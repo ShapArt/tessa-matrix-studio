@@ -1,0 +1,53 @@
+name: Finalize clean repository
+
+on:
+  push:
+    branches:
+      - release/v1.9.1-docs
+    paths:
+      - release_payload/READY
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rebuild clean repository tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat release_payload/repo.part* > /tmp/repo.tar.xz.b64
+          base64 -d /tmp/repo.tar.xz.b64 > /tmp/repo.tar.xz
+
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          tar -xJf /tmp/repo.tar.xz -C .
+
+      - name: Verify production tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test
+          test -s tessa-matrix-studio.user.js
+          test -s README.md
+          test -s docs/assets/studio-panel.webp
+          test -s docs/assets/studio-preview.webp
+          test -s docs/assets/excel-real.jpg
+          ! test -e .build
+          ! test -e build
+          ! test -e release_payload
+
+      - name: Commit clean tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Prepare clean TESSA Matrix Studio v1.9.1 release"
+          git push origin HEAD:release/v1.9.1-docs
