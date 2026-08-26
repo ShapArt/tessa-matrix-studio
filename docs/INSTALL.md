@@ -74,7 +74,6 @@ Tampermonkey официально доступен для Safari на macOS и i
 
 Если браузер управляется организацией и установка расширений запрещена политикой, самостоятельно обойти это ограничение нельзя — потребуется разрешение администратора браузера.
 
-
 ## Как выглядит Tampermonkey
 
 После установки значок Tampermonkey находится рядом с адресной строкой либо в меню расширений. Через него можно увидеть активные userscripts, открыть Dashboard и временно выключить скрипт.
@@ -125,9 +124,9 @@ Tampermonkey откроет страницу установки userscript.
 4. В правом нижнем углу должна появиться круглая красная кнопка TESSA Matrix Studio.
 5. Нажмите её — откроется панель.
 
-<p align="center"><img src="assets/studio-launcher.png" width="360" alt="Кнопка запуска TESSA Matrix Studio"></p>
+<p align="center"><img src="assets/studio-launcher.webp" width="360" alt="Кнопка запуска TESSA Matrix Studio"></p>
 
-<p align="center"><img src="assets/studio-panel.png" width="500" alt="Панель TESSA Matrix Studio"></p>
+<p align="center"><img src="assets/studio-panel.webp" width="500" alt="Панель TESSA Matrix Studio"></p>
 
 Если кнопки нет, перейдите в [TROUBLESHOOTING.md](TROUBLESHOOTING.md#скрипт-установлен-но-кнопки-в-tessa-нет).
 
