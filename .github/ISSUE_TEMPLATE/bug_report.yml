@@ -1,0 +1,61 @@
+name: Ошибка TESSA Matrix Studio
+description: Сообщить о проблеме при выгрузке, проверке или применении Excel
+title: "[Ошибка] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Перед отправкой убедитесь, что проблема повторяется на свежей выгрузке Excel. Не прикладывайте файлы с данными, которые нельзя размещать в GitHub.
+  - type: input
+    id: version
+    attributes:
+      label: Версия TESSA Matrix Studio
+      placeholder: 1.9.1
+    validations:
+      required: true
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Браузер
+      options:
+        - Google Chrome
+        - Mozilla Firefox
+        - Microsoft Edge
+        - Brave / другой Chromium
+        - Другое
+    validations:
+      required: true
+  - type: input
+    id: step
+    attributes:
+      label: На каком шаге возникла ошибка
+      placeholder: Скачать Excel / Проверить изменения / Применить к TESSA
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Что ожидалось
+      description: Кратко опишите ожидаемый результат.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Что произошло
+      description: Укажите счётчики preview и текст ошибки, если он есть.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Шаги для повторения
+      description: Перечислите действия от свежей выгрузки до ошибки.
+    validations:
+      required: true
+  - type: textarea
+    id: attachments
+    attributes:
+      label: Дополнительные материалы
+      description: Можно приложить обезличенный скриншот или ErrorReport JSON без конфиденциальных данных.
