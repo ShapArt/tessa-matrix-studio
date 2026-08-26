@@ -10,7 +10,7 @@
 
 Откройте нужную матрицу и панель TESSA Matrix Studio.
 
-<p align="center"><img src="assets/studio-panel.png" width="500" alt="Панель"></p>
+<p align="center"><img src="assets/studio-panel.webp" width="500" alt="Панель"></p>
 
 ### Скачать Excel
 
@@ -89,7 +89,7 @@
 
 На этом этапе запись в TESSA **не выполняется**.
 
-<p align="center"><img src="assets/studio-preview.png" width="500" alt="Preview изменений"></p>
+<p align="center"><img src="assets/studio-preview.webp" width="500" alt="Preview изменений"></p>
 
 Проверьте пять счётчиков:
 
