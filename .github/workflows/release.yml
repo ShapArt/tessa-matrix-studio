@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - tessa-matrix-studio.user.js
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify
+        run: npm test
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(awk '/@version/{print $3; exit}' tessa-matrix-studio.user.js)
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
+          zip -r "dist/tessa-matrix-studio-v${{ steps.version.outputs.version }}.zip" \
+            tessa-matrix-studio.user.js README.md CHANGELOG.md SECURITY.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              dist/tessa-matrix-studio.user.js \
+              "dist/tessa-matrix-studio-v$VERSION.zip" \
+              --clobber
+          else
+            gh release create "$TAG" \
+              dist/tessa-matrix-studio.user.js \
+              "dist/tessa-matrix-studio-v$VERSION.zip" \
+              --title "TESSA Matrix Studio v$VERSION" \
+              --generate-notes
+          fi
