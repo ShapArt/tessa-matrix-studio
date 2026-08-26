@@ -1,0 +1,6 @@
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+TESSA_Matrix_Apply_*.json
+TESSA_Matrix_ErrorReport_*.json
