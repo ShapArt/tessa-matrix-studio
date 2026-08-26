@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520">
+<rect width="1200" height="520" rx="24" fill="#fafafa"/><style>.h{font:700 25px Arial,sans-serif;fill:#292929}.t{font:700 20px Arial,sans-serif;fill:#292929}.s{font:16px Arial,sans-serif;fill:#606060}.ok{fill:#eaf7ef;stroke:#9bd0ad}.warn{fill:#fff7e8;stroke:#e5bd68}.bad{fill:#fff0f1;stroke:#e49ca0}</style>
+<text x="50" y="52" class="h">Что можно делать в Excel</text>
+<g transform="translate(50,85)"><rect width="530" height="90" rx="16" class="ok"/><text x="28" y="38" class="t">ИЗМЕНИТЬ</text><text x="28" y="67" class="s">Измените значения в существующей строке.</text></g>
+<g transform="translate(620,85)"><rect width="530" height="90" rx="16" class="ok"/><text x="28" y="38" class="t">ДОБАВИТЬ</text><text x="28" y="67" class="s">Вставьте копию в новую свободную строку и измените значения.</text></g>
+<g transform="translate(50,195)"><rect width="530" height="110" rx="16" class="warn"/><text x="28" y="38" class="t">ЗАМЕНИТЬ</text><text x="28" y="67" class="s">Вставка строки поверх существующей = замена целевой строки.</text><text x="28" y="92" class="s">ID целевой строки сохраняется, скрипт покажет ЗАМЕНИТЬ.</text></g>
+<g transform="translate(620,195)"><rect width="530" height="110" rx="16" class="bad"/><text x="28" y="38" class="t">УДАЛИТЬ</text><text x="28" y="67" class="s">Удалите строку Excel целиком.</text><text x="28" y="92" class="s">Не очищайте все ячейки вместо удаления строки.</text></g>
+<text x="50" y="365" class="h">Несколько значений в одной ячейке</text>
+<rect x="50" y="390" width="1100" height="80" rx="16" fill="#fff" stroke="#ddd"/>
+<text x="80" y="422" class="t">Правильно</text><text x="230" y="422" class="s">каждое значение с новой строки внутри ячейки (Alt+Enter)</text>
+<text x="80" y="453" class="t">Важно</text><text x="230" y="453" class="s">перед применением всегда смотрите итоговые счётчики и список изменений.</text>
+</svg>
