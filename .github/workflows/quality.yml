@@ -1,36 +1,35 @@
-name: Quality
+name: Quality & Security
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '17 3 * * 1'
 
 permissions:
   contents: read
+  security-events: write
 
 jobs:
-  test:
-    name: Syntax and regression tests
+  tests:
+    name: Tests
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Assemble userscript for pre-release branches
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f tessa-matrix-studio.user.js ]; then
-            cat build/tms.part*.b64 | tr -d '\n\r ' | base64 -d > /tmp/tessa-matrix-studio.user.js.xz
-            echo '4487e7bdac45eaf87287fad4db1f07d38049db5ea2d201d6819a1d5175402bba  /tmp/tessa-matrix-studio.user.js.xz' | sha256sum -c -
-            xz -dc /tmp/tessa-matrix-studio.user.js.xz > tessa-matrix-studio.user.js
-          fi
-
-      - name: Run tests
+      - name: Syntax and regression tests
         run: npm test
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@v3
