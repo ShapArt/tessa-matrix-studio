@@ -1,0 +1,39 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 3 * * 1'
+
+permissions:
+  security-events: write
+  packages: read
+  contents: read
+
+jobs:
+  analyze:
+    name: JavaScript analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Assemble userscript for pre-release branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f tessa-matrix-studio.user.js ]; then
+            cat build/tms.part*.b64 | tr -d '\n\r ' | base64 -d > /tmp/tessa-matrix-studio.user.js.xz
+            xz -dc /tmp/tessa-matrix-studio.user.js.xz > tessa-matrix-studio.user.js
+          fi
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
