@@ -1,0 +1,119 @@
+name: Fix stale schema refresh
+
+on:
+  push:
+    branches:
+      - fix/schema-refresh-stale-v1.9.11
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/schema-refresh-stale-v1.9.11
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Protect schema refresh from stale workbook rows
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = 'tessa-matrix-studio.user.js';
+          let text = fs.readFileSync(path, 'utf8');
+
+          function replaceOnce(source, oldValue, newValue, label) {
+            const count = source.split(oldValue).length - 1;
+            if (count !== 1) throw new Error(`${label}: expected 1 match, got ${count}`);
+            return source.replace(oldValue, newValue);
+          }
+
+          const anchor = [
+            '      const positionalOverwriteTarget = positionalOverwriteTargets.get(desired) || null;',
+            "      if (positionalOverwriteTarget && desired.system.action === 'delete') {",
+            '        throw new Error(`Строка Excel ${desired.excelRow}: операция неоднозначна — строка одновременно распознана как ЗАМЕНИТЬ и помечена УДАЛИТЬ. Нельзя безопасно определить цель удаления. Выполните удаление отдельно в свежей выгрузке.`);',
+            '      }',
+            '      let current = positionalOverwriteTarget || (desired.system.versionId ? byVersion.get(canonicalValue(desired.system.versionId)) : null);',
+          ].join('\n');
+
+          const replacement = [
+            '      const positionalOverwriteTarget = positionalOverwriteTargets.get(desired) || null;',
+            "      if (positionalOverwriteTarget && desired.system.action === 'delete') {",
+            '        throw new Error(`Строка Excel ${desired.excelRow}: операция неоднозначна — строка одновременно распознана как ЗАМЕНИТЬ и помечена УДАЛИТЬ. Нельзя безопасно определить цель удаления. Выполните удаление отдельно в свежей выгрузке.`);',
+            '      }',
+            '',
+            '      // Актуализация схемы читает свежий snapshot TESSA, поэтому нельзя молча',
+            '      // накладывать на него значения из Excel, выгруженного до чужих изменений.',
+            '      // Иначе старые значения получат свежий baseFingerprint и stale-защита Apply',
+            '      // больше не сможет распознать конфликт.',
+            '      const sourceIdentity = excelIdentityKey(desired);',
+            '      const sourceGroup = sourceIdentity ? (identityGroups.get(sourceIdentity) || []) : [];',
+            '      const primarySourceRow = sourceIdentity ? primaryExcelRowByIdentity.get(sourceIdentity) : null;',
+            '      const copiedFromExisting = Boolean(sourceGroup.length > 1 && primarySourceRow && primarySourceRow !== desired);',
+            '      const sourceCurrentRow = findCurrentByIdentity(desired);',
+            '      const exportedFingerprint = canonicalValue(desired.system.baseFingerprint || "");',
+            '      const freshFingerprint = canonicalValue(sourceCurrentRow?.fingerprint || "");',
+            '      const workbookFingerprint = canonicalValue(desired.fingerprint || fingerprintFlat(desired.flat || {}));',
+            '      const sourceChangedSinceExport = Boolean(sourceCurrentRow && exportedFingerprint && freshFingerprint && exportedFingerprint !== freshFingerprint);',
+            '      if (sourceChangedSinceExport) {',
+            '        const workbookChangedSinceExport = Boolean(workbookFingerprint && workbookFingerprint !== exportedFingerprint);',
+            "        const hasLocalOperation = desired.system.action !== 'keep' || positionalOverwriteTarget || copiedFromExisting || workbookChangedSinceExport;",
+            '        if (hasLocalOperation) {',
+            '          throw new Error(`Строка Excel ${desired.excelRow}: конфликт актуализации — исходная строка изменилась в TESSA после выгрузки, и в Excel тоже есть изменение/копия/операция. Скачайте свежую выгрузку и перенесите правку повторно.`);',
+            '        }',
+            '        // Excel-строка не менялась: сохраняем authoritative свежие значения TESSA,',
+            '        // но не теряем пользовательские несистемные колонки исходного файла.',
+            '        const sourceWorkbookRow = workbookRowByExcelRow.get(desired.excelRow);',
+            '        const customValues = customColumns.map(column => sourceWorkbookRow?.values?.[column.sourceIndex] ?? "");',
+            '        const freshRow = { ...clonePlain(sourceCurrentRow), action: "", customValues };',
+            '        const freshIdentityKey = canonicalValue(sourceCurrentRow.versionId || sourceCurrentRow.rowCardId);',
+            '        if (freshIdentityKey) usedCurrent.add(freshIdentityKey);',
+            '        mergedByCard.set(canonicalValue(sourceCurrentRow.rowCardId), freshRow);',
+            '        continue;',
+            '      }',
+            '',
+            '      let current = positionalOverwriteTarget || (desired.system.versionId ? byVersion.get(canonicalValue(desired.system.versionId)) : null);',
+          ].join('\n');
+
+          text = replaceOnce(text, anchor, replacement, 'schema refresh stale guard');
+          text = text.replaceAll('1.9.10', '1.9.11');
+          fs.writeFileSync(path, text, 'utf8');
+
+          for (const file of ['README.md', 'package.json', 'tests/smoke.mjs', '.github/ISSUE_TEMPLATE/bug_report.yml']) {
+            let value = fs.readFileSync(file, 'utf8');
+            value = value.replaceAll('1.9.10', '1.9.11');
+            fs.writeFileSync(file, value, 'utf8');
+          }
+
+          let changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
+          const head = '# Changelog\n\n';
+          if (!changelog.startsWith(head)) throw new Error('unexpected CHANGELOG header');
+          changelog = head
+            + '## 1.9.11 — 2026-08-27\n\n'
+            + '- актуализация Excel-схемы больше не переносит неизменённые устаревшие значения поверх свежего состояния TESSA;\n'
+            + '- если строка изменилась только в TESSA, в новый Excel попадает свежая строка TESSA вместе с её актуальным fingerprint;\n'
+            + '- если после выгрузки строку изменили и в TESSA, и в Excel (включая copy/replace/legacy action), актуализация останавливается с явным конфликтом вместо тихого rebase на свежий fingerprint.\n\n'
+            + changelog.slice(head.length);
+          fs.writeFileSync('CHANGELOG.md', changelog, 'utf8');
+          NODE
+
+      - name: Verify full regression suite
+        run: npm test
+
+      - name: Commit release-ready fix and remove helper
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/fix-schema-refresh-stale.yml
+          git add tessa-matrix-studio.user.js tests/schema-refresh-stale.mjs tests/smoke.mjs package.json README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml
+          git commit -m 'v1.9.11 — prevent stale schema-refresh laundering'
+          git push origin HEAD:fix/schema-refresh-stale-v1.9.11
