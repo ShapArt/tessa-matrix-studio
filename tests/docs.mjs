@@ -29,6 +29,8 @@ assert(readme.includes(`**v${version} · Автор: Шаповалов Артё
 assert(readme.includes(`Текущая версия: **${version}**`), 'README support version is out of sync');
 assert(readme.includes(downloadUrl), 'README does not contain userscript download URL');
 assert(downloadUrl === updateUrl, 'download/update URLs unexpectedly differ');
+assert(downloadUrl === 'https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js', 'userscript delivery must track latest GitHub Release');
+assert(!readme.includes('cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js'), 'README must not use stale jsDelivr @main install/update path');
 assert(readme.includes('docs/assets/studio-panel.webp'), 'README lost real Studio panel screenshot');
 assert(readme.includes('docs/assets/excel-real.webp'), 'README lost real Excel screenshot');
 assert(readme.includes('docs/assets/studio-preview.webp'), 'README lost real preview screenshot');

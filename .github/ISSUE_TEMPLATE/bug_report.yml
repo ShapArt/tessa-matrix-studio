@@ -14,7 +14,7 @@ body:
     id: version
     attributes:
       label: Версия TESSA Matrix Studio
-      placeholder: 1.9.12
+      placeholder: 1.9.13
     validations:
       required: true
 
@@ -37,6 +37,7 @@ body:
       label: Сценарий
       options:
         - Установка / запуск Studio
+        - Tampermonkey — проверка / автообновление Studio
         - Скачать Excel
         - PATCH — изменить существующую строку
         - ADD — добавить новую строку

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.13 — 2026-08-27
+
+- установка и автообновление Tampermonkey переведены с кэшируемого `jsDelivr @main` на `GitHub Releases /latest/download`;
+- `@updateURL` и `@downloadURL` теперь всегда ведут на последний опубликованный `.user.js`;
+- README-кнопка `УСТАНОВИТЬ` и ручной URL-импорт используют тот же актуальный release endpoint;
+- добавлена инструкция по `Automatic installation` в Tampermonkey 5.5+ и одноразовой переустановке старых 1.9.3;
+- regression запрещает возврат к stale `jsDelivr @main` в metadata и README.
+
 ## 1.9.12 — 2026-08-27
 
 - в preview добавлена выборочная отмена отдельных изменений поля без изменения исходного Excel;

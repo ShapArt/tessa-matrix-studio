@@ -6,13 +6,13 @@
 
 Выгрузка матрицы в Excel → массовая правка → проверка изменений → безопасное применение в TESSA.
 
-[![Version](https://img.shields.io/badge/version-1.9.12-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.9.13-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-userscript-24292F?style=flat-square&logo=tampermonkey)](https://www.tampermonkey.net/)
 
-### [УСТАНОВИТЬ](https://cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js) · [СКАЧАТЬ РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [ОТКРЫТЬ КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [СООБЩИТЬ ОБ ОШИБКЕ](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
+### [УСТАНОВИТЬ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js) · [СКАЧАТЬ РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [ОТКРЫТЬ КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [СООБЩИТЬ ОБ ОШИБКЕ](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.9.12 · Автор: Шаповалов Артём**
+**v1.9.13 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -45,8 +45,8 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
-1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.9.12** в Tampermonkey.
+1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
+2. Подтвердите установку версии **1.9.13** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -99,7 +99,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 
 <div align="center">
 
-### [УСТАНОВИТЬ TESSA MATRIX STUDIO](https://cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js)
+### [УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)
 
 </div>
 
@@ -108,7 +108,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Перед подтверждением проверьте:
 
 - **Название:** `TESSA Matrix Studio — Черкизово`
-- **Версия:** `1.9.12`
+- **Версия:** `1.9.13`
 - **Автор:** `Шаповалов Артём`
 - **Разрешения:** `@grant none`
 - **Область запуска:** только домены TESSA Черкизово
@@ -122,14 +122,14 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 3. В разделе **URL** вставьте:
 
 ```text
-https://cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js
+https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js
 ```
 
 4. Запустите импорт и подтвердите установку.
 
 Официальная справка Tampermonkey отдельно описывает импорт userscript по URL: [Import / Export scripts](https://www.tampermonkey.net/faq.php?q=Q106).
 
-### Если корпоративная сеть блокирует jsDelivr
+### Если GitHub Release скачался как файл, а Tampermonkey не открыл установку
 
 1. Откройте [последний GitHub Release](https://github.com/ShapArt/tessa-matrix-studio/releases/latest).
 2. В блоке **Assets** скачайте `tessa-matrix-studio.user.js`.
@@ -139,6 +139,24 @@ https://cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio
 Это надёжнее, чем рассчитывать на двойной клик по локальному `.user.js`, поведение которого различается между браузерами и настройками расширения.
 
 Официальная инструкция по ручному добавлению userscript: [How to install new scripts](https://www.tampermonkey.net/faq.php?q=Q102).
+
+### Автоматические обновления через Tampermonkey
+
+Начиная с **v1.9.13**, Studio больше не использует кэшируемый `jsDelivr @main` для установки и обновлений. В `@updateURL` и `@downloadURL` указан стабильный адрес **последнего опубликованного GitHub Release**:
+
+```text
+https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js
+```
+
+Как это работает:
+
+1. Tampermonkey периодически проверяет `@updateURL` и сравнивает `@version`.
+2. Если опубликована более новая версия, Tampermonkey скачивает её по `@downloadURL`.
+3. В Tampermonkey 5.5+ проверка обновлений и их установка разделены, поэтому для полностью автоматического режима включите **Automatic installation** в настройках обновлений Tampermonkey.
+4. Проверить вручную можно через **Dashboard → Installed userscripts → TESSA Matrix Studio → Check for updates** (название пункта может немного отличаться по браузеру/локали).
+
+> [!IMPORTANT]
+> Если у вас уже установлена старая **1.9.3** с `jsDelivr @main`, один раз переустановите Studio кнопкой **УСТАНОВИТЬ** выше. После установки **1.9.13+** дальнейшие версии будут проверяться через GitHub Releases автоматически.
 
 ## 3. Проверьте установку
 
@@ -299,7 +317,7 @@ https://tessa-app*.cherkizovsky.net/*
 Откройте **Tampermonkey → Dashboard → Utilities → URL** и вставьте адрес установки вручную:
 
 ```text
-https://cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js
+https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js
 ```
 
 Tampermonkey официально поддерживает принудительный импорт userscript по URL, когда автоматическое распознавание ссылки не сработало.
@@ -309,7 +327,7 @@ Tampermonkey официально поддерживает принудител�
 <details>
 <summary><b>ERR_INVALID_RESPONSE при установке</b></summary>
 
-Основная ссылка README использует jsDelivr, а не GitHub Raw. Если корпоративная сеть блокирует jsDelivr, скачайте `.user.js` из **GitHub Releases** и добавьте его через **Dashboard → Add a new script**.
+Основная ссылка README ведёт на `releases/latest/download/...user.js`, то есть на последний опубликованный GitHub Release. Если браузер просто скачал файл, добавьте его через **Dashboard → Add a new script** или импорт URL в **Utilities**.
 
 </details>
 
@@ -394,7 +412,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.9.12**  
+Текущая версия: **1.9.13**
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)
