@@ -32,6 +32,7 @@ assert(workflow.includes('uses: actions/attest@v4'), 'release must generate GitH
 assert(workflow.includes('subject-checksums: dist/SHA256SUMS.txt'), 'attestation must bind the checksummed release assets');
 
 // Do not trust a successful upload alone: verify what anonymous users actually receive through /latest/download.
+// This contract intentionally starts RED before the workflow implementation is added.
 assert(workflow.includes('Verify public latest delivery'), 'release must verify the public latest endpoint after publication');
 assert(workflow.includes('releases/latest/download/tessa-matrix-studio.meta.js'), 'public verification must fetch the latest metadata asset');
 assert(workflow.includes('releases/latest/download/tessa-matrix-studio.user.js'), 'public verification must fetch the latest full userscript asset');
