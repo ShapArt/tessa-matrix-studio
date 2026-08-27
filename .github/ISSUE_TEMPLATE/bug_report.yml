@@ -1,19 +1,23 @@
 name: Ошибка TESSA Matrix Studio
-description: Сообщить о проблеме при выгрузке, проверке или применении Excel
+description: Сообщить о проблеме при установке, выгрузке, проверке или применении Excel
 title: "[Ошибка] "
 labels: []
 body:
   - type: markdown
     attributes:
       value: |
-        Перед отправкой убедитесь, что проблема повторяется на свежей выгрузке Excel. Не прикладывайте файлы с данными, которые нельзя размещать в GitHub.
+        Репозиторий публичный. Не прикладывайте внутренние ссылки TESSA, ФИО, названия контрагентов, GUID карточек, Excel-файлы или JSON-отчёты с данными, которые нельзя размещать в GitHub.
+
+        Перед отправкой повторите проблему на свежей выгрузке Excel, если это безопасно и не требует повторного применения изменений.
+
   - type: input
     id: version
     attributes:
       label: Версия TESSA Matrix Studio
-      placeholder: 1.9.1
+      placeholder: 1.9.3
     validations:
       required: true
+
   - type: dropdown
     id: browser
     attributes:
@@ -26,13 +30,42 @@ body:
         - Другое
     validations:
       required: true
+
+  - type: dropdown
+    id: operation
+    attributes:
+      label: Сценарий
+      options:
+        - Установка / запуск Studio
+        - Скачать Excel
+        - PATCH — изменить существующую строку
+        - ADD — добавить новую строку
+        - REPLACE — вставить поверх существующей строки
+        - DELETE — удалить строку
+        - Справочник / поиск значения
+        - Актуализировать выбранный Excel
+        - Применить к TESSA
+        - Другое
+    validations:
+      required: true
+
+  - type: input
+    id: preview
+    attributes:
+      label: Счётчики preview
+      description: Укажите только числа, без данных строк.
+      placeholder: изменить 1 / добавить 0 / удалить 0 / без изменений 132 / пропустить 0
+    validations:
+      required: false
+
   - type: input
     id: step
     attributes:
       label: На каком шаге возникла ошибка
-      placeholder: Скачать Excel / Проверить изменения / Применить к TESSA
+      placeholder: Проверить изменения / Применить к TESSA / после Ctrl+R
     validations:
       required: true
+
   - type: textarea
     id: expected
     attributes:
@@ -40,22 +73,35 @@ body:
       description: Кратко опишите ожидаемый результат.
     validations:
       required: true
+
   - type: textarea
     id: actual
     attributes:
       label: Что произошло
-      description: Укажите счётчики preview и текст ошибки, если он есть.
+      description: Укажите текст ошибки и безопасные обезличенные детали.
     validations:
       required: true
+
   - type: textarea
     id: reproduce
     attributes:
       label: Шаги для повторения
-      description: Перечислите действия от свежей выгрузки до ошибки.
+      description: Перечислите действия от свежей выгрузки до ошибки без внутренних ссылок и конфиденциальных данных.
     validations:
       required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Перед отправкой
+      options:
+        - label: Я проверил проблему на свежей выгрузке Excel либо указал, почему повторять применение небезопасно.
+          required: true
+        - label: Я удалил из описания внутренние ссылки, ФИО, GUID и другие данные, которые нельзя публиковать.
+          required: true
+
   - type: textarea
     id: attachments
     attributes:
       label: Дополнительные материалы
-      description: Можно приложить обезличенный скриншот или ErrorReport JSON без конфиденциальных данных.
+      description: Можно приложить только обезличенный скриншот или фрагмент ErrorReport JSON без внутренних данных.
