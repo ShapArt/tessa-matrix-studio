@@ -3550,6 +3550,17 @@
           issues.push(`Строка Excel ${excelRow.excelRow}: целевая строка замены уже используется другой операцией. Строка пропущена.`);
           continue;
         }
+        // ЗАМЕНИТЬ переносит данные из source identity в другую target identity.
+        // Поэтому stale-check обязан проверять именно источник копии, а не только цель.
+        // Цель сразу резервируем в usedCurrent даже при SKIP, чтобы она не превратилась
+        // в неявный DELETE в конце planner-а.
+        const sourceCurrentRow = findCurrent(excelRow);
+        if (sourceCurrentRow && excelRow.system.baseFingerprint && sourceCurrentRow.fingerprint
+          && canonicalValue(excelRow.system.baseFingerprint) !== canonicalValue(sourceCurrentRow.fingerprint)) {
+          if (identityKey) usedCurrent.add(identityKey);
+          issues.push(`Строка Excel ${excelRow.excelRow}: исходная строка, из которой сделана замена, изменилась в TESSA после выгрузки. Скачайте свежий файл. Целевая строка TESSA не изменялась.`);
+          continue;
+        }
         usedCurrent.add(identityKey);
         const changes = [];
         for (const key of keys) {
