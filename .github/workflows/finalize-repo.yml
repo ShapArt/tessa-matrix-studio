@@ -35,12 +35,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base64 --decode docs/assets/studio-panel.webp.b64 > docs/assets/studio-panel.webp
-          base64 --decode docs/assets/studio-preview.webp.b64 > docs/assets/studio-preview.webp
+          cat docs/assets/panel.part*.b64 | base64 --decode > docs/assets/studio-panel.webp
           cat docs/assets/excel-real.part*.b64 | base64 --decode > docs/assets/excel-real.webp
-
           echo "8027c303d629d464073b59ac32774a2bfd1268df7f58ea133de25ecd0b818b9f  docs/assets/studio-panel.webp" | sha256sum --check --strict
-          echo "e597315844ef5f377c0e167272f87cb14cb855a8c30147cbd001f319d8605a3e  docs/assets/studio-preview.webp" | sha256sum --check --strict
           echo "67e8f5a621eab1c2992193f5c0384c818471961f26386d0535608f12b4fc17b6  docs/assets/excel-real.webp" | sha256sum --check --strict
 
       - name: Commit production assets
@@ -49,9 +46,9 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tessa-matrix-studio.user.js docs/assets/studio-panel.webp docs/assets/studio-preview.webp docs/assets/excel-real.webp
+          git add tessa-matrix-studio.user.js docs/assets/studio-panel.webp docs/assets/excel-real.webp
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "Add verified production assets for v1.9.1"
+          git commit -m "Add verified production screenshots for v1.9.1"
           git push
