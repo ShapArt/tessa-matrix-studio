@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.3 — 2026-08-27
+
+- добавлен end-to-end acceptance regression suite для `NOOP / PATCH / ADD / REPLACE / DELETE / SKIP / stale preview / справочников / отмены`;
+- исправлена классификация ошибок справочника: слово «справочник» больше не распознаётся как ошибка прав из-за подстроки «прав»;
+- `npm test` теперь включает пользовательские acceptance-сценарии поверх planner и preflight.
+
 ## 1.9.2 — 2026-08-27
 
 - `@updateURL` и `@downloadURL` переведены с `raw.githubusercontent.com` на jsDelivr, чтобы автообновление и повторная установка не зависели от GitHub Raw;

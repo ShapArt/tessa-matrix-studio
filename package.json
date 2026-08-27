@@ -1,9 +1,9 @@
 {
   "name": "tessa-matrix-studio",
-  "version": "1.9.2",
+  "version": "1.9.3",
   "private": true,
   "description": "TESSA Matrix Studio userscript verification commands",
   "scripts": {
-    "test": "node --check tessa-matrix-studio.user.js && node tests/smoke.mjs && node tests/planner.mjs && node tests/docs.mjs"
+    "test": "node --check tessa-matrix-studio.user.js && node tests/smoke.mjs && node tests/planner.mjs && node tests/acceptance.mjs && node tests/docs.mjs"
   }
 }
