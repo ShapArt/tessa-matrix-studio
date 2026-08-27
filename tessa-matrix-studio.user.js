@@ -44,6 +44,7 @@
     name: 'TESSA Matrix Studio',
     version: '1.9.11',
     plan: null,
+    review: createPlanReviewState(),
     workbook: null,
     snapshot: null,
     structure: null,
@@ -4287,6 +4288,7 @@
     APP.bridge = bridge;
     APP.structure = structure;
     APP.snapshot = snapshot;
+    APP.review = createPlanReviewState();
     APP.plan = plan;
     renderPlan(plan);
     const visible = plan.actions.filter(action => action.type !== 'noop').length;
@@ -4596,9 +4598,14 @@
     const summary = document.querySelector('#tms-summary');
     const table = document.querySelector('#tms-plan');
     if (!summary || !table) return;
-    const c = plan.counts;
-    const skipped = plan.skippedRows || [];
-    const warnings = (plan.warnings || []).slice(0, 8);
+    const reviewed = buildReviewedPlan(plan, APP.review);
+    const c = reviewed.counts;
+    const skipped = reviewed.skippedRows || [];
+    const warnings = (reviewed.warnings || []).slice(0, 8);
+    const reviewedSafety = reviewed.safety || plan.safety || { blocked: false, blockedReasons: [] };
+    const excludedRowCount = APP.review?.excludedRows?.size || 0;
+    const excludedChangeCount = [...(APP.review?.excludedChanges?.values?.() || [])].reduce((sum, values) => sum + (values?.size || 0), 0);
+    const hasReviewExclusions = excludedRowCount > 0 || excludedChangeCount > 0;
     summary.innerHTML = `
       <div class="tms-counters">
         <span class="tms-count tms-update">изменить <b>${c.update}</b></span>
@@ -4607,45 +4614,93 @@
         <span class="tms-count tms-noop">без изменений <b>${c.noop}</b></span>
         <span class="tms-count tms-skip">пропустить <b>${c.skip || 0}</b></span>
       </div>
-      ${plan.safety?.blocked ? `<div class="tms-fatal"><b>Этот файл нельзя безопасно применить</b><br>${plan.safety.blockedReasons.map(escapeHtml).join('<br>')}</div>` : ''}
+      ${hasReviewExclusions ? `<div class="tms-review-note"><b>Фильтр применения включён.</b> Отключённые здесь изменения не попадут в TESSA; исходный Excel не изменяется.</div>` : ''}
+      ${reviewedSafety.blocked ? `<div class="tms-fatal"><b>Этот набор изменений нельзя безопасно применить</b><br>${(reviewedSafety.blockedReasons || []).map(escapeHtml).join('<br>')}</div>` : ''}
       ${skipped.length ? `<details class="tms-skipped-box"><summary><b>Пропущено строк: ${skipped.length}</b> · корректные изменения можно применить</summary><div>${skipped.slice(0, 20).map(item => `<div class="tms-skip-line">${item.excelRow ? `Excel ${item.excelRow}: ` : ''}${escapeHtml(item.reason)}</div>`).join('')}${skipped.length > 20 ? `<div class="tms-skip-more">Ещё ${skipped.length - 20}…</div>` : ''}</div></details>` : ''}
       ${warnings.length ? `<details class="tms-warning"><summary>Нужно проверить</summary><div>${warnings.map(item => `<div>${escapeHtml(item)}</div>`).join('')}</div></details>` : ''}
     `;
+
+    // Не теряем раскрытую строку после клика по review-кнопке и повторного renderPlan().
+    const openActionKeys = new Set([...table.querySelectorAll('details[open][data-review-action-key]')].map(item => item.dataset.reviewActionKey));
     table.innerHTML = '';
-    const visible = plan.actions.filter(a => a.type !== 'noop');
+
+    // Показываем исходные найденные действия, а не только effective actions: иначе
+    // полностью отключённая строка исчезнет из preview и её нельзя будет вернуть.
+    const visible = plan.actions.filter(action => action.type !== 'noop');
     const previewLimit = 40;
     const previewActions = visible.slice(0, previewLimit);
     if (!visible.length && !skipped.length) table.innerHTML = '<div class="tms-empty">Изменений нет.</div>';
+
     previewActions.forEach(action => {
       const item = document.createElement('details');
       item.className = `tms-action tms-action-${action.type}`;
+      const actionKey = planReviewActionKey(action);
+      item.dataset.reviewActionKey = actionKey;
+      if (openActionKeys.has(actionKey)) item.open = true;
       const isReplacement = action.type === 'update' && isOverwriteMatch(action.match);
       const label = isReplacement ? 'ЗАМЕНИТЬ' : action.type === 'update' ? 'ИЗМЕНИТЬ' : action.type === 'add' ? 'ДОБАВИТЬ' : 'УДАЛИТЬ';
       const rowText = isReplacement ? `Excel ${action.excelRow.excelRow} → TESSA ${action.currentRow.index + 1}` : action.excelRow ? `Excel ${action.excelRow.excelRow}` : `TESSA ${action.currentRow.index + 1}`;
-      item.innerHTML = `<summary><b>${label}</b> — ${rowText}${action.match?.lowConfidence ? ' ⚠' : ''}</summary>`;
+      const rowExcluded = action.type === 'update' && Boolean(APP.review?.excludedRows?.has?.(actionKey));
+      if (rowExcluded) item.classList.add('tms-review-row-excluded');
+      item.innerHTML = `<summary><b>${label}</b> — ${rowText}${action.match?.lowConfidence ? ' ⚠' : ''}${rowExcluded ? ' · <span class="tms-review-state">не будет применено</span>' : ''}</summary>`;
       const body = document.createElement('div');
       body.className = 'tms-action-body';
+
       if (action.type === 'update') {
-        body.innerHTML = action.changes.map(change => `
-          <div class="tms-diff"><b>${escapeHtml(change.label || change.key)}</b><br>
-          <span class="tms-before">было: ${escapeHtml((change.before || []).join(' | ') || '∅')}</span><br>
-          <span class="tms-after">стало: ${escapeHtml((change.after || []).join(' | ') || '∅')}</span></div>`).join('');
+        const excludedChanges = reviewExcludedChanges(APP.review, action);
+        const rowButtonLabel = rowExcluded ? 'Вернуть все изменения строки' : 'Не применять всю строку';
+        const rowsExcludedIndividually = (action.changes || []).filter(change => excludedChanges.has(change.key)).length;
+        body.innerHTML = `
+          <div class="tms-review-row-actions">
+            <button type="button" class="tms-review-btn tms-review-row-btn" data-review-action="${escapeHtml(actionKey)}" data-review-row="true" aria-pressed="${rowExcluded ? 'true' : 'false'}">${rowButtonLabel}</button>
+            ${!rowExcluded && rowsExcludedIndividually ? `<span class="tms-review-state">Не применяется полей: ${rowsExcludedIndividually}</span>` : ''}
+          </div>
+          ${(action.changes || []).map(change => {
+            const individuallyExcluded = excludedChanges.has(change.key);
+            const excluded = rowExcluded || individuallyExcluded;
+            const button = rowExcluded ? '' : `<button type="button" class="tms-review-btn tms-review-change-btn" data-review-action="${escapeHtml(actionKey)}" data-review-change="${escapeHtml(change.key)}" aria-pressed="${individuallyExcluded ? 'true' : 'false'}">${individuallyExcluded ? 'Вернуть' : 'Не применять'}</button>`;
+            return `<div class="tms-diff${excluded ? ' tms-diff-excluded' : ''}">
+              <div class="tms-diff-head"><b>${escapeHtml(change.label || change.key)}</b>${button}</div>
+              <span class="tms-before">было: ${escapeHtml((change.before || []).join(' | ') || '∅')}</span><br>
+              <span class="tms-after">стало: ${escapeHtml((change.after || []).join(' | ') || '∅')}</span>
+              ${excluded ? '<div class="tms-review-state">Это изменение не будет применено</div>' : ''}
+            </div>`;
+          }).join('')}`;
       } else if (action.type === 'add') body.innerHTML = flatToHtml(action.excelRow.flat, plan.columnMap);
       else body.innerHTML = flatToHtml(action.currentRow.flat, plan.columnMap);
       item.appendChild(body);
       table.appendChild(item);
     });
+
     if (visible.length > previewLimit) {
       const more = document.createElement('div');
       more.className = 'tms-empty';
       more.textContent = `Ещё ${visible.length - previewLimit} изменений не развёрнуты. Счётчики сверху учитывают весь план.`;
       table.appendChild(more);
     }
-    const executable = visible.length > 0;
+
+    // Делегируем клики одной функцией: renderPlan может пересобирать карточки сколько угодно.
+    table.onclick = event => {
+      const button = event.target?.closest?.('button[data-review-action]');
+      if (!button || !APP.plan || APP.busy) return;
+      const sourceAction = (APP.plan.actions || []).find(candidate => planReviewActionKey(candidate) === button.dataset.reviewAction);
+      if (!sourceAction || sourceAction.type !== 'update') return;
+      if (button.hasAttribute('data-review-row')) {
+        const currentlyExcluded = Boolean(APP.review?.excludedRows?.has?.(planReviewActionKey(sourceAction)));
+        setPlanReviewRow(APP.review, sourceAction, !currentlyExcluded);
+      } else if (button.hasAttribute('data-review-change')) {
+        const changeKey = button.dataset.reviewChange;
+        const currentlyExcluded = reviewExcludedChanges(APP.review, sourceAction).has(changeKey);
+        setPlanReviewChange(APP.review, sourceAction, changeKey, !currentlyExcluded);
+      }
+      renderPlan(APP.plan);
+    };
+
+    const executableCount = reviewed.actions.filter(action => action.type !== 'noop').length;
     const apply = document.querySelector('#tms-apply');
     if (apply) {
-      apply.disabled = !executable || Boolean(plan.safety?.blocked);
-      apply.textContent = executable ? `Применить к TESSA · ${visible.length}` : 'Применить к TESSA';
+      apply.disabled = !executableCount || Boolean(reviewedSafety.blocked);
+      apply.textContent = executableCount ? `Применить к TESSA · ${executableCount}` : 'Применить к TESSA';
     }
   }
 
@@ -4684,7 +4739,7 @@
       const stop = document.querySelector('#tms-stop');
       if (stop) stop.disabled = true;
       const apply = document.querySelector('#tms-apply');
-      if (apply) { const executable = Boolean(APP.plan?.actions?.some(a => a.type !== 'noop')); apply.disabled = !executable || Boolean(APP.plan?.safety?.blocked); apply.textContent = executable ? `Применить к TESSA · ${APP.plan.actions.filter(a => a.type !== 'noop').length}` : 'Применить к TESSA'; }
+      if (apply) { const reviewedPlan = buildReviewedPlan(APP.plan, APP.review); const executableCount = reviewedPlan?.actions?.filter(a => a.type !== 'noop').length || 0; apply.disabled = !executableCount || Boolean(reviewedPlan?.safety?.blocked); apply.textContent = executableCount ? `Применить к TESSA · ${executableCount}` : 'Применить к TESSA'; }
       const refresh = document.querySelector('#tms-refresh-excel');
       if (refresh) refresh.disabled = !APP.workbook?.roundtrip?.enabled && !document.querySelector('#tms-file')?.files?.length;
       if ((APP.progress?.percent || 0) < 100) {
@@ -4705,7 +4760,7 @@
       #tms-panel{position:fixed;right:22px;bottom:88px;width:min(500px,calc(100vw - 30px));max-height:min(780px,calc(100vh - 110px));z-index:2147483646;background:var(--tms-bg);color:var(--tms-ink);border:1px solid var(--tms-line);border-radius:20px;box-shadow:0 24px 70px #0004;font:13px/1.45 Arial,sans-serif;display:none;overflow:hidden}
       #tms-panel.tms-open{display:flex;flex-direction:column;animation:tms-panel-in .22s ease-out}.tms-head{display:flex;align-items:center;gap:12px;padding:14px 16px;background:#fff;border-bottom:1px solid var(--tms-line);cursor:move;user-select:none}.tms-brand{width:34px;height:34px;border-radius:11px;background:var(--tms-red);color:#fff;display:grid;place-items:center;font-weight:900;font-size:17px}.tms-title{flex:1;min-width:0}.tms-title strong{display:block;font-size:14px}.tms-title small{display:block;color:var(--tms-muted);font-size:11px;margin-top:1px}.tms-close,.tms-help{border:0;background:transparent;color:#555;font-size:20px;cursor:pointer;border-radius:8px;padding:4px 7px}.tms-help{font-size:15px;font-weight:700}.tms-close:hover,.tms-help:hover{background:#f4f4f4}
       .tms-body{padding:14px 16px 16px;overflow:auto;background:linear-gradient(180deg,#fff 0,#fff 55%,#fffafa 100%)}.tms-status{padding:11px 12px;border-radius:13px;background:#f7f7f7;color:#555;margin-bottom:12px;border:1px solid #ededed;transition:.2s}.tms-status-line{display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:700;color:#353535}.tms-progress-percent{font-variant-numeric:tabular-nums;color:var(--tms-red);font-size:11px}.tms-progress-track{height:7px;border-radius:999px;background:#e9e9e9;overflow:hidden;margin:8px 0 5px;position:relative}.tms-progress-fill{height:100%;width:0;background:linear-gradient(90deg,var(--tms-red),#ff5b60);border-radius:inherit;transition:width .28s ease;position:relative;overflow:hidden}.tms-busy .tms-progress-fill::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,#ffffff80,transparent);transform:translateX(-100%);animation:tms-shimmer 1.15s linear infinite}.tms-progress-detail{min-height:16px;font-size:11px;color:#777}.tms-step{display:grid;gap:8px;margin-bottom:10px;padding:11px 12px;border:1px solid #ececec;border-radius:14px;background:#fff;box-shadow:0 2px 8px #00000008}.tms-step-apply{border-color:#f2c5c7;background:linear-gradient(135deg,#fff 0,#fff6f6 100%)}.tms-step-label{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#777;font-weight:800}.tms-step-caption{font-size:11px;color:#777;margin-top:-2px}.tms-row{display:flex;gap:8px;flex-wrap:wrap}.tms-controls button,.tms-file-label{border:1px solid #d9d9d9;background:#fff;color:#292929;border-radius:11px;padding:9px 12px;cursor:pointer;font-weight:600;transition:.15s}.tms-controls button:hover,.tms-file-label:hover{border-color:#b9b9b9;background:#fafafa}.tms-controls button.tms-primary{background:var(--tms-red);border-color:var(--tms-red);color:#fff}.tms-controls button.tms-primary:hover{background:var(--tms-red-dark);border-color:var(--tms-red-dark)}.tms-controls button:disabled,.tms-file-label.tms-disabled{opacity:.42;cursor:not-allowed}.tms-controls button.tms-ghost{color:#666}.tms-controls button.tms-danger{color:var(--tms-red-dark)}#tms-file{display:none}.tms-file-name{font-size:12px;color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;padding:1px 2px}
-      .tms-counters{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:10px 0}.tms-count{padding:8px 5px;border-radius:11px;text-align:center;font-size:10px;border:1px solid transparent}.tms-count b{display:block;font-size:16px;margin-top:1px}.tms-update{background:#fff7e6;border-color:#f4dfae}.tms-add{background:#edf9f1;border-color:#ccebd7}.tms-delete{background:#fff1f1;border-color:#f2cccc}.tms-noop{background:#f5f5f5;border-color:#e9e9e9}.tms-skip{background:#f6f1ff;border-color:#e1d4f7;color:#62438b}.tms-warning,.tms-skipped-box{margin-top:8px;padding:9px 11px;border-radius:11px;background:#fffaf0;color:#624f21;border:1px solid #f0e1b5}.tms-warning summary,.tms-skipped-box summary{cursor:pointer}.tms-skipped-box{background:#f7f3ff;color:#533b77;border-color:#e2d7f5}.tms-skip-line{padding:6px 0;border-top:1px dashed #e6ddf2}.tms-skip-more{padding-top:7px;font-weight:700}.tms-fatal{margin-top:8px;padding:11px 12px;border-radius:11px;background:#fff0f0;color:#8f1418;border:1px solid #f3b9bb}.tms-action{margin:7px 0;border:1px solid var(--tms-line);border-radius:11px;padding:8px 10px;background:#fff}.tms-action-update{border-left:4px solid #d99a00}.tms-action-add{border-left:4px solid #238b4a}.tms-action-delete{border-left:4px solid #c62828}.tms-action summary{cursor:pointer}.tms-action-body{padding:8px 2px 1px}.tms-diff{padding:7px 0;border-top:1px dashed #e5e5e5}.tms-before{color:#8a3232}.tms-after{color:#17683a}.tms-empty{padding:15px;text-align:center;color:#777}.tms-help-card{display:none;margin-bottom:12px;padding:13px;border-radius:14px;border:1px solid #f0c9cb;background:linear-gradient(135deg,#fff,#fff6f6);animation:tms-pop .18s ease-out}.tms-help-card.tms-show{display:block}.tms-help-card h3{font-size:14px;margin:0 0 8px}.tms-help-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.tms-help-item{padding:8px 9px;border:1px solid #eee;border-radius:10px;background:#fff;font-size:11px}.tms-help-item b{display:block;margin-bottom:2px}.tms-help-note{margin-top:8px;padding:8px 9px;border-radius:10px;background:#fff0f1;font-size:11px}.tms-help-close{margin-top:9px;width:100%;border:1px solid #ddd;background:#fff;border-radius:10px;padding:7px;cursor:pointer;font-weight:700}@keyframes tms-panel-in{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}@keyframes tms-pop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}@keyframes tms-shimmer{to{transform:translateX(100%)}}#tms-apply{width:100%;padding:11px 14px;font-size:13px;box-shadow:0 8px 18px #e31e2420}
+      .tms-counters{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:10px 0}.tms-count{padding:8px 5px;border-radius:11px;text-align:center;font-size:10px;border:1px solid transparent}.tms-count b{display:block;font-size:16px;margin-top:1px}.tms-update{background:#fff7e6;border-color:#f4dfae}.tms-add{background:#edf9f1;border-color:#ccebd7}.tms-delete{background:#fff1f1;border-color:#f2cccc}.tms-noop{background:#f5f5f5;border-color:#e9e9e9}.tms-skip{background:#f6f1ff;border-color:#e1d4f7;color:#62438b}.tms-warning,.tms-skipped-box{margin-top:8px;padding:9px 11px;border-radius:11px;background:#fffaf0;color:#624f21;border:1px solid #f0e1b5}.tms-warning summary,.tms-skipped-box summary{cursor:pointer}.tms-skipped-box{background:#f7f3ff;color:#533b77;border-color:#e2d7f5}.tms-skip-line{padding:6px 0;border-top:1px dashed #e6ddf2}.tms-skip-more{padding-top:7px;font-weight:700}.tms-fatal{margin-top:8px;padding:11px 12px;border-radius:11px;background:#fff0f0;color:#8f1418;border:1px solid #f3b9bb}.tms-action{margin:7px 0;border:1px solid var(--tms-line);border-radius:11px;padding:8px 10px;background:#fff}.tms-action-update{border-left:4px solid #d99a00}.tms-action-add{border-left:4px solid #238b4a}.tms-action-delete{border-left:4px solid #c62828}.tms-action summary{cursor:pointer}.tms-action-body{padding:8px 2px 1px}.tms-review-row-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0 8px}.tms-review-btn{border:1px solid #d6d6d6;background:#fff;color:#555;border-radius:9px;padding:5px 8px;font:600 11px/1.2 Arial,sans-serif;cursor:pointer}.tms-review-btn:hover{border-color:#aaa;background:#f8f8f8}.tms-review-btn[aria-pressed="true"]{border-color:#b9b9b9;background:#f0f0f0;color:#444}.tms-diff{padding:7px 0;border-top:1px dashed #e5e5e5;transition:.15s opacity,.15s background}.tms-diff-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.tms-diff-excluded{opacity:.58;background:#f7f7f7;margin:0 -6px;padding:7px 6px}.tms-diff-excluded .tms-before,.tms-diff-excluded .tms-after{text-decoration:line-through}.tms-review-row-excluded{background:#f7f7f7;border-left-color:#aaa}.tms-review-state{font-size:10px;color:#777;font-weight:700}.tms-review-note{margin-top:8px;padding:9px 11px;border-radius:11px;background:#f4f7fb;color:#485466;border:1px solid #dbe3ee}.tms-before{color:#8a3232}.tms-after{color:#17683a}.tms-empty{padding:15px;text-align:center;color:#777}.tms-help-card{display:none;margin-bottom:12px;padding:13px;border-radius:14px;border:1px solid #f0c9cb;background:linear-gradient(135deg,#fff,#fff6f6);animation:tms-pop .18s ease-out}.tms-help-card.tms-show{display:block}.tms-help-card h3{font-size:14px;margin:0 0 8px}.tms-help-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.tms-help-item{padding:8px 9px;border:1px solid #eee;border-radius:10px;background:#fff;font-size:11px}.tms-help-item b{display:block;margin-bottom:2px}.tms-help-note{margin-top:8px;padding:8px 9px;border-radius:10px;background:#fff0f1;font-size:11px}.tms-help-close{margin-top:9px;width:100%;border:1px solid #ddd;background:#fff;border-radius:10px;padding:7px;cursor:pointer;font-weight:700}@keyframes tms-panel-in{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}@keyframes tms-pop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}@keyframes tms-shimmer{to{transform:translateX(100%)}}#tms-apply{width:100%;padding:11px 14px;font-size:13px;box-shadow:0 8px 18px #e31e2420}
       @media(max-width:650px){#tms-panel{right:8px;bottom:74px;width:calc(100vw - 16px)}#tms-launch{right:10px;bottom:10px}.tms-counters{grid-template-columns:repeat(2,1fr)}}
     `;
     document.head.appendChild(style);
@@ -4837,7 +4892,7 @@
     });
     panel.querySelector('#tms-apply').addEventListener('click', async () => {
       if (APP.busy) return; setBusy(true);
-      try { const result = await applyPlan(APP.plan); if (result) alert(`Готово.\n\nПрименено: ${result.appliedCount}\nПропущено: ${result.skippedCount}\n\n${result.partial ? 'Ошибочные строки не применялись; остальные изменения сохранены.' : 'Все подготовленные изменения применены.'}`); }
+      try { const reviewedPlan = buildReviewedPlan(APP.plan, APP.review); const result = await applyPlan(reviewedPlan); if (result) alert(`Готово.\n\nПрименено: ${result.appliedCount}\nПропущено: ${result.skippedCount}\n\n${result.partial ? 'Ошибочные строки не применялись; остальные изменения сохранены.' : 'Все подготовленные изменения применены.'}`); }
       catch (error) {
         const message = friendlyErrorMessage(error); log(message, 'error', error);
         downloadJson({ app: { name: APP.name, version: APP.version }, planId: APP.plan?.id, failedAt: nowIso(), error: message, technicalError: error?.message || String(error), matrixId: APP.plan?.matrixId || null, logs: APP.logs.slice(-120) }, `TESSA_Matrix_ErrorReport_${Date.now()}.json`);
