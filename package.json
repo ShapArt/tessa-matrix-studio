@@ -4,6 +4,6 @@
   "private": true,
   "description": "TESSA Matrix Studio userscript verification commands",
   "scripts": {
-    "test": "node --check tessa-matrix-studio.user.js && node tests/smoke.mjs && node tests/planner.mjs && node tests/overwrite-delete.mjs && node tests/schema-refresh-stale.mjs && node tests/review-undo.mjs && node tests/acceptance.mjs && node tests/docs.mjs && node tests/release-workflow.mjs"
+    "test": "node --check tessa-matrix-studio.user.js && node tests/smoke.mjs && node tests/planner.mjs && node tests/overwrite-delete.mjs && node tests/schema-refresh-stale.mjs && node tests/review-undo.mjs && node tests/review-ui-contract.mjs && node tests/acceptance.mjs && node tests/docs.mjs && node tests/release-workflow.mjs"
   }
 }
