@@ -1,0 +1,40 @@
+name: Patch v1.9.15 release metadata
+
+on:
+  push:
+    branches:
+      - feature/qa-hardening-v1.9.15
+    paths:
+      - .github/workflows/patch-v1.9.15-release.yml
+      - tools/patch-v1.9.15-release.cjs
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feature/qa-hardening-v1.9.15
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Apply release/docs patch
+        run: node tools/patch-v1.9.15-release.cjs
+      - name: Verify full regression suite
+        run: npm test
+      - name: Commit release/docs and remove helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/patch-v1.9.15-release.yml
+          rm tools/patch-v1.9.15-release.cjs
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tessa-matrix-studio.user.js package.json tests/smoke.mjs .github/ISSUE_TEMPLATE/bug_report.yml README.md CHANGELOG.md .github/workflows/patch-v1.9.15-release.yml tools/patch-v1.9.15-release.cjs
+          git commit -m 'release: prepare v1.9.15 QA hardening'
+          git push origin HEAD:feature/qa-hardening-v1.9.15
