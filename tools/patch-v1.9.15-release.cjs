@@ -28,7 +28,25 @@ edit('.github/ISSUE_TEMPLATE/bug_report.yml', [
   ['        - Скачать Excel\n', '        - Скачать Excel\n        - Скачать QA-набор\n', 'QA operation option'],
 ]);
 
-const qaDocs = `## QA-набор для проверки всех сценариев\n\nНачиная с **v1.9.15**, Studio умеет собрать тестовый пакет прямо из открытой матрицы. Нажмите **Скачать QA-набор** — Studio перечитает текущие строки и справочники и создаст ZIP, привязанный к реальным **MatrixID / TemplateID / MatrixRowID / MatrixVersionID** этой матрицы. Поэтому эти XLSX можно сразу загружать обратно в ту же тестовую матрицу.\n\n> [!CAUTION]\n> Генерируйте QA-набор только на **тестовой или черновой матрице минимум с 3 строками**. Файлы PATCH / ADD / REPLACE / DELETE при нажатии Apply действительно меняют матрицу. Для первичной проверки достаточно загрузить файл и нажать **Проверить изменения**.\n\nВ ZIP находятся `README_QA.md`, `QA_PACK_MANIFEST.json` и изолированные Excel-сценарии. Начинайте с **\\`00_QA_SMOKE_PREVIEW.xlsx\\`**: он специально содержит одновременно корректный PATCH, корректный ADD и одну ошибочную строку, которая должна уйти в SKIP; при этом **DELETE должен остаться 0**.\n\nДальше можно прогнать отдельные файлы: NOOP, PATCH, PATCH нескольких полей, ADD, REPLACE, DELETE, очистка строки вместо DELETE, несуществующее значение справочника, повреждённые hidden-ID, повреждённый fingerprint, неоднозначная копия, DELETE + schema refresh, другая MatrixID и другой TemplateID. После любого реального Apply скачайте QA-набор заново — исходный baseline уже изменился.\n\n### Почему QA-файлы используют Roundtrip V6\n\nRoundtrip V6 сохраняет отдельный veryHidden **baseline-ledger** с исходными `MatrixRowID`, `MatrixVersionID` и `BaseFingerprint`. Он нужен не для редактирования пользователем, а чтобы Studio могла отличить настоящее физическое удаление строки от повреждения hidden-ID и проверить, не изменилась ли удаляемая строка в TESSA после выгрузки. Если identity или fingerprint повреждены либо DELETE стал stale, Studio должна отказаться от угадывания.\n\n---\n\n`;
+const qaDocs = [
+  '## QA-набор для проверки всех сценариев',
+  '',
+  'Начиная с **v1.9.15**, Studio умеет собрать тестовый пакет прямо из открытой матрицы. Нажмите **Скачать QA-набор** — Studio перечитает текущие строки и справочники и создаст ZIP, привязанный к реальным **MatrixID / TemplateID / MatrixRowID / MatrixVersionID** этой матрицы. Поэтому эти XLSX можно сразу загружать обратно в ту же тестовую матрицу.',
+  '',
+  '> [!CAUTION]',
+  '> Генерируйте QA-набор только на **тестовой или черновой матрице минимум с 3 строками**. Файлы PATCH / ADD / REPLACE / DELETE при нажатии Apply действительно меняют матрицу. Для первичной проверки достаточно загрузить файл и нажать **Проверить изменения**.',
+  '',
+  'В ZIP находятся `README_QA.md`, `QA_PACK_MANIFEST.json` и изолированные Excel-сценарии. Начинайте с **`00_QA_SMOKE_PREVIEW.xlsx`**: он специально содержит одновременно корректный PATCH, корректный ADD и одну ошибочную строку, которая должна уйти в SKIP; при этом **DELETE должен остаться 0**.',
+  '',
+  'Дальше можно прогнать отдельные файлы: NOOP, PATCH, PATCH нескольких полей, ADD, REPLACE, DELETE, очистка строки вместо DELETE, несуществующее значение справочника, повреждённые hidden-ID, повреждённый fingerprint, неоднозначная копия, DELETE + schema refresh, другая MatrixID и другой TemplateID. После любого реального Apply скачайте QA-набор заново — исходный baseline уже изменился.',
+  '',
+  '### Почему QA-файлы используют Roundtrip V6',
+  '',
+  'Roundtrip V6 сохраняет отдельный veryHidden **baseline-ledger** с исходными `MatrixRowID`, `MatrixVersionID` и `BaseFingerprint`. Он нужен не для редактирования пользователем, а чтобы Studio могла отличить настоящее физическое удаление строки от повреждения hidden-ID и проверить, не изменилась ли удаляемая строка в TESSA после выгрузки. Если identity или fingerprint повреждены либо DELETE стал stale, Studio должна отказаться от угадывания.',
+  '',
+  '---',
+  '',
+].join('\n');
 
 edit('README.md', [
   ['version-1.9.14-EF233C', 'version-1.9.15-EF233C', 'version badge'],
@@ -37,12 +55,26 @@ edit('README.md', [
   ['- **Версия:** `1.9.14`', '- **Версия:** `1.9.15`', 'install version'],
   ['Текущая версия: **1.9.14**', 'Текущая версия: **1.9.15**', 'support version'],
   ['| **Скачать со свежими справочниками** | если справочники TESSA недавно менялись |\n', '| **Скачать со свежими справочниками** | если справочники TESSA недавно менялись |\n| **Скачать QA-набор** | создать привязанный к текущей тестовой матрице ZIP с позитивными и негативными XLSX-сценариями |\n', 'buttons table'],
-  ['---\n\n# Права и безопасность', `---\n\n${qaDocs}# Права и безопасность`, 'QA documentation section'],
+  ['---\n\n# Права и безопасность', '---\n\n' + qaDocs + '# Права и безопасность', 'QA documentation section'],
 ]);
 
-const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
+let changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
 if (!changelog.startsWith('# Changelog\n')) throw new Error('CHANGELOG header anchor missing');
-const releaseEntry = `# Changelog\n\n## 1.9.15 — 2026-08-27\n\n- roundtrip-формат поднят до **V6**: в veryHidden baseline-ledger сохраняются исходные MatrixRowID / MatrixVersionID / BaseFingerprint для безопасной проверки удаления и целостности;\n- «Актуализировать выбранный Excel» сохраняет физический DELETE, но останавливается с конфликтом, если удаляемая строка уже изменилась в TESSA;\n- потеря hidden-ID или BaseFingerprint больше не может превратиться в случайный ADD + DELETE — повреждённая identity переводится в SKIP/блокировку;\n- добавлена кнопка **«Скачать QA-набор»**: Studio строит из текущей тестовой матрицы ZIP с 15 XLSX-сценариями, README_QA и manifest; каждый generated XLSX regression-тестом читается обратно штатным parser/planner;\n- в QA-паке есть быстрый \\`00_QA_SMOKE_PREVIEW.xlsx\\` и изолированные NOOP / PATCH / multi-PATCH / ADD / REPLACE / DELETE / invalid dictionary / hidden-ID / fingerprint / ambiguity / wrong matrix/template / schema-refresh DELETE сценарии;\n- опубликованные версии сделаны неизменяемыми: Release workflow отказывается перезаписывать существующий release/tag вместо \\`--clobber\\`;\n- добавлен ежедневный **Delivery Canary**, который анонимно проверяет latest metadata/userscript/ZIP и SHA-256 публичной доставки.\n`;
-fs.writeFileSync('CHANGELOG.md', changelog.replace('# Changelog\n', releaseEntry));
+const releaseEntry = [
+  '# Changelog',
+  '',
+  '## 1.9.15 — 2026-08-27',
+  '',
+  '- roundtrip-формат поднят до **V6**: в veryHidden baseline-ledger сохраняются исходные MatrixRowID / MatrixVersionID / BaseFingerprint для безопасной проверки удаления и целостности;',
+  '- «Актуализировать выбранный Excel» сохраняет физический DELETE, но останавливается с конфликтом, если удаляемая строка уже изменилась в TESSA;',
+  '- потеря hidden-ID или BaseFingerprint больше не может превратиться в случайный ADD + DELETE — повреждённая identity переводится в SKIP/блокировку;',
+  '- добавлена кнопка **«Скачать QA-набор»**: Studio строит из текущей тестовой матрицы ZIP с 15 XLSX-сценариями, README_QA и manifest; каждый generated XLSX regression-тестом читается обратно штатным parser/planner;',
+  '- в QA-паке есть быстрый `00_QA_SMOKE_PREVIEW.xlsx` и изолированные NOOP / PATCH / multi-PATCH / ADD / REPLACE / DELETE / invalid dictionary / hidden-ID / fingerprint / ambiguity / wrong matrix/template / schema-refresh DELETE сценарии;',
+  '- опубликованные версии сделаны неизменяемыми: Release workflow отказывается перезаписывать существующий release/tag вместо `--clobber`;',
+  '- добавлен ежедневный **Delivery Canary**, который анонимно проверяет latest metadata/userscript/ZIP и SHA-256 публичной доставки.',
+  '',
+].join('\n');
+changelog = changelog.replace('# Changelog\n', releaseEntry);
+fs.writeFileSync('CHANGELOG.md', changelog);
 
 console.log('v1.9.15 release/docs patch applied.');
