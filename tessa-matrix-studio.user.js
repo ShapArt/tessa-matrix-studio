@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.14
+// @version      1.9.15
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.14',
+    version: '1.9.15',
     plan: null,
     review: createPlanReviewState(),
     workbook: null,
@@ -57,11 +57,12 @@
   };
 
   const ROUNDTRIP = Object.freeze({
-    Format: 'TESSA_MATRIX_ROUNDTRIP_V5',
-    AcceptedFormats: ['TESSA_MATRIX_ROUNDTRIP_V1', 'TESSA_MATRIX_ROUNDTRIP_V2', 'TESSA_MATRIX_ROUNDTRIP_V3', 'TESSA_MATRIX_ROUNDTRIP_V4', 'TESSA_MATRIX_ROUNDTRIP_V5'],
+    Format: 'TESSA_MATRIX_ROUNDTRIP_V6',
+    AcceptedFormats: ['TESSA_MATRIX_ROUNDTRIP_V1', 'TESSA_MATRIX_ROUNDTRIP_V2', 'TESSA_MATRIX_ROUNDTRIP_V3', 'TESSA_MATRIX_ROUNDTRIP_V4', 'TESSA_MATRIX_ROUNDTRIP_V5', 'TESSA_MATRIX_ROUNDTRIP_V6'],
     DictionarySheet: 'Словари',
     StructureSheet: 'Структура',
     SchemaChangesSheet: 'Изменения структуры',
+    BaselineSheet: '__TESSA_BASELINE',
     InstructionSheet: 'Инструкция',
     FormatKey: '__TESSA_FORMAT',
     MatrixIdKey: '__TESSA_MATRIX_ID',
@@ -714,6 +715,24 @@
     });
   }
 
+  function parseBaselineRows(parsedSheets) {
+    const baselineSheet = parsedSheets.get(ROUNDTRIP.BaselineSheet);
+    if (!baselineSheet) return [];
+    const rows = rowsToObjects(baselineSheet).map(row => ({
+      rowCardId: normalizeSpace(row['MatrixRowID']),
+      versionId: normalizeSpace(row['MatrixVersionID']),
+      baseFingerprint: normalizeSpace(row['BaseFingerprint']),
+    })).filter(row => row.rowCardId || row.versionId);
+    const seen = new Set();
+    for (const row of rows) {
+      const key = `v:${canonicalValue(row.versionId)}|c:${canonicalValue(row.rowCardId)}`;
+      if (seen.has(key)) throw new Error('Повреждён baseline-ledger Excel: обнаружена повторяющаяся исходная identity. Скачайте свежую выгрузку.');
+      if (!row.baseFingerprint) throw new Error('Повреждён baseline-ledger Excel: отсутствует fingerprint исходной строки. Скачайте свежую выгрузку.');
+      seen.add(key);
+    }
+    return rows;
+  }
+
   function parseEmbeddedDictionaryCatalog(parsedSheets) {
     const dictionarySheet = parsedSheets.get(ROUNDTRIP.DictionarySheet);
     const structureSheet = parsedSheets.get(ROUNDTRIP.StructureSheet);
@@ -806,6 +825,7 @@
         templateId: metadata[ROUNDTRIP.TemplateIdKey] || null,
         previousVersionId: metadata[ROUNDTRIP.PreviousVersionIdKey] || null,
         templateMode: metadata[ROUNDTRIP.TemplateModeKey] || null,
+        baselineRows: parseBaselineRows(parsedSheets),
       },
     };
   }
@@ -1552,14 +1572,21 @@
     for (const item of changes.retiredData || []) changeRows.push(['АРХИВ ЗНАЧЕНИЯ', item.kind === 'function' ? 'Функция' : 'Критерий', item.id, item.header || '', 'Значение из старого Excel сохранено только для истории', item.excelRow, item.rowCardId || '', item.value || '']);
     if (changeRows.length === 1) changeRows.push(['БЕЗ ИЗМЕНЕНИЙ', '', '', '', 'Структура Excel соответствует текущему шаблону TESSA', '', '', '']);
 
+    const baselineRows = [['MatrixRowID', 'MatrixVersionID', 'BaseFingerprint']];
+    const baselineSourceRows = Array.isArray(options.baselineRows) ? options.baselineRows : (snapshot.rows || []);
+    for (const row of baselineSourceRows) {
+      baselineRows.push([row.rowCardId || '', row.versionId || '', row.fingerprint || fingerprintFlat(row.flat || {})]);
+    }
+
     const instructionSheet = instructionSheetXml();
     const dictionarySheet = genericSheetXml(dictionaryRows, [28, 42, 56, 48, 40, 14, 28, 72]);
     const structureSheet = genericSheetXml(structureRows, [46, 14, 38, 42, 38, 28, 24, 70]);
     const schemaChangesSheet = genericSheetXml(changeRows, [32, 16, 40, 44, 72, 12, 40, 72]);
+    const baselineSheet = genericSheetXml(baselineRows, [40, 40, 48], { autoFilter: false });
 
     const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="5"><font><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FF292929"/><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="20"/><name val="Aptos Display"/><family val="2"/></font><font><b/><color rgb="FF292929"/><sz val="13"/><name val="Aptos Display"/><family val="2"/></font></fonts><fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE31E24"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFB5121B"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF292929"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF0F1"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF5F5F5"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFE5E5E5"/></left><right style="thin"><color rgb="FFE5E5E5"/></right><top style="thin"><color rgb="FFE5E5E5"/></top><bottom style="thin"><color rgb="FFE5E5E5"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="15"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="6" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="6" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="3" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="5" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf><xf numFmtId="0" fontId="2" fillId="6" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
-    const sheetNames = ['Матрица', ROUNDTRIP.InstructionSheet, ROUNDTRIP.DictionarySheet, ROUNDTRIP.StructureSheet, ROUNDTRIP.SchemaChangesSheet];
-    const sheetXml = [worksheet, instructionSheet, dictionarySheet, structureSheet, schemaChangesSheet];
+    const sheetNames = ['Матрица', ROUNDTRIP.InstructionSheet, ROUNDTRIP.DictionarySheet, ROUNDTRIP.StructureSheet, ROUNDTRIP.SchemaChangesSheet, ROUNDTRIP.BaselineSheet];
+    const sheetXml = [worksheet, instructionSheet, dictionarySheet, structureSheet, schemaChangesSheet, baselineSheet];
     const sheetOverrides = sheetNames.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('');
     const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${sheetOverrides}<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>`;
     const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`;
@@ -1574,6 +1601,286 @@
     const entries = [['[Content_Types].xml', contentTypes], ['_rels/.rels', rels], ['docProps/core.xml', core], ['docProps/app.xml', app], ['xl/workbook.xml', workbook], ['xl/_rels/workbook.xml.rels', workbookRels], ['xl/styles.xml', styles]];
     sheetXml.forEach((xml, index) => entries.push([`xl/worksheets/sheet${index + 1}.xml`, xml]));
     return await makeZip(entries);
+  }
+
+  function qaDefinitionDescriptors(structure) {
+    return [
+      ...(structure?.conditions || []).map(condition => ({ kind: 'criterion', id: condition.criterionRowId, key: definitionKey('criterion', condition.criterionRowId), condition })),
+      ...(structure?.functions || []).map(fn => ({ kind: 'function', id: fn.id, key: definitionKey('function', fn.id), fn })),
+    ];
+  }
+
+  function qaCatalogForKey(dictionaryCatalog, key) {
+    const catalogId = dictionaryCatalog?.columnCatalogIds?.[key];
+    return catalogId ? dictionaryCatalog?.catalogs?.[catalogId] || null : null;
+  }
+
+  function qaApplyCatalogEntry(row, descriptor, entry) {
+    if (!row || !descriptor || !entry) return false;
+    row.flat = { ...(row.flat || {}) };
+    if (descriptor.kind === 'function') {
+      row.roles = { ...(row.roles || {}) };
+      row.roles[descriptor.id] = [{ id: String(entry.id || ''), display: entry.display || entry.selector || '', roleTypeId: entry.roleTypeId ?? '' }];
+      row.flat[descriptor.key] = [entry.display || entry.selector || ''];
+      return true;
+    }
+    const condition = descriptor.condition;
+    const kind = operandKind({ kind: 'criterion', operandTypeId: condition.operandTypeId, refSection: condition.refSection });
+    row.values = { ...(row.values || {}) };
+    if (kind === 'Boolean') {
+      const semantic = booleanSemantic(entry.value ?? entry.id ?? entry.display);
+      if (semantic === null) return false;
+      row.values[descriptor.id] = [{ id: semantic ? 'true' : 'false', display: semantic ? 'Да' : 'Нет', value: semantic }];
+      row.flat[descriptor.key] = [semantic ? 'Да' : 'Нет'];
+      return true;
+    }
+    row.values[descriptor.id] = [{ id: String(entry.id || ''), display: entry.display || entry.selector || '', value: entry.display || entry.selector || '' }];
+    row.flat[descriptor.key] = [entry.display || entry.selector || ''];
+    return true;
+  }
+
+  function qaApplyScalarMutation(row, descriptor, salt) {
+    if (!row || descriptor?.kind !== 'criterion') return false;
+    const condition = descriptor.condition;
+    const kind = operandKind({ kind: 'criterion', operandTypeId: condition.operandTypeId, refSection: condition.refSection });
+    const before = row.flat?.[descriptor.key]?.[0] ?? '';
+    let display = null;
+    if (kind === 'String') display = `${before || 'QA'} · ${salt}`;
+    else if (kind === 'Boolean') display = booleanSemantic(before) === true ? 'Нет' : 'Да';
+    else if (kind === 'Int') {
+      const n = Number(String(before).replace(',', '.'));
+      display = String(Number.isFinite(n) ? Math.trunc(n) + 1 : 1);
+    } else if (kind === 'Decimal') {
+      const n = Number(String(before).replace(',', '.'));
+      display = String(Number.isFinite(n) ? n + 1 : 1);
+    } else if (kind === 'Date' || kind === 'DateTime') {
+      const parsed = new Date(before);
+      const date = Number.isNaN(parsed.getTime()) ? new Date(2030, 0, 2, kind === 'DateTime' ? 12 : 0, 0, 0) : new Date(parsed.getTime() + 86400000);
+      display = kind === 'DateTime'
+        ? `${String(date.getDate()).padStart(2,'0')}.${String(date.getMonth()+1).padStart(2,'0')}.${date.getFullYear()} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`
+        : `${String(date.getDate()).padStart(2,'0')}.${String(date.getMonth()+1).padStart(2,'0')}.${date.getFullYear()}`;
+    }
+    if (display === null) return false;
+    row.values = { ...(row.values || {}) };
+    row.values[descriptor.id] = [{ id: '', display, value: display }];
+    row.flat = { ...(row.flat || {}), [descriptor.key]: [display] };
+    return true;
+  }
+
+  function qaMutateRowUnique(row, structure, dictionaryCatalog, existingRows, salt, excludedKeys = new Set()) {
+    const existing = new Set((existingRows || []).map(item => fingerprintFlat(item.flat || {})));
+    const descriptors = qaDefinitionDescriptors(structure);
+    for (const descriptor of descriptors) {
+      if (excludedKeys.has(descriptor.key)) continue;
+      const copy = clonePlain(row);
+      let changed = qaApplyScalarMutation(copy, descriptor, salt);
+      if (!changed) {
+        const catalog = qaCatalogForKey(dictionaryCatalog, descriptor.key);
+        const current = new Set((copy.flat?.[descriptor.key] || []).map(canonicalValue));
+        const alt = (catalog?.entries || []).find(entry => entry?.display && !current.has(canonicalValue(entry.display)));
+        if (alt) changed = qaApplyCatalogEntry(copy, descriptor, alt);
+      }
+      if (!changed) continue;
+      const fp = fingerprintFlat(copy.flat || {});
+      if (!fp || fp === fingerprintFlat(row.flat || {}) || existing.has(fp)) continue;
+      return { row: copy, key: descriptor.key };
+    }
+    throw new Error('QA-набор: не найдено поле, которое можно безопасно изменить для тестового сценария. Нужны допустимые альтернативные значения или скалярный критерий.');
+  }
+
+  function qaCorruptDictionaryRow(row, structure, dictionaryCatalog, salt = 'QA_NOT_FOUND') {
+    const descriptors = qaDefinitionDescriptors(structure);
+    for (const descriptor of descriptors) {
+      const catalog = qaCatalogForKey(dictionaryCatalog, descriptor.key);
+      if (!catalog) continue;
+      const copy = clonePlain(row);
+      copy.flat = { ...(copy.flat || {}), [descriptor.key]: [`__${salt}__`] };
+      if (descriptor.kind === 'function') {
+        copy.roles = { ...(copy.roles || {}), [descriptor.id]: [{ id: '', display: `__${salt}__`, roleTypeId: '' }] };
+      } else {
+        copy.values = { ...(copy.values || {}), [descriptor.id]: [{ id: '', display: `__${salt}__`, value: `__${salt}__` }] };
+      }
+      return copy;
+    }
+    for (const descriptor of descriptors) {
+      if (descriptor.kind !== 'criterion') continue;
+      const kind = operandKind({ kind: 'criterion', operandTypeId: descriptor.condition.operandTypeId, refSection: descriptor.condition.refSection });
+      if (!['Boolean','Int','Decimal','Date','DateTime'].includes(kind)) continue;
+      const copy = clonePlain(row);
+      copy.flat = { ...(copy.flat || {}), [descriptor.key]: ['__QA_INVALID_TYPED_VALUE__'] };
+      copy.values = { ...(copy.values || {}), [descriptor.id]: [{ id: '', display: '__QA_INVALID_TYPED_VALUE__', value: '__QA_INVALID_TYPED_VALUE__' }] };
+      return copy;
+    }
+    throw new Error('QA-набор: в матрице нет справочного или типизированного поля для негативного сценария.');
+  }
+
+  function qaClearVisibleRow(row, structure) {
+    const copy = clonePlain(row);
+    copy.values = { ...(copy.values || {}) };
+    copy.roles = { ...(copy.roles || {}) };
+    copy.flat = { ...(copy.flat || {}) };
+    for (const condition of structure?.conditions || []) {
+      copy.values[condition.criterionRowId] = [];
+      copy.flat[definitionKey('criterion', condition.criterionRowId)] = [];
+    }
+    for (const fn of structure?.functions || []) {
+      copy.roles[fn.id] = [];
+      copy.flat[definitionKey('function', fn.id)] = [];
+    }
+    return copy;
+  }
+
+  async function buildQaPackVariants(structure, snapshot, matrixInfo, dictionaryCatalog) {
+    if (!structure || !snapshot || !matrixInfo) throw new Error('QA-набор: не хватает структуры, snapshot или данных матрицы.');
+    if ((snapshot.rows || []).length < 3) throw new Error('QA-набор требует минимум 3 строки в тестовой матрице для сценариев PATCH / REPLACE / DELETE / ambiguity.');
+    const baselineRows = clonePlain(snapshot.rows || []);
+    const baseSnapshot = { ...clonePlain(snapshot), rows: clonePlain(snapshot.rows || []) };
+    const catalog = normalizeDictionaryCatalog(clonePlain(dictionaryCatalog || { catalogs: {}, columnCatalogIds: {}, stats: { errors: [] } }));
+    const variants = [];
+    const checklist = [];
+
+    const addVariant = async (scenario, name, rows, expected, risk, overrides = {}) => {
+      const variantSnapshot = { ...clonePlain(baseSnapshot), ...(overrides.snapshot || {}), rows: clonePlain(rows) };
+      const variantInfo = { ...clonePlain(matrixInfo), ...(overrides.matrixInfo || {}) };
+      const bytes = await createRoundtripXlsxBytes(structure, variantSnapshot, variantInfo, catalog, { baselineRows });
+      variants.push({ scenario, name, bytes, expected, risk });
+      checklist.push({ scenario, file: name, expected, risk });
+    };
+    const rows = () => clonePlain(baseSnapshot.rows);
+
+    {
+      const smoke = rows();
+      smoke[0] = qaMutateRowUnique(smoke[0], structure, catalog, baseSnapshot.rows, 'QA SMOKE PATCH').row;
+      smoke[1] = qaCorruptDictionaryRow(smoke[1], structure, catalog, 'QA_SMOKE_NOT_FOUND');
+      const added = qaMutateRowUnique(clonePlain(baseSnapshot.rows[2]), structure, catalog, [...baseSnapshot.rows, smoke[0]], 'QA SMOKE ADD').row;
+      added.index = smoke.length; added.rowCardId = ''; added.versionId = ''; added.fingerprint = '';
+      smoke.push(added);
+      await addVariant('smoke_preview', '00_QA_SMOKE_PREVIEW.xlsx', smoke, 'ИЗМЕНИТЬ ≥1, ДОБАВИТЬ ≥1, ПРОПУСТИТЬ ≥1, УДАЛИТЬ 0.', 'PREVIEW ONLY — не применять в рабочей матрице.');
+    }
+
+    await addVariant('noop', '01_OK_NOOP.xlsx', rows(), 'Только БЕЗ ИЗМЕНЕНИЙ.', 'Безопасно для preview; Apply не должен быть активен.');
+
+    {
+      const v = rows();
+      v[0] = qaMutateRowUnique(v[0], structure, catalog, baseSnapshot.rows, 'QA PATCH').row;
+      await addVariant('valid_patch', '02_OK_PATCH.xlsx', v, 'ИЗМЕНИТЬ 1, без ADD/DELETE.', 'Применять только в тестовой матрице.');
+    }
+
+    {
+      const v = rows();
+      const first = qaMutateRowUnique(v[0], structure, catalog, baseSnapshot.rows, 'QA MULTI 1');
+      const second = qaMutateRowUnique(first.row, structure, catalog, baseSnapshot.rows, 'QA MULTI 2', new Set([first.key]));
+      v[0] = second.row;
+      await addVariant('multi_patch', '03_OK_MULTI_PATCH.xlsx', v, 'ИЗМЕНИТЬ 1, внутри минимум 2 изменённых поля.', 'Применять только в тестовой матрице.');
+    }
+
+    {
+      const v = rows();
+      const added = qaMutateRowUnique(clonePlain(baseSnapshot.rows[0]), structure, catalog, baseSnapshot.rows, 'QA ADD').row;
+      added.index = v.length; added.rowCardId = ''; added.versionId = ''; added.fingerprint = '';
+      v.push(added);
+      await addVariant('valid_add', '04_OK_ADD.xlsx', v, 'ДОБАВИТЬ 1, УДАЛИТЬ 0.', 'Применять только в тестовой матрице.');
+    }
+
+    {
+      const v = rows();
+      const replacement = qaMutateRowUnique(clonePlain(baseSnapshot.rows[0]), structure, catalog, baseSnapshot.rows, 'QA REPLACE').row;
+      replacement.index = 1;
+      v[1] = replacement;
+      await addVariant('valid_replace', '05_OK_REPLACE.xlsx', v, 'ЗАМЕНИТЬ/ИЗМЕНИТЬ 1 по целевой строке, без ADD/DELETE.', 'Применять только в тестовой матрице.');
+    }
+
+    {
+      const v = rows(); v.splice(1, 1);
+      await addVariant('valid_delete', '06_OK_DELETE.xlsx', v, 'УДАЛИТЬ 1.', 'DESTRUCTIVE — только отдельная тестовая матрица.');
+    }
+
+    {
+      const v = rows(); v[1] = qaClearVisibleRow(v[1], structure);
+      await addVariant('invalid_clear_row', '07_BAD_CLEAR_ROW.xlsx', v, 'Строка ПРОПУЩЕНА; DELETE = 0. Очистка ячеек не равна удалению.', 'Негативный сценарий; не применять.');
+    }
+
+    {
+      const v = rows(); v[1] = qaCorruptDictionaryRow(v[1], structure, catalog, 'QA_NOT_FOUND');
+      await addVariant('invalid_dictionary', '08_BAD_DICTIONARY.xlsx', v, 'Локальный SKIP с сообщением о несуществующем значении.', 'Негативный сценарий; не применять.');
+    }
+
+    {
+      const v = rows(); v[1].rowCardId = ''; v[1].versionId = '';
+      await addVariant('invalid_hidden_identity', '09_BAD_HIDDEN_ID.xlsx', v, 'SKIP/блокировка из-за потерянных MatrixRowID/MatrixVersionID; ADD/DELETE = 0.', 'Негативный integrity-сценарий; не применять.');
+    }
+
+    {
+      const v = rows(); v[1].fingerprint = '';
+      await addVariant('invalid_hidden_fingerprint', '10_BAD_HIDDEN_FINGERPRINT.xlsx', v, 'SKIP из-за повреждённого BaseFingerprint; UPDATE/DELETE = 0.', 'Негативный integrity-сценарий; не применять.');
+    }
+
+    {
+      const v = rows();
+      const first = qaMutateRowUnique(clonePlain(baseSnapshot.rows[0]), structure, catalog, baseSnapshot.rows, 'QA AMBIG 1').row;
+      const second = qaMutateRowUnique(clonePlain(baseSnapshot.rows[0]), structure, catalog, [...baseSnapshot.rows, first], 'QA AMBIG 2').row;
+      first.index = 0; second.index = v.length; v[0] = first; v.push(second);
+      await addVariant('ambiguous_copy', '11_BAD_AMBIGUOUS_COPY.xlsx', v, 'Неоднозначная группа SKIP; автоматический DELETE отключён.', 'Негативный identity-сценарий; не применять.');
+    }
+
+    {
+      const v = rows(); v.splice(1, 1);
+      await addVariant('schema_refresh_delete', '12_OK_SCHEMA_REFRESH_DELETE.xlsx', v, 'После актуализации Excel удалённая строка остаётся удалённой.', 'Проверять refresh; Apply только в тестовой матрице.');
+    }
+
+    await addVariant('wrong_matrix', '13_BAD_WRONG_MATRIX.xlsx', rows(), 'Файл относится к другой карточке; Apply заблокирован.', 'Негативный контекстный сценарий; не применять.', { snapshot: { matrixId: `${snapshot.matrixId}-QA-WRONG` } });
+    await addVariant('wrong_template', '14_BAD_WRONG_TEMPLATE.xlsx', rows(), 'Файл относится к другому шаблону; Apply/refresh заблокированы.', 'Негативный контекстный сценарий; не применять.', { snapshot: { templateId: `${snapshot.templateId}-QA-WRONG` } });
+
+    return { variants, checklist, matrixId: snapshot.matrixId, templateId: snapshot.templateId, createdAt: nowIso() };
+  }
+
+  function qaChecklistMarkdown(pack, matrixInfo) {
+    const lines = [
+      '# TESSA Matrix Studio — QA pack', '',
+      `Версия Studio: ${APP.version}`,
+      `Матрица: ${matrixInfo?.TemplateName || matrixInfo?.Name || ''}`,
+      `MatrixID: ${pack.matrixId || ''}`,
+      `TemplateID: ${pack.templateId || ''}`,
+      `Создан: ${pack.createdAt || nowIso()}`, '',
+      '> ВАЖНО: OK_PATCH / ADD / REPLACE / DELETE меняют данные при Apply. Используйте отдельную тестовую матрицу. Для обычной проверки достаточно загрузить файл и нажать «Проверить изменения».', '',
+      '| # | Файл | Ожидаемое поведение | Риск |',
+      '|---:|---|---|---|',
+    ];
+    const esc = value => String(value || '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+    pack.checklist.forEach((item, index) => lines.push(`| ${index + 1} | ${esc(item.file)} | ${esc(item.expected)} | ${esc(item.risk)} |`));
+    lines.push('', '## Быстрый сценарий', '',
+      '1. Загрузите `00_QA_SMOKE_PREVIEW.xlsx` и нажмите «Проверить изменения».',
+      '2. Должны быть PATCH + ADD + SKIP, но DELETE = 0.',
+      '3. Затем прогоняйте отдельные файлы по одному.',
+      '4. После любого Apply скачайте новый QA-набор: baseline матрицы уже изменился.',
+      '5. `06_OK_DELETE.xlsx` и другие destructive-файлы применяйте только в специально созданной тестовой матрице.');
+    return lines.join('\n');
+  }
+
+  async function downloadQaPack() {
+    setProgress(8, 'Готовлю QA-набор', 'Читаю открытую матрицу');
+    const bridge = await TessaBridge.create();
+    const templateId = bridge.templateId();
+    if (!templateId) throw new Error('QA-набор: у матрицы не найден TemplateID.');
+    const structure = await bridge.requestStructure(templateId);
+    setProgress(28, 'Читаю строки', 'QA-файлы будут привязаны к текущему MatrixID и TemplateID');
+    const snapshot = await bridge.loadSnapshot(structure);
+    if ((snapshot.rows || []).length < 3) throw new Error('QA-набор требует тестовую матрицу минимум с 3 строками.');
+    setProgress(48, 'Подключаю справочники', 'Нужны реальные значения для корректных и ошибочных сценариев');
+    const dictionaryCatalog = await bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true });
+    const matrixInfo = bridge.matrixInfo();
+    setProgress(68, 'Создаю QA Excel', 'Формирую изолированные сценарии');
+    const pack = await buildQaPackVariants(structure, snapshot, matrixInfo, dictionaryCatalog);
+    const manifest = JSON.stringify({ app: { name: APP.name, version: APP.version }, matrixId: pack.matrixId, templateId: pack.templateId, createdAt: pack.createdAt, variants: pack.checklist }, null, 2);
+    const entries = [['README_QA.md', qaChecklistMarkdown(pack, matrixInfo)], ['QA_PACK_MANIFEST.json', manifest], ...pack.variants.map(item => [item.name, item.bytes])];
+    setProgress(88, 'Упаковываю ZIP', `${pack.variants.length} Excel-сценариев`);
+    const zipBytes = await makeZip(entries);
+    const shortId = String(snapshot.matrixId || '').slice(0, 8);
+    const name = `TESSA_QA_${sanitizeFileName(matrixInfo.TemplateName || 'Матрица')}_${shortId}_v${APP.version}.zip`;
+    downloadBlob(new Blob([zipBytes], { type: 'application/zip' }), name);
+    setProgress(100, 'QA-набор готов', `${pack.variants.length} файлов · начните с 00_QA_SMOKE_PREVIEW.xlsx`);
+    log(`QA-набор скачан: ${pack.variants.length} Excel-сценариев для MatrixID ${snapshot.matrixId}.`);
+    return { name, bytes: zipBytes, pack };
   }
 
   function sanitizeFileName(value) {
@@ -1668,6 +1975,7 @@
       customIndex: index,
     }));
     const workbookRowByExcelRow = new Map((workbook.rows || []).map(row => [row.excelRow, row]));
+    const baselineRows = Array.isArray(workbook.roundtrip?.baselineRows) ? workbook.roundtrip.baselineRows : [];
     const byVersion = new Map(snapshot.rows.map(row => [canonicalValue(row.versionId), row]));
     const byCard = new Map(snapshot.rows.map(row => [canonicalValue(row.rowCardId), row]));
     const mergedByCard = new Map(snapshot.rows.map(row => [canonicalValue(row.rowCardId), { ...clonePlain(row), action: '', customValues: Array(customColumns.length).fill('') }]));
@@ -1683,6 +1991,11 @@
       const rowCardId = canonicalValue(current?.rowCardId || '');
       return versionId || rowCardId ? `v:${versionId}|c:${rowCardId}` : '';
     };
+    const baselineByIdentity = new Map(baselineRows.map(row => {
+      const versionId = canonicalValue(row.versionId || '');
+      const rowCardId = canonicalValue(row.rowCardId || '');
+      return [`v:${versionId}|c:${rowCardId}`, row];
+    }));
     // Schema refresh должен сопоставлять overwrite по тем же identity-правилам,
     // что и основной planner. Физический порядок Excel после сортировки не является identity.
     const expectedCurrentByExcelRow = new Map();
@@ -1758,6 +2071,48 @@
       }
     }
 
+    if (canonicalValue(workbook.roundtrip?.format) === canonicalValue('TESSA_MATRIX_ROUNDTRIP_V6') && baselineRows.length) {
+      for (const desired of desiredRows) {
+        const identity = excelIdentityKey(desired);
+        if (!identity) continue;
+        const base = baselineByIdentity.get(identity);
+        if (!base) continue;
+        if (canonicalValue(desired.system.baseFingerprint || '') !== canonicalValue(base.baseFingerprint || '')) {
+          throw new Error(`Строка Excel ${desired.excelRow}: повреждён служебный BaseFingerprint. Скрытые ID/fingerprint нельзя очищать или менять. Скачайте свежую выгрузку.`);
+        }
+      }
+    }
+
+    // V6 хранит baseline identity/fingerprint на отдельном veryHidden-листе.
+    // Поэтому физическое удаление строки на основном листе не уничтожает доказательство,
+    // какую именно версию пользователь собирался удалить. Это позволяет schema refresh
+    // сохранить DELETE только если строка в TESSA с момента выгрузки не менялась.
+    const physicalDeleteIdentities = new Set();
+    if (canonicalValue(workbook.roundtrip?.format) === canonicalValue('TESSA_MATRIX_ROUNDTRIP_V6') && baselineRows.length) {
+      const desiredIdentities = new Set(desiredRows.map(excelIdentityKey).filter(Boolean));
+      const overwriteTargetIdentities = new Set([...positionalOverwriteTargets.values()].map(currentIdentityKey).filter(Boolean));
+      const missingBaseline = baselineRows.filter(base => {
+        const identity = `v:${canonicalValue(base.versionId || '')}|c:${canonicalValue(base.rowCardId || '')}`;
+        return identity !== 'v:|c:' && !desiredIdentities.has(identity) && !overwriteTargetIdentities.has(identity);
+      });
+      const rowDeficit = Math.max(0, baselineRows.length - desiredRows.length);
+      if (missingBaseline.length && missingBaseline.length !== rowDeficit) {
+        throw new Error('Конфликт актуализации: baseline показывает пропавшую исходную identity, но число строк Excel не соответствует чистому физическому удалению. Возможно, повреждены скрытые ID или одновременно выполнены удаление и добавление. Выполните эти операции отдельно в свежей выгрузке.');
+      }
+      for (const base of missingBaseline) {
+        const identity = `v:${canonicalValue(base.versionId || '')}|c:${canonicalValue(base.rowCardId || '')}`;
+        const current = base.versionId ? byVersion.get(canonicalValue(base.versionId)) : byCard.get(canonicalValue(base.rowCardId));
+        if (current) {
+          const freshFingerprint = canonicalValue(current.fingerprint || fingerprintFlat(current.flat || {}));
+          const exportedFingerprint = canonicalValue(base.baseFingerprint || '');
+          if (!exportedFingerprint || freshFingerprint !== exportedFingerprint) {
+            throw new Error(`Конфликт актуализации: физически удалённая строка TESSA ${base.versionId || base.rowCardId} изменилась после выгрузки Excel. Скачайте свежий файл и подтвердите удаление повторно.`);
+          }
+        }
+        physicalDeleteIdentities.add(identity);
+      }
+    }
+
     for (const desired of desiredRows) {
       if (desired.system.action.startsWith('invalid:')) throw new Error(`Строка Excel ${desired.excelRow}: неизвестное действие.`);
       const positionalOverwriteTarget = positionalOverwriteTargets.get(desired) || null;
@@ -1828,7 +2183,10 @@
       else mergedByCard.set(canonicalValue(current.rowCardId), row);
     }
 
-    const rows = snapshot.rows.map(row => mergedByCard.get(canonicalValue(row.rowCardId)) || { ...row, customValues: Array(customColumns.length).fill('') }).concat(added);
+    const rows = snapshot.rows
+      .filter(row => !physicalDeleteIdentities.has(currentIdentityKey(row)))
+      .map(row => mergedByCard.get(canonicalValue(row.rowCardId)) || { ...row, customValues: Array(customColumns.length).fill('') })
+      .concat(added);
     const retiredData = [];
     for (const retired of columnMap.retiredColumns || []) {
       for (const workbookRow of workbook.rows || []) {
@@ -3461,6 +3819,12 @@
     };
     const byVersion = new Map(snapshot.rows.map(row => [canonicalValue(row.versionId), row]));
     const byCard = new Map(snapshot.rows.map(row => [canonicalValue(row.rowCardId), row]));
+    const baselineRows = Array.isArray(workbook.roundtrip?.baselineRows) ? workbook.roundtrip.baselineRows : [];
+    const baselineByIdentity = new Map(baselineRows.map(row => {
+      const versionId = canonicalValue(row.versionId || '');
+      const rowCardId = canonicalValue(row.rowCardId || '');
+      return [`v:${versionId}|c:${rowCardId}`, row];
+    }));
     const byKey = new Map([...columnMap.columns.values()].map(column => [column.key, column]));
     const keys = [...byKey.keys()];
     const findCurrent = excelRow => {
@@ -3557,8 +3921,47 @@
       }
     }
 
+    const baselineIntegrityRows = new Set();
+    if (canonicalValue(workbook.roundtrip?.format) === canonicalValue('TESSA_MATRIX_ROUNDTRIP_V6') && baselineRows.length) {
+      // Скрытый fingerprint основной строки не является источником истины: V6 хранит
+      // отдельный baseline-ledger. Любая потеря/подмена fingerprint блокирует строку.
+      for (const excelRow of desired) {
+        const identity = excelIdentityKey(excelRow);
+        if (!identity) continue;
+        const base = baselineByIdentity.get(identity);
+        if (!base) continue;
+        if (canonicalValue(excelRow.system.baseFingerprint || '') !== canonicalValue(base.baseFingerprint || '')) {
+          baselineIntegrityRows.add(excelRow);
+          identityMappingAnomaly = true;
+          const current = findCurrent(excelRow);
+          if (current) usedCurrent.add(canonicalValue(current.versionId || current.rowCardId));
+          issues.push(`Строка Excel ${excelRow.excelRow}: повреждён служебный BaseFingerprint. Скрытые ID/fingerprint нельзя очищать или менять; скачайте свежую выгрузку.`);
+        }
+      }
+
+      // Если baseline identity пропала, но число строк не уменьшилось настолько же,
+      // это не доказанное физическое удаление. Чаще всего так выглядит потеря hidden ID
+      // или смешение DELETE+ADD в одном файле. Нельзя превращать это в ADD + implicit DELETE.
+      const desiredIdentities = new Set(desired.map(excelIdentityKey).filter(Boolean));
+      const overwriteTargetIdentities = new Set([...positionalOverwriteTargets.values()].map(currentIdentityKey).filter(Boolean));
+      const missingBaseline = baselineRows.filter(base => {
+        const identity = `v:${canonicalValue(base.versionId || '')}|c:${canonicalValue(base.rowCardId || '')}`;
+        return identity !== 'v:|c:' && !desiredIdentities.has(identity) && !overwriteTargetIdentities.has(identity);
+      });
+      const rowDeficit = Math.max(0, baselineRows.length - desired.length);
+      if (missingBaseline.length > rowDeficit) {
+        const noIdentityRows = desired.filter(row => row.hasData && !excelIdentityKey(row));
+        for (const excelRow of noIdentityRows) {
+          baselineIntegrityRows.add(excelRow);
+          issues.push(`Строка Excel ${excelRow.excelRow}: потеряны скрытые MatrixRowID/MatrixVersionID. Строка не будет считаться новой, а автоматическое удаление отключено. Скачайте свежую выгрузку или выполните DELETE и ADD отдельно.`);
+        }
+        identityMappingAnomaly = true;
+      }
+    }
+
     for (const excelRow of desired) {
       const action = excelRow.system.action;
+      if (baselineIntegrityRows.has(excelRow)) continue;
       if (action.startsWith('invalid:')) { issues.push(`Строка Excel ${excelRow.excelRow}: неизвестное действие «${action.slice(8)}».`); continue; }
       const hasIdentity = Boolean(excelRow.system.versionId || excelRow.system.rowCardId);
       const sourceIdentity = excelIdentityKey(excelRow);
@@ -4793,7 +5196,7 @@
         </div>
         <div id="tms-status" class="tms-status"><div class="tms-status-line"><span id="tms-progress-label">Готово</span><span id="tms-progress-percent" class="tms-progress-percent">0%</span></div><div class="tms-progress-track"><div id="tms-progress-fill" class="tms-progress-fill"></div></div><div id="tms-progress-detail" class="tms-progress-detail">Скачайте Excel, внесите изменения и загрузите файл обратно.</div></div>
         <div class="tms-controls">
-          <div class="tms-step"><div class="tms-step-label">1 · Подготовить Excel</div><div class="tms-row"><button id="tms-download-current" class="tms-primary">Скачать Excel</button><button id="tms-download-fresh">Скачать со свежими справочниками</button></div><div class="tms-step-caption">Обычная выгрузка быстрее. Свежие справочники нужны, если значения недавно добавили или переименовали.</div></div>
+          <div class="tms-step"><div class="tms-step-label">1 · Подготовить Excel</div><div class="tms-row"><button id="tms-download-current" class="tms-primary">Скачать Excel</button><button id="tms-download-fresh">Скачать со свежими справочниками</button><button id="tms-download-qa" class="tms-ghost">Скачать QA-набор</button></div><div class="tms-step-caption">QA-набор строится из текущей матрицы и проверяет NOOP / PATCH / ADD / REPLACE / DELETE / SKIP. Destructive-файлы применяйте только в тестовой матрице.</div></div>
           <div class="tms-step"><div class="tms-step-label">2 · Выбрать изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"><button id="tms-refresh-excel" class="tms-ghost" disabled>Актуализировать выбранный Excel</button></div><div class="tms-step-caption">Добавит новые поля из текущего шаблона TESSA и постарается сохранить ваши изменения.</div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
           <div class="tms-step"><div class="tms-step-label">3 · Проверить</div><div class="tms-row"><button id="tms-analyze" class="tms-primary">Проверить изменения</button><button id="tms-stop" class="tms-danger" disabled>Отмена</button></div></div>
           <div class="tms-step tms-step-apply"><div class="tms-step-label">4 · Применить корректные строки</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button></div>
@@ -4878,6 +5281,12 @@
       catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); alert(`Не удалось обновить справочники: ${message}`); }
       finally { setBusy(false); }
     });
+    panel.querySelector('#tms-download-qa').addEventListener('click', async () => {
+      if (APP.busy) return; setBusy(true);
+      try { await downloadQaPack(); alert('QA-набор скачан. Начните с 00_QA_SMOKE_PREVIEW.xlsx. Destructive-сценарии применяйте только в тестовой матрице.'); }
+      catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); alert(`Не удалось создать QA-набор: ${message}`); }
+      finally { setBusy(false); }
+    });
     panel.querySelector('#tms-refresh-excel').addEventListener('click', async () => {
       if (APP.busy) return; setBusy(true);
       try { const selectedFile = panel.querySelector('#tms-file').files?.[0]; if (selectedFile) await refreshSelectedWorkbook(selectedFile); else await refreshLoadedWorkbookXlsx(); alert('Выбранный Excel актуализирован. Правки сохранены.'); }
@@ -4919,7 +5328,7 @@
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
-    buildRoundtripGrid, createRoundtripXlsxBytes, mergeWorkbookIntoCurrentSnapshot, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
+    buildRoundtripGrid, createRoundtripXlsxBytes, buildQaPackVariants, downloadQaPack, mergeWorkbookIntoCurrentSnapshot, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard,
     createPlanReviewState, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,

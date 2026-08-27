@@ -1,0 +1,48 @@
+name: Delivery Canary
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-public-latest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify anonymous latest delivery
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$(mktemp -d)"
+          BASE="https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download"
+          META_URL="$BASE/tessa-matrix-studio.meta.js"
+          USER_URL="$BASE/tessa-matrix-studio.user.js"
+          SUMS_URL="$BASE/SHA256SUMS.txt"
+
+          curl --fail --location --silent --show-error --retry 3 --retry-all-errors "$META_URL" -o "$DIR/tessa-matrix-studio.meta.js"
+          curl --fail --location --silent --show-error --retry 3 --retry-all-errors "$USER_URL" -o "$DIR/tessa-matrix-studio.user.js"
+          curl --fail --location --silent --show-error --retry 3 --retry-all-errors "$SUMS_URL" -o "$DIR/SHA256SUMS.txt"
+
+          META_VERSION="$(awk '/@version/{print $3; exit}' "$DIR/tessa-matrix-studio.meta.js")"
+          USER_VERSION="$(awk '/@version/{print $3; exit}' "$DIR/tessa-matrix-studio.user.js")"
+          test -n "$META_VERSION"
+          [[ "$META_VERSION" == "$USER_VERSION" ]] || { echo "Version mismatch: meta=$META_VERSION user=$USER_VERSION"; exit 1; }
+
+          grep -Fqx "// @updateURL    $META_URL" "$DIR/tessa-matrix-studio.meta.js"
+          grep -Fqx "// @downloadURL  $USER_URL" "$DIR/tessa-matrix-studio.meta.js"
+          grep -Fqx "// @updateURL    $META_URL" "$DIR/tessa-matrix-studio.user.js"
+          grep -Fqx "// @downloadURL  $USER_URL" "$DIR/tessa-matrix-studio.user.js"
+
+          ZIP_NAME="$(awk '$2 ~ /\.zip$/ {print $2; exit}' "$DIR/SHA256SUMS.txt")"
+          test -n "$ZIP_NAME"
+          curl --fail --location --silent --show-error --retry 3 --retry-all-errors "$BASE/$ZIP_NAME" -o "$DIR/$ZIP_NAME"
+
+          (
+            cd "$DIR"
+            sha256sum --check SHA256SUMS.txt
+          )
+
+          echo "Public latest delivery is healthy: v$META_VERSION"

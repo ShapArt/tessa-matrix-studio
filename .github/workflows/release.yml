@@ -59,6 +59,29 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Guard immutable published version
+        if: steps.changed.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Refusing to overwrite published release $TAG. Published versions are immutable; bump @version and create a new release."
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            REMOTE_SHA="$(git ls-remote --tags origin "refs/tags/$TAG" | awk '{print $1}' | head -n1)"
+            HEAD_SHA="$(git rev-parse HEAD)"
+            if [[ "$REMOTE_SHA" != "$HEAD_SHA" ]]; then
+              echo "Existing tag $TAG points to $REMOTE_SHA, not verified HEAD $HEAD_SHA. Refusing to move or overwrite the tag."
+              exit 1
+            fi
+            echo "Tag $TAG already points to verified HEAD; continuing a tag-only partial release recovery."
+          fi
+
       - name: Build assets
         if: steps.changed.outputs.changed == 'true'
         shell: bash
@@ -103,22 +126,13 @@ jobs:
             git tag "$TAG"
             git push origin "$TAG"
           fi
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" \
-              dist/tessa-matrix-studio.meta.js \
-              dist/tessa-matrix-studio.user.js \
-              "dist/tessa-matrix-studio-v$VERSION.zip" \
-              dist/SHA256SUMS.txt \
-              --clobber
-          else
-            gh release create "$TAG" \
-              dist/tessa-matrix-studio.meta.js \
-              dist/tessa-matrix-studio.user.js \
-              "dist/tessa-matrix-studio-v$VERSION.zip" \
-              dist/SHA256SUMS.txt \
-              --title "TESSA Matrix Studio v$VERSION" \
-              --generate-notes
-          fi
+          gh release create "$TAG" \
+            dist/tessa-matrix-studio.meta.js \
+            dist/tessa-matrix-studio.user.js \
+            "dist/tessa-matrix-studio-v$VERSION.zip" \
+            dist/SHA256SUMS.txt \
+            --title "TESSA Matrix Studio v$VERSION" \
+            --generate-notes
 
       - name: Verify public latest delivery
         if: steps.changed.outputs.changed == 'true'

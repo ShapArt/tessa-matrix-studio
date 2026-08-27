@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.9.15 — 2026-08-27
+
+- roundtrip-формат поднят до **V6**: в veryHidden baseline-ledger сохраняются исходные MatrixRowID / MatrixVersionID / BaseFingerprint для безопасной проверки удаления и целостности;
+- «Актуализировать выбранный Excel» сохраняет физический DELETE, но останавливается с конфликтом, если удаляемая строка уже изменилась в TESSA;
+- потеря hidden-ID или BaseFingerprint больше не может превратиться в случайный ADD + DELETE — повреждённая identity переводится в SKIP/блокировку;
+- добавлена кнопка **«Скачать QA-набор»**: Studio строит из текущей тестовой матрицы ZIP с 15 XLSX-сценариями, README_QA и manifest; каждый generated XLSX regression-тестом читается обратно штатным parser/planner;
+- в QA-паке есть быстрый `00_QA_SMOKE_PREVIEW.xlsx` и изолированные NOOP / PATCH / multi-PATCH / ADD / REPLACE / DELETE / invalid dictionary / hidden-ID / fingerprint / ambiguity / wrong matrix/template / schema-refresh DELETE сценарии;
+- опубликованные версии сделаны неизменяемыми: Release workflow отказывается перезаписывать существующий release/tag вместо `--clobber`;
+- добавлен ежедневный **Delivery Canary**, который анонимно проверяет latest metadata/userscript/ZIP и SHA-256 публичной доставки.
+
 ## 1.9.14 — 2026-08-27
 
 - `@updateURL` переведён на отдельный лёгкий `tessa-matrix-studio.meta.js`, а `@downloadURL` оставлен на полном userscript;
