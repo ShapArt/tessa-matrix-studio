@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -74,6 +76,12 @@ jobs:
               "tessa-matrix-studio-v$VERSION.zip" \
               > SHA256SUMS.txt
           )
+
+      - name: Attest release provenance
+        if: steps.changed.outputs.changed == 'true'
+        uses: actions/attest@v4
+        with:
+          subject-checksums: dist/SHA256SUMS.txt
 
       - name: Publish release
         if: steps.changed.outputs.changed == 'true'
