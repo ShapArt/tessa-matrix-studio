@@ -9,12 +9,13 @@ const assert = (condition, message) => {
 };
 
 // Metadata checks protect the public installation/update path.
-assert(code.includes('// @version      1.9.13'), 'wrong userscript version');
+assert(code.includes('// @version      1.9.14'), 'wrong userscript version');
 assert(code.includes('// @author       Шаповалов Артём'), 'wrong author');
 assert(code.includes('// @match        https://tessa.cherkizovsky.net/*'), 'main TESSA domain is missing');
-const latestReleaseUrl = 'https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js';
-assert(code.includes(`// @updateURL    ${latestReleaseUrl}`), 'Tampermonkey updateURL must use the latest GitHub Release asset');
-assert(code.includes(`// @downloadURL  ${latestReleaseUrl}`), 'Tampermonkey downloadURL must use the latest GitHub Release asset');
+const latestMetaUrl = 'https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.meta.js';
+const latestScriptUrl = 'https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js';
+assert(code.includes(`// @updateURL    ${latestMetaUrl}`), 'Tampermonkey updateURL must use the lightweight latest-release metadata asset');
+assert(code.includes(`// @downloadURL  ${latestScriptUrl}`), 'Tampermonkey downloadURL must use the full latest-release userscript asset');
 assert(!code.includes('cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js'), 'stale jsDelivr @main update path must not remain in userscript metadata');
 
 // Internal runtime diagnostics must report the same version as userscript metadata.

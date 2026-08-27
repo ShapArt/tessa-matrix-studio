@@ -6,13 +6,13 @@
 
 Выгрузка матрицы в Excel → массовая правка → проверка изменений → безопасное применение в TESSA.
 
-[![Version](https://img.shields.io/badge/version-1.9.13-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.9.14-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-userscript-24292F?style=flat-square&logo=tampermonkey)](https://www.tampermonkey.net/)
 
 ### [УСТАНОВИТЬ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js) · [СКАЧАТЬ РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [ОТКРЫТЬ КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [СООБЩИТЬ ОБ ОШИБКЕ](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.9.13 · Автор: Шаповалов Артём**
+**v1.9.14 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -46,7 +46,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.9.13** в Tampermonkey.
+2. Подтвердите установку версии **1.9.14** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -108,7 +108,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Перед подтверждением проверьте:
 
 - **Название:** `TESSA Matrix Studio — Черкизово`
-- **Версия:** `1.9.13`
+- **Версия:** `1.9.14`
 - **Автор:** `Шаповалов Артём`
 - **Разрешения:** `@grant none`
 - **Область запуска:** только домены TESSA Черкизово
@@ -142,7 +142,15 @@ https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-ma
 
 ### Автоматические обновления через Tampermonkey
 
-Начиная с **v1.9.13**, Studio больше не использует кэшируемый `jsDelivr @main` для установки и обновлений. В `@updateURL` и `@downloadURL` указан стабильный адрес **последнего опубликованного GitHub Release**:
+Начиная с **v1.9.14**, проверка обновлений и загрузка полного скрипта разделены:
+
+- `@updateURL` указывает на маленький metadata-файл последнего релиза:
+
+```text
+https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.meta.js
+```
+
+- `@downloadURL` указывает на полный userscript:
 
 ```text
 https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js
@@ -150,13 +158,14 @@ https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-ma
 
 Как это работает:
 
-1. Tampermonkey периодически проверяет `@updateURL` и сравнивает `@version`.
-2. Если опубликована более новая версия, Tampermonkey скачивает её по `@downloadURL`.
-3. В Tampermonkey 5.5+ проверка обновлений и их установка разделены, поэтому для полностью автоматического режима включите **Automatic installation** в настройках обновлений Tampermonkey.
-4. Проверить вручную можно через **Dashboard → Installed userscripts → TESSA Matrix Studio → Check for updates** (название пункта может немного отличаться по браузеру/локали).
+1. Tampermonkey периодически получает маленький `tessa-matrix-studio.meta.js` и сравнивает `@version`, не скачивая весь Studio для одной проверки версии.
+2. Только если версия новее, полный `tessa-matrix-studio.user.js` загружается по `@downloadURL`.
+3. Оба адреса используют GitHub `releases/latest/download`, поэтому ведут на последний опубликованный релиз, а release-CI после публикации отдельно проверяет публичные `latest`-ссылки и SHA-256.
+4. В Tampermonkey 5.5+ проверка обновлений и их установка разделены, поэтому для полностью автоматического режима включите **Automatic installation** в настройках обновлений Tampermonkey.
+5. Проверить вручную можно через **Dashboard → Installed userscripts → TESSA Matrix Studio → Check for updates** (название пункта может немного отличаться по браузеру/локали).
 
 > [!IMPORTANT]
-> Если у вас уже установлена старая **1.9.3** с `jsDelivr @main`, один раз переустановите Studio кнопкой **УСТАНОВИТЬ** выше. После установки **1.9.13+** дальнейшие версии будут проверяться через GitHub Releases автоматически.
+> Если у вас уже установлена старая **1.9.3** с `jsDelivr @main`, один раз переустановите Studio кнопкой **УСТАНОВИТЬ** выше. После установки **1.9.14+** дальнейшие версии будут проверяться через metadata-файл GitHub Releases автоматически.
 
 ## 3. Проверьте установку
 
@@ -412,7 +421,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.9.13**
+Текущая версия: **1.9.14**
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)

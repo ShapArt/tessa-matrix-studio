@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.13
+// @version      1.9.14
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -12,7 +12,7 @@
 // @grant        none
 // @homepageURL  https://github.com/ShapArt/tessa-matrix-studio
 // @supportURL   https://github.com/ShapArt/tessa-matrix-studio/issues
-// @updateURL    https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js
+// @updateURL    https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.meta.js
 // @downloadURL  https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js
 // ==/UserScript==
 
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.13',
+    version: '1.9.14',
     plan: null,
     review: createPlanReviewState(),
     workbook: null,
