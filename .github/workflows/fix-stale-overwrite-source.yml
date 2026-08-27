@@ -1,0 +1,82 @@
+name: Fix stale overwrite source
+
+on:
+  push:
+    branches:
+      - fix/stale-overwrite-source-v1.9.8
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/stale-overwrite-source-v1.9.8
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Guard overwrite against stale source
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = 'tessa-matrix-studio.user.js';
+          let text = fs.readFileSync(path, 'utf8');
+
+          const oldBlock = [
+            "      if (positionalOverwriteTarget && action === 'keep') {",
+            '        if (usedCurrent.has(identityKey)) {',
+            '          identityMappingAnomaly = true;',
+            '          issues.push(`Строка Excel ${excelRow.excelRow}: целевая строка замены уже используется другой операцией. Строка пропущена.`);',
+            '          continue;',
+            '        }',
+            '        usedCurrent.add(identityKey);',
+            '        const changes = [];',
+          ].join('\n');
+
+          const newBlock = [
+            "      if (positionalOverwriteTarget && action === 'keep') {",
+            '        if (usedCurrent.has(identityKey)) {',
+            '          identityMappingAnomaly = true;',
+            '          issues.push(`Строка Excel ${excelRow.excelRow}: целевая строка замены уже используется другой операцией. Строка пропущена.`);',
+            '          continue;',
+            '        }',
+            '        // ЗАМЕНИТЬ переносит данные из source identity в другую target identity.',
+            '        // Поэтому stale-check обязан проверять именно источник копии, а не только цель.',
+            '        // Цель сразу резервируем в usedCurrent даже при SKIP, чтобы она не превратилась',
+            '        // в неявный DELETE в конце planner-а.',
+            '        const sourceCurrentRow = findCurrent(excelRow);',
+            '        if (sourceCurrentRow && excelRow.system.baseFingerprint && sourceCurrentRow.fingerprint',
+            '          && canonicalValue(excelRow.system.baseFingerprint) !== canonicalValue(sourceCurrentRow.fingerprint)) {',
+            '          if (identityKey) usedCurrent.add(identityKey);',
+            '          issues.push(`Строка Excel ${excelRow.excelRow}: исходная строка, из которой сделана замена, изменилась в TESSA после выгрузки. Скачайте свежий файл. Целевая строка TESSA не изменялась.`);',
+            '          continue;',
+            '        }',
+            '        usedCurrent.add(identityKey);',
+            '        const changes = [];',
+          ].join('\n');
+
+          const count = text.split(oldBlock).length - 1;
+          if (count !== 1) throw new Error(`overwrite block expected once, got ${count}`);
+          text = text.replace(oldBlock, newBlock);
+          fs.writeFileSync(path, text, 'utf8');
+          NODE
+
+      - name: Verify full regression suite
+        run: npm test
+
+      - name: Commit fix
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tessa-matrix-studio.user.js
+          git commit -m 'Block overwrite from stale source snapshot'
+          git push origin HEAD:fix/stale-overwrite-source-v1.9.8
