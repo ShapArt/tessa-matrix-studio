@@ -22,19 +22,18 @@ jobs:
           package-manager-cache: false
 
       - name: Apply delivery hardening
-        run: python .github/prepare_v1_9_14.py
+        run: python .github/finalize_v1_9_14.py
 
       - name: Verify full regression suite
         run: npm test
 
-      - name: Commit release-ready tree and remove helpers
+      - name: Commit release-ready tree
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm .github/prepare_v1_9_14.py .github/workflows/prepare-v1.9.14.yml
-          sed -i '${/^$/d;}' .github/workflows/release.yml
+          git rm .github/prepare_v1_9_14.py .github/finalize_v1_9_14.py
           git add -A
           git diff --cached --check
           git commit -m "v1.9.14 — metadata update feed and public release E2E"
