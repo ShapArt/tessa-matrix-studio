@@ -96,4 +96,24 @@ try {
 assert(conflict && /измен.*TESSA|конфликт|свеж/i.test(String(conflict.message || conflict)),
   `schema refresh must reject concurrent Excel/TESSA edit, got: ${conflict?.message || 'no error'}`);
 
+// 3. Дубликат hidden identity — это тоже локальная операция (копирование строки), даже
+// если после внешнего изменения source matcher уже не может однозначно выбрать primary.
+// Нельзя молча съесть такую копию и выдать "актуальный" Excel.
+const staleCopy = {
+  ...baseline,
+  rows: baseline.rows.map(row => ({ excelRow: row.excelRow, values: [...row.values] })),
+};
+staleCopy.rows.push({
+  excelRow: baseline.rows.at(-1).excelRow + 1,
+  values: [...baseline.rows[0].values],
+});
+let copyConflict = null;
+try {
+  E.mergeWorkbookIntoCurrentSnapshot(staleCopy, structure, freshSnapshot);
+} catch (error) {
+  copyConflict = error;
+}
+assert(copyConflict && /измен.*TESSA|конфликт|коп/i.test(String(copyConflict.message || copyConflict)),
+  `schema refresh must reject a copy from stale source identity, got: ${copyConflict?.message || 'no error'}`);
+
 console.log('TESSA Matrix Studio stale schema-refresh tests: OK');
