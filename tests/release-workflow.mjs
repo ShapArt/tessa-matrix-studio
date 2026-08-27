@@ -21,4 +21,10 @@ assert(workflow.includes('SHA256SUMS.txt'), 'release must publish SHA256SUMS.txt
 const checksumMentions = (workflow.match(/SHA256SUMS\.txt/g) || []).length;
 assert(checksumMentions >= 3, 'SHA256SUMS.txt must be built and uploaded for existing/new releases');
 
+// Release assets must carry GitHub/Sigstore build provenance.
+assert(workflow.includes('attestations: write'), 'release must allow writing artifact attestations');
+assert(workflow.includes('id-token: write'), 'release must allow OIDC signing for attestations');
+assert(workflow.includes('uses: actions/attest@v4'), 'release must generate GitHub artifact attestations');
+assert(workflow.includes('subject-checksums: dist/SHA256SUMS.txt'), 'attestation must bind the checksummed release assets');
+
 console.log('TESSA Matrix Studio release workflow checks: OK');
