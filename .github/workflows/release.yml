@@ -67,11 +67,18 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           mkdir -p dist
           cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
+          awk 'BEGIN { emit=0 } /^\/\/ ==UserScript==/ { emit=1 } emit { print } /^\/\/ ==\/UserScript==/ { exit }' \
+            tessa-matrix-studio.user.js > dist/tessa-matrix-studio.meta.js
+          test -s dist/tessa-matrix-studio.meta.js
+          grep -Fqx "// @version      $VERSION" dist/tessa-matrix-studio.meta.js
+          grep -Fqx "// @updateURL    https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.meta.js" dist/tessa-matrix-studio.meta.js
+          grep -Fqx "// @downloadURL  https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js" dist/tessa-matrix-studio.meta.js
           zip -r "dist/tessa-matrix-studio-v$VERSION.zip" \
             tessa-matrix-studio.user.js README.md CHANGELOG.md SECURITY.md
           (
             cd dist
             sha256sum \
+              tessa-matrix-studio.meta.js \
               tessa-matrix-studio.user.js \
               "tessa-matrix-studio-v$VERSION.zip" \
               > SHA256SUMS.txt
@@ -98,15 +105,59 @@ jobs:
           fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" \
+              dist/tessa-matrix-studio.meta.js \
               dist/tessa-matrix-studio.user.js \
               "dist/tessa-matrix-studio-v$VERSION.zip" \
               dist/SHA256SUMS.txt \
               --clobber
           else
             gh release create "$TAG" \
+              dist/tessa-matrix-studio.meta.js \
               dist/tessa-matrix-studio.user.js \
               "dist/tessa-matrix-studio-v$VERSION.zip" \
               dist/SHA256SUMS.txt \
               --title "TESSA Matrix Studio v$VERSION" \
               --generate-notes
           fi
+
+      - name: Verify public latest delivery
+        if: steps.changed.outputs.changed == 'true'
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PUBLIC_DIR="$(mktemp -d)"
+          BASE="https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download"
+          META_URL="$BASE/tessa-matrix-studio.meta.js"
+          USER_URL="$BASE/tessa-matrix-studio.user.js"
+          ZIP_URL="$BASE/tessa-matrix-studio-v$EXPECTED_VERSION.zip"
+          SUMS_URL="$BASE/SHA256SUMS.txt"
+
+          ok=false
+          for attempt in 1 2 3 4 5 6 7 8; do
+            rm -f "$PUBLIC_DIR"/*
+            if curl --fail --location --silent --show-error --retry 2 --retry-all-errors "$META_URL" -o "$PUBLIC_DIR/tessa-matrix-studio.meta.js" \
+              && curl --fail --location --silent --show-error --retry 2 --retry-all-errors "$USER_URL" -o "$PUBLIC_DIR/tessa-matrix-studio.user.js" \
+              && curl --fail --location --silent --show-error --retry 2 --retry-all-errors "$ZIP_URL" -o "$PUBLIC_DIR/tessa-matrix-studio-v$EXPECTED_VERSION.zip" \
+              && curl --fail --location --silent --show-error --retry 2 --retry-all-errors "$SUMS_URL" -o "$PUBLIC_DIR/SHA256SUMS.txt"; then
+              META_VERSION="$(awk '/@version/{print $3; exit}' "$PUBLIC_DIR/tessa-matrix-studio.meta.js")"
+              USER_VERSION="$(awk '/@version/{print $3; exit}' "$PUBLIC_DIR/tessa-matrix-studio.user.js")"
+              if [[ "$META_VERSION" == "$EXPECTED_VERSION" && "$USER_VERSION" == "$EXPECTED_VERSION" ]]; then
+                ok=true
+                break
+              fi
+            fi
+            echo "Public latest is not v$EXPECTED_VERSION yet (attempt $attempt/8); retrying..."
+            sleep 3
+          done
+
+          [[ "$ok" == "true" ]] || { echo "Public latest delivery never converged to v$EXPECTED_VERSION"; exit 1; }
+          grep -Fqx "// @updateURL    $META_URL" "$PUBLIC_DIR/tessa-matrix-studio.meta.js"
+          grep -Fqx "// @downloadURL  $USER_URL" "$PUBLIC_DIR/tessa-matrix-studio.meta.js"
+          grep -Fqx "// @updateURL    $META_URL" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fqx "// @downloadURL  $USER_URL" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          (
+            cd "$PUBLIC_DIR"
+            sha256sum --check SHA256SUMS.txt
+          )
