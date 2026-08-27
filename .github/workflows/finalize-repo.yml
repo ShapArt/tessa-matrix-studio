@@ -45,4 +45,4 @@ jobs:
           git commit -m "Add production userscript v1.9.1"
           git push
 
-# Retry trigger with verified payload: 2026-08-27
+# Verified payload parts complete: 2026-08-27 11:00 MSK
