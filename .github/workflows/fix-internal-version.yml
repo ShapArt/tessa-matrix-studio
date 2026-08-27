@@ -75,3 +75,5 @@ jobs:
           git diff --cached --check
           git commit -m 'v1.9.5 — fix internal version drift'
           git push origin HEAD:fix/internal-version-v1.9.5
+
+# Triggered after RED was confirmed in PR CI.
