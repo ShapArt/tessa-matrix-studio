@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.8
+// @version      1.9.9
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.8',
+    version: '1.9.9',
     plan: null,
     workbook: null,
     snapshot: null,
@@ -272,6 +272,10 @@
       .replace(/[‘’]/g, "'")
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  function isOverwriteMatch(match) {
+    return ['position-overwrite', 'missing-identity-overwrite'].includes(match?.matchedBy);
   }
 
   function stripFormulaMarker(value) {
@@ -4341,7 +4345,7 @@
         result.skipped.push(skipped);
         result.rows.push({ type: 'update', excelRow: action.excelRow.excelRow, status: 'skipped', reason: skipped.reason });
       }
-      tickStoreProgress(action.match?.matchedBy === 'position-overwrite' ? 'Заменяю строки' : 'Обновляю строки');
+      tickStoreProgress(isOverwriteMatch(action.match) ? 'Заменяю строки' : 'Обновляю строки');
     }
 
     for (const created of preparedAdds.values()) {
@@ -4441,7 +4445,7 @@
     previewActions.forEach(action => {
       const item = document.createElement('details');
       item.className = `tms-action tms-action-${action.type}`;
-      const isReplacement = action.type === 'update' && action.match?.matchedBy === 'position-overwrite';
+      const isReplacement = action.type === 'update' && isOverwriteMatch(action.match);
       const label = isReplacement ? 'ЗАМЕНИТЬ' : action.type === 'update' ? 'ИЗМЕНИТЬ' : action.type === 'add' ? 'ДОБАВИТЬ' : 'УДАЛИТЬ';
       const rowText = isReplacement ? `Excel ${action.excelRow.excelRow} → TESSA ${action.currentRow.index + 1}` : action.excelRow ? `Excel ${action.excelRow.excelRow}` : `TESSA ${action.currentRow.index + 1}`;
       item.innerHTML = `<summary><b>${label}</b> — ${rowText}${action.match?.lowConfidence ? ' ⚠' : ''}</summary>`;
@@ -4683,7 +4687,7 @@
   }
 
   window.__TESSA_MATRIX_SYNC_EXPORTS__ = {
-    normalizeSpace, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent,
+    normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, mergeWorkbookIntoCurrentSnapshot, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,

@@ -169,4 +169,9 @@ assert(refreshedC?.flat?.['criterion:criterion-org']?.[0] === 'Компания 
   && refreshedC?.flat?.['function:function-sign']?.[0] === 'Сидоров С.С.',
   `schema refresh corrupted untouched C: ${JSON.stringify(refreshedC?.flat)}`);
 
+// Оба способа определения overwrite должны одинаково отображаться как ЗАМЕНИТЬ.
+assert(E.isOverwriteMatch({ matchedBy: 'position-overwrite' }) === true, 'position overwrite must be recognized as replacement');
+assert(E.isOverwriteMatch({ matchedBy: 'missing-identity-overwrite' }) === true, 'sorted overwrite must be recognized as replacement');
+assert(E.isOverwriteMatch({ matchedBy: 'identity' }) === false, 'ordinary identity update must not be replacement');
+
 console.log('TESSA Matrix Studio planner tests: OK');
