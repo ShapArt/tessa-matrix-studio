@@ -1,0 +1,40 @@
+name: Prepare v1.9.14
+
+on:
+  push:
+    branches:
+      - fix/meta-release-e2e-v1.9.14
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/meta-release-e2e-v1.9.14
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Apply delivery hardening
+        run: python .github/prepare_v1_9_14.py
+
+      - name: Verify full regression suite
+        run: npm test
+
+      - name: Commit release-ready tree and remove helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/prepare_v1_9_14.py .github/workflows/prepare-v1.9.14.yml
+          git add -A
+          git diff --cached --check
+          git commit -m "v1.9.14 — metadata update feed and public release E2E"
+          git push origin HEAD:fix/meta-release-e2e-v1.9.14
