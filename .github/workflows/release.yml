@@ -62,10 +62,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
           mkdir -p dist
           cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
-          zip -r "dist/tessa-matrix-studio-v${{ steps.version.outputs.version }}.zip" \
+          zip -r "dist/tessa-matrix-studio-v$VERSION.zip" \
             tessa-matrix-studio.user.js README.md CHANGELOG.md SECURITY.md
+          (
+            cd dist
+            sha256sum \
+              tessa-matrix-studio.user.js \
+              "tessa-matrix-studio-v$VERSION.zip" \
+              > SHA256SUMS.txt
+          )
 
       - name: Publish release
         if: steps.changed.outputs.changed == 'true'
@@ -84,11 +92,13 @@ jobs:
             gh release upload "$TAG" \
               dist/tessa-matrix-studio.user.js \
               "dist/tessa-matrix-studio-v$VERSION.zip" \
+              dist/SHA256SUMS.txt \
               --clobber
           else
             gh release create "$TAG" \
               dist/tessa-matrix-studio.user.js \
               "dist/tessa-matrix-studio-v$VERSION.zip" \
+              dist/SHA256SUMS.txt \
               --title "TESSA Matrix Studio v$VERSION" \
               --generate-notes
           fi
