@@ -57,14 +57,19 @@ const bytes = await E.createRoundtripXlsxBytes(structure, snapshot, matrixInfo, 
 const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 const baseline = await E.readXlsxArrayBuffer(buffer, 'qa-delete-overwrite.xlsx');
 
-const actionIndex = baseline.headers.indexOf('Действие');
 const signerIndex = baseline.headers.indexOf('Подписание');
 const signerIdIndex = baseline.headers.indexOf('Подписание__ID');
-assert(actionIndex >= 0 && signerIndex >= 0 && signerIdIndex >= 0, 'required columns unavailable');
+assert(signerIndex >= 0 && signerIdIndex >= 0, 'required signer columns unavailable');
 
+// Современный roundtrip удаляет строки физически и не показывает action-колонку.
+// Но parser по-прежнему поддерживает system:action для старых/расширенных файлов,
+// поэтому моделируем такую колонку явно и проверяем destructive compatibility path.
+const actionIndex = baseline.headers.length;
 const workbook = {
   ...baseline,
-  rows: baseline.rows.map(row => ({ excelRow: row.excelRow, values: [...row.values] })),
+  headers: [...baseline.headers, 'Действие'],
+  schemaTokens: [...(baseline.schemaTokens || []), 'system:action'],
+  rows: baseline.rows.map(row => ({ excelRow: row.excelRow, values: [...row.values, ''] })),
 };
 
 // Пользователь копирует A поверх B: вместе с видимыми значениями копируются скрытые ID A.
