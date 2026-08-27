@@ -6,13 +6,13 @@
 
 Выгрузка матрицы в Excel → массовая правка → проверка изменений → безопасное применение в TESSA.
 
-[![Version](https://img.shields.io/badge/version-1.9.11-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.9.12-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-userscript-24292F?style=flat-square&logo=tampermonkey)](https://www.tampermonkey.net/)
 
 ### [УСТАНОВИТЬ](https://cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js) · [СКАЧАТЬ РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [ОТКРЫТЬ КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [СООБЩИТЬ ОБ ОШИБКЕ](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.9.11 · Автор: Шаповалов Артём**
+**v1.9.12 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -46,7 +46,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.9.11** в Tampermonkey.
+2. Подтвердите установку версии **1.9.12** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -108,7 +108,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Перед подтверждением проверьте:
 
 - **Название:** `TESSA Matrix Studio — Черкизово`
-- **Версия:** `1.9.11`
+- **Версия:** `1.9.12`
 - **Автор:** `Шаповалов Артём`
 - **Разрешения:** `@grant none`
 - **Область запуска:** только домены TESSA Черкизово
@@ -221,6 +221,18 @@ Studio показывает:
 | **пропустить** | строку нельзя применить безопасно |
 
 Перед применением проверьте три вещи: ожидаемое количество `ИЗМЕНИТЬ / ДОБАВИТЬ / УДАЛИТЬ`, отсутствие неожиданных удалений и правильность затронутых строк.
+
+### Исключить случайное изменение прямо в preview
+
+Если в строке есть случайная правка, **не нужно переделывать исходный Excel и запускать проверку заново**:
+
+- у каждого изменённого поля есть кнопка **«Не применять»** — поле останется со значением из текущей TESSA;
+- отключённое поле становится приглушённым и его можно вернуть кнопкой **«Вернуть»**;
+- кнопка **«Не применять всю строку»** исключает из записи все изменения этой строки;
+- **«Вернуть все изменения строки»** полностью восстанавливает исходный план для строки;
+- счётчики и кнопка **«Применить к TESSA»** сразу пересчитываются по выбранному набору изменений.
+
+Эта настройка действует **только для текущего preview**. Загруженный `.xlsx` не переписывается. При новом **«Проверить изменения»** выбор сбрасывается. Если частичная отмена создаёт дублирующую строку или другой небезопасный результат, Studio блокирует применение и показывает причину.
 
 ## 4. Применить к TESSA
 
@@ -382,7 +394,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.9.11**  
+Текущая версия: **1.9.12**  
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)

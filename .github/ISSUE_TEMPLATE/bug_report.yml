@@ -14,7 +14,7 @@ body:
     id: version
     attributes:
       label: Версия TESSA Matrix Studio
-      placeholder: 1.9.11
+      placeholder: 1.9.12
     validations:
       required: true
 
@@ -42,6 +42,7 @@ body:
         - ADD — добавить новую строку
         - REPLACE — вставить поверх существующей строки
         - DELETE — удалить строку
+        - Preview — не применять / вернуть изменение
         - Справочник / поиск значения
         - Актуализировать выбранный Excel
         - Применить к TESSA
