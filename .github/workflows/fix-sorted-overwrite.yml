@@ -30,72 +30,86 @@ jobs:
           const path = 'tessa-matrix-studio.user.js';
           let text = fs.readFileSync(path, 'utf8');
 
-          const startMarker = `    // Excel позволяет вставить скопированную строку ПОВЕРХ другой строки.\n`;
-          const endMarker = `    const primaryExcelRowByIdentity = new Map();\n`;
+          const startMarker = '    // Excel позволяет вставить скопированную строку ПОВЕРХ другой строки.\n';
+          const endMarker = '    const primaryExcelRowByIdentity = new Map();\n';
           const start = text.indexOf(startMarker);
           const end = text.indexOf(endMarker, start);
           if (start < 0 || end < 0) throw new Error('overwrite prelude markers not found');
 
-          const prelude = `    // Для overwrite сначала считаем identity, а не доверяем физическому порядку Excel.\n` +
-`    // Сортировка строк не должна менять цель операции. Позиция используется только как\n` +
-`    // дополнительное доказательство, когда исходная строка осталась на своей позиции.\n` +
-`    const expectedCurrentByExcelRow = new Map();\n` +
-`    const identityCounts = new Map();\n` +
-`    if (desired.length === snapshot.rows.length) {\n` +
-`      for (const row of desired) {\n` +
-`        const key = excelIdentityKey(row);\n` +
-`        if (key) identityCounts.set(key, (identityCounts.get(key) || 0) + 1);\n` +
-`      }\n` +
-`      desired.forEach((row, index) => expectedCurrentByExcelRow.set(row, snapshot.rows[index] || null));\n` +
-`    }\n\n`;
+          const prelude = [
+            '    // Для overwrite сначала считаем identity, а не доверяем физическому порядку Excel.',
+            '    // Сортировка строк не должна менять цель операции. Позиция используется только как',
+            '    // дополнительное доказательство, когда исходная строка осталась на своей позиции.',
+            '    const expectedCurrentByExcelRow = new Map();',
+            '    const identityCounts = new Map();',
+            '    if (desired.length === snapshot.rows.length) {',
+            '      for (const row of desired) {',
+            '        const key = excelIdentityKey(row);',
+            '        if (key) identityCounts.set(key, (identityCounts.get(key) || 0) + 1);',
+            '      }',
+            '      desired.forEach((row, index) => expectedCurrentByExcelRow.set(row, snapshot.rows[index] || null));',
+            '    }',
+            '',
+          ].join('\n');
           text = text.slice(0, start) + prelude + text.slice(end);
 
-          const primaryTail = `      else ambiguousDuplicateIdentities.add(sourceIdentity);\n    }\n\n    for (const excelRow of desired) {`;
+          const primaryTail = [
+            '      else ambiguousDuplicateIdentities.add(sourceIdentity);',
+            '    }',
+            '',
+            '    for (const excelRow of desired) {',
+          ].join('\n');
           if (!text.includes(primaryTail)) throw new Error('primary identity tail not found');
-          const overwriteMapping = `      else ambiguousDuplicateIdentities.add(sourceIdentity);\n    }\n\n` +
-`    // Копирование поверх существующей строки даёт одну дополнительную строку с identity\n` +
-`    // источника и одну пропавшую identity цели. Сначала используем позицию только там,\n` +
-`    // где оригинал источника всё ещё стоит на своей исходной позиции. Если после сортировки\n` +
-`    // остаётся ровно одна лишняя копия и одна пропавшая identity, пара однозначна без позиции.\n` +
-`    const positionalOverwriteTargets = new Map();\n` +
-`    const overwriteMatchedBy = new Map();\n` +
-`    if (desired.length === snapshot.rows.length) {\n` +
-`      const missingCurrentRows = (snapshot.rows || []).filter(currentRow => {\n` +
-`        const identity = currentIdentityKey(currentRow);\n` +
-`        return Boolean(identity && (identityCounts.get(identity) || 0) === 0);\n` +
-`      });\n` +
-`      const remainingMissing = new Map(missingCurrentRows.map(row => [currentIdentityKey(row), row]));\n` +
-`      const extraRows = [];\n` +
-`      for (const [sourceIdentity, group] of identityGroups.entries()) {\n` +
-`        if (group.length < 2 || ambiguousDuplicateIdentities.has(sourceIdentity)) continue;\n` +
-`        const primary = primaryExcelRowByIdentity.get(sourceIdentity);\n` +
-`        if (!primary) continue;\n` +
-`        for (const row of group) {\n` +
-`          if (row !== primary) extraRows.push({ row, sourceIdentity, primary });\n` +
-`        }\n` +
-`      }\n` +
-`      for (const extra of extraRows) {\n` +
-`        const expectedTarget = expectedCurrentByExcelRow.get(extra.row);\n` +
-`        const expectedTargetIdentity = currentIdentityKey(expectedTarget);\n` +
-`        const expectedPrimary = expectedCurrentByExcelRow.get(extra.primary);\n` +
-`        const primaryStayedInPlace = expectedPrimary && currentIdentityKey(expectedPrimary) === extra.sourceIdentity;\n` +
-`        if (!primaryStayedInPlace || !remainingMissing.has(expectedTargetIdentity)) continue;\n` +
-`        positionalOverwriteTargets.set(extra.row, expectedTarget);\n` +
-`        overwriteMatchedBy.set(extra.row, 'position-overwrite');\n` +
-`        remainingMissing.delete(expectedTargetIdentity);\n` +
-`      }\n` +
-`      const remainingExtras = extraRows.filter(extra => !positionalOverwriteTargets.has(extra.row));\n` +
-`      if (remainingExtras.length === 1 && remainingMissing.size === 1) {\n` +
-`        const [target] = remainingMissing.values();\n` +
-`        positionalOverwriteTargets.set(remainingExtras[0].row, target);\n` +
-`        overwriteMatchedBy.set(remainingExtras[0].row, 'missing-identity-overwrite');\n` +
-`      }\n` +
-`    }\n\n` +
-`    for (const excelRow of desired) {`;
-          text = text.replace(primaryTail, overwriteMapping);
 
-          const oldMatch = `          match: { matchedBy: 'position-overwrite', lowConfidence: false, sourceIdentity },`;
-          const newMatch = `          match: { matchedBy: overwriteMatchedBy.get(excelRow) || 'position-overwrite', lowConfidence: false, sourceIdentity },`;
+          const mappingBlock = [
+            '      else ambiguousDuplicateIdentities.add(sourceIdentity);',
+            '    }',
+            '',
+            '    // Копирование поверх существующей строки даёт одну дополнительную строку с identity',
+            '    // источника и одну пропавшую identity цели. Сначала используем позицию только там,',
+            '    // где оригинал источника всё ещё стоит на своей исходной позиции. Если после сортировки',
+            '    // остаётся ровно одна лишняя копия и одна пропавшая identity, пара однозначна без позиции.',
+            '    const positionalOverwriteTargets = new Map();',
+            '    const overwriteMatchedBy = new Map();',
+            '    if (desired.length === snapshot.rows.length) {',
+            '      const missingCurrentRows = (snapshot.rows || []).filter(currentRow => {',
+            '        const identity = currentIdentityKey(currentRow);',
+            '        return Boolean(identity && (identityCounts.get(identity) || 0) === 0);',
+            '      });',
+            '      const remainingMissing = new Map(missingCurrentRows.map(row => [currentIdentityKey(row), row]));',
+            '      const extraRows = [];',
+            '      for (const [sourceIdentity, group] of identityGroups.entries()) {',
+            '        if (group.length < 2 || ambiguousDuplicateIdentities.has(sourceIdentity)) continue;',
+            '        const primary = primaryExcelRowByIdentity.get(sourceIdentity);',
+            '        if (!primary) continue;',
+            '        for (const row of group) {',
+            '          if (row !== primary) extraRows.push({ row, sourceIdentity, primary });',
+            '        }',
+            '      }',
+            '      for (const extra of extraRows) {',
+            '        const expectedTarget = expectedCurrentByExcelRow.get(extra.row);',
+            '        const expectedTargetIdentity = currentIdentityKey(expectedTarget);',
+            '        const expectedPrimary = expectedCurrentByExcelRow.get(extra.primary);',
+            '        const primaryStayedInPlace = expectedPrimary && currentIdentityKey(expectedPrimary) === extra.sourceIdentity;',
+            '        if (!primaryStayedInPlace || !remainingMissing.has(expectedTargetIdentity)) continue;',
+            '        positionalOverwriteTargets.set(extra.row, expectedTarget);',
+            "        overwriteMatchedBy.set(extra.row, 'position-overwrite');",
+            '        remainingMissing.delete(expectedTargetIdentity);',
+            '      }',
+            '      const remainingExtras = extraRows.filter(extra => !positionalOverwriteTargets.has(extra.row));',
+            '      if (remainingExtras.length === 1 && remainingMissing.size === 1) {',
+            '        const [target] = remainingMissing.values();',
+            '        positionalOverwriteTargets.set(remainingExtras[0].row, target);',
+            "        overwriteMatchedBy.set(remainingExtras[0].row, 'missing-identity-overwrite');",
+            '      }',
+            '    }',
+            '',
+            '    for (const excelRow of desired) {',
+          ].join('\n');
+          text = text.replace(primaryTail, mappingBlock);
+
+          const oldMatch = "          match: { matchedBy: 'position-overwrite', lowConfidence: false, sourceIdentity },";
+          const newMatch = "          match: { matchedBy: overwriteMatchedBy.get(excelRow) || 'position-overwrite', lowConfidence: false, sourceIdentity },";
           if ((text.split(oldMatch).length - 1) !== 1) throw new Error('position-overwrite match line not found exactly once');
           text = text.replace(oldMatch, newMatch);
 
