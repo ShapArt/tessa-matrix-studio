@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 
+// README, UAT и issue-template считаются частью релизного контракта проекта.
 const read = (path) => fs.readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
