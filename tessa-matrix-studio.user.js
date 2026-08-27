@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.9
+// @version      1.9.10
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.9',
+    version: '1.9.10',
     plan: null,
     workbook: null,
     snapshot: null,
@@ -1760,6 +1760,9 @@
     for (const desired of desiredRows) {
       if (desired.system.action.startsWith('invalid:')) throw new Error(`Строка Excel ${desired.excelRow}: неизвестное действие.`);
       const positionalOverwriteTarget = positionalOverwriteTargets.get(desired) || null;
+      if (positionalOverwriteTarget && desired.system.action === 'delete') {
+        throw new Error(`Строка Excel ${desired.excelRow}: операция неоднозначна — строка одновременно распознана как ЗАМЕНИТЬ и помечена УДАЛИТЬ. Нельзя безопасно определить цель удаления. Выполните удаление отдельно в свежей выгрузке.`);
+      }
       let current = positionalOverwriteTarget || (desired.system.versionId ? byVersion.get(canonicalValue(desired.system.versionId)) : null);
       if (!current && desired.system.rowCardId) current = byCard.get(canonicalValue(desired.system.rowCardId));
       const identityKey = current ? canonicalValue(current.versionId || current.rowCardId) : '';
@@ -3542,6 +3545,13 @@
         continue;
       }
       const positionalOverwriteTarget = positionalOverwriteTargets.get(excelRow) || null;
+      if (positionalOverwriteTarget && action === 'delete') {
+        const protectedIdentity = canonicalValue(positionalOverwriteTarget.versionId || positionalOverwriteTarget.rowCardId);
+        if (protectedIdentity) usedCurrent.add(protectedIdentity);
+        identityMappingAnomaly = true;
+        issues.push(`Строка Excel ${excelRow.excelRow}: операция неоднозначна — строка одновременно распознана как ЗАМЕНИТЬ и помечена УДАЛИТЬ. Целевая строка TESSA сохранена без изменений. Выполните удаление отдельно в свежей выгрузке.`);
+        continue;
+      }
       const currentRow = positionalOverwriteTarget || findCurrent(excelRow);
       const identityKey = currentRow ? canonicalValue(currentRow.versionId || currentRow.rowCardId) : '';
 
