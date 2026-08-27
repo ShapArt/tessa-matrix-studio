@@ -1,4 +1,4 @@
-name: Fix sorted overwrite planner
+name: Finalize v1.9.6 sorted overwrite fix
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  patch:
+  finalize:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     steps:
@@ -22,108 +22,56 @@ jobs:
         with:
           node-version: 24
 
-      - name: Patch order-independent overwrite mapping
+      - name: Bump release metadata to v1.9.6
         shell: bash
         run: |
           node <<'NODE'
           const fs = require('node:fs');
-          const path = 'tessa-matrix-studio.user.js';
-          let text = fs.readFileSync(path, 'utf8');
 
-          const startMarker = '    // Excel позволяет вставить скопированную строку ПОВЕРХ другой строки.\n';
-          const endMarker = '    const primaryExcelRowByIdentity = new Map();\n';
-          const start = text.indexOf(startMarker);
-          const end = text.indexOf(endMarker, start);
-          if (start < 0 || end < 0) throw new Error('overwrite prelude markers not found');
+          function read(path) { return fs.readFileSync(path, 'utf8'); }
+          function write(path, text) { fs.writeFileSync(path, text, 'utf8'); }
+          function replaceExact(path, from, to) {
+            const text = read(path);
+            const count = text.split(from).length - 1;
+            if (count !== 1) throw new Error(`${path}: expected one ${JSON.stringify(from)}, got ${count}`);
+            write(path, text.replace(from, to));
+          }
 
-          const prelude = [
-            '    // Для overwrite сначала считаем identity, а не доверяем физическому порядку Excel.',
-            '    // Сортировка строк не должна менять цель операции. Позиция используется только как',
-            '    // дополнительное доказательство, когда исходная строка осталась на своей позиции.',
-            '    const expectedCurrentByExcelRow = new Map();',
-            '    const identityCounts = new Map();',
-            '    if (desired.length === snapshot.rows.length) {',
-            '      for (const row of desired) {',
-            '        const key = excelIdentityKey(row);',
-            '        if (key) identityCounts.set(key, (identityCounts.get(key) || 0) + 1);',
-            '      }',
-            '      desired.forEach((row, index) => expectedCurrentByExcelRow.set(row, snapshot.rows[index] || null));',
-            '    }',
+          replaceExact('tessa-matrix-studio.user.js', '// @version      1.9.5', '// @version      1.9.6');
+          replaceExact('tessa-matrix-studio.user.js', "version: '1.9.5',", "version: '1.9.6',");
+          replaceExact('package.json', '"version": "1.9.5"', '"version": "1.9.6"');
+          replaceExact('tests/smoke.mjs', "assert(code.includes('// @version      1.9.5'), 'wrong userscript version');", "assert(code.includes('// @version      1.9.6'), 'wrong userscript version');");
+          replaceExact('.github/ISSUE_TEMPLATE/bug_report.yml', 'placeholder: 1.9.5', 'placeholder: 1.9.6');
+
+          const readme = read('README.md');
+          const readmeCount = readme.split('1.9.5').length - 1;
+          if (readmeCount < 3) throw new Error(`README version references unexpected: ${readmeCount}`);
+          write('README.md', readme.replaceAll('1.9.5', '1.9.6'));
+
+          const changelog = read('CHANGELOG.md');
+          const marker = '# Changelog\n\n';
+          if (!changelog.startsWith(marker)) throw new Error('CHANGELOG header mismatch');
+          if (changelog.includes('## 1.9.6 — 2026-08-27')) throw new Error('v1.9.6 changelog already exists');
+          const entry = [
+            '## 1.9.6 — 2026-08-27',
+            '',
+            '- исправлено order-dependent сопоставление при сортировке Excel и копировании существующей строки поверх другой;',
+            '- planner теперь определяет overwrite по повторяющейся identity источника и пропавшей identity цели, а позицию использует только как дополнительное доказательство;',
+            '- добавлен regression-сценарий A/B/C → сортировка C/A/B → копирование A поверх B без лишнего ADD/DELETE/SKIP.',
             '',
           ].join('\n');
-          text = text.slice(0, start) + prelude + text.slice(end);
-
-          const primaryTail = [
-            '      else ambiguousDuplicateIdentities.add(sourceIdentity);',
-            '    }',
-            '',
-            '    for (const excelRow of desired) {',
-          ].join('\n');
-          if (!text.includes(primaryTail)) throw new Error('primary identity tail not found');
-
-          const mappingBlock = [
-            '      else ambiguousDuplicateIdentities.add(sourceIdentity);',
-            '    }',
-            '',
-            '    // Копирование поверх существующей строки даёт одну дополнительную строку с identity',
-            '    // источника и одну пропавшую identity цели. Сначала используем позицию только там,',
-            '    // где оригинал источника всё ещё стоит на своей исходной позиции. Если после сортировки',
-            '    // остаётся ровно одна лишняя копия и одна пропавшая identity, пара однозначна без позиции.',
-            '    const positionalOverwriteTargets = new Map();',
-            '    const overwriteMatchedBy = new Map();',
-            '    if (desired.length === snapshot.rows.length) {',
-            '      const missingCurrentRows = (snapshot.rows || []).filter(currentRow => {',
-            '        const identity = currentIdentityKey(currentRow);',
-            '        return Boolean(identity && (identityCounts.get(identity) || 0) === 0);',
-            '      });',
-            '      const remainingMissing = new Map(missingCurrentRows.map(row => [currentIdentityKey(row), row]));',
-            '      const extraRows = [];',
-            '      for (const [sourceIdentity, group] of identityGroups.entries()) {',
-            '        if (group.length < 2 || ambiguousDuplicateIdentities.has(sourceIdentity)) continue;',
-            '        const primary = primaryExcelRowByIdentity.get(sourceIdentity);',
-            '        if (!primary) continue;',
-            '        for (const row of group) {',
-            '          if (row !== primary) extraRows.push({ row, sourceIdentity, primary });',
-            '        }',
-            '      }',
-            '      for (const extra of extraRows) {',
-            '        const expectedTarget = expectedCurrentByExcelRow.get(extra.row);',
-            '        const expectedTargetIdentity = currentIdentityKey(expectedTarget);',
-            '        const expectedPrimary = expectedCurrentByExcelRow.get(extra.primary);',
-            '        const primaryStayedInPlace = expectedPrimary && currentIdentityKey(expectedPrimary) === extra.sourceIdentity;',
-            '        if (!primaryStayedInPlace || !remainingMissing.has(expectedTargetIdentity)) continue;',
-            '        positionalOverwriteTargets.set(extra.row, expectedTarget);',
-            "        overwriteMatchedBy.set(extra.row, 'position-overwrite');",
-            '        remainingMissing.delete(expectedTargetIdentity);',
-            '      }',
-            '      const remainingExtras = extraRows.filter(extra => !positionalOverwriteTargets.has(extra.row));',
-            '      if (remainingExtras.length === 1 && remainingMissing.size === 1) {',
-            '        const [target] = remainingMissing.values();',
-            '        positionalOverwriteTargets.set(remainingExtras[0].row, target);',
-            "        overwriteMatchedBy.set(remainingExtras[0].row, 'missing-identity-overwrite');",
-            '      }',
-            '    }',
-            '',
-            '    for (const excelRow of desired) {',
-          ].join('\n');
-          text = text.replace(primaryTail, mappingBlock);
-
-          const oldMatch = "          match: { matchedBy: 'position-overwrite', lowConfidence: false, sourceIdentity },";
-          const newMatch = "          match: { matchedBy: overwriteMatchedBy.get(excelRow) || 'position-overwrite', lowConfidence: false, sourceIdentity },";
-          if ((text.split(oldMatch).length - 1) !== 1) throw new Error('position-overwrite match line not found exactly once');
-          text = text.replace(oldMatch, newMatch);
-
-          fs.writeFileSync(path, text, 'utf8');
+          write('CHANGELOG.md', marker + entry + changelog.slice(marker.length));
           NODE
 
-      - name: Verify regression suite
+      - name: Verify full suite
         run: npm test
 
-      - name: Commit planner fix
+      - name: Commit release-ready fix and remove helper
         shell: bash
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add tessa-matrix-studio.user.js
-          git commit -m 'Fix sorted overwrite identity mapping'
+          git rm .github/workflows/fix-sorted-overwrite.yml
+          git add tessa-matrix-studio.user.js package.json README.md CHANGELOG.md tests/smoke.mjs .github/ISSUE_TEMPLATE/bug_report.yml
+          git commit -m 'v1.9.6 — finalize sorted overwrite fix'
           git push origin HEAD:fix/sorted-overwrite-v1.9.6
