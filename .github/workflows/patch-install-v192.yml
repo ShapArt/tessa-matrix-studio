@@ -1,0 +1,76 @@
+name: Patch install metadata v1.9.2
+
+on:
+  push:
+    branches: [fix/install-v1.9.2]
+    paths:
+      - .github/workflows/patch-install-v192.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Patch release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          script = Path('tessa-matrix-studio.user.js')
+          s = script.read_text(encoding='utf-8')
+          s = s.replace('// @version      1.9.1', '// @version      1.9.2', 1)
+          s = s.replace(
+              'https://raw.githubusercontent.com/ShapArt/tessa-matrix-studio/main/tessa-matrix-studio.user.js',
+              'https://cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js'
+          )
+          script.write_text(s, encoding='utf-8')
+
+          readme = Path('README.md')
+          r = readme.read_text(encoding='utf-8').replace('1.9.1', '1.9.2')
+          readme.write_text(r, encoding='utf-8')
+
+          package = Path('package.json')
+          data = json.loads(package.read_text(encoding='utf-8'))
+          data['version'] = '1.9.2'
+          package.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          changelog = Path('CHANGELOG.md')
+          c = changelog.read_text(encoding='utf-8')
+          entry = '''# Changelog\n\n## 1.9.2 — 2026-08-27\n\n- `@updateURL` и `@downloadURL` переведены с `raw.githubusercontent.com` на jsDelivr, чтобы автообновление и повторная установка не зависели от GitHub Raw;\n- версия README и `package.json` синхронизирована с userscript.\n\n'''
+          if c.startswith('# Changelog\n\n'):
+              c = entry + c[len('# Changelog\n\n'):]
+          else:
+              raise SystemExit('Unexpected CHANGELOG header')
+          changelog.write_text(c, encoding='utf-8')
+          PY
+
+          grep -q '@version      1.9.2' tessa-matrix-studio.user.js
+          grep -q 'cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js' tessa-matrix-studio.user.js
+          if grep -q 'raw.githubusercontent.com/ShapArt/tessa-matrix-studio/main/tessa-matrix-studio.user.js' tessa-matrix-studio.user.js; then
+            echo 'GitHub Raw URL still present in userscript metadata' >&2
+            exit 1
+          fi
+          npm test
+
+      - name: Commit patch and remove helper workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/patch-install-v192.yml
+          git add tessa-matrix-studio.user.js README.md package.json CHANGELOG.md
+          git commit -m 'Fix installation and update URLs for v1.9.2'
+          git push
