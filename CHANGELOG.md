@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.14 — 2026-08-27
+
+- `@updateURL` переведён на отдельный лёгкий `tessa-matrix-studio.meta.js`, а `@downloadURL` оставлен на полном userscript;
+- release workflow автоматически собирает metadata-файл из фактического userscript header, исключая рассинхрон версий;
+- metadata-файл включён в `SHA256SUMS.txt`, release assets и GitHub/Sigstore provenance;
+- после публикации CI анонимно скачивает публичные `releases/latest/download` assets, проверяет `@version`, update/download URL и SHA-256;
+- релиз считается успешным только после подтверждения, что наружу реально отдаётся актуальная версия.
+
 ## 1.9.13 — 2026-08-27
 
 - установка и автообновление Tampermonkey переведены с кэшируемого `jsDelivr @main` на `GitHub Releases /latest/download`;
