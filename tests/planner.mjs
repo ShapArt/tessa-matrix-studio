@@ -137,4 +137,21 @@ assert(plan.counts.noop === 2 && plan.counts.update === 1 && plan.counts.add ===
 assert(sortedReplacement?.currentRow?.index === 1,
   `sorted overwrite must update missing identity B, got ${JSON.stringify(sortedReplacement?.currentRow)}`);
 
+// Обновление Excel-схемы должно переносить тот же sorted overwrite точно так же, как planner.
+// Иначе «Обновить Excel-схему» может незаметно перенести значения копии в исходную identity A.
+const refreshed = E.mergeWorkbookIntoCurrentSnapshot(sortedOverwrite, structure, sortedSnapshot).snapshot;
+assert(refreshed.rows.length === 3, `schema refresh changed row count: ${refreshed.rows.length}`);
+const refreshedA = refreshed.rows.find(row => row.versionId === 'version-a3');
+const refreshedB = refreshed.rows.find(row => row.versionId === 'version-b3');
+const refreshedC = refreshed.rows.find(row => row.versionId === 'version-c3');
+assert(refreshedA?.flat?.['criterion:criterion-org']?.[0] === 'Компания А'
+  && refreshedA?.flat?.['function:function-sign']?.[0] === 'Иванов И.И.',
+  `schema refresh corrupted source A: ${JSON.stringify(refreshedA?.flat)}`);
+assert(refreshedB?.flat?.['criterion:criterion-org']?.[0] === 'Компания А'
+  && refreshedB?.flat?.['function:function-sign']?.[0] === 'Петров П.П.',
+  `schema refresh mapped overwrite to wrong target B: ${JSON.stringify(refreshedB?.flat)}`);
+assert(refreshedC?.flat?.['criterion:criterion-org']?.[0] === 'Компания В'
+  && refreshedC?.flat?.['function:function-sign']?.[0] === 'Сидоров С.С.',
+  `schema refresh corrupted untouched C: ${JSON.stringify(refreshedC?.flat)}`);
+
 console.log('TESSA Matrix Studio planner tests: OK');

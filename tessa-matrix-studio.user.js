@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.6
+// @version      1.9.7
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.6',
+    version: '1.9.7',
     plan: null,
     workbook: null,
     snapshot: null,
@@ -1678,20 +1678,79 @@
       const rowCardId = canonicalValue(current?.rowCardId || '');
       return versionId || rowCardId ? `v:${versionId}|c:${rowCardId}` : '';
     };
+    // Schema refresh должен сопоставлять overwrite по тем же identity-правилам,
+    // что и основной planner. Физический порядок Excel после сортировки не является identity.
+    const expectedCurrentByExcelRow = new Map();
+    const identityCounts = new Map();
+    const identityGroups = new Map();
+    const primaryExcelRowByIdentity = new Map();
+    const ambiguousDuplicateIdentities = new Set();
     const positionalOverwriteTargets = new Map();
-    if (desiredRows.length === snapshot.rows.length) {
-      const identityCounts = new Map();
-      for (const desired of desiredRows) {
-        const key = excelIdentityKey(desired);
-        if (key) identityCounts.set(key, (identityCounts.get(key) || 0) + 1);
+    const findCurrentByIdentity = desired => {
+      if (desired?.system?.versionId) {
+        const row = byVersion.get(canonicalValue(desired.system.versionId));
+        if (row) return row;
       }
-      desiredRows.forEach((desired, index) => {
-        const expected = snapshot.rows[index];
-        const expectedIdentity = currentIdentityKey(expected);
-        const actualIdentity = excelIdentityKey(desired);
-        if (!expectedIdentity || !actualIdentity || expectedIdentity === actualIdentity) return;
-        if ((identityCounts.get(actualIdentity) || 0) > 1 && (identityCounts.get(expectedIdentity) || 0) === 0) positionalOverwriteTargets.set(desired, expected);
+      if (desired?.system?.rowCardId) {
+        const row = byCard.get(canonicalValue(desired.system.rowCardId));
+        if (row) return row;
+      }
+      return null;
+    };
+    for (const desired of desiredRows) {
+      const identity = excelIdentityKey(desired);
+      if (!identity) continue;
+      if (!identityGroups.has(identity)) identityGroups.set(identity, []);
+      identityGroups.get(identity).push(desired);
+    }
+    if (desiredRows.length === snapshot.rows.length) {
+      for (const desired of desiredRows) {
+        const identity = excelIdentityKey(desired);
+        if (identity) identityCounts.set(identity, (identityCounts.get(identity) || 0) + 1);
+      }
+      desiredRows.forEach((desired, index) => expectedCurrentByExcelRow.set(desired, snapshot.rows[index] || null));
+      for (const [sourceIdentity, group] of identityGroups.entries()) {
+        if (group.length === 1) { primaryExcelRowByIdentity.set(sourceIdentity, group[0]); continue; }
+        const current = findCurrentByIdentity(group[0]);
+        if (!current) { primaryExcelRowByIdentity.set(sourceIdentity, group[0]); continue; }
+        const positionalOriginal = group.find(row => {
+          const expected = expectedCurrentByExcelRow.get(row);
+          return expected && currentIdentityKey(expected) === sourceIdentity;
+        });
+        if (positionalOriginal) { primaryExcelRowByIdentity.set(sourceIdentity, positionalOriginal); continue; }
+        const currentFingerprint = canonicalValue(current.fingerprint || fingerprintFlat(current.flat || {}));
+        const exact = group.filter(row => canonicalValue(fingerprintFlat(row.flat || {})) === currentFingerprint);
+        if (exact.length) primaryExcelRowByIdentity.set(sourceIdentity, exact[0]);
+        else ambiguousDuplicateIdentities.add(sourceIdentity);
+      }
+      const missingCurrentRows = (snapshot.rows || []).filter(current => {
+        const identity = currentIdentityKey(current);
+        return Boolean(identity && (identityCounts.get(identity) || 0) === 0);
       });
+      const remainingMissing = new Map(missingCurrentRows.map(row => [currentIdentityKey(row), row]));
+      const extraRows = [];
+      for (const [sourceIdentity, group] of identityGroups.entries()) {
+        if (group.length < 2 || ambiguousDuplicateIdentities.has(sourceIdentity)) continue;
+        const primary = primaryExcelRowByIdentity.get(sourceIdentity);
+        if (!primary) continue;
+        for (const row of group) {
+          if (row !== primary) extraRows.push({ row, sourceIdentity, primary });
+        }
+      }
+      for (const extra of extraRows) {
+        const expectedTarget = expectedCurrentByExcelRow.get(extra.row);
+        const expectedTargetIdentity = currentIdentityKey(expectedTarget);
+        const expectedPrimary = expectedCurrentByExcelRow.get(extra.primary);
+        const primaryStayedInPlace = expectedPrimary && currentIdentityKey(expectedPrimary) === extra.sourceIdentity;
+        if (!primaryStayedInPlace || !remainingMissing.has(expectedTargetIdentity)) continue;
+        positionalOverwriteTargets.set(extra.row, expectedTarget);
+        remainingMissing.delete(expectedTargetIdentity);
+      }
+      const remainingExtras = extraRows.filter(extra => !positionalOverwriteTargets.has(extra.row));
+      if (remainingExtras.length === 1 && remainingMissing.size === 1) {
+        const [target] = remainingMissing.values();
+        positionalOverwriteTargets.set(remainingExtras[0].row, target);
+      }
     }
 
     for (const desired of desiredRows) {
