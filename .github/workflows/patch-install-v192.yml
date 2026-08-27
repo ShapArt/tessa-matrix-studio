@@ -28,13 +28,13 @@ jobs:
           from pathlib import Path
           import json
 
+          old_url = 'https://raw.githubusercontent.com/ShapArt/tessa-matrix-studio/main/tessa-matrix-studio.user.js'
+          new_url = 'https://cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js'
+
           script = Path('tessa-matrix-studio.user.js')
           s = script.read_text(encoding='utf-8')
           s = s.replace('// @version      1.9.1', '// @version      1.9.2', 1)
-          s = s.replace(
-              'https://raw.githubusercontent.com/ShapArt/tessa-matrix-studio/main/tessa-matrix-studio.user.js',
-              'https://cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js'
-          )
+          s = s.replace(old_url, new_url)
           script.write_text(s, encoding='utf-8')
 
           readme = Path('README.md')
@@ -46,9 +46,15 @@ jobs:
           data['version'] = '1.9.2'
           package.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
+          smoke = Path('tests/smoke.mjs')
+          t = smoke.read_text(encoding='utf-8')
+          t = t.replace("// @version      1.9.1", "// @version      1.9.2")
+          t = t.replace(old_url, new_url)
+          smoke.write_text(t, encoding='utf-8')
+
           changelog = Path('CHANGELOG.md')
           c = changelog.read_text(encoding='utf-8')
-          entry = '''# Changelog\n\n## 1.9.2 — 2026-08-27\n\n- `@updateURL` и `@downloadURL` переведены с `raw.githubusercontent.com` на jsDelivr, чтобы автообновление и повторная установка не зависели от GitHub Raw;\n- версия README и `package.json` синхронизирована с userscript.\n\n'''
+          entry = '''# Changelog\n\n## 1.9.2 — 2026-08-27\n\n- `@updateURL` и `@downloadURL` переведены с `raw.githubusercontent.com` на jsDelivr, чтобы автообновление и повторная установка не зависели от GitHub Raw;\n- версия README, `package.json` и regression tests синхронизирована с userscript.\n\n'''
           if c.startswith('# Changelog\n\n'):
               c = entry + c[len('# Changelog\n\n'):]
           else:
@@ -71,6 +77,6 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git rm .github/workflows/patch-install-v192.yml
-          git add tessa-matrix-studio.user.js README.md package.json CHANGELOG.md
+          git add tessa-matrix-studio.user.js README.md package.json CHANGELOG.md tests/smoke.mjs
           git commit -m 'Fix installation and update URLs for v1.9.2'
           git push
