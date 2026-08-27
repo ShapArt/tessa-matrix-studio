@@ -1,0 +1,63 @@
+name: Harden stale schema refresh copy
+
+on:
+  push:
+    branches:
+      - fix/schema-refresh-stale-v1.9.11
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/schema-refresh-stale-v1.9.11
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Treat duplicate stale identity as local operation
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = 'tessa-matrix-studio.user.js';
+          let text = fs.readFileSync(path, 'utf8');
+          const oldDefs = [
+            '      const sourceGroup = sourceIdentity ? (identityGroups.get(sourceIdentity) || []) : [];',
+            '      const primarySourceRow = sourceIdentity ? primaryExcelRowByIdentity.get(sourceIdentity) : null;',
+            '      const copiedFromExisting = Boolean(sourceGroup.length > 1 && primarySourceRow && primarySourceRow !== desired);',
+          ].join('\n');
+          const newDefs = [
+            '      const sourceGroup = sourceIdentity ? (identityGroups.get(sourceIdentity) || []) : [];',
+            '      // Повтор одной hidden identity в Excel означает локальное копирование.',
+            '      // Для stale source этого достаточно для конфликта, даже если primary',
+            '      // нельзя выбрать однозначно после внешнего изменения TESSA.',
+            '      const duplicatedSourceIdentity = sourceGroup.length > 1;',
+          ].join('\n');
+          const defsCount = text.split(oldDefs).length - 1;
+          if (defsCount !== 1) throw new Error(`stale source definitions: expected 1 match, got ${defsCount}`);
+          text = text.replace(oldDefs, newDefs);
+
+          const oldPolicy = "        const hasLocalOperation = desired.system.action !== 'keep' || positionalOverwriteTarget || copiedFromExisting || workbookChangedSinceExport;";
+          const newPolicy = "        const hasLocalOperation = desired.system.action !== 'keep' || positionalOverwriteTarget || duplicatedSourceIdentity || workbookChangedSinceExport;";
+          const policyCount = text.split(oldPolicy).length - 1;
+          if (policyCount !== 1) throw new Error(`stale source policy: expected 1 match, got ${policyCount}`);
+          text = text.replace(oldPolicy, newPolicy);
+          fs.writeFileSync(path, text, 'utf8');
+          NODE
+      - name: Verify full suite
+        run: npm test
+      - name: Commit hardening and remove helper
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/harden-schema-refresh-stale-copy.yml
+          git add tessa-matrix-studio.user.js tests/schema-refresh-stale.mjs
+          git commit -m 'Harden stale copied identity during schema refresh'
+          git push origin HEAD:fix/schema-refresh-stale-v1.9.11
