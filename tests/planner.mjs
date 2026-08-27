@@ -102,4 +102,39 @@ plan = E.buildPlan(removed, structure, snapshot);
 assert(plan.counts.noop === 1 && plan.counts.delete === 1 && plan.counts.update === 0 && plan.counts.add === 0 && plan.counts.skip === 0,
   `single delete mismatch: ${JSON.stringify(plan.counts)}`);
 
+// Сортировка Excel не должна ломать распознавание overwrite.
+// Сценарий: исходно A/B/C, пользователь сортирует строки как C/A/B,
+// затем копирует A поверх B и оставляет у копии исполнителя B.
+// Физическая позиция больше не соответствует snapshot-порядку, поэтому planner обязан
+// определить пропавшую identity B и обновить именно её, не создавая лишнюю строку.
+const sortedSnapshot = {
+  matrixId: 'qa-matrix-sorted',
+  templateId: 'qa-template',
+  rows: [
+    currentRow(0, 'card-a3', 'version-a3', 'org-a', 'Компания А', 'person-a', 'Иванов И.И.'),
+    currentRow(1, 'card-b3', 'version-b3', 'org-b', 'Компания Б', 'person-b', 'Петров П.П.'),
+    currentRow(2, 'card-c3', 'version-c3', 'org-c', 'Компания В', 'person-c', 'Сидоров С.С.'),
+  ],
+};
+const sortedInfo = { matrixId: sortedSnapshot.matrixId, TemplateID: sortedSnapshot.templateId, Name: 'QA Sorted Matrix' };
+const sortedCatalog = E.mergeSnapshotIntoDictionaryCatalog(null, structure, sortedSnapshot);
+const sortedBytes = await E.createRoundtripXlsxBytes(structure, sortedSnapshot, sortedInfo, sortedCatalog);
+const sortedBuffer = sortedBytes.buffer.slice(sortedBytes.byteOffset, sortedBytes.byteOffset + sortedBytes.byteLength);
+const sortedBaseline = await E.readXlsxArrayBuffer(sortedBuffer, 'qa-sorted-roundtrip.xlsx');
+const sortedOverwrite = cloneWorkbook(sortedBaseline);
+const valuesA = [...sortedBaseline.rows[0].values];
+const valuesB = [...sortedBaseline.rows[1].values];
+const valuesC = [...sortedBaseline.rows[2].values];
+sortedOverwrite.rows[0].values = valuesC;
+sortedOverwrite.rows[1].values = valuesA;
+sortedOverwrite.rows[2].values = [...valuesA];
+sortedOverwrite.rows[2].values[signerIndex] = valuesB[signerIndex];
+sortedOverwrite.rows[2].values[signerIdIndex] = valuesB[signerIdIndex];
+plan = E.buildPlan(sortedOverwrite, structure, sortedSnapshot);
+const sortedReplacement = plan.actions.find(action => action.type === 'update');
+assert(plan.counts.noop === 2 && plan.counts.update === 1 && plan.counts.add === 0 && plan.counts.delete === 0 && plan.counts.skip === 0,
+  `sorted overwrite mismatch: ${JSON.stringify(plan.counts)} warnings=${JSON.stringify(plan.warnings)} skipped=${JSON.stringify(plan.skippedRows)}`);
+assert(sortedReplacement?.currentRow?.index === 1,
+  `sorted overwrite must update missing identity B, got ${JSON.stringify(sortedReplacement?.currentRow)}`);
+
 console.log('TESSA Matrix Studio planner tests: OK');
