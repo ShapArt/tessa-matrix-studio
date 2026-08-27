@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.10
+// @version      1.9.11
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.10',
+    version: '1.9.11',
     plan: null,
     workbook: null,
     snapshot: null,
@@ -1763,6 +1763,39 @@
       if (positionalOverwriteTarget && desired.system.action === 'delete') {
         throw new Error(`Строка Excel ${desired.excelRow}: операция неоднозначна — строка одновременно распознана как ЗАМЕНИТЬ и помечена УДАЛИТЬ. Нельзя безопасно определить цель удаления. Выполните удаление отдельно в свежей выгрузке.`);
       }
+
+      // Актуализация схемы читает свежий snapshot TESSA, поэтому нельзя молча
+      // накладывать на него значения из Excel, выгруженного до чужих изменений.
+      // Иначе старые значения получат свежий baseFingerprint и stale-защита Apply
+      // больше не сможет распознать конфликт.
+      const sourceIdentity = excelIdentityKey(desired);
+      const sourceGroup = sourceIdentity ? (identityGroups.get(sourceIdentity) || []) : [];
+      // Повтор одной hidden identity в Excel означает локальное копирование.
+      // Для stale source этого достаточно для конфликта, даже если primary
+      // нельзя выбрать однозначно после внешнего изменения TESSA.
+      const duplicatedSourceIdentity = sourceGroup.length > 1;
+      const sourceCurrentRow = findCurrentByIdentity(desired);
+      const exportedFingerprint = canonicalValue(desired.system.baseFingerprint || "");
+      const freshFingerprint = canonicalValue(sourceCurrentRow?.fingerprint || "");
+      const workbookFingerprint = canonicalValue(desired.fingerprint || fingerprintFlat(desired.flat || {}));
+      const sourceChangedSinceExport = Boolean(sourceCurrentRow && exportedFingerprint && freshFingerprint && exportedFingerprint !== freshFingerprint);
+      if (sourceChangedSinceExport) {
+        const workbookChangedSinceExport = Boolean(workbookFingerprint && workbookFingerprint !== exportedFingerprint);
+        const hasLocalOperation = desired.system.action !== 'keep' || positionalOverwriteTarget || duplicatedSourceIdentity || workbookChangedSinceExport;
+        if (hasLocalOperation) {
+          throw new Error(`Строка Excel ${desired.excelRow}: конфликт актуализации — исходная строка изменилась в TESSA после выгрузки, и в Excel тоже есть изменение/копия/операция. Скачайте свежую выгрузку и перенесите правку повторно.`);
+        }
+        // Excel-строка не менялась: сохраняем authoritative свежие значения TESSA,
+        // но не теряем пользовательские несистемные колонки исходного файла.
+        const sourceWorkbookRow = workbookRowByExcelRow.get(desired.excelRow);
+        const customValues = customColumns.map(column => sourceWorkbookRow?.values?.[column.sourceIndex] ?? "");
+        const freshRow = { ...clonePlain(sourceCurrentRow), action: "", customValues };
+        const freshIdentityKey = canonicalValue(sourceCurrentRow.versionId || sourceCurrentRow.rowCardId);
+        if (freshIdentityKey) usedCurrent.add(freshIdentityKey);
+        mergedByCard.set(canonicalValue(sourceCurrentRow.rowCardId), freshRow);
+        continue;
+      }
+
       let current = positionalOverwriteTarget || (desired.system.versionId ? byVersion.get(canonicalValue(desired.system.versionId)) : null);
       if (!current && desired.system.rowCardId) current = byCard.get(canonicalValue(desired.system.rowCardId));
       const identityKey = current ? canonicalValue(current.versionId || current.rowCardId) : '';
