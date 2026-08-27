@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.5
+// @version      1.9.6
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.5',
+    version: '1.9.6',
     plan: null,
     workbook: null,
     snapshot: null,
@@ -3387,31 +3387,18 @@
       identityGroups.get(sourceIdentity).push(row);
     }
 
-    // Excel позволяет вставить скопированную строку ПОВЕРХ другой строки.
-    // При обычном Ctrl+C/Ctrl+V копируются и скрытые MatrixRowID/MatrixVersionID, поэтому
-    // identity источника дублируется, а identity строки-цели исчезает. Если количество строк
-    // не менялось и источник по-прежнему присутствует в своей исходной позиции, физическая
-    // позиция Excel однозначно задаёт цель. В таком случае это не ADD+DELETE, а UPDATE цели.
+    // Для overwrite сначала считаем identity, а не доверяем физическому порядку Excel.
+    // Сортировка строк не должна менять цель операции. Позиция используется только как
+    // дополнительное доказательство, когда исходная строка осталась на своей позиции.
     const expectedCurrentByExcelRow = new Map();
-    const positionalOverwriteTargets = new Map();
+    const identityCounts = new Map();
     if (desired.length === snapshot.rows.length) {
-      const identityCounts = new Map();
       for (const row of desired) {
         const key = excelIdentityKey(row);
         if (key) identityCounts.set(key, (identityCounts.get(key) || 0) + 1);
       }
       desired.forEach((row, index) => expectedCurrentByExcelRow.set(row, snapshot.rows[index] || null));
-      for (const row of desired) {
-        const expected = expectedCurrentByExcelRow.get(row);
-        const expectedIdentity = currentIdentityKey(expected);
-        const actualIdentity = excelIdentityKey(row);
-        if (!expected || !expectedIdentity || !actualIdentity || expectedIdentity === actualIdentity) continue;
-        const actualRepeated = (identityCounts.get(actualIdentity) || 0) > 1;
-        const expectedMissing = (identityCounts.get(expectedIdentity) || 0) === 0;
-        if (actualRepeated && expectedMissing) positionalOverwriteTargets.set(row, expected);
-      }
     }
-
     const primaryExcelRowByIdentity = new Map();
     const ambiguousDuplicateIdentities = new Set();
     for (const [sourceIdentity, group] of identityGroups.entries()) {
@@ -3429,6 +3416,45 @@
       const exact = scored.filter(item => item.changes === 0);
       if (exact.length) primaryExcelRowByIdentity.set(sourceIdentity, exact[0].row);
       else ambiguousDuplicateIdentities.add(sourceIdentity);
+    }
+
+    // Копирование поверх существующей строки даёт одну дополнительную строку с identity
+    // источника и одну пропавшую identity цели. Сначала используем позицию только там,
+    // где оригинал источника всё ещё стоит на своей исходной позиции. Если после сортировки
+    // остаётся ровно одна лишняя копия и одна пропавшая identity, пара однозначна без позиции.
+    const positionalOverwriteTargets = new Map();
+    const overwriteMatchedBy = new Map();
+    if (desired.length === snapshot.rows.length) {
+      const missingCurrentRows = (snapshot.rows || []).filter(currentRow => {
+        const identity = currentIdentityKey(currentRow);
+        return Boolean(identity && (identityCounts.get(identity) || 0) === 0);
+      });
+      const remainingMissing = new Map(missingCurrentRows.map(row => [currentIdentityKey(row), row]));
+      const extraRows = [];
+      for (const [sourceIdentity, group] of identityGroups.entries()) {
+        if (group.length < 2 || ambiguousDuplicateIdentities.has(sourceIdentity)) continue;
+        const primary = primaryExcelRowByIdentity.get(sourceIdentity);
+        if (!primary) continue;
+        for (const row of group) {
+          if (row !== primary) extraRows.push({ row, sourceIdentity, primary });
+        }
+      }
+      for (const extra of extraRows) {
+        const expectedTarget = expectedCurrentByExcelRow.get(extra.row);
+        const expectedTargetIdentity = currentIdentityKey(expectedTarget);
+        const expectedPrimary = expectedCurrentByExcelRow.get(extra.primary);
+        const primaryStayedInPlace = expectedPrimary && currentIdentityKey(expectedPrimary) === extra.sourceIdentity;
+        if (!primaryStayedInPlace || !remainingMissing.has(expectedTargetIdentity)) continue;
+        positionalOverwriteTargets.set(extra.row, expectedTarget);
+        overwriteMatchedBy.set(extra.row, 'position-overwrite');
+        remainingMissing.delete(expectedTargetIdentity);
+      }
+      const remainingExtras = extraRows.filter(extra => !positionalOverwriteTargets.has(extra.row));
+      if (remainingExtras.length === 1 && remainingMissing.size === 1) {
+        const [target] = remainingMissing.values();
+        positionalOverwriteTargets.set(remainingExtras[0].row, target);
+        overwriteMatchedBy.set(remainingExtras[0].row, 'missing-identity-overwrite');
+      }
     }
 
     for (const excelRow of desired) {
@@ -3480,7 +3506,7 @@
           excelRow,
           currentRow: positionalOverwriteTarget,
           changes,
-          match: { matchedBy: 'position-overwrite', lowConfidence: false, sourceIdentity },
+          match: { matchedBy: overwriteMatchedBy.get(excelRow) || 'position-overwrite', lowConfidence: false, sourceIdentity },
           expectedFingerprint: positionalOverwriteTarget.fingerprint,
         });
         warnings.push(`Excel ${excelRow.excelRow}: обнаружена замена существующей строки. Будет обновлена строка TESSA ${positionalOverwriteTarget.index + 1}, а не создана новая.`);
