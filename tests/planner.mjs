@@ -83,6 +83,21 @@ assert(plan.counts.noop === 1 && plan.counts.update === 1 && plan.counts.add ===
 assert(replacement?.currentRow?.index === 1 && replacement?.match?.matchedBy === 'position-overwrite',
   'overwrite must update the target identity by position');
 
+// Если источник копии изменился в TESSA после выгрузки, overwrite нельзя применять из старых данных.
+// Обычная copy-to-new-row уже защищена baseFingerprint; ЗАМЕНИТЬ должен соблюдать то же правило.
+const staleSourceSnapshot = {
+  ...snapshot,
+  rows: [
+    currentRow(0, 'card-a', 'version-a', 'org-a', 'Компания А', 'person-z', 'Сидоров С.С.'),
+    snapshot.rows[1],
+  ],
+};
+plan = E.buildPlan(overwrite, structure, staleSourceSnapshot);
+assert(plan.counts.update === 0 && plan.counts.add === 0 && plan.counts.delete === 0,
+  `stale overwrite source must not produce mutation: ${JSON.stringify(plan.counts)} skipped=${JSON.stringify(plan.skippedRows)}`);
+assert(plan.skippedRows.some(item => /исходн.*строк|устар|изменил/i.test(item.reason)),
+  `stale overwrite source reason is missing: ${JSON.stringify(plan.skippedRows)}`);
+
 // Та же копия в новой строке должна стать ADD.
 const add = cloneWorkbook(baseline);
 const newRow = { excelRow: baseline.rows.at(-1).excelRow + 1, values: [...baseline.rows[0].values] };

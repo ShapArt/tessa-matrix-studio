@@ -1,6 +1,6 @@
 {
   "name": "tessa-matrix-studio",
-  "version": "1.9.7",
+  "version": "1.9.8",
   "private": true,
   "description": "TESSA Matrix Studio userscript verification commands",
   "scripts": {
