@@ -2,7 +2,7 @@
 
 ## 1.9.4 — 2026-08-27
 
-- security/packaging release без изменений бизнес-логики TESSA Matrix Studio;
+- security/packaging release без изменений бизнес-логики и пользовательского поведения TESSA Matrix Studio;
 - release pipeline публикует `SHA256SUMS.txt` для `.user.js` и ZIP;
 - release assets получают GitHub/Sigstore provenance-аттестацию после успешных Tests и CodeQL;
 - релиз собирается из того же commit SHA, который прошёл `Quality & Security`.
