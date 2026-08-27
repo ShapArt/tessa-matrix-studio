@@ -1,4 +1,4 @@
-name: Fix schema refresh sorted overwrite
+name: Finalize v1.9.7 schema refresh fix
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  patch:
+  finalize:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     steps:
@@ -22,109 +22,56 @@ jobs:
         with:
           node-version: 24
 
-      - name: Align schema refresh overwrite mapping
+      - name: Bump release metadata to v1.9.7
         shell: bash
         run: |
           node <<'NODE'
           const fs = require('node:fs');
-          const path = 'tessa-matrix-studio.user.js';
-          let text = fs.readFileSync(path, 'utf8');
 
-          const fnStart = text.indexOf('  function mergeWorkbookIntoCurrentSnapshot(workbook, structure, snapshot) {');
-          if (fnStart < 0) throw new Error('mergeWorkbookIntoCurrentSnapshot not found');
-          const blockStart = text.indexOf('    const positionalOverwriteTargets = new Map();', fnStart);
-          const blockEnd = text.indexOf('\n\n    for (const desired of desiredRows) {', blockStart);
-          if (blockStart < 0 || blockEnd < 0) throw new Error('schema refresh overwrite block not found');
+          function read(path) { return fs.readFileSync(path, 'utf8'); }
+          function write(path, text) { fs.writeFileSync(path, text, 'utf8'); }
+          function replaceExact(path, from, to) {
+            const text = read(path);
+            const count = text.split(from).length - 1;
+            if (count !== 1) throw new Error(`${path}: expected one ${JSON.stringify(from)}, got ${count}`);
+            write(path, text.replace(from, to));
+          }
 
-          const replacement = [
-            '    // Schema refresh должен сопоставлять overwrite по тем же identity-правилам,',
-            '    // что и основной planner. Физический порядок Excel после сортировки не является identity.',
-            '    const expectedCurrentByExcelRow = new Map();',
-            '    const identityCounts = new Map();',
-            '    const identityGroups = new Map();',
-            '    const primaryExcelRowByIdentity = new Map();',
-            '    const ambiguousDuplicateIdentities = new Set();',
-            '    const positionalOverwriteTargets = new Map();',
-            '    const findCurrentByIdentity = desired => {',
-            '      if (desired?.system?.versionId) {',
-            '        const row = byVersion.get(canonicalValue(desired.system.versionId));',
-            '        if (row) return row;',
-            '      }',
-            '      if (desired?.system?.rowCardId) {',
-            '        const row = byCard.get(canonicalValue(desired.system.rowCardId));',
-            '        if (row) return row;',
-            '      }',
-            '      return null;',
-            '    };',
-            '    for (const desired of desiredRows) {',
-            '      const identity = excelIdentityKey(desired);',
-            '      if (!identity) continue;',
-            '      if (!identityGroups.has(identity)) identityGroups.set(identity, []);',
-            '      identityGroups.get(identity).push(desired);',
-            '    }',
-            '    if (desiredRows.length === snapshot.rows.length) {',
-            '      for (const desired of desiredRows) {',
-            '        const identity = excelIdentityKey(desired);',
-            '        if (identity) identityCounts.set(identity, (identityCounts.get(identity) || 0) + 1);',
-            '      }',
-            '      desiredRows.forEach((desired, index) => expectedCurrentByExcelRow.set(desired, snapshot.rows[index] || null));',
-            '      for (const [sourceIdentity, group] of identityGroups.entries()) {',
-            '        if (group.length === 1) { primaryExcelRowByIdentity.set(sourceIdentity, group[0]); continue; }',
-            '        const current = findCurrentByIdentity(group[0]);',
-            '        if (!current) { primaryExcelRowByIdentity.set(sourceIdentity, group[0]); continue; }',
-            '        const positionalOriginal = group.find(row => {',
-            '          const expected = expectedCurrentByExcelRow.get(row);',
-            '          return expected && currentIdentityKey(expected) === sourceIdentity;',
-            '        });',
-            '        if (positionalOriginal) { primaryExcelRowByIdentity.set(sourceIdentity, positionalOriginal); continue; }',
-            '        const currentFingerprint = canonicalValue(current.fingerprint || fingerprintFlat(current.flat || {}));',
-            '        const exact = group.filter(row => canonicalValue(fingerprintFlat(row.flat || {})) === currentFingerprint);',
-            '        if (exact.length) primaryExcelRowByIdentity.set(sourceIdentity, exact[0]);',
-            '        else ambiguousDuplicateIdentities.add(sourceIdentity);',
-            '      }',
-            '      const missingCurrentRows = (snapshot.rows || []).filter(current => {',
-            '        const identity = currentIdentityKey(current);',
-            '        return Boolean(identity && (identityCounts.get(identity) || 0) === 0);',
-            '      });',
-            '      const remainingMissing = new Map(missingCurrentRows.map(row => [currentIdentityKey(row), row]));',
-            '      const extraRows = [];',
-            '      for (const [sourceIdentity, group] of identityGroups.entries()) {',
-            '        if (group.length < 2 || ambiguousDuplicateIdentities.has(sourceIdentity)) continue;',
-            '        const primary = primaryExcelRowByIdentity.get(sourceIdentity);',
-            '        if (!primary) continue;',
-            '        for (const row of group) {',
-            '          if (row !== primary) extraRows.push({ row, sourceIdentity, primary });',
-            '        }',
-            '      }',
-            '      for (const extra of extraRows) {',
-            '        const expectedTarget = expectedCurrentByExcelRow.get(extra.row);',
-            '        const expectedTargetIdentity = currentIdentityKey(expectedTarget);',
-            '        const expectedPrimary = expectedCurrentByExcelRow.get(extra.primary);',
-            '        const primaryStayedInPlace = expectedPrimary && currentIdentityKey(expectedPrimary) === extra.sourceIdentity;',
-            '        if (!primaryStayedInPlace || !remainingMissing.has(expectedTargetIdentity)) continue;',
-            '        positionalOverwriteTargets.set(extra.row, expectedTarget);',
-            '        remainingMissing.delete(expectedTargetIdentity);',
-            '      }',
-            '      const remainingExtras = extraRows.filter(extra => !positionalOverwriteTargets.has(extra.row));',
-            '      if (remainingExtras.length === 1 && remainingMissing.size === 1) {',
-            '        const [target] = remainingMissing.values();',
-            '        positionalOverwriteTargets.set(remainingExtras[0].row, target);',
-            '      }',
-            '    }',
+          replaceExact('tessa-matrix-studio.user.js', '// @version      1.9.6', '// @version      1.9.7');
+          replaceExact('tessa-matrix-studio.user.js', "version: '1.9.6',", "version: '1.9.7',");
+          replaceExact('package.json', '"version": "1.9.6"', '"version": "1.9.7"');
+          replaceExact('tests/smoke.mjs', "assert(code.includes('// @version      1.9.6'), 'wrong userscript version');", "assert(code.includes('// @version      1.9.7'), 'wrong userscript version');");
+          replaceExact('.github/ISSUE_TEMPLATE/bug_report.yml', 'placeholder: 1.9.6', 'placeholder: 1.9.7');
+
+          const readme = read('README.md');
+          const count = readme.split('1.9.6').length - 1;
+          if (count < 3) throw new Error(`README version references unexpected: ${count}`);
+          write('README.md', readme.replaceAll('1.9.6', '1.9.7'));
+
+          const changelog = read('CHANGELOG.md');
+          const marker = '# Changelog\n\n';
+          if (!changelog.startsWith(marker)) throw new Error('CHANGELOG header mismatch');
+          if (changelog.includes('## 1.9.7 — 2026-08-27')) throw new Error('v1.9.7 changelog already exists');
+          const entry = [
+            '## 1.9.7 — 2026-08-27',
+            '',
+            '- исправлено обновление Excel-схемы после сортировки и overwrite существующей строки;',
+            '- `mergeWorkbookIntoCurrentSnapshot()` теперь сопоставляет повторяющуюся identity источника с пропавшей identity цели по тем же правилам, что основной planner;',
+            '- regression подтверждает, что schema refresh сохраняет исходные A/C и переносит копию только в целевую B.',
+            '',
           ].join('\n');
-
-          text = text.slice(0, blockStart) + replacement + text.slice(blockEnd);
-          fs.writeFileSync(path, text, 'utf8');
+          write('CHANGELOG.md', marker + entry + changelog.slice(marker.length));
           NODE
 
-      - name: Verify full regression suite
+      - name: Verify full suite
         run: npm test
 
-      - name: Commit fix
+      - name: Commit release-ready fix and remove helper
         shell: bash
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add tessa-matrix-studio.user.js
-          git commit -m 'Fix schema refresh sorted overwrite mapping'
+          git rm .github/workflows/fix-schema-refresh-sorted.yml
+          git add tessa-matrix-studio.user.js package.json README.md CHANGELOG.md tests/smoke.mjs .github/ISSUE_TEMPLATE/bug_report.yml
+          git commit -m 'v1.9.7 — finalize schema refresh fix'
           git push origin HEAD:fix/schema-refresh-sorted-overwrite-v1.9.7
