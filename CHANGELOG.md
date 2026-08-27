@@ -5,6 +5,7 @@
 - исправлена рассинхронизация версии: runtime `APP.version` теперь совпадает с `@version` userscript;
 - корректная версия отображается в панели Studio, Excel-инструкции и автоматическом error-report;
 - smoke regression автоматически проверяет, что внутренняя версия больше не может отстать от metadata.
+
 ## 1.9.4 — 2026-08-27
 
 - security/packaging release без изменений бизнес-логики и пользовательского поведения TESSA Matrix Studio;
