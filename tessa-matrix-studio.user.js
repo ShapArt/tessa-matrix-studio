@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.2
+// @version      1.9.3
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -4077,7 +4077,7 @@
     const raw = normalizeSpace(error?.message || error || 'Неизвестная ошибка');
     const text = canonicalValue(raw);
     if (text.includes('дублирующ') || text.includes('duplicate')) return 'TESSA обнаружила дублирующую строку. Проверьте одинаковые строки в Excel: комбинация критериев и исполнителей должна быть уникальной.';
-    if (text.includes('access') || text.includes('permission') || text.includes('доступ') || text.includes('прав')) return 'Недостаточно прав для изменения этой матрицы. Откройте черновик под пользователем с правами редактирования.';
+    if (text.includes('access denied') || text.includes('permission') || text.includes('forbidden') || text.includes('недостаточно прав') || text.includes('нет прав') || text.includes('прав доступа') || text.includes('доступ запрещ')) return 'Недостаточно прав для изменения этой матрицы. Откройте черновик под пользователем с правами редактирования.';
     if (text.includes('lock') || text.includes('заблок')) return 'Матрица занята или не переведена в режим редактирования. Обновите карточку, войдите в режим «Редактировать и заблокировать для других» и повторите проверку.';
     if (text.includes('изменилась в tessa после предпросмотра') || text.includes('исчезла после предпросмотра')) return 'Матрица изменилась после проверки Excel. Нажмите «Проверить изменения» ещё раз, чтобы работать с актуальной версией.';
     return raw;
