@@ -53,6 +53,7 @@ s = s.replace(f'**v{old} · Автор: Шаповалов Артём**', f'**v{
 s = s.replace(f'версии **{old}**', f'версии **{new}**')
 s = s.replace(f'- **Версия:** `{old}`', f'- **Версия:** `{new}`')
 s = s.replace(f'Текущая версия: **{old}**', f'Текущая версия: **{new}**')
+s = s.replace(f'Текущая версия: **{new}**  \n', f'Текущая версия: **{new}**\n')
 s = s.replace(
     '### Если корпоративная сеть блокирует jsDelivr\n\n1. Откройте [последний GitHub Release](https://github.com/ShapArt/tessa-matrix-studio/releases/latest).',
     '### Если GitHub Release скачался как файл, а Tampermonkey не открыл установку\n\n1. Откройте [последний GitHub Release](https://github.com/ShapArt/tessa-matrix-studio/releases/latest).'
