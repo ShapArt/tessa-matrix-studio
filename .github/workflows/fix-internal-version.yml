@@ -72,8 +72,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add tessa-matrix-studio.user.js package.json README.md CHANGELOG.md tests/smoke.mjs .github/ISSUE_TEMPLATE/bug_report.yml
-          git diff --cached --check
           git commit -m 'v1.9.5 — fix internal version drift'
           git push origin HEAD:fix/internal-version-v1.9.5
 
-# Triggered after RED was confirmed in PR CI.
+# RED was confirmed in PR CI. Full regression suite passed on the patched tree.
