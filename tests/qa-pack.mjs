@@ -13,6 +13,8 @@ vm.runInThisContext(code, { filename: 'tessa-matrix-studio.user.js' });
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 const O = E.constants.OPERAND;
 assert(typeof E.buildQaPackVariants === 'function', 'buildQaPackVariants is missing');
+assert(code.includes('id="tms-download-qa"'), 'QA pack download button is missing');
+assert(code.includes('downloadQaPack'), 'QA pack download handler is missing');
 
 const structure = {
   templateId: 'qa-pack-template',
@@ -83,7 +85,7 @@ assert(pack && Array.isArray(pack.variants), 'QA pack variants missing');
 assert(Array.isArray(pack.checklist) && pack.checklist.length >= 10, 'QA checklist is too small');
 const byScenario = new Map(pack.variants.map(item => [item.scenario, item]));
 const required = [
-  'noop', 'valid_patch', 'multi_patch', 'valid_add', 'valid_replace', 'valid_delete',
+  'smoke_preview', 'noop', 'valid_patch', 'multi_patch', 'valid_add', 'valid_replace', 'valid_delete',
   'invalid_clear_row', 'invalid_dictionary', 'invalid_hidden_identity', 'invalid_hidden_fingerprint',
   'ambiguous_copy', 'schema_refresh_delete', 'wrong_matrix', 'wrong_template',
 ];
@@ -105,8 +107,13 @@ for (const scenario of required.filter(x => !['wrong_matrix', 'wrong_template'].
   assert(wb.roundtrip.templateId === snapshot.templateId, `${scenario}: TemplateID drifted`);
 }
 
-let wb = await parseScenario('noop');
+let wb = await parseScenario('smoke_preview');
 let plan = E.buildPlan(wb, structure, snapshot);
+assert(plan.counts.update >= 1 && plan.counts.add >= 1 && plan.counts.skip >= 1 && plan.counts.delete === 0,
+  `SMOKE PREVIEW mismatch: ${JSON.stringify(plan.counts)} skipped=${JSON.stringify(plan.skippedRows)}`);
+
+wb = await parseScenario('noop');
+plan = E.buildPlan(wb, structure, snapshot);
 assert(plan.counts.update === 0 && plan.counts.add === 0 && plan.counts.delete === 0 && plan.counts.skip === 0,
   `NOOP mismatch: ${JSON.stringify(plan.counts)}`);
 
