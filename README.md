@@ -6,13 +6,13 @@
 
 Выгрузка матрицы в Excel → массовая правка → проверка изменений → безопасное применение в TESSA.
 
-[![Version](https://img.shields.io/badge/version-1.9.1-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.9.2-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-userscript-24292F?style=flat-square&logo=tampermonkey)](https://www.tampermonkey.net/)
 
 ### [УСТАНОВИТЬ](https://cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js) · [СКАЧАТЬ РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [ОТКРЫТЬ КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [СООБЩИТЬ ОБ ОШИБКЕ](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.9.1 · Автор: Шаповалов Артём**
+**v1.9.2 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -27,7 +27,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 
 <div align="center">
   <img src="docs/assets/studio-panel.webp" alt="Реальная панель TESSA Matrix Studio" width="520">
-  <br><sub>Реальный интерфейс TESSA Matrix Studio v1.9.1</sub>
+  <br><sub>Реальный интерфейс TESSA Matrix Studio v1.9.2</sub>
 </div>
 
 ### Четыре шага
@@ -92,7 +92,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Tampermonkey откроет карточку установки. Перед подтверждением можно проверить:
 
 - **Название:** `TESSA Matrix Studio — Черкизово`
-- **Версия:** `1.9.1`
+- **Версия:** `1.9.2`
 - **Автор:** `Шаповалов Артём`
 - **Разрешения:** `@grant none`
 - **Область запуска:** только домены TESSA Черкизово
@@ -277,7 +277,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.9.1**  
+Текущая версия: **1.9.2**  
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)

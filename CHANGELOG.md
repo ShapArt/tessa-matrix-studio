@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.9.2 — 2026-08-27
+
+- `@updateURL` и `@downloadURL` переведены с `raw.githubusercontent.com` на jsDelivr, чтобы автообновление и повторная установка не зависели от GitHub Raw;
+- версия README, `package.json` и regression tests синхронизирована с userscript.
+
 ## 1.9.1 — 2026-08-26
 
 Пользовательский релиз TESSA Matrix Studio.

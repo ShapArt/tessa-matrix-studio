@@ -9,10 +9,10 @@ const assert = (condition, message) => {
 };
 
 // Metadata checks protect the public installation/update path.
-assert(code.includes('// @version      1.9.1'), 'wrong userscript version');
+assert(code.includes('// @version      1.9.2'), 'wrong userscript version');
 assert(code.includes('// @author       Шаповалов Артём'), 'wrong author');
 assert(code.includes('// @match        https://tessa.cherkizovsky.net/*'), 'main TESSA domain is missing');
-assert(code.includes('https://raw.githubusercontent.com/ShapArt/tessa-matrix-studio/main/tessa-matrix-studio.user.js'), 'update/download URL is wrong');
+assert(code.includes('https://cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js'), 'update/download URL is wrong');
 
 // Load in test mode: bootstrap must not require a live TESSA page.
 globalThis.window = globalThis;
