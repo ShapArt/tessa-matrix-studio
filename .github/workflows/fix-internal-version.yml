@@ -1,0 +1,77 @@
+name: Fix internal version v1.9.5
+
+on:
+  push:
+    branches:
+      - fix/internal-version-v1.9.5
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/internal-version-v1.9.5
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Apply minimal v1.9.5 version fix
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          function read(path) { return fs.readFileSync(path, 'utf8'); }
+          function write(path, text) { fs.writeFileSync(path, text, 'utf8'); }
+          function replaceExact(path, from, to) {
+            const text = read(path);
+            const count = text.split(from).length - 1;
+            if (count !== 1) throw new Error(`${path}: expected exactly one occurrence of ${JSON.stringify(from)}, got ${count}`);
+            write(path, text.replace(from, to));
+          }
+
+          replaceExact('tessa-matrix-studio.user.js', '// @version      1.9.4', '// @version      1.9.5');
+          replaceExact('tessa-matrix-studio.user.js', "version: '1.9.1',", "version: '1.9.5',");
+          replaceExact('package.json', '"version": "1.9.4"', '"version": "1.9.5"');
+          replaceExact('tests/smoke.mjs', "assert(code.includes('// @version      1.9.4'), 'wrong userscript version');", "assert(code.includes('// @version      1.9.5'), 'wrong userscript version');");
+          replaceExact('.github/ISSUE_TEMPLATE/bug_report.yml', 'placeholder: 1.9.4', 'placeholder: 1.9.5');
+
+          const readme = read('README.md');
+          const readmeOccurrences = readme.split('1.9.4').length - 1;
+          if (readmeOccurrences < 3) throw new Error(`README.md: expected version references for 1.9.4, got ${readmeOccurrences}`);
+          write('README.md', readme.replaceAll('1.9.4', '1.9.5'));
+
+          const changelog = read('CHANGELOG.md');
+          const marker = '# Changelog\n\n';
+          if (!changelog.startsWith(marker)) throw new Error('CHANGELOG.md: unexpected header');
+          if (changelog.includes('## 1.9.5 — 2026-08-27')) throw new Error('CHANGELOG.md: v1.9.5 entry already exists');
+          const entry = [
+            '## 1.9.5 — 2026-08-27',
+            '',
+            '- исправлена рассинхронизация версии: runtime `APP.version` теперь совпадает с `@version` userscript;',
+            '- корректная версия отображается в панели Studio, Excel-инструкции и автоматическом error-report;',
+            '- smoke regression автоматически проверяет, что внутренняя версия больше не может отстать от metadata.',
+            '',
+          ].join('\n');
+          write('CHANGELOG.md', marker + entry + changelog.slice(marker.length));
+          NODE
+
+      - name: Verify full regression suite
+        run: npm test
+
+      - name: Commit fix
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tessa-matrix-studio.user.js package.json README.md CHANGELOG.md tests/smoke.mjs .github/ISSUE_TEMPLATE/bug_report.yml
+          git diff --cached --check
+          git commit -m 'v1.9.5 — fix internal version drift'
+          git push origin HEAD:fix/internal-version-v1.9.5
