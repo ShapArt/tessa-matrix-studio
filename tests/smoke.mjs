@@ -14,6 +14,11 @@ assert(code.includes('// @author       Шаповалов Артём'), 'wrong a
 assert(code.includes('// @match        https://tessa.cherkizovsky.net/*'), 'main TESSA domain is missing');
 assert(code.includes('https://cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js'), 'update/download URL is wrong');
 
+// Internal runtime diagnostics must report the same version as userscript metadata.
+const metadataVersion = code.match(/^\/\/ @version\s+([^\s]+)$/m)?.[1];
+assert(metadataVersion, 'userscript @version metadata is missing');
+assert(code.includes(`version: '${metadataVersion}',`), `APP.version is out of sync with userscript metadata ${metadataVersion}`);
+
 // Load in test mode: bootstrap must not require a live TESSA page.
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
