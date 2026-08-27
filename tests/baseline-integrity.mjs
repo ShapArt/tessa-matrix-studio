@@ -34,7 +34,7 @@ const catalog = E.mergeSnapshotIntoDictionaryCatalog(null, structure, snapshot);
 const bytes = await E.createRoundtripXlsxBytes(structure, snapshot, info, catalog);
 const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 const workbook = await E.readXlsxArrayBuffer(buffer, 'qa-integrity.xlsx');
-const broken = { ...workbook, rows: workbook.rows.map(r => ({ excelRow: r.excelRow, values: [...r.values] })) };
+const cloneWorkbook = source => ({ ...source, rows: source.rows.map(r => ({ excelRow: r.excelRow, values: [...r.values] })) });
 const rowCardCol = workbook.schemaTokens.indexOf('system:rowCardId');
 const versionCol = workbook.schemaTokens.indexOf('system:versionId');
 const fpCol = workbook.schemaTokens.indexOf('system:baseFingerprint');
@@ -42,22 +42,38 @@ assert(rowCardCol >= 0 && versionCol >= 0 && fpCol >= 0, 'system identity column
 
 // Пользователь/Excel случайно уничтожил hidden identity одной существующей строки,
 // но сама строка и её видимые данные остались. Это НЕ новая строка и НЕ DELETE+ADD.
+const broken = cloneWorkbook(workbook);
 broken.rows[1].values[rowCardCol] = '';
 broken.rows[1].values[versionCol] = '';
 broken.rows[1].values[fpCol] = '';
 
-const plan = E.buildPlan(broken, structure, snapshot);
+let plan = E.buildPlan(broken, structure, snapshot);
 assert(plan.counts.add === 0 && plan.counts.delete === 0 && plan.counts.update === 0,
   `lost hidden identity must never become mutation: ${JSON.stringify(plan.counts)} skipped=${JSON.stringify(plan.skippedRows)}`);
 assert(plan.skippedRows.some(item => /скрыт|identity|baseline|id|идентифик/i.test(item.reason)),
   `lost hidden identity must be explained explicitly: ${JSON.stringify(plan.skippedRows)}`);
-assert(plan.safety?.blocked === true,
-  `lost hidden identity must block Apply: ${JSON.stringify(plan.safety)}`);
+assert(plan.warnings.some(item => /автоматическ.*удален|сопостав/i.test(item)),
+  `lost hidden identity must disable automatic delete: ${JSON.stringify(plan.warnings)}`);
 
 let refreshError = null;
 try { E.mergeWorkbookIntoCurrentSnapshot(broken, structure, snapshot); }
 catch (error) { refreshError = error; }
 assert(refreshError && /скрыт|identity|baseline|id|конфликт/i.test(String(refreshError.message || refreshError)),
   `schema refresh must reject lost hidden identity: ${refreshError?.message || 'no error'}`);
+
+// Даже если RowID/VersionID сохранились, удаление одного BaseFingerprint не должно
+// отключать stale-защиту: V6 ledger знает исходный fingerprint отдельно от основной строки.
+const brokenFingerprint = cloneWorkbook(workbook);
+brokenFingerprint.rows[1].values[fpCol] = '';
+plan = E.buildPlan(brokenFingerprint, structure, snapshot);
+assert(plan.counts.add === 0 && plan.counts.delete === 0 && plan.counts.update === 0,
+  `lost base fingerprint must never become mutation: ${JSON.stringify(plan.counts)} skipped=${JSON.stringify(plan.skippedRows)}`);
+assert(plan.skippedRows.some(item => /fingerprint|baseline|служеб|скрыт/i.test(item.reason)),
+  `lost base fingerprint must be explained explicitly: ${JSON.stringify(plan.skippedRows)}`);
+refreshError = null;
+try { E.mergeWorkbookIntoCurrentSnapshot(brokenFingerprint, structure, snapshot); }
+catch (error) { refreshError = error; }
+assert(refreshError && /fingerprint|baseline|служеб|скрыт|конфликт/i.test(String(refreshError.message || refreshError)),
+  `schema refresh must reject lost base fingerprint: ${refreshError?.message || 'no error'}`);
 
 console.log('TESSA Matrix Studio baseline integrity tests: OK');
