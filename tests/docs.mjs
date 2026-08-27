@@ -38,6 +38,10 @@ assert(readme.includes('docs/assets/excel-real.webp'), 'README lost real Excel s
 assert(readme.includes('docs/assets/studio-preview.webp'), 'README lost real preview screenshot');
 assert(readme.includes('Dashboard → Utilities → URL'), 'README lost manual URL-import fallback');
 
+assert(readme.includes('Скачать QA-набор'), 'README lost the matrix-bound QA pack workflow');
+assert(readme.includes('00_QA_SMOKE_PREVIEW.xlsx'), 'README lost the one-shot QA smoke workbook');
+assert(readme.includes('baseline-ledger'), 'README must explain the V6 baseline ledger used for DELETE/integrity safety');
+
 assert(readme.includes('# Боевой UAT перед раздачей пользователям'), 'README lost the production UAT section');
 for (const token of ['NOOP', 'PATCH', 'ADD', 'REPLACE', 'DELETE', 'stale conflict', 'невалидный справочник', 'Отмена']) {
   assert(readme.includes(token), `README UAT section lost scenario: ${token}`);
