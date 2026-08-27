@@ -157,6 +157,11 @@ Tampermonkey откроет карточку установки. Перед по
 4. Дождитесь завершения прогресса.
 5. Проверьте итоговые счётчики и каждую затронутую строку.
 
+<div align="center">
+  <img src="docs/assets/studio-preview.webp" alt="Реальный preview изменений TESSA Matrix Studio" width="560">
+  <br><sub>Реальный preview: Studio показывает замену строки до записи в TESSA</sub>
+</div>
+
 Studio показывает:
 
 | Счётчик | Что означает |
