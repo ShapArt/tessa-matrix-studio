@@ -1770,8 +1770,10 @@
       // больше не сможет распознать конфликт.
       const sourceIdentity = excelIdentityKey(desired);
       const sourceGroup = sourceIdentity ? (identityGroups.get(sourceIdentity) || []) : [];
-      const primarySourceRow = sourceIdentity ? primaryExcelRowByIdentity.get(sourceIdentity) : null;
-      const copiedFromExisting = Boolean(sourceGroup.length > 1 && primarySourceRow && primarySourceRow !== desired);
+      // Повтор одной hidden identity в Excel означает локальное копирование.
+      // Для stale source этого достаточно для конфликта, даже если primary
+      // нельзя выбрать однозначно после внешнего изменения TESSA.
+      const duplicatedSourceIdentity = sourceGroup.length > 1;
       const sourceCurrentRow = findCurrentByIdentity(desired);
       const exportedFingerprint = canonicalValue(desired.system.baseFingerprint || "");
       const freshFingerprint = canonicalValue(sourceCurrentRow?.fingerprint || "");
@@ -1779,7 +1781,7 @@
       const sourceChangedSinceExport = Boolean(sourceCurrentRow && exportedFingerprint && freshFingerprint && exportedFingerprint !== freshFingerprint);
       if (sourceChangedSinceExport) {
         const workbookChangedSinceExport = Boolean(workbookFingerprint && workbookFingerprint !== exportedFingerprint);
-        const hasLocalOperation = desired.system.action !== 'keep' || positionalOverwriteTarget || copiedFromExisting || workbookChangedSinceExport;
+        const hasLocalOperation = desired.system.action !== 'keep' || positionalOverwriteTarget || duplicatedSourceIdentity || workbookChangedSinceExport;
         if (hasLocalOperation) {
           throw new Error(`Строка Excel ${desired.excelRow}: конфликт актуализации — исходная строка изменилась в TESSA после выгрузки, и в Excel тоже есть изменение/копия/операция. Скачайте свежую выгрузку и перенесите правку повторно.`);
         }
