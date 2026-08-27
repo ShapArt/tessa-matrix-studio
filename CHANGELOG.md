@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.9.4 — 2026-08-27
+
+- security/packaging release без изменений бизнес-логики TESSA Matrix Studio;
+- release pipeline публикует `SHA256SUMS.txt` для `.user.js` и ZIP;
+- release assets получают GitHub/Sigstore provenance-аттестацию после успешных Tests и CodeQL;
+- релиз собирается из того же commit SHA, который прошёл `Quality & Security`.
+
 ## 1.9.3 — 2026-08-27
 
 - добавлен end-to-end acceptance regression suite для `NOOP / PATCH / ADD / REPLACE / DELETE / SKIP / stale preview / справочников / отмены`;
