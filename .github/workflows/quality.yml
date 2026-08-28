@@ -8,9 +8,9 @@ on:
   schedule:
     - cron: '17 3 * * 1'
 
+# Default token is read-only. Jobs that truly need additional scopes declare them locally.
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   tests:
@@ -29,6 +29,10 @@ jobs:
   codeql:
     name: CodeQL
     runs-on: ubuntu-latest
+    # SARIF upload needs security-events: write; keep that capability out of the test job.
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
