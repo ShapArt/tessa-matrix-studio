@@ -5335,6 +5335,9 @@
       const action = created.action;
       try {
         log(`Добавляю строку Excel ${action.excelRow.excelRow}`);
+        // Re-check immediately before Store: another session may have created the
+        // same matrix row after preflight completed.
+        await bridge.validateDuplicate(created.card, created.versionId);
         const storeResponse = await bridge.storeRowCard(created.card);
         const storedCardId = String(storeResponse?.cardId || created.cardId);
         const verification = await bridge.tryGetCard(storedCardId);
