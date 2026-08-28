@@ -14,6 +14,7 @@ vm.runInThisContext(code, { filename: 'tessa-matrix-studio.user.js' });
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 assert(typeof E.TessaBridge?.prototype?.storeRowCard === 'function', 'storeRowCard is unavailable');
 
+// A Store built from the preflight Card must make TESSA validate that exact card version atomically.
 class FakeCardStoreRequest {
   constructor() {
     this.card = null;
