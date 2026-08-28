@@ -1103,7 +1103,10 @@
         const styleIndexRaw = attr(attrs, 's');
         const styleIndex = styleIndexRaw === null ? 0 : Number(styleIndexRaw);
         const style = Number.isInteger(styleIndex) && styleIndex >= 0 ? (styles[styleIndex] || null) : null;
-        const formulaMatch = cellBody.match(/<(?:[A-Za-z_][\w.-]*:)?f\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?f>/i);
+        // Formula nodes can contain an expression (<f>1+1</f>) or be self-closing
+        // for shared formulas (<f t="shared" si="0"/>). Both mean the cached <v>
+        // is formula output, never a user-entered scalar that may be applied to TESSA.
+        const formulaMatch = cellBody.match(/<(?:[A-Za-z_][\w.-]*:)?f\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?f>)/i);
         metaValues[coordinate.col] = {
           styleIndex: Number.isInteger(styleIndex) && styleIndex >= 0 ? styleIndex : 0,
           numFmtId: style?.numFmtId ?? 0,
@@ -1111,7 +1114,7 @@
           numberFormatKind: style?.numberFormatKind || 'general',
           rawType: type || 'n',
           hasFormula: Boolean(formulaMatch),
-          formula: formulaMatch ? xmlDecode(formulaMatch[1]) : '',
+          formula: formulaMatch ? xmlDecode(formulaMatch[2] || '') : '',
         };
         let value = '';
         const inline = cellBody.match(/<(?:[A-Za-z_][\w.-]*:)?is\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?is>/i);
