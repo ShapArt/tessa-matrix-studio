@@ -1,0 +1,38 @@
+name: Fix v1.9.24 implicit row ceiling
+
+on:
+  push:
+    branches:
+      - security/spreadsheetml-guards-v1.9.24
+    paths:
+      - scripts/fix-v1.9.24-implicit-row.mjs
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: security/spreadsheetml-guards-v1.9.24
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Apply fix
+        run: node scripts/fix-v1.9.24-implicit-row.mjs
+      - name: Verify full suite
+        run: npm test
+      - name: Commit fix and remove staging helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js
+          git rm scripts/fix-v1.9.24-implicit-row.mjs .github/workflows/fix-v1.9.24-implicit-row.yml
+          git commit -m "security: enforce implicit SpreadsheetML row ceiling"
+          git push origin HEAD:security/spreadsheetml-guards-v1.9.24
