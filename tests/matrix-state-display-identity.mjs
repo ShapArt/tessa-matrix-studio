@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import vm from 'node:vm';
 
+// Regression is intentionally based on production-shaped TESSA localization keys and stable IDs.
 const code = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
