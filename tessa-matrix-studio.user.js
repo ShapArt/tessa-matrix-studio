@@ -922,8 +922,8 @@
   }
 
   function spreadsheetRowNumber(raw, fallback, limits) {
-    if (raw === null || raw === undefined || String(raw).trim() === '') return fallback;
-    const text = String(raw).trim();
+    const hasExplicit = raw !== null && raw !== undefined && String(raw).trim() !== '';
+    const text = hasExplicit ? String(raw).trim() : String(fallback);
     if (!/^[1-9]\d*$/.test(text)) throw xlsxArchiveError(`некорректный номер строки «${text || '(пусто)'}» в SpreadsheetML.`);
     const value = Number(text);
     if (!Number.isSafeInteger(value) || value < 1) throw xlsxArchiveError(`некорректный номер строки «${text}» в SpreadsheetML.`);
