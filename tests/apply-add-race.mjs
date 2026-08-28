@@ -51,7 +51,13 @@ const catalog = E.mergeSnapshotIntoDictionaryCatalog(null, structure, snapshot);
 const bytes = await E.createRoundtripXlsxBytes(structure, snapshot, matrixInfo, catalog);
 const workbook = await E.readXlsxArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), 'add-race.xlsx');
 const edited = { ...workbook, rows: workbook.rows.map(item => ({ excelRow: item.excelRow, values: [...item.values] })) };
-edited.rows.push({ excelRow: edited.rows.at(-1).excelRow + 1, values: [...edited.rows[0].values] });
+const signerIndex = workbook.headers.indexOf('Подписание');
+const signerIdIndex = workbook.headers.indexOf('Подписание__ID');
+assert(signerIndex >= 0 && signerIdIndex >= 0, 'signer columns unavailable');
+const copied = { excelRow: edited.rows.at(-1).excelRow + 1, values: [...edited.rows[0].values] };
+copied.values[signerIndex] = 'Петров П.П.';
+copied.values[signerIdIndex] = 'person-b';
+edited.rows.push(copied);
 const plan = E.buildPlan(edited, structure, snapshot);
 assert(plan.counts.add === 1, `expected one ADD, got ${JSON.stringify(plan.counts)}`);
 
