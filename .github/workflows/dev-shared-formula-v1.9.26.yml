@@ -1,0 +1,36 @@
+name: Dev Shared Formula v1.9.26
+
+on:
+  push:
+    branches: [fix/excel-coercion-v1.9.26]
+    paths:
+      - '.github/workflows/dev-shared-formula-v1.9.26.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fix/excel-coercion-v1.9.26
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Apply shared-formula fix
+        run: python .github/scripts/shared-formula-v1.9.26.py
+      - name: Verify focused regression
+        run: node tests/xlsx-coercion.mjs
+      - name: Commit fix and remove helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/scripts/shared-formula-v1.9.26.py .github/workflows/dev-shared-formula-v1.9.26.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tessa-matrix-studio.user.js .github/scripts/shared-formula-v1.9.26.py .github/workflows/dev-shared-formula-v1.9.26.yml
+          git commit -m 'fix: detect self-closing shared formulas'
+          git push origin HEAD:fix/excel-coercion-v1.9.26
