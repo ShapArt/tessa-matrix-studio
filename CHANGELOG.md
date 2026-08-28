@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.20 — 2026-08-28
+
+- Preview теперь выполняет read-only preflight до отображения итогового плана и не считает заведомо неприменимые операции корректными;
+- несуществующие значения справочников, duplicate/stale runtime-конфликты и другие preflight-ошибки сразу переводятся в ПРОПУСТИТЬ с причиной в Preview;
+- зависимый DELETE также исключается из Apply, если связанный UPDATE/ADD уже не прошёл Preview-preflight;
+- Preview-preflight перечитывает свежий snapshot TESSA вместо reuse session-cache; перед фактической записью Apply повторяет preflight ещё раз;
+- planner-plan не мутируется при проекции runtime SKIP в пользовательский Preview; добавлен regression `preview-preflight.mjs`.
+
 ## 1.9.19 — 2026-08-28
 
 - XLSX parser принимает валидный SpreadsheetML с namespace-префиксами (например, x:sheet / x:row / x:c / x:v), поэтому файлы, сохранённые сторонними Excel-библиотеками, больше не теряют строку заголовков;
