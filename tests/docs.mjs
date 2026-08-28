@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 
-// Публичный README и issue-template считаются частью релизного контракта проекта.
+// Релизный контракт сверяет публичный README, changelog и issue-template с фактической версией userscript.
 const read = (path) => fs.readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
@@ -8,6 +8,7 @@ const assert = (condition, message) => {
 
 const script = read('tessa-matrix-studio.user.js');
 const readme = read('README.md');
+const changelog = read('CHANGELOG.md');
 const bugTemplate = read('.github/ISSUE_TEMPLATE/bug_report.yml');
 const pkg = JSON.parse(read('package.json'));
 
@@ -26,7 +27,9 @@ const updateUrl = updateMatch[1];
 assert(pkg.version === version, `package.json version ${pkg.version} != userscript ${version}`);
 assert(readme.includes(`version-${version}-`), 'README version badge is out of sync');
 assert(readme.includes(`**v${version} · Автор: Шаповалов Артём**`), 'README header version is out of sync');
+assert(readme.includes(`Подтвердите установку версии **${version}**`), 'README quick-start install version is out of sync');
 assert(readme.includes(`Текущая версия: **${version}**`), 'README support version is out of sync');
+assert(changelog.includes(`## ${version} —`), 'CHANGELOG latest release entry is out of sync');
 assert(readme.includes(downloadUrl), 'README does not contain userscript download URL');
 assert(updateUrl !== downloadUrl, 'metadata update URL must stay separate from full userscript download URL');
 assert(downloadUrl === 'https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js', 'userscript download must track latest GitHub Release');
