@@ -5361,6 +5361,18 @@
         if (missingDependencies.length) {
           throw new Error(`Удаление строки TESSA ${action.currentRow.index + 1} пропущено: связанное изменение Excel ${missingDependencies.join(', ')} не было успешно применено. Исходная строка сохранена.`);
         }
+        // DeleteRow is a custom request without CardStoreRequest.AffectVersion.
+        // Re-read the target immediately before deletion and fail closed on any drift.
+        const deleteSnapshot = await bridge.loadSnapshot(structure);
+        const deleteTarget = (deleteSnapshot.rows || []).find(row =>
+          canonicalValue(row.rowCardId) === canonicalValue(prepared.current.rowCardId));
+        if (!deleteTarget) {
+          throw new Error(`Удаление строки TESSA ${action.currentRow.index + 1} пропущено: строка исчезла после предварительной проверки. Обновите Excel и проверьте изменения заново.`);
+        }
+        if (canonicalValue(deleteTarget.versionId) !== canonicalValue(prepared.current.versionId)
+          || canonicalValue(deleteTarget.fingerprint) !== canonicalValue(prepared.current.fingerprint)) {
+          throw new Error(`Удаление строки TESSA ${action.currentRow.index + 1} пропущено: строка изменилась после предварительной проверки. Обновите Excel и проверьте изменения заново.`);
+        }
         log(`Удаляю строку TESSA ${action.currentRow.index + 1}`);
         await bridge.deleteMatrixRow(action.currentRow.versionId);
         result.rows.push({ type: 'delete', versionId: action.currentRow.versionId, status: 'ok' });
