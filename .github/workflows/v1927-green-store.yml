@@ -1,0 +1,38 @@
+name: v1.9.27 store race patch
+
+on:
+  push:
+    branches:
+      - feat/v1.9.27-apply-race-protection
+    paths:
+      - .github/workflows/v1927-green-store.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/v1.9.27-apply-race-protection
+      - name: Apply minimal GREEN patch
+        shell: python
+        run: |
+          from pathlib import Path
+          source = Path('tessa-matrix-studio.user.js')
+          text = source.read_text(encoding='utf-8')
+          old = """    async storeRowCard(card) {\n      const req = new this.cards.CardStoreRequest();\n      req.card = card;\n"""
+          new = """    async storeRowCard(card) {\n      const req = new this.cards.CardStoreRequest();\n      // Force TESSA to perform an atomic card-version check during Store.\n      // This closes the post-preflight lost-update window for UPDATE/ADD.\n      req.affectVersion = true;\n      req.card = card;\n"""
+          if old not in text:
+              raise SystemExit('storeRowCard anchor not found')
+          source.write_text(text.replace(old, new, 1), encoding='utf-8')
+          Path('.github/workflows/v1927-green-store.yml').unlink()
+      - name: Commit patch and remove helper
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js .github/workflows/v1927-green-store.yml
+          git commit -m "fix: require TESSA version check on row store"
+          git push origin HEAD:feat/v1.9.27-apply-race-protection
