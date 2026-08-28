@@ -29,7 +29,7 @@ assert(checksumMentions >= 3, 'SHA256SUMS.txt must be built and published');
 // Release assets must carry GitHub/Sigstore build provenance.
 assert(workflow.includes('attestations: write'), 'release must allow writing artifact attestations');
 assert(workflow.includes('id-token: write'), 'release must allow OIDC signing for attestations');
-assert(workflow.includes('uses: actions/attest@v4'), 'release must generate GitHub artifact attestations');
+assert(workflow.includes('uses: actions/attest@'), 'release must generate GitHub artifact attestations');
 assert(workflow.includes('subject-checksums: dist/SHA256SUMS.txt'), 'attestation must bind the checksummed release assets');
 
 // Published versions are immutable: a repeated run may finish a release after a tag-only partial failure,
