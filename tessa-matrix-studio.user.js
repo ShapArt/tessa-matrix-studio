@@ -4424,6 +4424,15 @@
     } else if (plan.skippedRows?.length) {
       log(`Проверка готова: ${plan.skippedRows.length} строк будут пропущены, остальные можно применить.`, 'warn');
     }
+    let previewPlan = plan;
+    if (!plan.safety.blocked && plan.actions.some(action => action.type !== 'noop')) {
+      setProgress(92, 'Проверяю применимость', 'Справочники, дубли и зависимости перед Apply');
+      const previewPreflight = await preflightPlan(plan, { previewOnly: true, bridge, structure, fresh: snapshot });
+      previewPlan = applyPreflightPreview(plan, previewPreflight);
+      if (previewPlan.preflightPreview.runtimeSkipCount) {
+        log(`Предварительная проверка: ${previewPlan.preflightPreview.runtimeSkipCount} операций заранее переведены в ПРОПУСТИТЬ.`, 'warn');
+      }
+    }
     APP.workbook = workbook;
     if (workbook.dictionaryCatalog && workbook.roundtrip?.enabled) {
       APP.dictionaryCatalog = normalizeDictionaryCatalog(clonePlain(workbook.dictionaryCatalog));
@@ -4434,11 +4443,15 @@
     APP.structure = structure;
     APP.snapshot = snapshot;
     APP.review = createPlanReviewState();
-    APP.plan = plan;
-    renderPlan(plan);
-    const visible = plan.actions.filter(action => action.type !== 'noop').length;
-    setProgress(100, 'Проверка завершена', visible ? `Найдено изменений: ${visible}` : 'Изменений нет');
-    return plan;
+    APP.plan = previewPlan;
+    renderPlan(previewPlan);
+    const visible = previewPlan.actions.filter(action => action.type !== 'noop').length;
+    const skipped = previewPlan.counts?.skip || 0;
+    const detail = visible
+      ? `Корректных изменений: ${visible}${skipped ? ` · пропустить: ${skipped}` : ''}`
+      : (skipped ? `Корректных изменений нет · пропустить: ${skipped}` : 'Изменений нет');
+    setProgress(100, 'Проверка завершена', detail);
+    return previewPlan;
   }
 
   async function hydrateMissingIdsForAction(action, structure, snapshot, bridge) {
@@ -4509,19 +4522,58 @@
     return makeSkippedRow(rowNumber, friendlyErrorMessage(error), phase, action?.type || null);
   }
 
-  async function preflightPlan(plan) {
-    setProgress(10, 'Предварительная проверка', 'Перечитываю матрицу перед записью');
+  function applyPreflightPreview(plan, preflight) {
+    if (!plan) return plan;
+    const skippedActions = preflight?.runtimeSkippedActions instanceof Set
+      ? preflight.runtimeSkippedActions
+      : new Set();
+    const runtimeSkips = Array.isArray(preflight?.runtimeSkips) ? preflight.runtimeSkips : [];
+    const seenSkips = new Set();
+    const skippedRows = [];
+    for (const item of [...(plan.skippedRows || []), ...runtimeSkips]) {
+      const key = [item?.phase || '', item?.actionType || '', item?.excelRow ?? '', item?.reason || ''].join('|');
+      if (seenSkips.has(key)) continue;
+      seenSkips.add(key);
+      skippedRows.push(item);
+    }
+    const actions = (plan.actions || []).filter(action => !skippedActions.has(action));
+    const runtimeSkipCount = runtimeSkips.length;
+    const warnings = [...(plan.warnings || [])];
+    if (runtimeSkipCount) {
+      warnings.push(`Предварительная проверка до Apply: ${runtimeSkipCount} операций переведены в ПРОПУСТИТЬ. Причины показаны выше.`);
+    }
+    return {
+      ...plan,
+      actions,
+      skippedRows,
+      warnings,
+      counts: countActions(actions, skippedRows),
+      preflightPreview: {
+        validated: true,
+        runtimeSkipCount,
+        attemptedCount: (plan.actions || []).filter(action => action.type !== 'noop').length,
+        executableCount: actions.filter(action => action.type !== 'noop').length,
+        validatedAt: nowIso(),
+      },
+    };
+  }
+
+  async function preflightPlan(plan, options = {}) {
+    const previewOnly = Boolean(options.previewOnly);
+    const preflightProgress = previewOnly ? () => {} : setProgress;
+    preflightProgress(10, 'Предварительная проверка', 'Перечитываю матрицу перед записью');
     if (plan?.safety?.blocked) throw new Error(`Файл нельзя применить: ${plan.safety.blockedReasons.join(' ')}`);
-    const bridge = await TessaBridge.create();
+    const bridge = options.bridge || await TessaBridge.create();
     assertWritableMatrixDraft(bridge);
-    assertNativeEditMode();
-    const structure = await bridge.requestStructure(bridge.templateId());
-    const fresh = await bridge.loadSnapshot(structure);
-    setProgress(18, 'Сверяю актуальное состояние', `${fresh.rows.length} строк в TESSA`);
+    if (!previewOnly) assertNativeEditMode();
+    const structure = options.structure || await bridge.requestStructure(bridge.templateId());
+    const fresh = options.fresh || await bridge.loadSnapshot(structure);
+    preflightProgress(18, 'Сверяю актуальное состояние', `${fresh.rows.length} строк в TESSA`);
     if (fresh.matrixId !== plan.matrixId) throw new Error('Открыта другая матрица. Нажмите «Проверить изменения» ещё раз.');
     const freshByVersion = new Map(fresh.rows.map(row => [canonicalValue(row.versionId), row]));
     const freshByCard = new Map(fresh.rows.map(row => [canonicalValue(row.rowCardId), row]));
     const runtimeSkips = [];
+    const runtimeSkippedActions = new Set();
     const preparedUpdates = new Map();
     const preparedAdds = new Map();
     const readyDeletes = [];
@@ -4596,11 +4648,12 @@
       } catch (error) {
         const excelRow = Number(action.excelRow?.excelRow);
         if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
+        runtimeSkippedActions.add(action);
         runtimeSkips.push(runtimeSkip(action, error, 'preflight-update'));
       }
     }
 
-    setProgress(28, 'Проверяю изменяемые строки', `Проверено: ${plan.actions.filter(x => x.type === 'update').length}`);
+    preflightProgress(28, 'Проверяю изменяемые строки', `Проверено: ${plan.actions.filter(x => x.type === 'update').length}`);
 
     // ADD: если конкретная новая строка не проходит справочник/дубликат/тип — пропускаем её.
     const addActions = plan.actions.filter(x => x.type === 'add');
@@ -4653,11 +4706,12 @@
       } catch (error) {
         const excelRow = Number(action.excelRow?.excelRow);
         if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
+        runtimeSkippedActions.add(action);
         runtimeSkips.push(runtimeSkip(action, error, 'preflight-add'));
       }
     }
 
-    setProgress(36, 'Проверяю новые строки', `Проверено: ${plan.actions.filter(x => x.type === 'add').length}`);
+    preflightProgress(36, 'Проверяю новые строки', `Проверено: ${plan.actions.filter(x => x.type === 'add').length}`);
 
     // DELETE тоже проверяется по fingerprint отдельно.
     for (const action of plan.actions.filter(x => x.type === 'delete')) {
@@ -4672,12 +4726,13 @@
         }
         readyDeletes.push({ action, current, dependsOnExcelRows });
       } catch (error) {
+        runtimeSkippedActions.add(action);
         runtimeSkips.push(runtimeSkip(action, error, 'preflight-delete'));
       }
     }
 
-    setProgress(42, 'Предварительная проверка завершена', `Готово к записи: ${preparedUpdates.size + preparedAdds.size + readyDeletes.length}`);
-    return { bridge, structure, fresh, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips };
+    preflightProgress(42, 'Предварительная проверка завершена', `Готово к записи: ${preparedUpdates.size + preparedAdds.size + readyDeletes.length}`);
+    return { bridge, structure, fresh, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips, runtimeSkippedActions };
   }
 
   /**
@@ -5144,7 +5199,7 @@
     createPlanReviewState, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
-    preflightPlan, applyPlan, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
+    preflightPlan, applyPreflightPreview, applyPlan, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, compactPlanForExport,
     TessaBridge,
