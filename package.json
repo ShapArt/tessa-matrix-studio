@@ -1,6 +1,6 @@
 {
   "name": "tessa-matrix-studio",
-  "version": "1.9.17",
+  "version": "1.9.18",
   "private": true,
   "description": "TESSA Matrix Studio userscript regression and QA-pack verification",
   "scripts": {
