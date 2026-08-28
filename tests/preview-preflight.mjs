@@ -13,6 +13,9 @@ vm.runInThisContext(code, { filename: 'tessa-matrix-studio.user.js' });
 
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 assert(typeof E.applyPreflightPreview === 'function', 'applyPreflightPreview is missing');
+assert(code.includes("preflightPlan(plan, { previewOnly: true, bridge, structure })"), 'analyze must run Preview preflight against a freshly reloaded TESSA snapshot');
+assert(!code.includes("preflightPlan(plan, { previewOnly: true, bridge, structure, fresh: snapshot })"), 'Preview preflight must not reuse the potentially cached planner snapshot');
+assert(code.includes("if (!previewOnly) assertNativeEditMode();"), 'Preview preflight must stay non-mutating and must not require native edit mode');
 
 const goodUpdate = { type: 'update', excelRow: { excelRow: 18 }, changes: [{ key: 'org' }] };
 const invalidDictionary = { type: 'update', excelRow: { excelRow: 22 }, changes: [{ key: 'org' }] };
