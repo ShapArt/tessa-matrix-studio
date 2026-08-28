@@ -46,6 +46,14 @@ async function workbookFor(operandTypeId, baselineValue = '123') {
   assert(parsed.cellMeta?.[0]?.[0]?.hasFormula === true, `formula presence must be preserved in cell metadata: ${JSON.stringify(parsed.cellMeta?.[0]?.[0])}`);
 }
 
+// Shared formulas may be serialized as a self-closing <f .../> while the cached <v>
+// remains present. This must still be recognized as a formula-backed cell.
+{
+  const parsed = E.parseSheetXml('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><f t="shared" si="0"/><v>124</v></c></row></sheetData></worksheet>', [], []);
+  assert(parsed.rows[0][0] === '124', `shared-formula cached value parsing changed: ${parsed.rows[0][0]}`);
+  assert(parsed.cellMeta?.[0]?.[0]?.hasFormula === true, `self-closing shared formula must be preserved in cell metadata: ${JSON.stringify(parsed.cellMeta?.[0]?.[0])}`);
+}
+
 // Formula in an editable matrix cell must fail closed even if cached value looks valid.
 {
   const { workbook, structure, snapshot, index } = await workbookFor(O.Int, '123');
