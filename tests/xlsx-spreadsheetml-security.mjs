@@ -47,6 +47,13 @@ expectRejected(
   'row-number-ceiling',
 );
 
+// An implicit row after an explicit row at the ceiling must not bypass MaxRowNumber.
+expectRejected(
+  worksheet('<row r="10"><c r="A10" t="str"><v>x</v></c></row><row><c r="A11" t="str"><v>y</v></c></row>'),
+  /XLSX отклонён.*номер строки|безопасн.*лимит|строк.*10/i,
+  'implicit-row-ceiling',
+);
+
 // Excel itself ends at XFD (16,384 columns); XFE must never be materialized.
 expectRejected(
   worksheet('<row r="1"><c r="XFE1" t="str"><v>x</v></c></row>'),
