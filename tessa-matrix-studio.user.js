@@ -3552,6 +3552,9 @@
 
     async storeRowCard(card) {
       const req = new this.cards.CardStoreRequest();
+      // Force TESSA to perform an atomic card-version check during Store.
+      // This closes the post-preflight lost-update window for UPDATE/ADD.
+      req.affectVersion = true;
       req.card = card;
       req.info.MatrixID = this.TypedField.createGuid(this.mainCard.id);
       const response = await this.cardService.store(req);
