@@ -87,6 +87,12 @@ write('tests/smoke.mjs', smoke);
 
 let docs = read('tests/docs.mjs');
 docs = docs.replace("\nassert(readme.includes('Скачать QA-набор'), 'README lost the matrix-bound QA pack workflow');\nassert(readme.includes('00_QA_SMOKE_PREVIEW.xlsx'), 'README lost the one-shot QA smoke workbook');", '');
+docs = replaceOnce(
+  docs,
+  "assert(readme.includes('Dashboard → Utilities → URL'), 'README lost manual URL-import fallback');",
+  "assert(readme.includes('Tampermonkey → Dashboard / Панель управления'), 'README lost Tampermonkey Dashboard fallback');\nassert(readme.includes('Utilities / Сервис'), 'README lost Tampermonkey Utilities fallback');\nassert(readme.includes('В разделе **URL** вставьте:'), 'README lost manual URL import field');",
+  'manual URL fallback documentation contract'
+);
 write('tests/docs.mjs', docs);
 
 let pkg = JSON.parse(read('package.json'));
