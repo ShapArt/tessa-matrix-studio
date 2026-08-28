@@ -26,6 +26,7 @@ const updateUrl = updateMatch[1];
 assert(pkg.version === version, `package.json version ${pkg.version} != userscript ${version}`);
 assert(readme.includes(`version-${version}-`), 'README version badge is out of sync');
 assert(readme.includes(`**v${version} · Автор: Шаповалов Артём**`), 'README header version is out of sync');
+assert(readme.includes(`Подтвердите установку версии **${version}**`), 'README quick-start install version is out of sync');
 assert(readme.includes(`Текущая версия: **${version}**`), 'README support version is out of sync');
 assert(readme.includes(downloadUrl), 'README does not contain userscript download URL');
 assert(updateUrl !== downloadUrl, 'metadata update URL must stay separate from full userscript download URL');
