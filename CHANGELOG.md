@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.27 — 2026-08-29
+
+- UPDATE и ADD теперь отправляются через `CardStoreRequest` с `AffectVersion = true`: TESSA атомарно проверяет версию карточки во время Store и не позволяет молча затереть изменение, сделанное после preflight;
+- перед ADD duplicate-validation повторяется непосредственно перед Store, чтобы строка-дубль, созданная другой сессией после preflight, не была записана;
+- перед кастомным DELETE Studio заново читает матрицу и строго сверяет RowCardID, MatrixVersionID и raw fingerprint удаляемой строки; исчезнувшая или изменившаяся цель переводится в ПРОПУСТИТЬ;
+- конфликт одной операции остаётся локальным: auto-merge не выполняется, зависимые destructive DELETE сохраняют fail-closed поведение, независимые безопасные строки могут продолжить применение;
+- добавлены TDD-regressions для atomic Store version guard, post-preflight ADD duplicate race и post-preflight DELETE target race.
+
 ## 1.9.26 — 2026-08-29
 
 - XLSX-reader сохраняет наличие и текст Excel-формулы в metadata рабочей ячейки; формулы в редактируемых критериях fail-closed переводят строку в ПРОПУСТИТЬ, cached `<v>` не применяется как обычное значение;
