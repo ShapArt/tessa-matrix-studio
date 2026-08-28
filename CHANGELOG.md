@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.9.16 — 2026-08-28
+
+- исправлен TOCTOU-сценарий REPLACE: перед Apply Studio теперь повторно проверяет не только target, но и source identity копии;
+- если source-строка изменилась или исчезла в TESSA после Preview, REPLACE переводится в runtime SKIP и требует повторного «Проверить изменения»;
+- stale source больше не может быть перенесён в неизменившийся target между Preview и Apply;
+- добавлен отдельный regression `preflight-stale-replace-source.mjs`, воспроизводящий изменение source после Preview при неизменном target.
+
 ## 1.9.15 — 2026-08-27
 
 - roundtrip-формат поднят до **V6**: в veryHidden baseline-ledger сохраняются исходные MatrixRowID / MatrixVersionID / BaseFingerprint для безопасной проверки удаления и целостности;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.15
+// @version      1.9.16
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.15',
+    version: '1.9.16',
     plan: null,
     review: createPlanReviewState(),
     workbook: null,
@@ -4778,6 +4778,7 @@
     setProgress(18, 'Сверяю актуальное состояние', `${fresh.rows.length} строк в TESSA`);
     if (fresh.matrixId !== plan.matrixId) throw new Error('Открыта другая матрица. Нажмите «Проверить изменения» ещё раз.');
     const freshByVersion = new Map(fresh.rows.map(row => [canonicalValue(row.versionId), row]));
+    const freshByCard = new Map(fresh.rows.map(row => [canonicalValue(row.rowCardId), row]));
     const runtimeSkips = [];
     const preparedUpdates = new Map();
     const preparedAdds = new Map();
@@ -4789,6 +4790,24 @@
         const current = freshByVersion.get(canonicalValue(action.currentRow.versionId));
         if (!current) throw new Error(`Строка ${action.currentRow.versionId} исчезла после предпросмотра.`);
         if (current.fingerprint !== action.expectedFingerprint) throw new Error(`Строка Excel ${action.excelRow.excelRow} изменилась в TESSA после предпросмотра.`);
+
+        // REPLACE читает данные из source identity Excel, но записывает их в другую target identity.
+        // Target stale-check выше недостаточен: source мог измениться уже после Preview.
+        // Повторно сверяем source непосредственно перед записью, иначе старый снимок source
+        // может быть перенесён в неизменившийся target.
+        if (isOverwriteMatch(action.match)) {
+          const sourceVersionId = canonicalValue(action.excelRow?.system?.versionId || '');
+          const sourceRowCardId = canonicalValue(action.excelRow?.system?.rowCardId || '');
+          const sourceCurrent = (sourceVersionId ? freshByVersion.get(sourceVersionId) : null)
+            || (sourceRowCardId ? freshByCard.get(sourceRowCardId) : null);
+          if (!sourceCurrent) throw new Error(`Исходная строка Excel ${action.excelRow.excelRow} исчезла после предпросмотра.`);
+          const sourceExpectedFingerprint = canonicalValue(action.excelRow?.system?.baseFingerprint || '');
+          const sourceFreshFingerprint = canonicalValue(sourceCurrent.fingerprint || fingerprintFlat(sourceCurrent.flat || {}));
+          if (!sourceExpectedFingerprint || sourceExpectedFingerprint !== sourceFreshFingerprint) {
+            throw new Error(`Исходная строка Excel ${action.excelRow.excelRow} изменилась в TESSA после предпросмотра.`);
+          }
+        }
+
         await hydrateMissingIdsForAction(action, structure, fresh, bridge);
         for (const condition of structure.conditions) {
           const column = action.excelRow.columns.get(condition.criterionRowId);
