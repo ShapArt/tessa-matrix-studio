@@ -1,0 +1,38 @@
+name: Run v1.9.18 dependent DELETE patch
+
+on:
+  push:
+    branches:
+      - fix/preflight-dependent-delete-v1.9.18
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/preflight-dependent-delete-v1.9.18
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Apply patch
+        run: node .github/patch-v1.9.18-dependent-delete.mjs
+      - name: Verify full regression suite
+        run: npm test
+      - name: Commit implementation and remove helpers
+        run: |
+          rm -f .github/patch-v1.9.18-dependent-delete.mjs
+          rm -f .github/trigger-v1.9.18-dependent-delete
+          rm -f .github/workflows/patch-v1.9.18-dependent-delete.yml
+          rm -f .github/workflows/run-patch-v1.9.18-dependent-delete.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: protect dependent deletes across preflight and store"
+          git push origin HEAD:fix/preflight-dependent-delete-v1.9.18
