@@ -13,6 +13,8 @@ vm.runInThisContext(code, { filename: 'tessa-matrix-studio.user.js' });
 
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 const O = E.constants.OPERAND;
+const SIGN_FUNCTION = { id: 'function-sign', name: 'Подписание', typeName: 'Подписание' };
+const SIGN_ROLE = { id: 'person-1', display: 'Иванов И.И.', roleTypeId: 'role-type' };
 
 const structure = {
   templateId: 'qa-auto-date-template',
@@ -64,9 +66,12 @@ const intStructure = {
     criterionName: 'Количество листов',
     operandTypeId: O.Int,
   }],
-  functions: [],
+  functions: [SIGN_FUNCTION],
 };
-const intFlat = { 'criterion:criterion-pages': ['17'] };
+const intFlat = {
+  'criterion:criterion-pages': ['17'],
+  'function:function-sign': [SIGN_ROLE.display],
+};
 const intSnapshot = {
   matrixId: 'qa-auto-date-int-matrix',
   templateId: intStructure.templateId,
@@ -76,15 +81,16 @@ const intSnapshot = {
     versionId: 'version-int',
     fingerprint: E.fingerprintFlat(intFlat),
     values: { 'criterion-pages': [{ id: '', display: '17', value: 17 }] },
-    roles: {},
+    roles: { 'function-sign': [SIGN_ROLE] },
     flat: intFlat,
   }],
 };
+const intCatalog = E.mergeSnapshotIntoDictionaryCatalog(null, intStructure, intSnapshot);
 const intBytes = await E.createRoundtripXlsxBytes(
   intStructure,
   intSnapshot,
   { matrixId: intSnapshot.matrixId, TemplateID: intSnapshot.templateId, TemplateName: 'QA Int Auto Date' },
-  null,
+  intCatalog,
 );
 const intBuffer = intBytes.buffer.slice(intBytes.byteOffset, intBytes.byteOffset + intBytes.byteLength);
 const intBaseline = await E.readXlsxArrayBuffer(intBuffer, 'qa-auto-date-int.xlsx');
@@ -134,9 +140,12 @@ const dateStructure = {
     criterionName: 'Дата документа',
     operandTypeId: O.Date,
   }],
-  functions: [],
+  functions: [SIGN_FUNCTION],
 };
-const dateFlat = { 'criterion:criterion-date': ['01.03.2018'] };
+const dateFlat = {
+  'criterion:criterion-date': ['01.03.2018'],
+  'function:function-sign': [SIGN_ROLE.display],
+};
 const dateSnapshot = {
   matrixId: 'qa-auto-date-date-matrix',
   templateId: dateStructure.templateId,
@@ -146,15 +155,16 @@ const dateSnapshot = {
     versionId: 'version-date',
     fingerprint: E.fingerprintFlat(dateFlat),
     values: { 'criterion-date': [{ id: '', display: '01.03.2018', value: '01.03.2018' }] },
-    roles: {},
+    roles: { 'function-sign': [SIGN_ROLE] },
     flat: dateFlat,
   }],
 };
+const dateCatalog = E.mergeSnapshotIntoDictionaryCatalog(null, dateStructure, dateSnapshot);
 const dateBytes = await E.createRoundtripXlsxBytes(
   dateStructure,
   dateSnapshot,
   { matrixId: dateSnapshot.matrixId, TemplateID: dateSnapshot.templateId, TemplateName: 'QA Date Serial' },
-  null,
+  dateCatalog,
 );
 const dateBuffer = dateBytes.buffer.slice(dateBytes.byteOffset, dateBytes.byteOffset + dateBytes.byteLength);
 const dateBaseline = await E.readXlsxArrayBuffer(dateBuffer, 'qa-auto-date-date.xlsx');
