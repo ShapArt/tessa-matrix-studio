@@ -1,0 +1,54 @@
+name: Bump CHANGELOG to v1.9.22
+
+on:
+  push:
+    branches:
+      - fix/localized-matrix-state-v1.9.22
+    paths:
+      - .github/workflows/bump-changelog-v1.9.22.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.actor == 'ShapArt' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/localized-matrix-state-v1.9.22
+          fetch-depth: 0
+      - name: Prepend release notes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('CHANGELOG.md')
+          text = path.read_text(encoding='utf-8')
+          marker = '# Changelog\n\n'
+          if not text.startswith(marker):
+              raise SystemExit('Unexpected CHANGELOG header')
+          if '## 1.9.22 —' in text:
+              raise SystemExit('1.9.22 entry already exists')
+          section = '''## 1.9.22 — 2026-08-28
+
+- `StateName` матрицы теперь проходит штатную локализацию TESSA до отображения и safety-проверки: непрозрачные ключи `$Mtx_Enums_*` больше не превращают известное состояние в «Неизвестное состояние»;
+- caption и writable-guard используют единый нормализованный state: `Черновик` остаётся доступен для изменений, `Активная` и `Согласование` остаются read-only;
+- stale-проверка обычных строк, REPLACE-source и copied-ADD-source различает реальное изменение данных и display-only переименование при неизменном стабильном ID исполнителя/справочного значения;
+- destructive DELETE намеренно остаётся на строгом raw `BaseFingerprint`: display-only послабление не может разрешить удаление устаревшей строки;
+- REPLACE после Preview контролирует source уже от свежего raw fingerprint, сохраняя TOCTOU-защиту между Preview и Apply;
+- добавлены regression-сценарии для opaque localization keys и реального кейса «тот же role ID, другое отображаемое имя → NOOP», а release-документация и version-контракты синхронизированы с 1.9.22.
+
+'''
+          path.write_text(marker + section + text[len(marker):], encoding='utf-8')
+          PY
+          rm .github/workflows/bump-changelog-v1.9.22.yml
+      - name: Commit changelog
+        run: |
+          git config user.name "ShapArt"
+          git config user.email "100069322+ShapArt@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "docs: add v1.9.22 changelog"
+          git push origin HEAD:fix/localized-matrix-state-v1.9.22
