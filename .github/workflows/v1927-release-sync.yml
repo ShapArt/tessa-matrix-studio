@@ -1,0 +1,73 @@
+name: v1.9.27 release sync
+
+on:
+  push:
+    branches:
+      - feat/v1.9.27-apply-race-protection
+    paths:
+      - .github/workflows/v1927-release-sync.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/v1.9.27-apply-race-protection
+      - name: Sync version and release docs
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              if old not in text:
+                  raise SystemExit(f'anchor not found in {path}: {old!r}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once('tessa-matrix-studio.user.js', '// @version      1.9.26', '// @version      1.9.27')
+          replace_once('tessa-matrix-studio.user.js', "version: '1.9.26'", "version: '1.9.27'")
+          replace_once('package.json', '"version": "1.9.26"', '"version": "1.9.27"')
+
+          replace_once('README.md', 'version-1.9.26-', 'version-1.9.27-')
+          replace_once('README.md', '**v1.9.26 · Автор: Шаповалов Артём**', '**v1.9.27 · Автор: Шаповалов Артём**')
+          replace_once('README.md', 'Подтвердите установку версии **1.9.26**', 'Подтвердите установку версии **1.9.27**')
+          replace_once('README.md', 'Текущая версия: **1.9.26**', 'Текущая версия: **1.9.27**')
+
+          readme = Path('README.md')
+          text = readme.read_text(encoding='utf-8')
+          anchor = 'Перед фактической записью тот же preflight выполняется ещё раз.\n'
+          note = '''\n> [!IMPORTANT]\n> Начиная с **v1.9.27**, Apply дополнительно защищён от изменений, произошедших уже после успешного preflight. UPDATE/ADD сохраняются через TESSA `CardStoreRequest` с `AffectVersion = true`, поэтому сервер проверяет версию карточки непосредственно во время Store; для ADD duplicate-проверка повторяется прямо перед Store. Перед кастомным DELETE Studio повторно читает целевую строку и строго сверяет её MatrixRowID, MatrixVersionID и raw fingerprint. Конфликтующая операция переводится в **ПРОПУСТИТЬ** без auto-merge; независимые безопасные строки могут продолжить применение. Для кастомного DELETE это строгая клиентская recheck-защита, а не серверный version-lock.\n'''
+          if note.strip() not in text:
+              if anchor not in text:
+                  raise SystemExit('README preflight anchor not found')
+              text = text.replace(anchor, anchor + note, 1)
+              readme.write_text(text, encoding='utf-8')
+
+          changelog = Path('CHANGELOG.md')
+          text = changelog.read_text(encoding='utf-8')
+          entry = '''## 1.9.27 — 2026-08-29\n\n- UPDATE и ADD теперь отправляются через `CardStoreRequest` с `AffectVersion = true`: TESSA атомарно проверяет версию карточки во время Store и не позволяет молча затереть изменение, сделанное после preflight;\n- перед ADD duplicate-validation повторяется непосредственно перед Store, чтобы строка-дубль, созданная другой сессией после preflight, не была записана;\n- перед кастомным DELETE Studio заново читает матрицу и строго сверяет RowCardID, MatrixVersionID и raw fingerprint удаляемой строки; исчезнувшая или изменившаяся цель переводится в ПРОПУСТИТЬ;\n- конфликт одной операции остаётся локальным: auto-merge не выполняется, зависимые destructive DELETE сохраняют fail-closed поведение, независимые безопасные строки могут продолжить применение;\n- добавлены TDD-regressions для atomic Store version guard, post-preflight ADD duplicate race и post-preflight DELETE target race.\n\n'''
+          if '## 1.9.27 —' not in text:
+              if not text.startswith('# Changelog\n'):
+                  raise SystemExit('CHANGELOG header not found')
+              text = text.replace('# Changelog\n\n', '# Changelog\n\n' + entry, 1)
+              changelog.write_text(text, encoding='utf-8')
+
+          issue = Path('.github/ISSUE_TEMPLATE/bug_report.yml')
+          text = issue.read_text(encoding='utf-8')
+          if 'placeholder: 1.9.26' not in text:
+              raise SystemExit('issue template version anchor not found')
+          issue.write_text(text.replace('placeholder: 1.9.26', 'placeholder: 1.9.27', 1), encoding='utf-8')
+
+          Path('.github/workflows/v1927-release-sync.yml').unlink()
+      - name: Commit release sync and remove helper
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js package.json README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml .github/workflows/v1927-release-sync.yml
+          git commit -m "docs: prepare v1.9.27 release"
+          git push origin HEAD:feat/v1.9.27-apply-race-protection
