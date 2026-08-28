@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 
-// Публичный README, changelog и issue-template считаются частью релизного контракта проекта.
+// Релизный контракт сверяет публичный README, changelog и issue-template с фактической версией userscript.
 const read = (path) => fs.readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
