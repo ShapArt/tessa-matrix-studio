@@ -69,6 +69,7 @@ const bridge = {
   matrixInfo: () => matrixInfo,
   templateId: () => structure.templateId,
   requestStructure: async () => structure,
+  // First read is Apply preflight; second read must happen immediately before DeleteRow.
   loadSnapshot: async () => {
     snapshotReads += 1;
     return snapshotReads === 1 ? snapshot : changedSnapshot;
