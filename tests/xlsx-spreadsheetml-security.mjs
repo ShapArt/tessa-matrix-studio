@@ -48,8 +48,9 @@ expectRejected(
 );
 
 // An implicit row after an explicit row at the ceiling must not bypass MaxRowNumber.
+// The implicit cell reference is intentionally omitted too, so the row fallback itself is tested.
 expectRejected(
-  worksheet('<row r="10"><c r="A10" t="str"><v>x</v></c></row><row><c r="A11" t="str"><v>y</v></c></row>'),
+  worksheet('<row r="10"><c r="A10" t="str"><v>x</v></c></row><row><c t="str"><v>y</v></c></row>'),
   /XLSX отклонён.*номер строки|безопасн.*лимит|строк.*10/i,
   'implicit-row-ceiling',
 );
