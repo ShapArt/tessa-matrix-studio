@@ -37,7 +37,7 @@ replaceExact(
 const readmePath = 'README.md';
 let readme = fs.readFileSync(readmePath, 'utf8');
 const readmeCount = readme.split('1.9.17').length - 1;
-if (readmeCount !== 4) throw new Error(`README current-version occurrences: expected 4, got ${readmeCount}`);
+if (readmeCount !== 5) throw new Error(`README current-version occurrences: expected 5, got ${readmeCount}`);
 readme = readme.replaceAll('1.9.17', '1.9.18');
 fs.writeFileSync(readmePath, readme);
 
