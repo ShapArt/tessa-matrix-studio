@@ -4,6 +4,13 @@ import vm from 'node:vm';
 const code = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
+// Keep the documented production ceilings under regression control. Runtime tests below
+// use tiny Node-only overrides so pathological cases stay fast in CI.
+assert(code.includes('MaxRowNumber: 100000'), 'production SpreadsheetML row ceiling drifted from 100000');
+assert(code.includes('MaxColumnNumber: 16384'), 'production SpreadsheetML column ceiling drifted from Excel XFD / 16384');
+assert(code.includes('MaxParsedRows: 100000'), 'production parsed-row ceiling drifted from 100000');
+assert(code.includes('MaxParsedCells: 500000'), 'production parsed-cell ceiling drifted from 500000');
+
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 globalThis.__TESSA_MATRIX_SYNC_TEST_SPREADSHEET_LIMITS__ = {
