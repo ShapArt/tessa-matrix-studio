@@ -87,8 +87,11 @@ try {
     `DELETE must re-read fresh matrix state immediately before DeleteRow, got ${snapshotReads} snapshot reads`);
   assert(deleteCalls === 0,
     `DELETE must not execute after target fingerprint changed post-preflight, got ${deleteCalls} delete calls`);
-  assert(result.rows.some(item => item.type === 'delete' && item.status === 'skipped'),
+  const skippedDelete = result.rows.find(item => item.type === 'delete' && item.status === 'skipped');
+  assert(skippedDelete,
     `race-conflicted DELETE must be reported as skipped: ${JSON.stringify(result.rows)}`);
+  assert(/изменилась после предварительной проверки/i.test(skippedDelete.reason || ''),
+    `DELETE race skip reason must explain the concurrent change: ${skippedDelete.reason}`);
 } finally {
   E.TessaBridge.create = originalCreate;
 }
