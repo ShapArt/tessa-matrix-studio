@@ -1016,9 +1016,8 @@
       }
       rows[rowNumber - 1] = values;
     }
-    // Sparse row indexes are bounded above. Fill gaps so the rest of the existing
-    // roundtrip parser keeps its simple array contract without exposing holes.
-    for (let i = 0; i < rows.length; i += 1) rows[i] = rows[i] || [];
+    // Keep missing rows as sparse-array holes. The numeric indexes are still bounded by
+    // MaxRowNumber, while avoiding one allocated empty Array for every absent row.
     return { rows, maxCol };
   }
 
