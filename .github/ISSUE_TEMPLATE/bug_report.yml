@@ -42,7 +42,7 @@ body:
         - Выбрать Excel — XLSX отклонён / ZIP security
         - Выбрать Excel — XLSX отклонён / SpreadsheetML security
         - Выбрать Excel — Excel автоматически преобразовал значение в дату
-        - Выбрать Excel — формула / scientific / процент / дробь / ведущие нули
+        - Выбрать Excel — формула / shared formula / scientific / процент / дробь / ведущие нули
         - PATCH — изменить существующую строку
         - ADD — добавить новую строку
         - REPLACE — вставить поверх существующей строки
