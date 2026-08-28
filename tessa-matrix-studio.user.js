@@ -874,6 +874,49 @@
     return new Map(decoded);
   }
 
+  const BUILTIN_EXCEL_DATE_FORMAT_IDS = new Set([
+    14, 15, 16, 17, 18, 19, 20, 21, 22,
+    27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
+    45, 46, 47, 50, 51, 52, 53, 54, 55, 56, 57, 58,
+  ]);
+
+  function excelNumberFormatKind(numFmtId, formatCode = '') {
+    const id = Number(numFmtId);
+    if (id === 49) return 'text';
+    if (BUILTIN_EXCEL_DATE_FORMAT_IDS.has(id)) return 'date';
+    const code = String(formatCode || '').trim();
+    if (!code) return 'general';
+    if (code === '@') return 'text';
+    const semantic = code
+      .replace(/"(?:[^"]|"")*"/g, '')
+      .replace(/\\./g, '')
+      .replace(/[_*]./g, '')
+      .replace(/\[(?!h+\]|m+\]|s+\])[^\]]*\]/gi, '')
+      .toLowerCase();
+    if (/am\/pm|a\/p|\[h+\]|\[m+\]|\[s+\]|y+|d+|h+|s+/.test(semantic)) return 'date';
+    if (/m+/.test(semantic) && /[\/-]/.test(semantic)) return 'date';
+    return 'general';
+  }
+
+  function parseStylesXml(xml) {
+    if (!xml) return [];
+    const customFormats = new Map();
+    for (const match of xml.matchAll(/<(?:[A-Za-z_][\w.-]*:)?numFmt\b([^>]*?)(?:\/\s*>|>)/gi)) {
+      const id = Number(attr(match[1], 'numFmtId'));
+      const code = attr(match[1], 'formatCode') || '';
+      if (Number.isInteger(id) && id >= 0) customFormats.set(id, code);
+    }
+    const cellXfsMatch = xml.match(/<(?:[A-Za-z_][\w.-]*:)?cellXfs\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?cellXfs>/i);
+    if (!cellXfsMatch) return [];
+    const styles = [];
+    for (const match of cellXfsMatch[1].matchAll(/<(?:[A-Za-z_][\w.-]*:)?xf\b([^>]*?)(?:\/\s*>|>)/gi)) {
+      const numFmtId = Number(attr(match[1], 'numFmtId') || 0);
+      const formatCode = customFormats.get(numFmtId) || '';
+      styles.push({ numFmtId, formatCode, numberFormatKind: excelNumberFormatKind(numFmtId, formatCode) });
+    }
+    return styles;
+  }
+
   function parseSharedStrings(xml) {
     if (!xml) return [];
     const items = [];
@@ -961,9 +1004,10 @@
     return { col, key: `${rowNumber}:${col}`, label: raw.toUpperCase() };
   }
 
-  function parseSheetXml(xml, sharedStrings) {
+  function parseSheetXml(xml, sharedStrings, styles = []) {
     const limits = effectiveSpreadsheetMlLimits();
     const rows = [];
+    const cellMeta = [];
     const seenRows = new Set();
     const seenCells = new Set();
     let maxCol = 0;
@@ -983,6 +1027,7 @@
       seenRows.add(rowNumber);
 
       const values = [];
+      const metaValues = [];
       const body = rowMatch[2];
       let nextImplicitCol = 0;
       // В Excel пустая ячейка часто сериализуется как <c .../>. Обрабатываем
@@ -1001,6 +1046,16 @@
         nextImplicitCol = Math.max(nextImplicitCol, coordinate.col + 1);
 
         const type = attr(attrs, 't') || '';
+        const styleIndexRaw = attr(attrs, 's');
+        const styleIndex = styleIndexRaw === null ? 0 : Number(styleIndexRaw);
+        const style = Number.isInteger(styleIndex) && styleIndex >= 0 ? (styles[styleIndex] || null) : null;
+        metaValues[coordinate.col] = {
+          styleIndex: Number.isInteger(styleIndex) && styleIndex >= 0 ? styleIndex : 0,
+          numFmtId: style?.numFmtId ?? 0,
+          formatCode: style?.formatCode || '',
+          numberFormatKind: style?.numberFormatKind || 'general',
+          rawType: type || 'n',
+        };
         let value = '';
         const inline = cellBody.match(/<(?:[A-Za-z_][\w.-]*:)?is\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?is>/i);
         if (inline) value = [...inline[1].matchAll(/<(?:[A-Za-z_][\w.-]*:)?t\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?t>/gi)].map(x => xmlDecode(x[1])).join('');
@@ -1015,10 +1070,11 @@
         maxCol = Math.max(maxCol, coordinate.col + 1);
       }
       rows[rowNumber - 1] = values;
+      cellMeta[rowNumber - 1] = metaValues;
     }
     // Keep missing rows as sparse-array holes. The numeric indexes are still bounded by
     // MaxRowNumber, while avoiding one allocated empty Array for every absent row.
-    return { rows, maxCol };
+    return { rows, maxCol, cellMeta };
   }
 
   function findHeaderRow(rows) {
@@ -1113,12 +1169,13 @@
     const entries = await unzipArrayBuffer(arrayBuffer);
     const decoder = new TextDecoder('utf-8');
     const shared = parseSharedStrings(entries.has('xl/sharedStrings.xml') ? decoder.decode(entries.get('xl/sharedStrings.xml')) : '');
+    const styles = parseStylesXml(entries.has('xl/styles.xml') ? decoder.decode(entries.get('xl/styles.xml')) : '');
     const sheetDescriptors = parseWorkbookSheets(entries, decoder);
     const parsedSheets = new Map();
     for (const descriptor of sheetDescriptors) {
       const raw = entries.get(descriptor.path);
       if (!raw) continue;
-      parsedSheets.set(descriptor.name, parseSheetXml(decoder.decode(raw), shared));
+      parsedSheets.set(descriptor.name, parseSheetXml(decoder.decode(raw), shared, styles));
     }
     const matrixDescriptor = sheetDescriptors.find(item => canonicalValue(item.name) === canonicalValue('Матрица')) || sheetDescriptors[0];
     const parsed = parsedSheets.get(matrixDescriptor.name);
@@ -1143,7 +1200,8 @@
     for (let r = headerRowIndex + 1; r < parsed.rows.length; r += 1) {
       const source = parsed.rows[r] || [];
       const values = Array.from({ length: lastMeaningful }, (_, i) => source[i] ?? '');
-      if (values.some(v => normalizeSpace(v))) data.push({ excelRow: r + 1, values });
+      const cellMeta = Array.from({ length: lastMeaningful }, (_, i) => parsed.cellMeta?.[r]?.[i] || null);
+      if (values.some(v => normalizeSpace(v))) data.push({ excelRow: r + 1, values, cellMeta });
     }
     const format = metadata[ROUNDTRIP.FormatKey] || null;
     return {
@@ -1924,7 +1982,7 @@
     const schemaChangesSheet = genericSheetXml(changeRows, [32, 16, 40, 44, 72, 12, 40, 72]);
     const baselineSheet = genericSheetXml(baselineRows, [40, 40, 48], { autoFilter: false });
 
-    const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="5"><font><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FF292929"/><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="20"/><name val="Aptos Display"/><family val="2"/></font><font><b/><color rgb="FF292929"/><sz val="13"/><name val="Aptos Display"/><family val="2"/></font></fonts><fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE31E24"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFB5121B"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF292929"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF0F1"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF5F5F5"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFE5E5E5"/></left><right style="thin"><color rgb="FFE5E5E5"/></right><top style="thin"><color rgb="FFE5E5E5"/></top><bottom style="thin"><color rgb="FFE5E5E5"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="15"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="6" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="6" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="3" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="5" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf><xf numFmtId="0" fontId="2" fillId="6" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+    const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="5"><font><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FF292929"/><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="20"/><name val="Aptos Display"/><family val="2"/></font><font><b/><color rgb="FF292929"/><sz val="13"/><name val="Aptos Display"/><family val="2"/></font></fonts><fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE31E24"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFB5121B"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF292929"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF0F1"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF5F5F5"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFE5E5E5"/></left><right style="thin"><color rgb="FFE5E5E5"/></right><top style="thin"><color rgb="FFE5E5E5"/></top><bottom style="thin"><color rgb="FFE5E5E5"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="15"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="49" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="6" borderId="0" xfId="0"/><xf numFmtId="49" fontId="0" fillId="6" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="3" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="5" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf><xf numFmtId="0" fontId="2" fillId="6" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
     const sheetNames = ['Матрица', ROUNDTRIP.InstructionSheet, ROUNDTRIP.DictionarySheet, ROUNDTRIP.StructureSheet, ROUNDTRIP.SchemaChangesSheet, ROUNDTRIP.BaselineSheet];
     const sheetXml = [worksheet, instructionSheet, dictionarySheet, structureSheet, schemaChangesSheet, baselineSheet];
     const sheetOverrides = sheetNames.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('');
