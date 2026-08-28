@@ -1,0 +1,43 @@
+name: Patch v1.9.16 release metadata
+
+on:
+  push:
+    branches: [fix/preflight-stale-replace-source-v1.9.16]
+    paths:
+      - '.github/workflows/patch-v1.9.16-release.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/preflight-stale-replace-source-v1.9.16
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Apply release metadata patch
+        run: node tools/patch-v1.9.16-release.cjs
+      - name: Verify release metadata and regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check tessa-matrix-studio.user.js
+          node tests/smoke.mjs
+          node tests/preflight-stale-replace-source.mjs
+          node tests/qa-pack.mjs
+      - name: Commit release metadata and remove helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f tools/patch-v1.9.16-release.cjs .github/workflows/patch-v1.9.16-release.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tessa-matrix-studio.user.js tests/smoke.mjs package.json README.md CHANGELOG.md tools/patch-v1.9.16-release.cjs .github/workflows/patch-v1.9.16-release.yml
+          git commit -m 'chore: prepare v1.9.16 release metadata'
+          git push origin HEAD:fix/preflight-stale-replace-source-v1.9.16
