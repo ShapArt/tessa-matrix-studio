@@ -11,6 +11,7 @@ for (const token of ['Скачать QA-набор', 'buildQaPackVariants', 'dow
   assert(!readme.includes(token), `README still contains removed QA generator token: ${token}`);
 }
 assert(!issue.includes('Скачать QA-набор'), 'issue template still exposes removed QA generator scenario');
+// Removing the generated QA pack must not erase unrelated production documentation.
 assert(readme.includes('# Права и безопасность'), 'QA removal must not delete the security section');
 assert(readme.includes('# Если что-то не работает'), 'QA removal must not delete troubleshooting');
 assert(readme.includes('Ссылка .user.js открылась как текст или установка не стартовала'), 'manual installation troubleshooting must remain');
