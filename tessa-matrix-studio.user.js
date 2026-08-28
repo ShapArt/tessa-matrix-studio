@@ -5292,7 +5292,7 @@
     if (c.delete && !window.confirm(`Будет удалено строк: ${c.delete}. Подтвердите удаление отдельно.`)) return null;
 
     APP.abortRequested = false;
-    const { bridge, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips } = await preflightPlan(plan);
+    const { bridge, structure, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips } = await preflightPlan(plan);
     const totalToStore = preparedUpdates.size + preparedAdds.size + readyDeletes.length;
     let storedCount = 0;
     const tickStoreProgress = label => {
