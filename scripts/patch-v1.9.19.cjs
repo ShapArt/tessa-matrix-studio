@@ -13,7 +13,6 @@ let script = read('tessa-matrix-studio.user.js');
 script = replaceOnce(script, '// @version      1.9.18', '// @version      1.9.19', 'metadata version');
 script = replaceOnce(script, "    version: '1.9.18',", "    version: '1.9.19',", 'runtime version');
 
-// Accept both default-namespace and explicitly prefixed SpreadsheetML/relationship tags.
 script = replaceOnce(script,
   "for (const match of rels.matchAll(/<Relationship\\b([^>]*)\\/?\\s*>/gi)) {",
   "for (const match of rels.matchAll(/<(?:[A-Za-z_][\\w.-]*:)?Relationship\\b([^>]*)\\/?\\s*>/gi)) {",
@@ -43,26 +42,23 @@ script = replaceOnce(script,
   "const v = cellBody.match(/<(?:[A-Za-z_][\\w.-]*:)?v\\b[^>]*>([\\s\\S]*?)<\\/(?:[A-Za-z_][\\w.-]*:)?v>/i);",
   'value namespace parser');
 
-// Match DELETE dependencies against the actual resulting UPDATE row, including current
-// values of columns omitted from a supported stale roundtrip schema.
 script = replaceOnce(script,
   "      const desiredFingerprint = canonicalValue(fingerprintFlat(action.excelRow.flat || {}));",
   "      const resultingFlat = action.type === 'update'\n        ? { ...(action.currentRow?.flat || {}), ...(action.excelRow.flat || {}) }\n        : (action.excelRow.flat || {});\n      const desiredFingerprint = canonicalValue(fingerprintFlat(resultingFlat));",
   'dependent delete resulting fingerprint');
 
-// Remove built-in QA generator; preserve Roundtrip V6 baseline/integrity code.
 const qaStart = script.indexOf('  function qaDefinitionDescriptors(structure) {');
 const qaEnd = script.indexOf('  function sanitizeFileName(value) {', qaStart);
 if (qaStart < 0 || qaEnd < 0 || qaEnd <= qaStart) throw new Error('QA generator block boundaries not found');
 script = script.slice(0, qaStart) + script.slice(qaEnd);
 
 script = replaceOnce(script,
-  '<button id=\\"tms-download-qa\\" class=\\"tms-ghost\\">Скачать QA-набор</button>',
+  '<button id="tms-download-qa" class="tms-ghost">Скачать QA-набор</button>',
   '',
   'QA UI button');
 script = replaceOnce(script,
-  '<div class=\\"tms-step-caption\\">QA-набор строится из текущей матрицы и проверяет NOOP / PATCH / ADD / REPLACE / DELETE / SKIP. Destructive-файлы применяйте только в тестовой матрице.</div>',
-  '<div class=\\"tms-step-caption\\">Скачайте рабочий Excel или обновите справочники перед редактированием.</div>',
+  '<div class="tms-step-caption">QA-набор строится из текущей матрицы и проверяет NOOP / PATCH / ADD / REPLACE / DELETE / SKIP. Destructive-файлы применяйте только в тестовой матрице.</div>',
+  '<div class="tms-step-caption">Скачайте рабочий Excel или обновите справочники перед редактированием.</div>',
   'QA UI caption');
 const qaHandler = `    panel.querySelector('#tms-download-qa').addEventListener('click', async () => {\n      if (APP.busy) return; setBusy(true);\n      try { await downloadQaPack(); alert('QA-набор скачан. Начните с 00_QA_SMOKE_PREVIEW.xlsx. Destructive-сценарии применяйте только в тестовой матрице.'); }\n      catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); alert(\`Не удалось создать QA-набор: \${message}\`); }\n      finally { setBusy(false); }\n    });\n`;
 script = replaceOnce(script, qaHandler, '', 'QA UI event handler');
