@@ -178,3 +178,4 @@ replaceOnce(
 
 fs.writeFileSync(path, text);
 console.log('v1.9.20 preview preflight patch applied');
+// trigger helper after workflow registration
