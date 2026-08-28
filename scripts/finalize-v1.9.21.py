@@ -30,3 +30,4 @@ entry = '''## 1.9.21 — 2026-08-28\n\n- исправлена safety-завис�
 changelog.write_text(text.replace(marker, marker + entry, 1), encoding='utf-8')
 
 print('v1.9.21 release metadata finalized')
+# trigger workflow after finalizer definition exists
