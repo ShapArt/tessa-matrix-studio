@@ -1,0 +1,38 @@
+name: v1.9.27 DELETE race wiring
+
+on:
+  push:
+    branches:
+      - feat/v1.9.27-apply-race-protection
+    paths:
+      - .github/workflows/v1927-green-delete-wiring.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/v1.9.27-apply-race-protection
+      - name: Wire preflight structure into Apply
+        shell: python
+        run: |
+          from pathlib import Path
+          source = Path('tessa-matrix-studio.user.js')
+          text = source.read_text(encoding='utf-8')
+          old = "const { bridge, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips } = await preflightPlan(plan);"
+          new = "const { bridge, structure, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips } = await preflightPlan(plan);"
+          if old not in text:
+              raise SystemExit('preflight destructuring anchor not found')
+          source.write_text(text.replace(old, new, 1), encoding='utf-8')
+          Path('.github/workflows/v1927-green-delete-wiring.yml').unlink()
+      - name: Commit patch and remove helper
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js .github/workflows/v1927-green-delete-wiring.yml
+          git commit -m "fix: pass preflight structure to DELETE recheck"
+          git push origin HEAD:feat/v1.9.27-apply-race-protection
