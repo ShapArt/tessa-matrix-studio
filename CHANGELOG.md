@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.25 — 2026-08-28
+
+- рабочие ячейки roundtrip-Excel теперь выгружаются с форматом Excel Text, чтобы значения вроде `3 - 18`, `1-10` и похожие строки не превращались в даты при ручном редактировании;
+- XLSX-reader разбирает `styles.xml` и сохраняет для каждой рабочей ячейки style index, number format и исходный тип SpreadsheetML;
+- если Excel уже преобразовал числовое значение в дату и сохранил serial (реальный UAT: `3 - 18` → `мар.18` → `43160`), не-Date/DateTime критерий переводится в ПРОПУСТИТЬ с явной причиной вместо применения двусмысленного числа;
+- настоящий Int/Decimal в General/Text не блокируется, а Date/DateTime по-прежнему поддерживает штатные Excel serial values;
+- TDD regression покрывает Text export, реальный `43160 + date style` fail-closed, genuine integer `43160` и настоящий Date serial; внутренние XLSX и данные TESSA в репозиторий не добавляются.
+
 ## 1.9.24 — 2026-08-28
 
 - добавлена fail-closed структурная проверка SpreadsheetML после ZIP/OPC guard и до построения workbook/Preview;
