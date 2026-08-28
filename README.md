@@ -6,13 +6,13 @@
 
 Выгрузка матрицы в Excel → массовая правка → проверка изменений → безопасное применение в TESSA.
 
-[![Version](https://img.shields.io/badge/version-1.9.18-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.9.19-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-userscript-24292F?style=flat-square&logo=tampermonkey)](https://www.tampermonkey.net/)
 
 ### [УСТАНОВИТЬ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js) · [СКАЧАТЬ РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [ОТКРЫТЬ КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [СООБЩИТЬ ОБ ОШИБКЕ](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.9.18 · Автор: Шаповалов Артём**
+**v1.9.19 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -46,7 +46,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.9.18** в Tampermonkey.
+2. Подтвердите установку версии **1.9.19** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -108,7 +108,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Перед подтверждением проверьте:
 
 - **Название:** `TESSA Matrix Studio — Черкизово`
-- **Версия:** `1.9.18`
+- **Версия:** `1.9.19`
 - **Автор:** `Шаповалов Артём`
 - **Разрешения:** `@grant none`
 - **Область запуска:** только домены TESSA Черкизово
@@ -190,6 +190,8 @@ https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-ma
 - **Скачать со свежими справочниками** — новая выгрузка с принудительным перечитыванием справочников TESSA; полезно, если недавно добавили или переименовали значение.
 
 В Excel сохраняются скрытые служебные идентификаторы строк. Они нужны для точного сопоставления и **не должны редактироваться вручную**.
+
+Roundtrip V6 дополнительно хранит на veryHidden-листе **baseline-ledger** с исходными MatrixRowID, MatrixVersionID и BaseFingerprint. Он нужен для безопасной проверки физического DELETE и целостности файла: если служебная identity или fingerprint повреждены либо удаляемая строка успела измениться в TESSA, Studio отказывается угадывать и просит свежую выгрузку.
 
 > [!TIP]
 > Перед первой правкой сохраните исходную выгрузку отдельно. Если preview покажет неожиданные изменения, проще начать заново от свежего файла.
@@ -275,7 +277,6 @@ Studio показывает:
 |---|---|
 | **Скачать Excel** | получить текущую матрицу для редактирования |
 | **Скачать со свежими справочниками** | если справочники TESSA недавно менялись |
-| **Скачать QA-набор** | создать привязанный к текущей тестовой матрице ZIP с позитивными и негативными XLSX-сценариями |
 | **Выбрать Excel** | загрузить отредактированный `.xlsx` |
 | **Актуализировать выбранный Excel** | перенести ваши правки в актуальную Excel-структуру, если в TESSA появились новые поля |
 | **Проверить изменения** | построить diff без записи в TESSA |
@@ -284,101 +285,7 @@ Studio показывает:
 
 ---
 
-## QA-набор для проверки всех сценариев
 
-Начиная с **v1.9.15**, Studio умеет собрать тестовый пакет прямо из открытой матрицы. Нажмите **Скачать QA-набор** — Studio перечитает текущие строки и справочники и создаст ZIP, привязанный к реальным **MatrixID / TemplateID / MatrixRowID / MatrixVersionID** этой матрицы. Поэтому эти XLSX можно сразу загружать обратно в ту же тестовую матрицу.
-
-> [!CAUTION]
-> Генерируйте QA-набор только на **тестовой или черновой матрице минимум с 3 строками**. Файлы PATCH / ADD / REPLACE / DELETE при нажатии Apply действительно меняют матрицу. Для первичной проверки достаточно загрузить файл и нажать **Проверить изменения**.
-
-В ZIP находятся `README_QA.md`, `QA_PACK_MANIFEST.json` и изолированные Excel-сценарии. Начинайте с **`00_QA_SMOKE_PREVIEW.xlsx`**: он специально содержит одновременно корректный PATCH, корректный ADD и одну ошибочную строку, которая должна уйти в SKIP; при этом **DELETE должен остаться 0**.
-
-Дальше можно прогнать отдельные файлы: NOOP, PATCH, PATCH нескольких полей, ADD, REPLACE, DELETE, очистка строки вместо DELETE, несуществующее значение справочника, повреждённые hidden-ID, повреждённый fingerprint, неоднозначная копия, DELETE + schema refresh, другая MatrixID и другой TemplateID. После любого реального Apply скачайте QA-набор заново — исходный baseline уже изменился.
-
-### Почему QA-файлы используют Roundtrip V6
-
-Roundtrip V6 сохраняет отдельный veryHidden **baseline-ledger** с исходными `MatrixRowID`, `MatrixVersionID` и `BaseFingerprint`. Он нужен не для редактирования пользователем, а чтобы Studio могла отличить настоящее физическое удаление строки от повреждения hidden-ID и проверить, не изменилась ли удаляемая строка в TESSA после выгрузки. Если identity или fingerprint повреждены либо DELETE стал stale, Studio должна отказаться от угадывания.
-
----
-# Права и безопасность
-
-TESSA Matrix Studio работает в контексте уже открытой страницы TESSA и текущей пользовательской сессии.
-
-- скрипт не повышает права и не обходит штатные ограничения TESSA;
-- для записи нужны права на корректировку конкретной матрицы;
-- `@grant none` означает, что привилегированные GM/Tampermonkey API не используются;
-- скрипт всё равно выполняется внутри разрешённых страниц TESSA и работает с данными открытой карточки;
-- пароль и учётные данные пользователя не сохраняются;
-- Excel обрабатывается локально в браузере;
-- перед записью выполняется повторная проверка состояния матрицы;
-- неоднозначные значения, конфликт версий и небезопасные операции не применяются молча.
-
-Поддерживаемые адреса:
-
-```text
-https://tessa.cherkizovsky.net/*
-https://tessa-app01.cherkizovsky.net/*
-https://tessa-app01tl.cherkizovsky.net/*
-https://tessa-app*.cherkizovsky.net/*
-```
-
----
-
-# Если что-то не работает
-
-<details>
-<summary><b>Скрипт установлен, но панель Studio не появилась</b></summary>
-
-1. Проверьте, что Tampermonkey включён.
-2. В Chrome/Edge проверьте **Allow User Scripts** или **Developer mode**.
-3. Убедитесь, что открыт поддерживаемый адрес TESSA.
-4. Обновите страницу (`Ctrl+R`).
-5. В меню Tampermonkey убедитесь, что **TESSA Matrix Studio** включён для этой страницы.
-
-</details>
-
-<details>
-<summary><b>Ссылка .user.js открылась как текст или установка не стартовала</b></summary>
-
-Откройте **Tampermonkey → Dashboard → Utilities → URL** и вставьте адрес установки вручную:
-
-```text
-https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js
-```
-
-Tampermonkey официально поддерживает принудительный импорт userscript по URL, когда автоматическое распознавание ссылки не сработало.
-
-</details>
-
-<details>
-<summary><b>ERR_INVALID_RESPONSE при установке</b></summary>
-
-Основная ссылка README ведёт на `releases/latest/download/...user.js`, то есть на последний опубликованный GitHub Release. Если браузер просто скачал файл, добавьте его через **Dashboard → Add a new script** или импорт URL в **Utilities**.
-
-</details>
-
-<details>
-<summary><b>Неожиданно появилось «УДАЛИТЬ»</b></summary>
-
-Не применяйте план. Скачайте свежую выгрузку и повторите правку. Смысл preview — показать опасное действие **до** записи.
-
-</details>
-
-<details>
-<summary><b>«Применить к TESSA» недоступно или TESSA отклоняет сохранение</b></summary>
-
-Проверьте состояние матрицы и ваши права на её корректировку. Studio не обходит штатную модель доступа TESSA.
-
-</details>
-
-<details>
-<summary><b>В справочнике нет нужного значения</b></summary>
-
-Скачайте Excel кнопкой **«Скачать со свежими справочниками»**. Если значения нет и после этого, сначала проверьте его наличие в самой TESSA.
-
-</details>
-
----
 # Боевой UAT перед раздачей пользователям
 
 Перед первой раздачей новой версии пользователям пройдите этот чек-лист на **тестовой или черновой матрице**, где допустимы контролируемые изменения. Не используйте для проверки критичную матрицу.
@@ -438,7 +345,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.9.18**
+Текущая версия: **1.9.19**
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)

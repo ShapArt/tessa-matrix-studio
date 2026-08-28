@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.18
+// @version      1.9.19
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.18',
+    version: '1.9.19',
     plan: null,
     review: createPlanReviewState(),
     workbook: null,
@@ -628,13 +628,13 @@
     const workbook = decoder.decode(entries.get('xl/workbook.xml') || new Uint8Array());
     const rels = decoder.decode(entries.get('xl/_rels/workbook.xml.rels') || new Uint8Array());
     const relationships = new Map();
-    for (const match of rels.matchAll(/<Relationship\b([^>]*)\/?\s*>/gi)) {
+    for (const match of rels.matchAll(/<(?:[A-Za-z_][\w.-]*:)?Relationship\b([^>]*)\/?\s*>/gi)) {
       const id = attr(match[1], 'Id');
       const target = attr(match[1], 'Target');
       if (id && target) relationships.set(id, target);
     }
     const sheets = [];
-    for (const match of workbook.matchAll(/<sheet\b([^>]*)\/?\s*>/gi)) {
+    for (const match of workbook.matchAll(/<(?:[A-Za-z_][\w.-]*:)?sheet\b([^>]*)\/?\s*>/gi)) {
       const sheetName = attr(match[1], 'name') || `Лист${sheets.length + 1}`;
       const relId = attr(match[1], 'r:id') || attr(match[1], 'id');
       const target = relationships.get(relId) || `worksheets/sheet${sheets.length + 1}.xml`;
@@ -647,14 +647,14 @@
   function parseSheetXml(xml, sharedStrings) {
     const rows = [];
     let maxCol = 0;
-    for (const rowMatch of xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>/gi)) {
+    for (const rowMatch of xml.matchAll(/<(?:[A-Za-z_][\w.-]*:)?row\b([^>]*)>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?row>/gi)) {
       const rowNumber = Number(attr(rowMatch[1], 'r') || rows.length + 1);
       const values = [];
       const body = rowMatch[2];
       // В Excel пустая ячейка часто сериализуется как <c .../>. Старый regex
       // ошибочно склеивал её со следующей ячейкой и показывал индекс sharedStrings
       // (например 102/118) вместо реального значения. Обрабатываем оба варианта.
-      const cellRegex = /<c\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/c>)/gi;
+      const cellRegex = /<(?:[A-Za-z_][\w.-]*:)?c\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?c>)/gi;
       for (const cellMatch of body.matchAll(cellRegex)) {
         const attrs = cellMatch[1] || '';
         const cellBody = cellMatch[2] || '';
@@ -662,10 +662,10 @@
         const col = colToIndex(ref);
         const type = attr(attrs, 't') || '';
         let value = '';
-        const inline = cellBody.match(/<is\b[^>]*>([\s\S]*?)<\/is>/i);
-        if (inline) value = [...inline[1].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/gi)].map(x => xmlDecode(x[1])).join('');
+        const inline = cellBody.match(/<(?:[A-Za-z_][\w.-]*:)?is\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?is>/i);
+        if (inline) value = [...inline[1].matchAll(/<(?:[A-Za-z_][\w.-]*:)?t\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?t>/gi)].map(x => xmlDecode(x[1])).join('');
         else {
-          const v = cellBody.match(/<v\b[^>]*>([\s\S]*?)<\/v>/i);
+          const v = cellBody.match(/<(?:[A-Za-z_][\w.-]*:)?v\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?v>/i);
           if (v) {
             const raw = xmlDecode(v[1]);
             value = type === 's' ? (sharedStrings[Number(raw)] ?? '') : raw;
@@ -1603,286 +1603,6 @@
     return await makeZip(entries);
   }
 
-  function qaDefinitionDescriptors(structure) {
-    return [
-      ...(structure?.conditions || []).map(condition => ({ kind: 'criterion', id: condition.criterionRowId, key: definitionKey('criterion', condition.criterionRowId), condition })),
-      ...(structure?.functions || []).map(fn => ({ kind: 'function', id: fn.id, key: definitionKey('function', fn.id), fn })),
-    ];
-  }
-
-  function qaCatalogForKey(dictionaryCatalog, key) {
-    const catalogId = dictionaryCatalog?.columnCatalogIds?.[key];
-    return catalogId ? dictionaryCatalog?.catalogs?.[catalogId] || null : null;
-  }
-
-  function qaApplyCatalogEntry(row, descriptor, entry) {
-    if (!row || !descriptor || !entry) return false;
-    row.flat = { ...(row.flat || {}) };
-    if (descriptor.kind === 'function') {
-      row.roles = { ...(row.roles || {}) };
-      row.roles[descriptor.id] = [{ id: String(entry.id || ''), display: entry.display || entry.selector || '', roleTypeId: entry.roleTypeId ?? '' }];
-      row.flat[descriptor.key] = [entry.display || entry.selector || ''];
-      return true;
-    }
-    const condition = descriptor.condition;
-    const kind = operandKind({ kind: 'criterion', operandTypeId: condition.operandTypeId, refSection: condition.refSection });
-    row.values = { ...(row.values || {}) };
-    if (kind === 'Boolean') {
-      const semantic = booleanSemantic(entry.value ?? entry.id ?? entry.display);
-      if (semantic === null) return false;
-      row.values[descriptor.id] = [{ id: semantic ? 'true' : 'false', display: semantic ? 'Да' : 'Нет', value: semantic }];
-      row.flat[descriptor.key] = [semantic ? 'Да' : 'Нет'];
-      return true;
-    }
-    row.values[descriptor.id] = [{ id: String(entry.id || ''), display: entry.display || entry.selector || '', value: entry.display || entry.selector || '' }];
-    row.flat[descriptor.key] = [entry.display || entry.selector || ''];
-    return true;
-  }
-
-  function qaApplyScalarMutation(row, descriptor, salt) {
-    if (!row || descriptor?.kind !== 'criterion') return false;
-    const condition = descriptor.condition;
-    const kind = operandKind({ kind: 'criterion', operandTypeId: condition.operandTypeId, refSection: condition.refSection });
-    const before = row.flat?.[descriptor.key]?.[0] ?? '';
-    let display = null;
-    if (kind === 'String') display = `${before || 'QA'} · ${salt}`;
-    else if (kind === 'Boolean') display = booleanSemantic(before) === true ? 'Нет' : 'Да';
-    else if (kind === 'Int') {
-      const n = Number(String(before).replace(',', '.'));
-      display = String(Number.isFinite(n) ? Math.trunc(n) + 1 : 1);
-    } else if (kind === 'Decimal') {
-      const n = Number(String(before).replace(',', '.'));
-      display = String(Number.isFinite(n) ? n + 1 : 1);
-    } else if (kind === 'Date' || kind === 'DateTime') {
-      const parsed = new Date(before);
-      const date = Number.isNaN(parsed.getTime()) ? new Date(2030, 0, 2, kind === 'DateTime' ? 12 : 0, 0, 0) : new Date(parsed.getTime() + 86400000);
-      display = kind === 'DateTime'
-        ? `${String(date.getDate()).padStart(2,'0')}.${String(date.getMonth()+1).padStart(2,'0')}.${date.getFullYear()} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`
-        : `${String(date.getDate()).padStart(2,'0')}.${String(date.getMonth()+1).padStart(2,'0')}.${date.getFullYear()}`;
-    }
-    if (display === null) return false;
-    row.values = { ...(row.values || {}) };
-    row.values[descriptor.id] = [{ id: '', display, value: display }];
-    row.flat = { ...(row.flat || {}), [descriptor.key]: [display] };
-    return true;
-  }
-
-  function qaMutateRowUnique(row, structure, dictionaryCatalog, existingRows, salt, excludedKeys = new Set()) {
-    const existing = new Set((existingRows || []).map(item => fingerprintFlat(item.flat || {})));
-    const descriptors = qaDefinitionDescriptors(structure);
-    for (const descriptor of descriptors) {
-      if (excludedKeys.has(descriptor.key)) continue;
-      const copy = clonePlain(row);
-      let changed = qaApplyScalarMutation(copy, descriptor, salt);
-      if (!changed) {
-        const catalog = qaCatalogForKey(dictionaryCatalog, descriptor.key);
-        const current = new Set((copy.flat?.[descriptor.key] || []).map(canonicalValue));
-        const alt = (catalog?.entries || []).find(entry => entry?.display && !current.has(canonicalValue(entry.display)));
-        if (alt) changed = qaApplyCatalogEntry(copy, descriptor, alt);
-      }
-      if (!changed) continue;
-      const fp = fingerprintFlat(copy.flat || {});
-      if (!fp || fp === fingerprintFlat(row.flat || {}) || existing.has(fp)) continue;
-      return { row: copy, key: descriptor.key };
-    }
-    throw new Error('QA-набор: не найдено поле, которое можно безопасно изменить для тестового сценария. Нужны допустимые альтернативные значения или скалярный критерий.');
-  }
-
-  function qaCorruptDictionaryRow(row, structure, dictionaryCatalog, salt = 'QA_NOT_FOUND') {
-    const descriptors = qaDefinitionDescriptors(structure);
-    for (const descriptor of descriptors) {
-      const catalog = qaCatalogForKey(dictionaryCatalog, descriptor.key);
-      if (!catalog) continue;
-      const copy = clonePlain(row);
-      copy.flat = { ...(copy.flat || {}), [descriptor.key]: [`__${salt}__`] };
-      if (descriptor.kind === 'function') {
-        copy.roles = { ...(copy.roles || {}), [descriptor.id]: [{ id: '', display: `__${salt}__`, roleTypeId: '' }] };
-      } else {
-        copy.values = { ...(copy.values || {}), [descriptor.id]: [{ id: '', display: `__${salt}__`, value: `__${salt}__` }] };
-      }
-      return copy;
-    }
-    for (const descriptor of descriptors) {
-      if (descriptor.kind !== 'criterion') continue;
-      const kind = operandKind({ kind: 'criterion', operandTypeId: descriptor.condition.operandTypeId, refSection: descriptor.condition.refSection });
-      if (!['Boolean','Int','Decimal','Date','DateTime'].includes(kind)) continue;
-      const copy = clonePlain(row);
-      copy.flat = { ...(copy.flat || {}), [descriptor.key]: ['__QA_INVALID_TYPED_VALUE__'] };
-      copy.values = { ...(copy.values || {}), [descriptor.id]: [{ id: '', display: '__QA_INVALID_TYPED_VALUE__', value: '__QA_INVALID_TYPED_VALUE__' }] };
-      return copy;
-    }
-    throw new Error('QA-набор: в матрице нет справочного или типизированного поля для негативного сценария.');
-  }
-
-  function qaClearVisibleRow(row, structure) {
-    const copy = clonePlain(row);
-    copy.values = { ...(copy.values || {}) };
-    copy.roles = { ...(copy.roles || {}) };
-    copy.flat = { ...(copy.flat || {}) };
-    for (const condition of structure?.conditions || []) {
-      copy.values[condition.criterionRowId] = [];
-      copy.flat[definitionKey('criterion', condition.criterionRowId)] = [];
-    }
-    for (const fn of structure?.functions || []) {
-      copy.roles[fn.id] = [];
-      copy.flat[definitionKey('function', fn.id)] = [];
-    }
-    return copy;
-  }
-
-  async function buildQaPackVariants(structure, snapshot, matrixInfo, dictionaryCatalog) {
-    if (!structure || !snapshot || !matrixInfo) throw new Error('QA-набор: не хватает структуры, snapshot или данных матрицы.');
-    if ((snapshot.rows || []).length < 3) throw new Error('QA-набор требует минимум 3 строки в тестовой матрице для сценариев PATCH / REPLACE / DELETE / ambiguity.');
-    const baselineRows = clonePlain(snapshot.rows || []);
-    const baseSnapshot = { ...clonePlain(snapshot), rows: clonePlain(snapshot.rows || []) };
-    const catalog = normalizeDictionaryCatalog(clonePlain(dictionaryCatalog || { catalogs: {}, columnCatalogIds: {}, stats: { errors: [] } }));
-    const variants = [];
-    const checklist = [];
-
-    const addVariant = async (scenario, name, rows, expected, risk, overrides = {}) => {
-      const variantSnapshot = { ...clonePlain(baseSnapshot), ...(overrides.snapshot || {}), rows: clonePlain(rows) };
-      const variantInfo = { ...clonePlain(matrixInfo), ...(overrides.matrixInfo || {}) };
-      const bytes = await createRoundtripXlsxBytes(structure, variantSnapshot, variantInfo, catalog, { baselineRows });
-      variants.push({ scenario, name, bytes, expected, risk });
-      checklist.push({ scenario, file: name, expected, risk });
-    };
-    const rows = () => clonePlain(baseSnapshot.rows);
-
-    {
-      const smoke = rows();
-      smoke[0] = qaMutateRowUnique(smoke[0], structure, catalog, baseSnapshot.rows, 'QA SMOKE PATCH').row;
-      smoke[1] = qaCorruptDictionaryRow(smoke[1], structure, catalog, 'QA_SMOKE_NOT_FOUND');
-      const added = qaMutateRowUnique(clonePlain(baseSnapshot.rows[2]), structure, catalog, [...baseSnapshot.rows, smoke[0]], 'QA SMOKE ADD').row;
-      added.index = smoke.length; added.rowCardId = ''; added.versionId = ''; added.fingerprint = '';
-      smoke.push(added);
-      await addVariant('smoke_preview', '00_QA_SMOKE_PREVIEW.xlsx', smoke, 'ИЗМЕНИТЬ ≥1, ДОБАВИТЬ ≥1, ПРОПУСТИТЬ ≥1, УДАЛИТЬ 0.', 'PREVIEW ONLY — не применять в рабочей матрице.');
-    }
-
-    await addVariant('noop', '01_OK_NOOP.xlsx', rows(), 'Только БЕЗ ИЗМЕНЕНИЙ.', 'Безопасно для preview; Apply не должен быть активен.');
-
-    {
-      const v = rows();
-      v[0] = qaMutateRowUnique(v[0], structure, catalog, baseSnapshot.rows, 'QA PATCH').row;
-      await addVariant('valid_patch', '02_OK_PATCH.xlsx', v, 'ИЗМЕНИТЬ 1, без ADD/DELETE.', 'Применять только в тестовой матрице.');
-    }
-
-    {
-      const v = rows();
-      const first = qaMutateRowUnique(v[0], structure, catalog, baseSnapshot.rows, 'QA MULTI 1');
-      const second = qaMutateRowUnique(first.row, structure, catalog, baseSnapshot.rows, 'QA MULTI 2', new Set([first.key]));
-      v[0] = second.row;
-      await addVariant('multi_patch', '03_OK_MULTI_PATCH.xlsx', v, 'ИЗМЕНИТЬ 1, внутри минимум 2 изменённых поля.', 'Применять только в тестовой матрице.');
-    }
-
-    {
-      const v = rows();
-      const added = qaMutateRowUnique(clonePlain(baseSnapshot.rows[0]), structure, catalog, baseSnapshot.rows, 'QA ADD').row;
-      added.index = v.length; added.rowCardId = ''; added.versionId = ''; added.fingerprint = '';
-      v.push(added);
-      await addVariant('valid_add', '04_OK_ADD.xlsx', v, 'ДОБАВИТЬ 1, УДАЛИТЬ 0.', 'Применять только в тестовой матрице.');
-    }
-
-    {
-      const v = rows();
-      const replacement = qaMutateRowUnique(clonePlain(baseSnapshot.rows[0]), structure, catalog, baseSnapshot.rows, 'QA REPLACE').row;
-      replacement.index = 1;
-      v[1] = replacement;
-      await addVariant('valid_replace', '05_OK_REPLACE.xlsx', v, 'ЗАМЕНИТЬ/ИЗМЕНИТЬ 1 по целевой строке, без ADD/DELETE.', 'Применять только в тестовой матрице.');
-    }
-
-    {
-      const v = rows(); v.splice(1, 1);
-      await addVariant('valid_delete', '06_OK_DELETE.xlsx', v, 'УДАЛИТЬ 1.', 'DESTRUCTIVE — только отдельная тестовая матрица.');
-    }
-
-    {
-      const v = rows(); v[1] = qaClearVisibleRow(v[1], structure);
-      await addVariant('invalid_clear_row', '07_BAD_CLEAR_ROW.xlsx', v, 'Строка ПРОПУЩЕНА; DELETE = 0. Очистка ячеек не равна удалению.', 'Негативный сценарий; не применять.');
-    }
-
-    {
-      const v = rows(); v[1] = qaCorruptDictionaryRow(v[1], structure, catalog, 'QA_NOT_FOUND');
-      await addVariant('invalid_dictionary', '08_BAD_DICTIONARY.xlsx', v, 'Локальный SKIP с сообщением о несуществующем значении.', 'Негативный сценарий; не применять.');
-    }
-
-    {
-      const v = rows(); v[1].rowCardId = ''; v[1].versionId = '';
-      await addVariant('invalid_hidden_identity', '09_BAD_HIDDEN_ID.xlsx', v, 'SKIP/блокировка из-за потерянных MatrixRowID/MatrixVersionID; ADD/DELETE = 0.', 'Негативный integrity-сценарий; не применять.');
-    }
-
-    {
-      const v = rows(); v[1].fingerprint = '';
-      await addVariant('invalid_hidden_fingerprint', '10_BAD_HIDDEN_FINGERPRINT.xlsx', v, 'SKIP из-за повреждённого BaseFingerprint; UPDATE/DELETE = 0.', 'Негативный integrity-сценарий; не применять.');
-    }
-
-    {
-      const v = rows();
-      const first = qaMutateRowUnique(clonePlain(baseSnapshot.rows[0]), structure, catalog, baseSnapshot.rows, 'QA AMBIG 1').row;
-      const second = qaMutateRowUnique(clonePlain(baseSnapshot.rows[0]), structure, catalog, [...baseSnapshot.rows, first], 'QA AMBIG 2').row;
-      first.index = 0; second.index = v.length; v[0] = first; v.push(second);
-      await addVariant('ambiguous_copy', '11_BAD_AMBIGUOUS_COPY.xlsx', v, 'Неоднозначная группа SKIP; автоматический DELETE отключён.', 'Негативный identity-сценарий; не применять.');
-    }
-
-    {
-      const v = rows(); v.splice(1, 1);
-      await addVariant('schema_refresh_delete', '12_OK_SCHEMA_REFRESH_DELETE.xlsx', v, 'После актуализации Excel удалённая строка остаётся удалённой.', 'Проверять refresh; Apply только в тестовой матрице.');
-    }
-
-    await addVariant('wrong_matrix', '13_BAD_WRONG_MATRIX.xlsx', rows(), 'Файл относится к другой карточке; Apply заблокирован.', 'Негативный контекстный сценарий; не применять.', { snapshot: { matrixId: `${snapshot.matrixId}-QA-WRONG` } });
-    await addVariant('wrong_template', '14_BAD_WRONG_TEMPLATE.xlsx', rows(), 'Файл относится к другому шаблону; Apply/refresh заблокированы.', 'Негативный контекстный сценарий; не применять.', { snapshot: { templateId: `${snapshot.templateId}-QA-WRONG` } });
-
-    return { variants, checklist, matrixId: snapshot.matrixId, templateId: snapshot.templateId, createdAt: nowIso() };
-  }
-
-  function qaChecklistMarkdown(pack, matrixInfo) {
-    const lines = [
-      '# TESSA Matrix Studio — QA pack', '',
-      `Версия Studio: ${APP.version}`,
-      `Матрица: ${matrixInfo?.TemplateName || matrixInfo?.Name || ''}`,
-      `MatrixID: ${pack.matrixId || ''}`,
-      `TemplateID: ${pack.templateId || ''}`,
-      `Создан: ${pack.createdAt || nowIso()}`, '',
-      '> ВАЖНО: OK_PATCH / ADD / REPLACE / DELETE меняют данные при Apply. Используйте отдельную тестовую матрицу. Для обычной проверки достаточно загрузить файл и нажать «Проверить изменения».', '',
-      '| # | Файл | Ожидаемое поведение | Риск |',
-      '|---:|---|---|---|',
-    ];
-    const esc = value => String(value || '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
-    pack.checklist.forEach((item, index) => lines.push(`| ${index + 1} | ${esc(item.file)} | ${esc(item.expected)} | ${esc(item.risk)} |`));
-    lines.push('', '## Быстрый сценарий', '',
-      '1. Загрузите `00_QA_SMOKE_PREVIEW.xlsx` и нажмите «Проверить изменения».',
-      '2. Должны быть PATCH + ADD + SKIP, но DELETE = 0.',
-      '3. Затем прогоняйте отдельные файлы по одному.',
-      '4. После любого Apply скачайте новый QA-набор: baseline матрицы уже изменился.',
-      '5. `06_OK_DELETE.xlsx` и другие destructive-файлы применяйте только в специально созданной тестовой матрице.');
-    return lines.join('\n');
-  }
-
-  async function downloadQaPack() {
-    setProgress(8, 'Готовлю QA-набор', 'Читаю открытую матрицу');
-    const bridge = await TessaBridge.create();
-    const templateId = bridge.templateId();
-    if (!templateId) throw new Error('QA-набор: у матрицы не найден TemplateID.');
-    const structure = await bridge.requestStructure(templateId);
-    setProgress(28, 'Читаю строки', 'QA-файлы будут привязаны к текущему MatrixID и TemplateID');
-    const snapshot = await bridge.loadSnapshot(structure);
-    if ((snapshot.rows || []).length < 3) throw new Error('QA-набор требует тестовую матрицу минимум с 3 строками.');
-    setProgress(48, 'Подключаю справочники', 'Нужны реальные значения для корректных и ошибочных сценариев');
-    const dictionaryCatalog = await bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true });
-    const matrixInfo = bridge.matrixInfo();
-    setProgress(68, 'Создаю QA Excel', 'Формирую изолированные сценарии');
-    const pack = await buildQaPackVariants(structure, snapshot, matrixInfo, dictionaryCatalog);
-    const manifest = JSON.stringify({ app: { name: APP.name, version: APP.version }, matrixId: pack.matrixId, templateId: pack.templateId, createdAt: pack.createdAt, variants: pack.checklist }, null, 2);
-    const entries = [['README_QA.md', qaChecklistMarkdown(pack, matrixInfo)], ['QA_PACK_MANIFEST.json', manifest], ...pack.variants.map(item => [item.name, item.bytes])];
-    setProgress(88, 'Упаковываю ZIP', `${pack.variants.length} Excel-сценариев`);
-    const zipBytes = await makeZip(entries);
-    const shortId = String(snapshot.matrixId || '').slice(0, 8);
-    const name = `TESSA_QA_${sanitizeFileName(matrixInfo.TemplateName || 'Матрица')}_${shortId}_v${APP.version}.zip`;
-    downloadBlob(new Blob([zipBytes], { type: 'application/zip' }), name);
-    setProgress(100, 'QA-набор готов', `${pack.variants.length} файлов · начните с 00_QA_SMOKE_PREVIEW.xlsx`);
-    log(`QA-набор скачан: ${pack.variants.length} Excel-сценариев для MatrixID ${snapshot.matrixId}.`);
-    return { name, bytes: zipBytes, pack };
-  }
-
   function sanitizeFileName(value) {
     return normalizeSpace(value || 'Матрица')
       .replace(/[\\/:*?"<>|]+/g, '_')
@@ -2021,12 +1741,16 @@
       if (!identityGroups.has(identity)) identityGroups.set(identity, []);
       identityGroups.get(identity).push(desired);
     }
-    if (desiredRows.length === snapshot.rows.length) {
-      for (const desired of desiredRows) {
+    // Новые строки без identity не должны ломать позиционное доказательство REPLACE
+    // между исходными identity-строками. Сопоставляем позиции только по baseline-рядам.
+    const positionalDesiredRows = desiredRows.filter(desired => desired.system.action !== 'add' && Boolean(excelIdentityKey(desired)));
+    const canAlignByPosition = positionalDesiredRows.length === snapshot.rows.length;
+    if (canAlignByPosition) {
+      for (const desired of positionalDesiredRows) {
         const identity = excelIdentityKey(desired);
         if (identity) identityCounts.set(identity, (identityCounts.get(identity) || 0) + 1);
       }
-      desiredRows.forEach((desired, index) => expectedCurrentByExcelRow.set(desired, snapshot.rows[index] || null));
+      positionalDesiredRows.forEach((desired, index) => expectedCurrentByExcelRow.set(desired, snapshot.rows[index] || null));
       for (const [sourceIdentity, group] of identityGroups.entries()) {
         if (group.length === 1) { primaryExcelRowByIdentity.set(sourceIdentity, group[0]); continue; }
         const current = findCurrentByIdentity(group[0]);
@@ -3856,12 +3580,16 @@
     // дополнительное доказательство, когда исходная строка осталась на своей позиции.
     const expectedCurrentByExcelRow = new Map();
     const identityCounts = new Map();
-    if (desired.length === snapshot.rows.length) {
-      for (const row of desired) {
+    // ADD без baseline identity может находиться в том же Excel, что и REPLACE.
+    // Для позиционного доказательства REPLACE исключаем новые строки из baseline-последовательности.
+    const positionalDesiredRows = desired.filter(row => row.system.action !== 'add' && Boolean(excelIdentityKey(row)));
+    const canAlignByPosition = positionalDesiredRows.length === snapshot.rows.length;
+    if (canAlignByPosition) {
+      for (const row of positionalDesiredRows) {
         const key = excelIdentityKey(row);
         if (key) identityCounts.set(key, (identityCounts.get(key) || 0) + 1);
       }
-      desired.forEach((row, index) => expectedCurrentByExcelRow.set(row, snapshot.rows[index] || null));
+      positionalDesiredRows.forEach((row, index) => expectedCurrentByExcelRow.set(row, snapshot.rows[index] || null));
     }
     const primaryExcelRowByIdentity = new Map();
     const ambiguousDuplicateIdentities = new Set();
@@ -3888,7 +3616,7 @@
     // остаётся ровно одна лишняя копия и одна пропавшая identity, пара однозначна без позиции.
     const positionalOverwriteTargets = new Map();
     const overwriteMatchedBy = new Map();
-    if (desired.length === snapshot.rows.length) {
+    if (canAlignByPosition) {
       const missingCurrentRows = (snapshot.rows || []).filter(currentRow => {
         const identity = currentIdentityKey(currentRow);
         return Boolean(identity && (identityCounts.get(identity) || 0) === 0);
@@ -4805,7 +4533,10 @@
     // нельзя выполнять отдельно — иначе получится разрушительное частичное применение.
     const mutationRowsByDesiredFingerprint = new Map();
     for (const action of plan.actions.filter(x => (x.type === 'update' || x.type === 'add') && x.excelRow)) {
-      const desiredFingerprint = canonicalValue(fingerprintFlat(action.excelRow.flat || {}));
+      const resultingFlat = action.type === 'update'
+        ? { ...(action.currentRow?.flat || {}), ...(action.excelRow.flat || {}) }
+        : (action.excelRow.flat || {});
+      const desiredFingerprint = canonicalValue(fingerprintFlat(resultingFlat));
       const excelRow = Number(action.excelRow.excelRow);
       if (!desiredFingerprint || !Number.isFinite(excelRow)) continue;
       if (!mutationRowsByDesiredFingerprint.has(desiredFingerprint)) mutationRowsByDesiredFingerprint.set(desiredFingerprint, []);
@@ -5282,7 +5013,7 @@
         </div>
         <div id="tms-status" class="tms-status"><div class="tms-status-line"><span id="tms-progress-label">Готово</span><span id="tms-progress-percent" class="tms-progress-percent">0%</span></div><div class="tms-progress-track"><div id="tms-progress-fill" class="tms-progress-fill"></div></div><div id="tms-progress-detail" class="tms-progress-detail">Скачайте Excel, внесите изменения и загрузите файл обратно.</div></div>
         <div class="tms-controls">
-          <div class="tms-step"><div class="tms-step-label">1 · Подготовить Excel</div><div class="tms-row"><button id="tms-download-current" class="tms-primary">Скачать Excel</button><button id="tms-download-fresh">Скачать со свежими справочниками</button><button id="tms-download-qa" class="tms-ghost">Скачать QA-набор</button></div><div class="tms-step-caption">QA-набор строится из текущей матрицы и проверяет NOOP / PATCH / ADD / REPLACE / DELETE / SKIP. Destructive-файлы применяйте только в тестовой матрице.</div></div>
+          <div class="tms-step"><div class="tms-step-label">1 · Подготовить Excel</div><div class="tms-row"><button id="tms-download-current" class="tms-primary">Скачать Excel</button><button id="tms-download-fresh">Скачать со свежими справочниками</button></div><div class="tms-step-caption">Скачайте рабочий Excel или обновите справочники перед редактированием.</div></div>
           <div class="tms-step"><div class="tms-step-label">2 · Выбрать изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"><button id="tms-refresh-excel" class="tms-ghost" disabled>Актуализировать выбранный Excel</button></div><div class="tms-step-caption">Добавит новые поля из текущего шаблона TESSA и постарается сохранить ваши изменения.</div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
           <div class="tms-step"><div class="tms-step-label">3 · Проверить</div><div class="tms-row"><button id="tms-analyze" class="tms-primary">Проверить изменения</button><button id="tms-stop" class="tms-danger" disabled>Отмена</button></div></div>
           <div class="tms-step tms-step-apply"><div class="tms-step-label">4 · Применить корректные строки</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button></div>
@@ -5367,12 +5098,6 @@
       catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); alert(`Не удалось обновить справочники: ${message}`); }
       finally { setBusy(false); }
     });
-    panel.querySelector('#tms-download-qa').addEventListener('click', async () => {
-      if (APP.busy) return; setBusy(true);
-      try { await downloadQaPack(); alert('QA-набор скачан. Начните с 00_QA_SMOKE_PREVIEW.xlsx. Destructive-сценарии применяйте только в тестовой матрице.'); }
-      catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); alert(`Не удалось создать QA-набор: ${message}`); }
-      finally { setBusy(false); }
-    });
     panel.querySelector('#tms-refresh-excel').addEventListener('click', async () => {
       if (APP.busy) return; setBusy(true);
       try { const selectedFile = panel.querySelector('#tms-file').files?.[0]; if (selectedFile) await refreshSelectedWorkbook(selectedFile); else await refreshLoadedWorkbookXlsx(); alert('Выбранный Excel актуализирован. Правки сохранены.'); }
@@ -5414,7 +5139,7 @@
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
-    buildRoundtripGrid, createRoundtripXlsxBytes, buildQaPackVariants, downloadQaPack, mergeWorkbookIntoCurrentSnapshot, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
+    buildRoundtripGrid, createRoundtripXlsxBytes, mergeWorkbookIntoCurrentSnapshot, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard,
     createPlanReviewState, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,

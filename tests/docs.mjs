@@ -36,10 +36,10 @@ assert(!readme.includes('cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/te
 assert(readme.includes('docs/assets/studio-panel.webp'), 'README lost real Studio panel screenshot');
 assert(readme.includes('docs/assets/excel-real.webp'), 'README lost real Excel screenshot');
 assert(readme.includes('docs/assets/studio-preview.webp'), 'README lost real preview screenshot');
-assert(readme.includes('Dashboard → Utilities → URL'), 'README lost manual URL-import fallback');
+assert(readme.includes('Tampermonkey → Dashboard / Панель управления'), 'README lost Tampermonkey Dashboard fallback');
+assert(readme.includes('Utilities / Сервис'), 'README lost Tampermonkey Utilities fallback');
+assert(readme.includes('В разделе **URL** вставьте:'), 'README lost manual URL import field');
 
-assert(readme.includes('Скачать QA-набор'), 'README lost the matrix-bound QA pack workflow');
-assert(readme.includes('00_QA_SMOKE_PREVIEW.xlsx'), 'README lost the one-shot QA smoke workbook');
 assert(readme.includes('baseline-ledger'), 'README must explain the V6 baseline ledger used for DELETE/integrity safety');
 
 assert(readme.includes('# Боевой UAT перед раздачей пользователям'), 'README lost the production UAT section');

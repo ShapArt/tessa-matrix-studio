@@ -9,7 +9,7 @@ const assert = (condition, message) => {
 };
 
 // Metadata checks protect the public installation/update path.
-assert(code.includes('// @version      1.9.18'), 'wrong userscript version');
+assert(code.includes('// @version      1.9.19'), 'wrong userscript version');
 assert(code.includes('// @author       Шаповалов Артём'), 'wrong author');
 assert(code.includes('// @match        https://tessa.cherkizovsky.net/*'), 'main TESSA domain is missing');
 const latestMetaUrl = 'https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.meta.js';
