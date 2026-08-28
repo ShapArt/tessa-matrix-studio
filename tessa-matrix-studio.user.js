@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.17
+// @version      1.9.18
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.17',
+    version: '1.9.18',
     plan: null,
     review: createPlanReviewState(),
     workbook: null,
@@ -4797,6 +4797,25 @@
     const preparedUpdates = new Map();
     const preparedAdds = new Map();
     const readyDeletes = [];
+    const failedMutationRows = new Set();
+
+    // Некоторые финально валидные пакеты используют DELETE как зависимость: например,
+    // UPDATE A -> значения B одновременно с DELETE B. До удаления B серверная проверка
+    // может видеть временный дубль. Если связанная мутация не применится, такой DELETE
+    // нельзя выполнять отдельно — иначе получится разрушительное частичное применение.
+    const mutationRowsByDesiredFingerprint = new Map();
+    for (const action of plan.actions.filter(x => (x.type === 'update' || x.type === 'add') && x.excelRow)) {
+      const desiredFingerprint = canonicalValue(fingerprintFlat(action.excelRow.flat || {}));
+      const excelRow = Number(action.excelRow.excelRow);
+      if (!desiredFingerprint || !Number.isFinite(excelRow)) continue;
+      if (!mutationRowsByDesiredFingerprint.has(desiredFingerprint)) mutationRowsByDesiredFingerprint.set(desiredFingerprint, []);
+      mutationRowsByDesiredFingerprint.get(desiredFingerprint).push(excelRow);
+    }
+    const deleteDependencies = new Map();
+    for (const action of plan.actions.filter(x => x.type === 'delete')) {
+      const currentFingerprint = canonicalValue(action.currentRow?.fingerprint || '');
+      deleteDependencies.set(action, [...(mutationRowsByDesiredFingerprint.get(currentFingerprint) || [])]);
+    }
 
     // UPDATE: каждая строка проверяется независимо. Ошибка одной строки не отменяет пакет.
     for (const action of plan.actions.filter(x => x.type === 'update')) {
@@ -4844,6 +4863,8 @@
         await bridge.validateDuplicate(card, current.versionId);
         preparedUpdates.set(action.excelRow.excelRow, { action, card, current });
       } catch (error) {
+        const excelRow = Number(action.excelRow?.excelRow);
+        if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
         runtimeSkips.push(runtimeSkip(action, error, 'preflight-update'));
       }
     }
@@ -4899,6 +4920,8 @@
         await bridge.validateDuplicate(created.card, created.versionId);
         preparedAdds.set(action.excelRow.excelRow, { action, ...created });
       } catch (error) {
+        const excelRow = Number(action.excelRow?.excelRow);
+        if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
         runtimeSkips.push(runtimeSkip(action, error, 'preflight-add'));
       }
     }
@@ -4911,7 +4934,12 @@
         const current = freshByVersion.get(canonicalValue(action.currentRow.versionId));
         if (!current) throw new Error(`Строка ${action.currentRow.versionId} исчезла после предпросмотра.`);
         if (current.fingerprint !== action.expectedFingerprint) throw new Error(`Строка TESSA ${action.currentRow.index + 1} изменилась после предпросмотра.`);
-        readyDeletes.push({ action, current });
+        const dependsOnExcelRows = deleteDependencies.get(action) || [];
+        const failedDependencies = dependsOnExcelRows.filter(excelRow => failedMutationRows.has(Number(excelRow)));
+        if (failedDependencies.length) {
+          throw new Error(`Удаление строки TESSA ${action.currentRow.index + 1} пропущено: связанное изменение Excel ${failedDependencies.join(', ')} не прошло предварительную проверку. Выполните изменение и удаление отдельно на свежей выгрузке.`);
+        }
+        readyDeletes.push({ action, current, dependsOnExcelRows });
       } catch (error) {
         runtimeSkips.push(runtimeSkip(action, error, 'preflight-delete'));
       }
@@ -4950,6 +4978,7 @@
       setProgress(percent, label, `${storedCount} из ${Math.max(1, totalToStore)}`);
     };
     setProgress(44, 'Применяю изменения', totalToStore ? `0 из ${totalToStore}` : 'Нет строк для записи');
+    const successfulMutationRows = new Set();
     const result = {
       planId: plan.id,
       startedAt: nowIso(),
@@ -4968,6 +4997,7 @@
       try {
         log(`Обновляю строку Excel ${action.excelRow.excelRow}`);
         await bridge.storeRowCard(prepared.card);
+        successfulMutationRows.add(Number(action.excelRow.excelRow));
         result.rows.push({ type: 'update', excelRow: action.excelRow.excelRow, versionId: prepared.current.versionId, status: 'ok' });
       } catch (error) {
         const skipped = runtimeSkip(action, error, 'store-update');
@@ -4986,6 +5016,7 @@
         const storedCardId = String(storeResponse?.cardId || created.cardId);
         const verification = await bridge.tryGetCard(storedCardId);
         if (verification.error || !verification.card) throw new Error(`Новая карточка строки ${storedCardId} не открывается после сохранения.`);
+        successfulMutationRows.add(Number(action.excelRow.excelRow));
         result.rows.push({ type: 'add', excelRow: action.excelRow.excelRow, rowCardId: storedCardId, versionId: created.versionId, newMethod: created.newMethod, verifiedByCardGet: true, status: 'ok' });
       } catch (error) {
         const skipped = runtimeSkip(action, error, 'store-add');
@@ -4999,6 +5030,11 @@
       if (APP.abortRequested) throw new Error('Операция остановлена пользователем.');
       const action = prepared.action;
       try {
+        const missingDependencies = (prepared.dependsOnExcelRows || [])
+          .filter(excelRow => !successfulMutationRows.has(Number(excelRow)));
+        if (missingDependencies.length) {
+          throw new Error(`Удаление строки TESSA ${action.currentRow.index + 1} пропущено: связанное изменение Excel ${missingDependencies.join(', ')} не было успешно применено. Исходная строка сохранена.`);
+        }
         log(`Удаляю строку TESSA ${action.currentRow.index + 1}`);
         await bridge.deleteMatrixRow(action.currentRow.versionId);
         result.rows.push({ type: 'delete', versionId: action.currentRow.versionId, status: 'ok' });

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.9.18 — 2026-08-28
+
+- добавлена явная зависимость DELETE от UPDATE/ADD, когда новая итоговая строка занимает комбинацию удаляемой строки;
+- если связанный UPDATE/ADD не проходит preflight, зависимый DELETE тоже переводится в SKIP — существующая строка TESSA сохраняется;
+- зависимость повторно контролируется на реальной записи: если UPDATE/ADD падает после успешного preflight, связанный DELETE не выполняется отдельно;
+- добавлены два regression-сценария для destructive partial apply: preflight duplicate conflict и store-time failure в пакете UPDATE A → B + DELETE B.
+
 ## 1.9.17 — 2026-08-28
 
 - исправлен второй TOCTOU-сценарий: ADD, созданный копированием существующей строки, теперь сохраняет provenance source identity отдельно от identity новой строки;
