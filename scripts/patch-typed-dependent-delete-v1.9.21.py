@@ -99,3 +99,4 @@ replace_once(
 
 path.write_text(text, encoding='utf-8')
 print('v1.9.21 typed semantic dependent DELETE patch applied')
+# trigger workflow after helper definition exists
