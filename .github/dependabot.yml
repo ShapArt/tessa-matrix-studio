@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Workflow actions are pinned to immutable full commit SHAs. Dependabot opens
+  # reviewable PRs when the upstream action publishes a newer compatible release.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
