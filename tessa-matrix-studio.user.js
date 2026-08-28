@@ -96,6 +96,16 @@
     MaxCompressionRatio: 100,
   });
 
+  // SpreadsheetML itself is untrusted even after the ZIP package passes archive guards.
+  // These ceilings prevent tiny XML from materializing pathological sparse arrays or
+  // forcing the browser to parse an unreasonable number of physical row/cell nodes.
+  const SPREADSHEETML_LIMITS = Object.freeze({
+    MaxRowNumber: 100000,
+    MaxColumnNumber: 16384, // Excel XFD
+    MaxParsedRows: 100000,
+    MaxParsedCells: 500000,
+  });
+
 
   // Индексы справочников живут только в памяти вкладки. Они не сериализуются в Excel,
   // зато превращают точный поиск по ID/названию из O(N) на каждую ячейку в O(1).
@@ -894,22 +904,102 @@
     return sheets.length ? sheets : [{ name: 'Лист1', path: 'xl/worksheets/sheet1.xml', relId: 'rId1' }];
   }
 
+  function effectiveSpreadsheetMlLimits() {
+    // Tests may inject tiny limits only in Node. A TESSA page cannot weaken production ceilings.
+    const isNodeTest = Boolean(
+      window.__TESSA_MATRIX_SYNC_TEST_MODE__
+      && typeof process !== 'undefined'
+      && process?.versions?.node
+      && window.__TESSA_MATRIX_SYNC_TEST_SPREADSHEET_LIMITS__,
+    );
+    if (!isNodeTest) return SPREADSHEETML_LIMITS;
+    const limits = { ...SPREADSHEETML_LIMITS };
+    for (const key of Object.keys(limits)) {
+      const value = Number(window.__TESSA_MATRIX_SYNC_TEST_SPREADSHEET_LIMITS__[key]);
+      if (Number.isFinite(value) && value > 0) limits[key] = Math.floor(value);
+    }
+    return limits;
+  }
+
+  function spreadsheetRowNumber(raw, fallback, limits) {
+    if (raw === null || raw === undefined || String(raw).trim() === '') return fallback;
+    const text = String(raw).trim();
+    if (!/^[1-9]\d*$/.test(text)) throw xlsxArchiveError(`некорректный номер строки «${text || '(пусто)'}» в SpreadsheetML.`);
+    const value = Number(text);
+    if (!Number.isSafeInteger(value) || value < 1) throw xlsxArchiveError(`некорректный номер строки «${text}» в SpreadsheetML.`);
+    if (value > limits.MaxRowNumber) throw xlsxArchiveError(`номер строки ${value} превышает безопасный лимит ${limits.MaxRowNumber}.`);
+    return value;
+  }
+
+  function spreadsheetColumnNumber(letters) {
+    let value = 0;
+    for (const ch of String(letters).toUpperCase()) value = value * 26 + ch.charCodeAt(0) - 64;
+    return value;
+  }
+
+  function spreadsheetCellCoordinate(rawRef, rowNumber, inferredCol, limits) {
+    const raw = rawRef === null || rawRef === undefined ? '' : String(rawRef).trim();
+    if (!raw) {
+      const columnNumber = inferredCol + 1;
+      if (columnNumber > limits.MaxColumnNumber) throw xlsxArchiveError('число столбцов SpreadsheetML превышает предел Excel XFD (16 384).');
+      return { col: inferredCol, key: `${rowNumber}:${inferredCol}`, label: `столбец ${columnNumber}` };
+    }
+    const match = raw.match(/^([A-Za-z]{1,3})([1-9]\d*)$/);
+    if (!match) throw xlsxArchiveError(`некорректная координата ячейки «${raw}» в SpreadsheetML.`);
+    const columnNumber = spreadsheetColumnNumber(match[1]);
+    const cellRow = Number(match[2]);
+    if (!Number.isSafeInteger(cellRow) || cellRow < 1 || cellRow > limits.MaxRowNumber) {
+      throw xlsxArchiveError(`координата ячейки «${raw}» содержит недопустимый номер строки.`);
+    }
+    if (columnNumber < 1 || columnNumber > limits.MaxColumnNumber) {
+      throw xlsxArchiveError(`столбец «${match[1].toUpperCase()}» выходит за предел Excel XFD (16 384).`);
+    }
+    if (cellRow !== rowNumber) {
+      throw xlsxArchiveError(`координата ячейки «${raw}» указывает на строку ${cellRow}, но находится внутри строки ${rowNumber}.`);
+    }
+    const col = columnNumber - 1;
+    return { col, key: `${rowNumber}:${col}`, label: raw.toUpperCase() };
+  }
+
   function parseSheetXml(xml, sharedStrings) {
+    const limits = effectiveSpreadsheetMlLimits();
     const rows = [];
+    const seenRows = new Set();
+    const seenCells = new Set();
     let maxCol = 0;
+    let parsedRowCount = 0;
+    let parsedCellCount = 0;
+    let nextImplicitRow = 1;
+
     for (const rowMatch of xml.matchAll(/<(?:[A-Za-z_][\w.-]*:)?row\b([^>]*)>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?row>/gi)) {
-      const rowNumber = Number(attr(rowMatch[1], 'r') || rows.length + 1);
+      parsedRowCount += 1;
+      if (parsedRowCount > limits.MaxParsedRows) {
+        throw xlsxArchiveError(`слишком много строк SpreadsheetML (${parsedRowCount} > ${limits.MaxParsedRows}).`);
+      }
+      const explicitRow = attr(rowMatch[1], 'r');
+      const rowNumber = spreadsheetRowNumber(explicitRow, nextImplicitRow, limits);
+      nextImplicitRow = Math.max(nextImplicitRow, rowNumber + 1);
+      if (seenRows.has(rowNumber)) throw xlsxArchiveError(`дублирующийся номер строки ${rowNumber} в SpreadsheetML.`);
+      seenRows.add(rowNumber);
+
       const values = [];
       const body = rowMatch[2];
-      // В Excel пустая ячейка часто сериализуется как <c .../>. Старый regex
-      // ошибочно склеивал её со следующей ячейкой и показывал индекс sharedStrings
-      // (например 102/118) вместо реального значения. Обрабатываем оба варианта.
+      let nextImplicitCol = 0;
+      // В Excel пустая ячейка часто сериализуется как <c .../>. Обрабатываем
+      // self-closing и обычную формы одинаково, но координаты проверяем до записи.
       const cellRegex = /<(?:[A-Za-z_][\w.-]*:)?c\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?c>)/gi;
       for (const cellMatch of body.matchAll(cellRegex)) {
+        parsedCellCount += 1;
+        if (parsedCellCount > limits.MaxParsedCells) {
+          throw xlsxArchiveError(`слишком много ячеек SpreadsheetML (${parsedCellCount} > ${limits.MaxParsedCells}).`);
+        }
         const attrs = cellMatch[1] || '';
         const cellBody = cellMatch[2] || '';
-        const ref = attr(attrs, 'r') || 'A1';
-        const col = colToIndex(ref);
+        const coordinate = spreadsheetCellCoordinate(attr(attrs, 'r'), rowNumber, nextImplicitCol, limits);
+        if (seenCells.has(coordinate.key)) throw xlsxArchiveError(`дублирующаяся координата ячейки ${coordinate.label} в SpreadsheetML.`);
+        seenCells.add(coordinate.key);
+        nextImplicitCol = Math.max(nextImplicitCol, coordinate.col + 1);
+
         const type = attr(attrs, 't') || '';
         let value = '';
         const inline = cellBody.match(/<(?:[A-Za-z_][\w.-]*:)?is\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?is>/i);
@@ -921,15 +1011,16 @@
             value = type === 's' ? (sharedStrings[Number(raw)] ?? '') : raw;
           }
         }
-        values[col] = value;
-        maxCol = Math.max(maxCol, col + 1);
+        values[coordinate.col] = value;
+        maxCol = Math.max(maxCol, coordinate.col + 1);
       }
       rows[rowNumber - 1] = values;
     }
+    // Sparse row indexes are bounded above. Fill gaps so the rest of the existing
+    // roundtrip parser keeps its simple array contract without exposing holes.
     for (let i = 0; i < rows.length; i += 1) rows[i] = rows[i] || [];
     return { rows, maxCol };
   }
-
 
   function findHeaderRow(rows) {
     let best = { index: -1, score: -1 };
