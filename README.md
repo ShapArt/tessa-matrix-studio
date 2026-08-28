@@ -6,13 +6,13 @@
 
 Выгрузка матрицы в Excel → массовая правка → проверка изменений → безопасное применение в TESSA.
 
-[![Version](https://img.shields.io/badge/version-1.9.24-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.9.25-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-userscript-24292F?style=flat-square&logo=tampermonkey)](https://www.tampermonkey.net/)
 
 ### [УСТАНОВИТЬ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js) · [СКАЧАТЬ РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [ОТКРЫТЬ КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [СООБЩИТЬ ОБ ОШИБКЕ](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.9.24 · Автор: Шаповалов Артём**
+**v1.9.25 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -48,7 +48,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.9.24** в Tampermonkey.
+2. Подтвердите установку версии **1.9.25** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -110,7 +110,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Перед подтверждением проверьте:
 
 - **Название:** `TESSA Matrix Studio — Черкизово`
-- **Версия:** `1.9.24`
+- **Версия:** `1.9.25`
 - **Автор:** `Шаповалов Артём`
 - **Разрешения:** `@grant none`
 - **Область запуска:** только домены TESSA Черкизово
@@ -200,6 +200,9 @@ Roundtrip V6 дополнительно хранит на veryHidden-листе 
 
 > [!IMPORTANT]
 > Начиная с **v1.9.24**, после ZIP/OPC-проверки каждый SpreadsheetML-лист проходит отдельную структурную валидацию до построения workbook: Studio ограничивает используемый номер строки **100 000**, столбцы — штатным пределом Excel **XFD / 16 384**, физически разбираемые строки — **100 000**, ячейки — **500 000**. Дубли номеров строк/координат ячеек, некорректные ссылки и несовпадение `cell r` с родительской строкой приводят к `XLSX отклонён`; такой файл не доходит до Preview/Apply.
+
+> [!IMPORTANT]
+> Начиная с **v1.9.25**, редактируемые ячейки матрицы выгружаются в формате Excel **Text**, чтобы Excel не превращал значения вроде `3 - 18` в даты. При импорте Studio также читает `styles.xml`: если Excel уже сохранил числовой serial как дату, а критерий TESSA не является Date/DateTime, строка fail-closed переводится в **ПРОПУСТИТЬ** с понятной причиной. Настоящие Date/DateTime serial values остаются поддержанными.
 
 > [!TIP]
 > Перед первой правкой сохраните исходную выгрузку отдельно. Если preview покажет неожиданные изменения, проще начать заново от свежего файла.
@@ -396,7 +399,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.9.24**
+Текущая версия: **1.9.25**
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)
