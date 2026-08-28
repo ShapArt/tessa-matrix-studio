@@ -25,3 +25,5 @@ const replacement = `  function effectiveSpreadsheetMlLimits() {\n    // Tests m
 source = source.slice(0, start) + replacement + source.slice(end);
 fs.writeFileSync(path, source);
 console.log('Applied v1.9.24 SpreadsheetML structural safety patch.');
+
+// Workflow trigger marker; removed together with this staging helper.
