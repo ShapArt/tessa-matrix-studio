@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 
-// README, UAT и issue-template считаются частью релизного контракта проекта.
+// Публичный README и issue-template считаются частью релизного контракта проекта.
 const read = (path) => fs.readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
@@ -41,12 +41,9 @@ assert(readme.includes('Utilities / Сервис'), 'README lost Tampermonkey Ut
 assert(readme.includes('В разделе **URL** вставьте:'), 'README lost manual URL import field');
 
 assert(readme.includes('baseline-ledger'), 'README must explain the V6 baseline ledger used for DELETE/integrity safety');
+assert(!readme.includes('# Боевой UAT перед раздачей пользователям'), 'public README must not contain the internal pre-release UAT block');
+assert(!readme.includes('Стоп-критерии'), 'public README must not contain the removed UAT stop-criteria block');
 
-assert(readme.includes('# Боевой UAT перед раздачей пользователям'), 'README lost the production UAT section');
-for (const token of ['NOOP', 'PATCH', 'ADD', 'REPLACE', 'DELETE', 'stale conflict', 'невалидный справочник', 'Отмена']) {
-  assert(readme.includes(token), `README UAT section lost scenario: ${token}`);
-}
-assert(readme.includes('Стоп-критерии'), 'README lost UAT stop criteria');
 assert(bugTemplate.includes(`placeholder: ${version}`), 'bug report version placeholder is out of sync');
 assert(bugTemplate.includes('Счётчики preview'), 'bug report lost preview counters field');
 assert(bugTemplate.includes('свежей выгрузке'), 'bug report lost fresh-export safety reminder');
