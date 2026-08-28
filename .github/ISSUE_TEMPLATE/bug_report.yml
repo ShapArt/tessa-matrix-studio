@@ -41,6 +41,7 @@ body:
         - Скачать Excel
         - Выбрать Excel — XLSX отклонён / ZIP security
         - Выбрать Excel — XLSX отклонён / SpreadsheetML security
+        - Выбрать Excel — Excel автоматически преобразовал значение в дату
         - PATCH — изменить существующую строку
         - ADD — добавить новую строку
         - REPLACE — вставить поверх существующей строки
