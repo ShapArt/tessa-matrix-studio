@@ -74,6 +74,7 @@ const bridge = {
   assertCanCreateRows: () => {},
   createRowCard: async () => ({ card: { id: 'new-card', version: 0 }, cardId: 'new-card', versionId: 'new-version', newMethod: 'CardNew' }),
   rebuildRowCard: () => {},
+  // First call is preflight. The second one must happen immediately before Store.
   validateDuplicate: async () => {
     duplicateChecks += 1;
     if (duplicateChecks === 2) throw new Error('TESSA обнаружила дублирующую строку матрицы.');
