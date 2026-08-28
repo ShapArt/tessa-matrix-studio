@@ -15,6 +15,7 @@ const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 assert(typeof E.TessaBridge?.prototype?.storeRowCard === 'function', 'storeRowCard is unavailable');
 
 // A Store built from the preflight Card must make TESSA validate that exact card version atomically.
+// DoesNotAffectVersion must remain disabled because TESSA gives it priority over AffectVersion.
 class FakeCardStoreRequest {
   constructor() {
     this.card = null;
