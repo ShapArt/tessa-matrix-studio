@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.24 — 2026-08-28
+
+- добавлена fail-closed структурная проверка SpreadsheetML после ZIP/OPC guard и до построения workbook/Preview;
+- максимальный используемый номер строки ограничен 100 000, столбцы — штатным пределом Excel XFD / 16 384;
+- физически разбираемые XML-узлы ограничены 100 000 строками и 500 000 ячейками на лист, чтобы компактный патологический XML не мог разогнать CPU/RAM;
+- отклоняются дубли номеров строк и координат ячеек, нулевые/повреждённые references, координаты за XFD и несовпадение номера строки ячейки с родительским <row>;
+- regression suite покрывает row ceiling, XFE, excessive rows/cells, duplicate coordinates, row/cell mismatch и malformed zero references; обычный namespaced SpreadsheetML и Roundtrip V6 сохраняют совместимость.
+
 ## 1.9.23 — 2026-08-28
 
 - XLSX теперь проходит fail-closed проверку ZIP/OPC-пакета до XML-парсинга: опасный или повреждённый архив не доходит до Preview и Apply;
