@@ -6,13 +6,13 @@
 
 Выгрузка матрицы в Excel → массовая правка → проверка изменений → безопасное применение в TESSA.
 
-[![Version](https://img.shields.io/badge/version-1.9.22-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.9.23-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-userscript-24292F?style=flat-square&logo=tampermonkey)](https://www.tampermonkey.net/)
 
 ### [УСТАНОВИТЬ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js) · [СКАЧАТЬ РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [ОТКРЫТЬ КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [СООБЩИТЬ ОБ ОШИБКЕ](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.9.22 · Автор: Шаповалов Артём**
+**v1.9.23 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -48,7 +48,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.9.22** в Tampermonkey.
+2. Подтвердите установку версии **1.9.23** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -110,7 +110,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Перед подтверждением проверьте:
 
 - **Название:** `TESSA Matrix Studio — Черкизово`
-- **Версия:** `1.9.21`
+- **Версия:** `1.9.23`
 - **Автор:** `Шаповалов Артём`
 - **Разрешения:** `@grant none`
 - **Область запуска:** только домены TESSA Черкизово
@@ -194,6 +194,9 @@ https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-ma
 В Excel сохраняются скрытые служебные идентификаторы строк. Они нужны для точного сопоставления и **не должны редактироваться вручную**.
 
 Roundtrip V6 дополнительно хранит на veryHidden-листе **baseline-ledger** с исходными MatrixRowID, MatrixVersionID и BaseFingerprint. Он нужен для безопасной проверки физического DELETE и целостности файла: если служебная identity или fingerprint повреждены либо удаляемая строка успела измениться в TESSA, Studio отказывается угадывать и просит свежую выгрузку.
+
+> [!IMPORTANT]
+> Начиная с **v1.9.23**, выбранный XLSX сначала проходит fail-closed проверку ZIP/OPC-пакета и только затем попадает в Excel-парсер. Studio отклоняет ZIP64 и шифрованные архивы, небезопасные или дублирующиеся пути, повреждённые смещения, а также файлы, способные чрезмерно разрастись при распаковке. Защитные пределы: **32 МБ** на исходный XLSX, **256** ZIP-частей, **128 МБ** на одну распакованную часть, **256 МБ** суммарно и степень сжатия не более **100×**. При срабатывании защиты никакие строки не передаются в Preview/Apply.
 
 > [!TIP]
 > Перед первой правкой сохраните исходную выгрузку отдельно. Если preview покажет неожиданные изменения, проще начать заново от свежего файла.
@@ -390,7 +393,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.9.22**
+Текущая версия: **1.9.23**
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)
