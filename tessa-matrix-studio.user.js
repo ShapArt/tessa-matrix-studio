@@ -4055,7 +4055,21 @@
           ...excelRow,
           system: { ...excelRow.system, rowCardId: '', versionId: '', baseFingerprint: '' },
         };
-        actions.push({ type: 'add', excelRow: cloned, currentRow: null, changes: [], match: { matchedBy: 'copied-row-auto-add', lowConfidence: false }, expectedFingerprint: null });
+        actions.push({
+          type: 'add',
+          excelRow: cloned,
+          currentRow: null,
+          changes: [],
+          match: {
+            matchedBy: 'copied-row-auto-add',
+            lowConfidence: false,
+            sourceIdentity,
+            sourceVersionId: excelRow.system.versionId || '',
+            sourceRowCardId: excelRow.system.rowCardId || '',
+            sourceFingerprint: excelRow.system.baseFingerprint || currentRow.fingerprint || '',
+          },
+          expectedFingerprint: null,
+        });
         copiedRowAutoAddDetected = true;
         warnings.push(`Excel ${excelRow.excelRow}: копия существующей строки распознана как новая.`);
         continue;
@@ -4845,6 +4859,23 @@
     for (const action of addActions) {
       try {
         if (createCapabilityError) throw createCapabilityError;
+
+        // copied-row-auto-add создаёт новую identity, но данные пришли из существующей
+        // source-строки. Source мог измениться уже после Preview, поэтому provenance
+        // сохраняется в match и повторно сверяется непосредственно перед CardNew.
+        if (action.match?.matchedBy === 'copied-row-auto-add') {
+          const sourceVersionId = canonicalValue(action.match.sourceVersionId || '');
+          const sourceRowCardId = canonicalValue(action.match.sourceRowCardId || '');
+          const sourceCurrent = (sourceVersionId ? freshByVersion.get(sourceVersionId) : null)
+            || (sourceRowCardId ? freshByCard.get(sourceRowCardId) : null);
+          if (!sourceCurrent) throw new Error(`Исходная строка Excel ${action.excelRow.excelRow} исчезла после предпросмотра.`);
+          const sourceExpectedFingerprint = canonicalValue(action.match.sourceFingerprint || '');
+          const sourceFreshFingerprint = canonicalValue(sourceCurrent.fingerprint || fingerprintFlat(sourceCurrent.flat || {}));
+          if (!sourceExpectedFingerprint || sourceExpectedFingerprint !== sourceFreshFingerprint) {
+            throw new Error(`Исходная строка Excel ${action.excelRow.excelRow} изменилась в TESSA после предпросмотра.`);
+          }
+        }
+
         await hydrateMissingIdsForAction(action, structure, fresh, bridge);
         for (const condition of structure.conditions) {
           const column = action.excelRow.columns.get(condition.criterionRowId);
