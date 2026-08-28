@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.9.17 — 2026-08-28
+
+- исправлен второй TOCTOU-сценарий: ADD, созданный копированием существующей строки, теперь сохраняет provenance source identity отдельно от identity новой строки;
+- перед CardNew preflight повторно проверяет source MatrixVersionID/MatrixRowID и экспортный BaseFingerprint;
+- если source копии изменилась или исчезла после Preview, новая строка не создаётся — операция переводится в runtime SKIP и требует повторного «Проверить изменения»;
+- добавлен regression `preflight-stale-copied-add-source.mjs`, подтверждающий, что stale копия не доходит до preparedAdds.
+
 ## 1.9.16 — 2026-08-28
 
 - исправлен TOCTOU-сценарий REPLACE: перед Apply Studio теперь повторно проверяет не только target, но и source identity копии;
