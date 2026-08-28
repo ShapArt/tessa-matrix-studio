@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.20
+// @version      1.9.21
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.20',
+    version: '1.9.21',
     plan: null,
     review: createPlanReviewState(),
     workbook: null,
@@ -513,6 +513,35 @@
       normalized[key] = sortedCanon(flat[key]);
     });
     return hashText(JSON.stringify(stableObject(normalized)));
+  }
+
+  // DELETE dependency matching has a different goal from stale/integrity fingerprints.
+  // It must compare the semantic final row state, not the raw display representation.
+  // Example: Excel Boolean «Да» and TESSA raw «true» are the same matrix value but have
+  // different fingerprintFlat hashes. Keep fingerprintFlat exact for stale protection and
+  // normalize typed values only for UPDATE/ADD -> DELETE dependency detection.
+  function dependencySemanticKey(flat, structure) {
+    const normalized = {};
+    let definitionCount = 0;
+    const semanticValue = (kind, value) => {
+      if (['Boolean', 'Int', 'Decimal', 'Date', 'DateTime'].includes(kind)) {
+        return typedScalarSemantic(kind, value);
+      }
+      const text = canonicalValue(value);
+      return text ? `text:${text}` : '';
+    };
+    for (const condition of structure?.conditions || []) {
+      definitionCount += 1;
+      const key = definitionKey('criterion', condition.criterionRowId);
+      const kind = operandKind({ kind: 'criterion', operandTypeId: condition.operandTypeId, refSection: condition.refSection });
+      normalized[key] = (flat?.[key] || []).map(value => semanticValue(kind, value)).filter(Boolean).sort();
+    }
+    for (const fn of structure?.functions || []) {
+      definitionCount += 1;
+      const key = definitionKey('function', fn.id);
+      normalized[key] = (flat?.[key] || []).map(value => semanticValue('Function', value)).filter(Boolean).sort();
+    }
+    return definitionCount ? JSON.stringify(stableObject(normalized)) : '';
   }
 
   function similarityFlat(a, b, keys) {
@@ -4583,21 +4612,21 @@
     // UPDATE A -> значения B одновременно с DELETE B. До удаления B серверная проверка
     // может видеть временный дубль. Если связанная мутация не применится, такой DELETE
     // нельзя выполнять отдельно — иначе получится разрушительное частичное применение.
-    const mutationRowsByDesiredFingerprint = new Map();
+    const mutationRowsByDesiredSemanticKey = new Map();
     for (const action of plan.actions.filter(x => (x.type === 'update' || x.type === 'add') && x.excelRow)) {
       const resultingFlat = action.type === 'update'
         ? { ...(action.currentRow?.flat || {}), ...(action.excelRow.flat || {}) }
         : (action.excelRow.flat || {});
-      const desiredFingerprint = canonicalValue(fingerprintFlat(resultingFlat));
+      const desiredSemanticKey = dependencySemanticKey(resultingFlat, structure);
       const excelRow = Number(action.excelRow.excelRow);
-      if (!desiredFingerprint || !Number.isFinite(excelRow)) continue;
-      if (!mutationRowsByDesiredFingerprint.has(desiredFingerprint)) mutationRowsByDesiredFingerprint.set(desiredFingerprint, []);
-      mutationRowsByDesiredFingerprint.get(desiredFingerprint).push(excelRow);
+      if (!desiredSemanticKey || !Number.isFinite(excelRow)) continue;
+      if (!mutationRowsByDesiredSemanticKey.has(desiredSemanticKey)) mutationRowsByDesiredSemanticKey.set(desiredSemanticKey, []);
+      mutationRowsByDesiredSemanticKey.get(desiredSemanticKey).push(excelRow);
     }
     const deleteDependencies = new Map();
     for (const action of plan.actions.filter(x => x.type === 'delete')) {
-      const currentFingerprint = canonicalValue(action.currentRow?.fingerprint || '');
-      deleteDependencies.set(action, [...(mutationRowsByDesiredFingerprint.get(currentFingerprint) || [])]);
+      const currentSemanticKey = dependencySemanticKey(action.currentRow?.flat || {}, structure);
+      deleteDependencies.set(action, [...(mutationRowsByDesiredSemanticKey.get(currentSemanticKey) || [])]);
     }
 
     // UPDATE: каждая строка проверяется независимо. Ошибка одной строки не отменяет пакет.
