@@ -55,6 +55,12 @@ expectRejected(
   'implicit-row-ceiling',
 );
 
+// Sparse coordinates may increase Array.length, but missing rows must remain holes rather than
+// allocating one empty Array per absent row. This keeps the row ceiling from becoming a RAM amplifier.
+const sparse = E.parseSheetXml(worksheet('<row r="10"><c r="A10" t="str"><v>x</v></c></row>'), []);
+assert(sparse.rows.length === 10, `sparse row index was not preserved: length=${sparse.rows.length}`);
+assert(Object.keys(sparse.rows).length === 1 && sparse.rows[9]?.[0] === 'x', `sparse gaps were materialized: keys=${Object.keys(sparse.rows).length}`);
+
 // Excel itself ends at XFD (16,384 columns); XFE must never be materialized.
 expectRejected(
   worksheet('<row r="1"><c r="XFE1" t="str"><v>x</v></c></row>'),
