@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.19
+// @version      1.9.20
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.19',
+    version: '1.9.20',
     plan: null,
     review: createPlanReviewState(),
     workbook: null,
@@ -4427,7 +4427,7 @@
     let previewPlan = plan;
     if (!plan.safety.blocked && plan.actions.some(action => action.type !== 'noop')) {
       setProgress(92, 'Проверяю применимость', 'Справочники, дубли и зависимости перед Apply');
-      const previewPreflight = await preflightPlan(plan, { previewOnly: true, bridge, structure, fresh: snapshot });
+      const previewPreflight = await preflightPlan(plan, { previewOnly: true, bridge, structure });
       previewPlan = applyPreflightPreview(plan, previewPreflight);
       if (previewPlan.preflightPreview.runtimeSkipCount) {
         log(`Предварительная проверка: ${previewPlan.preflightPreview.runtimeSkipCount} операций заранее переведены в ПРОПУСТИТЬ.`, 'warn');

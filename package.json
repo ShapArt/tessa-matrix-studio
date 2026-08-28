@@ -1,6 +1,6 @@
 {
   "name": "tessa-matrix-studio",
-  "version": "1.9.19",
+  "version": "1.9.20",
   "private": true,
   "description": "TESSA Matrix Studio userscript regression and safety verification",
   "scripts": {
