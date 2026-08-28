@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.25
+// @version      1.9.26
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.25',
+    version: '1.9.26',
     plan: null,
     review: createPlanReviewState(),
     workbook: null,
@@ -459,6 +459,31 @@
       ? ` ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`
       : '';
     return `В столбце «${label}» Excel автоматически преобразовал значение в дату «${dd}.${mm}.${yyyy}${time}» и сохранил серийный номер «${raw}». Верните ячейку в текстовый формат и введите исходное значение повторно.`;
+  }
+
+  function excelCoercionIssue(kind, value, meta, label = 'значение') {
+    if (!meta) return null;
+    if (meta.hasFormula) {
+      return `В столбце «${label}» обнаружена Excel-формула. Формулы в редактируемых ячейках матрицы не применяются: замените формулу обычным значением.`;
+    }
+    if (kind === 'Date' || kind === 'DateTime') return null;
+    const rawType = canonicalValue(meta.rawType || 'n');
+    if (rawType && rawType !== 'n') return null;
+    const raw = stripFormulaMarker(value);
+    if (!raw) return null;
+
+    // Свежие Roundtrip-файлы экспортируют редактируемые значения как Text. Если
+    // строковый критерий вернулся из Excel числовым cell type, исходная запись могла
+    // потерять ведущие нули, перейти в scientific notation, процент или дробь.
+    if (kind === 'String') {
+      return `В столбце «${label}» Excel сохранил текстовый критерий как число «${raw}». Исходное текстовое представление могло измениться (ведущие нули, экспонента, проценты или дробь). Верните ячейку в текстовый формат и введите значение повторно.`;
+    }
+
+    const formatKind = canonicalValue(meta.numberFormatKind || 'general');
+    if (['scientific', 'percent', 'fraction'].includes(formatKind) && !['Int', 'Decimal'].includes(kind)) {
+      return `В столбце «${label}» Excel применил числовой формат «${formatKind}» к значению «${raw}». Для этого типа критерия преобразование неоднозначно; верните ячейку в текстовый формат и повторите ввод.`;
+    }
+    return null;
   }
 
   function typedScalarSemantic(kind, value) {
@@ -907,6 +932,9 @@
     const id = Number(numFmtId);
     if (id === 49) return 'text';
     if (BUILTIN_EXCEL_DATE_FORMAT_IDS.has(id)) return 'date';
+    if (id === 9 || id === 10) return 'percent';
+    if (id === 11 || id === 48) return 'scientific';
+    if (id === 12 || id === 13) return 'fraction';
     const code = String(formatCode || '').trim();
     if (!code) return 'general';
     if (code === '@') return 'text';
@@ -918,6 +946,9 @@
       .toLowerCase();
     if (/am\/pm|a\/p|\[h+\]|\[m+\]|\[s+\]|y+|d+|h+|s+/.test(semantic)) return 'date';
     if (/m+/.test(semantic) && /[\/-]/.test(semantic)) return 'date';
+    if (/%/.test(semantic)) return 'percent';
+    if (/[0#?]+\s*e[+-]?[0#?]+/i.test(semantic)) return 'scientific';
+    if (/[#0?]+\s+[#0?]+\/[#0?]+/.test(semantic)) return 'fraction';
     return 'general';
   }
 
@@ -1072,12 +1103,18 @@
         const styleIndexRaw = attr(attrs, 's');
         const styleIndex = styleIndexRaw === null ? 0 : Number(styleIndexRaw);
         const style = Number.isInteger(styleIndex) && styleIndex >= 0 ? (styles[styleIndex] || null) : null;
+        // Formula nodes can contain an expression (<f>1+1</f>) or be self-closing
+        // for shared formulas (<f t="shared" si="0"/>). Both mean the cached <v>
+        // is formula output, never a user-entered scalar that may be applied to TESSA.
+        const formulaMatch = cellBody.match(/<(?:[A-Za-z_][\w.-]*:)?f\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?f>)/i);
         metaValues[coordinate.col] = {
           styleIndex: Number.isInteger(styleIndex) && styleIndex >= 0 ? styleIndex : 0,
           numFmtId: style?.numFmtId ?? 0,
           formatCode: style?.formatCode || '',
           numberFormatKind: style?.numberFormatKind || 'general',
           rawType: type || 'n',
+          hasFormula: Boolean(formulaMatch),
+          formula: formulaMatch ? xmlDecode(formulaMatch[2] || '') : '',
         };
         let value = '';
         const inline = cellBody.match(/<(?:[A-Za-z_][\w.-]*:)?is\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?is>/i);
@@ -3878,10 +3915,15 @@
       const resolutions = [];
       for (const [id, column] of columnMap.columns.entries()) {
         const cellOperandKind = operandKind(column);
+        const cellMeta = row.cellMeta?.[column.index];
         const autoDateIssue = column.kind === 'criterion'
-          ? excelAutoDateIssue(cellOperandKind, row.values[column.index], row.cellMeta?.[column.index], column.excelHeader)
+          ? excelAutoDateIssue(cellOperandKind, row.values[column.index], cellMeta, column.excelHeader)
           : null;
         if (autoDateIssue) issues.push(`Excel ${row.excelRow}: ${autoDateIssue}`);
+        const coercionIssue = column.kind === 'criterion'
+          ? excelCoercionIssue(cellOperandKind, row.values[column.index], cellMeta, column.excelHeader)
+          : null;
+        if (coercionIssue) issues.push(`Excel ${row.excelRow}: ${coercionIssue}`);
         const visibleValues = splitCell(row.values[column.index]);
         const explicitValues = column.idIndex === null ? [] : splitCell(row.values[column.idIndex]);
         const resolvedDisplays = [];

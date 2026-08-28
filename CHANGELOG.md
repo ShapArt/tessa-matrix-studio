@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.26 — 2026-08-29
+
+- XLSX-reader сохраняет наличие и текст Excel-формулы в metadata рабочей ячейки; формулы в редактируемых критериях fail-closed переводят строку в ПРОПУСТИТЬ, cached `<v>` не применяется как обычное значение;
+- строковый критерий, который Excel сериализовал как numeric cell, блокируется как потенциально преобразованный: исходное отображение могло потерять ведущие нули или измениться через scientific notation, проценты/дроби;
+- number-format classifier различает built-in/custom `percent`, `scientific` и `fraction` наряду с `date`, `text` и `general`;
+- настоящие Int/Decimal в General/Text и Date/DateTime Excel serial продолжают работать без новых ограничений;
+- добавлен TDD regression pack для formula cached values и типовых Excel coercion-сценариев.
+
 ## 1.9.25 — 2026-08-28
 
 - рабочие ячейки roundtrip-Excel теперь выгружаются с форматом Excel Text, чтобы значения вроде `3 - 18`, `1-10` и похожие строки не превращались в даты при ручном редактировании;
