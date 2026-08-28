@@ -156,6 +156,9 @@ await expectRejected(
 );
 
 // Do not trust declared uncompressed size: streamed inflate must stop when actual output crosses the limit.
+// Raise only the ratio cap for this one test so it proves the output-byte limit rather than the ratio guard.
+const savedRatio = globalThis.__TESSA_MATRIX_SYNC_TEST_ARCHIVE_LIMITS__.MaxCompressionRatio;
+globalThis.__TESSA_MATRIX_SYNC_TEST_ARCHIVE_LIMITS__.MaxCompressionRatio = 10000;
 await expectRejected(
   buildZip([{
     name: 'xl/worksheets/sheet1.xml',
@@ -166,6 +169,7 @@ await expectRejected(
   /распакованн.*размер.*файл|безопасн.*лимит/i,
   'actual-inflate-size',
 );
+globalThis.__TESSA_MATRIX_SYNC_TEST_ARCHIVE_LIMITS__.MaxCompressionRatio = savedRatio;
 
 // A bogus local-header offset must become a controlled XLSX rejection, never a raw RangeError.
 await expectRejected(
