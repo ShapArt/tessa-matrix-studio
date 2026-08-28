@@ -20,6 +20,7 @@ replace_once('README.md', 'version-1.9.20-EF233C', 'version-1.9.21-EF233C', 'REA
 replace_once('README.md', '**v1.9.20 · Автор: Шаповалов Артём**', '**v1.9.21 · Автор: Шаповалов Артём**', 'README current version')
 replace_once('README.md', 'Подтвердите установку версии **1.9.20** в Tampermonkey.', 'Подтвердите установку версии **1.9.21** в Tampermonkey.', 'README quick start version')
 replace_once('README.md', '- **Версия:** `1.9.20`', '- **Версия:** `1.9.21`', 'README install version')
+replace_once('README.md', 'Текущая версия: **1.9.20**', 'Текущая версия: **1.9.21**', 'README support version')
 
 changelog = Path('CHANGELOG.md')
 text = changelog.read_text(encoding='utf-8')
@@ -31,3 +32,4 @@ changelog.write_text(text.replace(marker, marker + entry, 1), encoding='utf-8')
 
 print('v1.9.21 release metadata finalized')
 # trigger workflow after finalizer definition exists
+# second trigger includes README support version contract
