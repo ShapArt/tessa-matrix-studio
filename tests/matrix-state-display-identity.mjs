@@ -12,18 +12,19 @@ vm.runInThisContext(code, { filename: 'tessa-matrix-studio.user.js' });
 
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 
-// Реальная TESSA иногда отдаёт StateName как localization key ($Mtx_Enums_*).
-// Caption и draft-guard обязаны использовать один и тот же локализованный state.
+// Реальная TESSA иногда отдаёт StateName как непрозрачный localization key ($Mtx_Enums_*).
+// В таком ключе может вообще не быть слов Draft/Active/Approval, поэтому caption и draft-guard
+// обязаны использовать один и тот же результат штатной локализации TESSA.
 const stateMap = new Map([
-  ['$Mtx_Enums_RouteMatrixState_Draft', 'Черновик'],
-  ['$Mtx_Enums_RouteMatrixState_Active', 'Активная'],
-  ['$Mtx_Enums_RouteMatrixState_Approval', 'На согласовании'],
+  ['$Mtx_Enums_4F3810A2', 'Черновик'],
+  ['$Mtx_Enums_88B17C61', 'Активная'],
+  ['$Mtx_Enums_A0126E4D', 'На согласовании'],
 ]);
 const localizeState = value => stateMap.get(String(value)) || String(value);
 
-const draftInfo = { StateName: '$Mtx_Enums_RouteMatrixState_Draft' };
-const activeInfo = { StateName: '$Mtx_Enums_RouteMatrixState_Active' };
-const approvalInfo = { StateName: '$Mtx_Enums_RouteMatrixState_Approval' };
+const draftInfo = { StateName: '$Mtx_Enums_4F3810A2' };
+const activeInfo = { StateName: '$Mtx_Enums_88B17C61' };
+const approvalInfo = { StateName: '$Mtx_Enums_A0126E4D' };
 
 assert(E.matrixStateCaption(draftInfo, localizeState) === 'Черновик',
   `localized draft caption mismatch: ${E.matrixStateCaption(draftInfo, localizeState)}`);
