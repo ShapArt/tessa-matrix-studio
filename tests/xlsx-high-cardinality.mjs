@@ -115,8 +115,10 @@ const importStarted = performance.now();
 const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 const workbook = await E.readXlsxArrayBuffer(buffer, 'cardinality.xlsx');
 const importMs = performance.now() - importStarted;
-assert(workbook.dictionaryCatalog?.stats?.entries === ENTRY_COUNT + 3,
-  `embedded dictionary lost entries after XLSX roundtrip: ${workbook.dictionaryCatalog?.stats?.entries}`);
+const importedDictionaryEntries = Object.values(workbook.dictionaryCatalog?.catalogs || {})
+  .reduce((sum, item) => sum + (item.entries?.length || 0), 0);
+assert(importedDictionaryEntries === ENTRY_COUNT + 3,
+  `embedded dictionary lost entries after XLSX roundtrip: ${importedDictionaryEntries}`);
 
 const planStarted = performance.now();
 const plan = E.buildPlan(workbook, structure, snapshot);
