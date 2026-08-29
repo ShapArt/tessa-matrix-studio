@@ -15,6 +15,8 @@ const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 const decode = E.TessaBridge.prototype.readMatrixRowFromCard;
 assert(typeof decode === 'function', 'readMatrixRowFromCard must exist');
 
+// The row-card may still exist after another session removes/replaces the exact version.
+// Targeted DELETE must validate MatrixVersionID itself instead of treating CardGet success as freshness.
 const missingVersionCard = {
   sections: {
     MtxRouteMatrixRowVersions: { rows: [{ rowId: 'other-version', state: 0 }] },
