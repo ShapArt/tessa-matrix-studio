@@ -3173,6 +3173,12 @@
       const criterionIdCache = caches.criterionIdCache || null;
       const roleIdCache = caches.roleIdCache || null;
       const roleIdByFunctionCache = caches.roleIdByFunctionCache || null;
+      const versionsSection = this.section(card, S.Versions);
+      const versionExists = (versionsSection?.rows || []).some(row =>
+        !this.isDeleted(row) && canonicalValue(row.rowId) === canonicalValue(link.versionId));
+      if (!versionExists) {
+        throw new Error(`MatrixVersionID ${link.versionId || ''} для строки ${link.rowCardId || ''} больше не существует.`);
+      }
       const valuesSection = this.section(card, S.Values);
       const rolesSection = this.section(card, S.Roles);
       const flat = {};
