@@ -1745,7 +1745,7 @@
       const roleType = canonicalValue(item.roleTypeId);
       if (id) {
         append(byId, `${id}|${roleType}`, item);
-        append(byId, `${id}|`, item);
+        if (roleType) append(byId, `${id}|`, item);
       }
       append(bySelector, canonicalValue(item.selector), item);
       append(byDisplay, canonicalValue(item.display), item);
