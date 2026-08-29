@@ -1016,13 +1016,18 @@
     for (const match of rels.matchAll(/<(?:[A-Za-z_][\w.-]*:)?Relationship\b([^>]*)\/?\s*>/gi)) {
       const id = attr(match[1], 'Id');
       const target = attr(match[1], 'Target');
-      if (id && target) relationships.set(id, target);
+      const targetMode = attr(match[1], 'TargetMode');
+      if (id && target) relationships.set(id, { target, targetMode });
     }
     const sheets = [];
     for (const match of workbook.matchAll(/<(?:[A-Za-z_][\w.-]*:)?sheet\b([^>]*)\/?\s*>/gi)) {
       const sheetName = attr(match[1], 'name') || `Лист${sheets.length + 1}`;
       const relId = attr(match[1], 'r:id') || attr(match[1], 'id');
-      const target = relationships.get(relId) || `worksheets/sheet${sheets.length + 1}.xml`;
+      const relationship = relationships.get(relId);
+      if (canonicalValue(relationship?.targetMode) === 'external') {
+        throw xlsxArchiveError(`Relationship ${relId || ''} имеет TargetMode=External и не может использоваться как лист XLSX.`);
+      }
+      const target = relationship?.target || `worksheets/sheet${sheets.length + 1}.xml`;
       const normalized = resolveOpcRelationshipTarget(workbookPath, target);
       sheets.push({ name: sheetName, path: normalized, relId });
     }
