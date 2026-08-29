@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.30 — 2026-08-29
+
+- OOXML Relationship Target для листов теперь разрешается относительно `xl/workbook.xml` с нормализацией безопасных `.`/`..` URI-сегментов вместо буквального поиска пути внутри ZIP;
+- внешние URI и Relationship, выходящие выше корня XLSX-пакета, fail-closed отклоняются вместо попытки угадать локальную часть;
+- добавлен regression-pack V1–V5: старые roundtrip-форматы продолжают читаться и строить чистый Preview, но физически отсутствующая строка не превращается в V6-only implicit DELETE без baseline-ledger;
+- актуализация legacy workbook сохраняет текущие строки TESSA и последующий export формирует V6 с полным baseline-ledger;
+- добавлен нагрузочный export → import → plan regression на 500 / 1000 / 5000 строк; untouched книги обязаны давать только NOOP и оставаться в действующих XLSX/SpreadsheetML лимитах.
+
 ## 1.9.29 — 2026-08-29
 
 - `sharedStrings.xml` теперь разбирается одинаково для обычных и namespace-prefixed SpreadsheetML-элементов (`<si>/<t>` и `<x:si>/<x:t>`);
