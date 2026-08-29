@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.26
+// @version      1.9.27
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.26',
+    version: '1.9.27',
     plan: null,
     review: createPlanReviewState(),
     workbook: null,
@@ -3552,6 +3552,9 @@
 
     async storeRowCard(card) {
       const req = new this.cards.CardStoreRequest();
+      // Force TESSA to perform an atomic card-version check during Store.
+      // This closes the post-preflight lost-update window for UPDATE/ADD.
+      req.affectVersion = true;
       req.card = card;
       req.info.MatrixID = this.TypedField.createGuid(this.mainCard.id);
       const response = await this.cardService.store(req);
@@ -5289,7 +5292,7 @@
     if (c.delete && !window.confirm(`Будет удалено строк: ${c.delete}. Подтвердите удаление отдельно.`)) return null;
 
     APP.abortRequested = false;
-    const { bridge, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips } = await preflightPlan(plan);
+    const { bridge, structure, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips } = await preflightPlan(plan);
     const totalToStore = preparedUpdates.size + preparedAdds.size + readyDeletes.length;
     let storedCount = 0;
     const tickStoreProgress = label => {
@@ -5332,6 +5335,9 @@
       const action = created.action;
       try {
         log(`Добавляю строку Excel ${action.excelRow.excelRow}`);
+        // Re-check immediately before Store: another session may have created the
+        // same matrix row after preflight completed.
+        await bridge.validateDuplicate(created.card, created.versionId);
         const storeResponse = await bridge.storeRowCard(created.card);
         const storedCardId = String(storeResponse?.cardId || created.cardId);
         const verification = await bridge.tryGetCard(storedCardId);
@@ -5354,6 +5360,18 @@
           .filter(excelRow => !successfulMutationRows.has(Number(excelRow)));
         if (missingDependencies.length) {
           throw new Error(`Удаление строки TESSA ${action.currentRow.index + 1} пропущено: связанное изменение Excel ${missingDependencies.join(', ')} не было успешно применено. Исходная строка сохранена.`);
+        }
+        // DeleteRow is a custom request without CardStoreRequest.AffectVersion.
+        // Re-read the target immediately before deletion and fail closed on any drift.
+        const deleteSnapshot = await bridge.loadSnapshot(structure);
+        const deleteTarget = (deleteSnapshot.rows || []).find(row =>
+          canonicalValue(row.rowCardId) === canonicalValue(prepared.current.rowCardId));
+        if (!deleteTarget) {
+          throw new Error(`Удаление строки TESSA ${action.currentRow.index + 1} пропущено: строка исчезла после предварительной проверки. Обновите Excel и проверьте изменения заново.`);
+        }
+        if (canonicalValue(deleteTarget.versionId) !== canonicalValue(prepared.current.versionId)
+          || canonicalValue(deleteTarget.fingerprint) !== canonicalValue(prepared.current.fingerprint)) {
+          throw new Error(`Удаление строки TESSA ${action.currentRow.index + 1} пропущено: строка изменилась после предварительной проверки. Обновите Excel и проверьте изменения заново.`);
         }
         log(`Удаляю строку TESSA ${action.currentRow.index + 1}`);
         await bridge.deleteMatrixRow(action.currentRow.versionId);

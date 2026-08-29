@@ -14,7 +14,7 @@ body:
     id: version
     attributes:
       label: Версия TESSA Matrix Studio
-      placeholder: 1.9.26
+      placeholder: 1.9.27
     validations:
       required: true
 
