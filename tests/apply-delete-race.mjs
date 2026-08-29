@@ -47,11 +47,6 @@ const snapshot = {
   matrixId: 'delete-race-matrix', templateId: structure.templateId, rows: [originalRow],
   criterionIdCache: new Map(), roleIdByFunctionCache: new Map(), roleIdCache: new Map(),
 };
-const changedSnapshot = {
-  ...snapshot,
-  rows: [changedRow],
-  criterionIdCache: new Map(), roleIdByFunctionCache: new Map(), roleIdCache: new Map(),
-};
 const matrixInfo = {
   matrixId: snapshot.matrixId, TemplateID: snapshot.templateId,
   TemplateName: 'DELETE RACE QA', StateName: 'Черновик', Name: 'DELETE RACE QA',
@@ -64,16 +59,25 @@ const plan = E.buildPlan(edited, structure, snapshot);
 assert(plan.counts.delete === 1, `expected one DELETE, got ${JSON.stringify(plan.counts)}`);
 
 let snapshotReads = 0;
+let targetedReads = 0;
 let deleteCalls = 0;
 const bridge = {
   matrixInfo: () => matrixInfo,
   templateId: () => structure.templateId,
   requestStructure: async () => structure,
-  // First read is Apply preflight; second read must happen immediately before DeleteRow.
+  // Apply preflight may read the whole matrix once. The store-time DELETE guard must
+  // not load the whole matrix again just to validate one target row.
   loadSnapshot: async () => {
     snapshotReads += 1;
-    return snapshotReads === 1 ? snapshot : changedSnapshot;
+    return snapshot;
   },
+  getCard: async cardId => {
+    targetedReads += 1;
+    assert(cardId === originalRow.rowCardId, `targeted CardGet used wrong card: ${cardId}`);
+    return { __deleteRaceFixture: changedRow };
+  },
+  // This hook models the common one-card decoder that v1.9.28 should share with loadSnapshot.
+  readMatrixRowFromCard: (card, link) => ({ ...card.__deleteRaceFixture, ...link, fingerprint: card.__deleteRaceFixture.fingerprint }),
   resolveReferenceOnline: async () => null,
   deleteMatrixRow: async () => { deleteCalls += 1; },
   refresh: async () => {},
@@ -83,8 +87,10 @@ const originalCreate = E.TessaBridge.create;
 E.TessaBridge.create = async () => bridge;
 try {
   const result = await E.applyPlan(plan);
-  assert(snapshotReads >= 2,
-    `DELETE must re-read fresh matrix state immediately before DeleteRow, got ${snapshotReads} snapshot reads`);
+  assert(snapshotReads === 1,
+    `DELETE store-time guard must not re-read the whole matrix; expected one preflight snapshot, got ${snapshotReads}`);
+  assert(targetedReads === 1,
+    `DELETE store-time guard must perform one targeted CardGet for its target, got ${targetedReads}`);
   assert(deleteCalls === 0,
     `DELETE must not execute after target fingerprint changed post-preflight, got ${deleteCalls} delete calls`);
   const skippedDelete = result.rows.find(item => item.type === 'delete' && item.status === 'skipped');
@@ -96,4 +102,4 @@ try {
   E.TessaBridge.create = originalCreate;
 }
 
-console.log('TESSA Matrix Studio DELETE store-time race regression: OK');
+console.log('TESSA Matrix Studio targeted DELETE race regression: OK');
