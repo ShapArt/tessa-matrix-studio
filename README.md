@@ -6,13 +6,13 @@
 
 Выгрузка матрицы в Excel → массовая правка → проверка изменений → безопасное применение в TESSA.
 
-[![Version](https://img.shields.io/badge/version-1.9.27-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.9.28-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-userscript-24292F?style=flat-square&logo=tampermonkey)](https://www.tampermonkey.net/)
 
 ### [УСТАНОВИТЬ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js) · [СКАЧАТЬ РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [ОТКРЫТЬ КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [СООБЩИТЬ ОБ ОШИБКЕ](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.9.27 · Автор: Шаповалов Артём**
+**v1.9.28 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -44,6 +44,9 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 > [!IMPORTANT]
 > Начиная с **v1.9.27**, Apply дополнительно защищён от изменений, произошедших уже после успешного preflight. UPDATE/ADD сохраняются через TESSA `CardStoreRequest` с `AffectVersion = true`, поэтому сервер проверяет версию карточки непосредственно во время Store; для ADD duplicate-проверка повторяется прямо перед Store. Перед кастомным DELETE Studio повторно читает целевую строку и строго сверяет её MatrixRowID, MatrixVersionID и raw fingerprint. Конфликтующая операция переводится в **ПРОПУСТИТЬ** без auto-merge; независимые безопасные строки могут продолжить применение. Для кастомного DELETE это строгая клиентская recheck-защита, а не серверный version-lock.
 
+> [!NOTE]
+> Начиная с **v1.9.28**, DELETE recheck больше не перечитывает всю матрицу перед каждой удаляемой строкой. Studio делает один targeted `CardGet` конкретной row-card, подтверждает наличие исходной `MatrixVersionID` и тем же decoder вычисляет raw fingerprint. Это сохраняет fail-closed поведение v1.9.27, но убирает рост запросов порядка `N × DELETE`; микроокно между targeted CardGet и кастомным `DeleteRow` остаётся клиентским, так как серверного аналога `AffectVersion` для этого request не используется.
+
 ---
 
 # Быстрый старт
@@ -51,7 +54,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.9.27** в Tampermonkey.
+2. Подтвердите установку версии **1.9.28** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -113,7 +116,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Перед подтверждением проверьте:
 
 - **Название:** `TESSA Matrix Studio — Черкизово`
-- **Версия:** `1.9.26`
+- **Версия:** `1.9.28`
 - **Автор:** `Шаповалов Артём`
 - **Разрешения:** `@grant none`
 - **Область запуска:** только домены TESSA Черкизово
