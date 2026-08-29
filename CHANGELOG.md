@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.31 — 2026-08-29
+
+- повторные fragment/not-found разрешения одного значения во встроенном справочнике теперь используют bounded per-catalog cache (до 2048 результатов) вместо повторного линейного сканирования большого `searchRows`;
+- exact ID index больше не добавляет одну и ту же запись дважды в fallback-ключ `id|`, когда `RoleTypeID` пуст;
+- добавлен high-cardinality regression: 25 000+ записей справочника, 10 000 exact ID lookup, неоднозначные display names и полный export → import → plan без ложных изменений;
+- OPC worksheet relationships теперь учитывают `TargetMode`: `External` fail-closed отклоняется до разрешения ZIP-part даже при локально выглядящем `Target`;
+- regression покрывает internal/root-relative/dot-segment/backslash targets и отклонение root-escape, URL/file/network-path и explicit External relationship.
+
 ## 1.9.30 — 2026-08-29
 
 - OOXML Relationship Target для листов теперь разрешается относительно `xl/workbook.xml` с нормализацией безопасных `.`/`..` URI-сегментов вместо буквального поиска пути внутри ZIP;
