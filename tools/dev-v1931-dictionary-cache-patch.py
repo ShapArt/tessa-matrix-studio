@@ -79,5 +79,46 @@ if old_block not in s:
 else:
     s = s.replace(old_block, new_block, 1)
 
+old_relationships = '''    const relationships = new Map();
+    for (const match of rels.matchAll(/<(?:[A-Za-z_][\\w.-]*:)?Relationship\\b([^>]*)\\/?\\s*>/gi)) {
+      const id = attr(match[1], 'Id');
+      const target = attr(match[1], 'Target');
+      if (id && target) relationships.set(id, target);
+    }
+    const sheets = [];
+    for (const match of workbook.matchAll(/<(?:[A-Za-z_][\\w.-]*:)?sheet\\b([^>]*)\\/?\\s*>/gi)) {
+      const sheetName = attr(match[1], 'name') || `Лист${sheets.length + 1}`;
+      const relId = attr(match[1], 'r:id') || attr(match[1], 'id');
+      const target = relationships.get(relId) || `worksheets/sheet${sheets.length + 1}.xml`;
+      const normalized = resolveOpcRelationshipTarget(workbookPath, target);
+      sheets.push({ name: sheetName, path: normalized, relId });
+    }
+'''
+new_relationships = '''    const relationships = new Map();
+    for (const match of rels.matchAll(/<(?:[A-Za-z_][\\w.-]*:)?Relationship\\b([^>]*)\\/?\\s*>/gi)) {
+      const id = attr(match[1], 'Id');
+      const target = attr(match[1], 'Target');
+      const targetMode = attr(match[1], 'TargetMode');
+      if (id && target) relationships.set(id, { target, targetMode });
+    }
+    const sheets = [];
+    for (const match of workbook.matchAll(/<(?:[A-Za-z_][\\w.-]*:)?sheet\\b([^>]*)\\/?\\s*>/gi)) {
+      const sheetName = attr(match[1], 'name') || `Лист${sheets.length + 1}`;
+      const relId = attr(match[1], 'r:id') || attr(match[1], 'id');
+      const relationship = relationships.get(relId);
+      if (canonicalValue(relationship?.targetMode) === 'external') {
+        throw xlsxArchiveError(`Relationship ${relId || ''} имеет TargetMode=External и не может использоваться как лист XLSX.`);
+      }
+      const target = relationship?.target || `worksheets/sheet${sheets.length + 1}.xml`;
+      const normalized = resolveOpcRelationshipTarget(workbookPath, target);
+      sheets.push({ name: sheetName, path: normalized, relId });
+    }
+'''
+if old_relationships not in s:
+    if new_relationships not in s:
+        raise SystemExit('workbook relationship anchor not found')
+else:
+    s = s.replace(old_relationships, new_relationships, 1)
+
 p.write_text(s, encoding='utf-8')
-print('v1.9.31 dictionary cache/index patch applied')
+print('v1.9.31 dictionary cache/index + OPC TargetMode patch applied')
