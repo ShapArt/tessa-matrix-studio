@@ -76,12 +76,13 @@ function workbookZip(target, targetMode = null, localPart = 'xl/worksheets/sheet
   ]);
 }
 
-for (const [label, target] of [
-  ['dot-segments', './worksheets/../worksheets/sheet9.xml'],
-  ['package-root', '/xl/worksheets/sheet9.xml'],
-  ['backslash-writer', 'worksheets\\sheet9.xml'],
+for (const [label, target, targetMode] of [
+  ['dot-segments', './worksheets/../worksheets/sheet9.xml', null],
+  ['package-root', '/xl/worksheets/sheet9.xml', null],
+  ['backslash-writer', 'worksheets\\sheet9.xml', null],
+  ['explicit-internal', 'worksheets/sheet9.xml', 'Internal'],
 ]) {
-  const workbook = await E.readXlsxArrayBuffer(toArrayBuffer(workbookZip(target)), `${label}.xlsx`);
+  const workbook = await E.readXlsxArrayBuffer(toArrayBuffer(workbookZip(target, targetMode)), `${label}.xlsx`);
   assert(workbook.sheetName === 'Матрица' && workbook.rows.length === 1,
     `${label}: safe internal Relationship did not resolve`);
 }
