@@ -66,7 +66,7 @@ const bridge = {
   templateId: () => structure.templateId,
   requestStructure: async () => structure,
   // Apply preflight may read the whole matrix once. The store-time DELETE guard must
-  // not load the whole matrix again just to validate one target row.
+  // use exactly one targeted CardGet for this target instead of another full snapshot.
   loadSnapshot: async () => {
     snapshotReads += 1;
     return snapshot;
