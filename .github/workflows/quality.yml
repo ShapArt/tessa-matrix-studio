@@ -13,31 +13,6 @@ permissions:
   contents: read
 
 jobs:
-  dev_patch_v1929:
-    name: Temporary v1.9.29 GREEN patch helper
-    if: github.event_name == 'pull_request' && github.head_ref == 'fix/v1.9.29-sharedstrings-hardening'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
-      - name: Patch parser
-        run: python3 tools/dev-v1929-green.py
-      - name: Commit parser patch
-        run: |
-          if git diff --quiet -- tessa-matrix-studio.user.js; then
-            echo 'No parser change required'
-            exit 0
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add tessa-matrix-studio.user.js
-          git commit -m 'fix: harden sharedStrings parsing'
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
-
   tests:
     name: Tests
     runs-on: ubuntu-latest
