@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.28 — 2026-08-29
+
+- DELETE store-time freshness-check больше не вызывает полный `loadSnapshot()` перед каждой удаляемой строкой: используется targeted `CardGet` только конкретной row-card;
+- общий `readMatrixRowFromCard` теперь используется и полным snapshot, и targeted DELETE recheck, поэтому raw fingerprint рассчитывается одной и той же логикой;
+- targeted recheck явно подтверждает наличие живой `MatrixVersionID` в `MtxRouteMatrixRowVersions`; исчезнувшая версия fail-closed переводит DELETE в ПРОПУСТИТЬ;
+- сохранены строгие проверки `RowCardID + MatrixVersionID + raw fingerprint` и локальный partial-apply без auto-merge; клиентское микроокно `CardGet → DeleteRow` остаётся задокументированным ограничением кастомного DELETE;
+- добавлены TDD-regressions на отсутствие повторного full snapshot и исчезнувшую target-version.
+
 ## 1.9.27 — 2026-08-29
 
 - UPDATE и ADD теперь отправляются через `CardStoreRequest` с `AffectVersion = true`: TESSA атомарно проверяет версию карточки во время Store и не позволяет молча затереть изменение, сделанное после preflight;
