@@ -102,7 +102,7 @@ for (const [label, target] of [
 
 // OPC TargetMode is authoritative. Microsoft documents Internal targets as package parts
 // resolved relative to the source part, while External targets point outside the package.
-// Therefore a harmless-looking Target text cannot override TargetMode="External".
+// Verify this independently from Target text: a local-looking path must not bypass External mode.
 let externalModeError = null;
 try {
   await E.readXlsxArrayBuffer(
