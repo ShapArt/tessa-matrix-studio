@@ -59,6 +59,8 @@ const toArrayBuffer = bytes => bytes.buffer.slice(bytes.byteOffset, bytes.byteOf
 // Relationship targets are URI references relative to xl/workbook.xml. Office writers
 // are allowed to leave harmless dot-segments in that URI. Studio must resolve those
 // segments rather than looking for a literal ZIP member named "worksheets/../...".
+// The deliberately non-sequential rId42/sheet9 pair also proves lookup is relationship-based,
+// not coupled to workbook ordering or conventional rId1/sheet1 names.
 const workbookXml = `<?xml version="1.0" encoding="UTF-8"?>
 <x:workbook xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
