@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.29 — 2026-08-29
+
+- `sharedStrings.xml` теперь разбирается одинаково для обычных и namespace-prefixed SpreadsheetML-элементов (`<si>/<t>` и `<x:si>/<x:t>`);
+- rich-text shared strings корректно собираются из нескольких `<t>`-runs в порядке документа;
+- для ячеек `t="s"` индекс общей строки валидируется fail-closed: отрицательные, дробные, нечисловые и выходящие за таблицу ссылки отклоняют XLSX с явной диагностикой вместо тихого значения `''`;
+- валидная shared-string с пустым текстом остаётся допустимой; inline strings, обычные `str`, числа, даты и формулы не менялись;
+- добавлен TDD regression на namespaced sharedStrings, rich-text concatenation и invalid/out-of-range indexes.
+
 ## 1.9.28 — 2026-08-29
 
 - DELETE store-time freshness-check больше не вызывает полный `loadSnapshot()` перед каждой удаляемой строкой: используется targeted `CardGet` только конкретной row-card;
