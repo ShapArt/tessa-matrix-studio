@@ -3,6 +3,22 @@ from pathlib import Path
 p = Path('tessa-matrix-studio.user.js')
 s = p.read_text(encoding='utf-8')
 
+old_index = '''      if (id) {
+        append(byId, `${id}|${roleType}`, item);
+        append(byId, `${id}|`, item);
+      }
+'''
+new_index = '''      if (id) {
+        append(byId, `${id}|${roleType}`, item);
+        if (roleType) append(byId, `${id}|`, item);
+      }
+'''
+if old_index not in s:
+    if new_index not in s:
+        raise SystemExit('dictionary byId anchor not found')
+else:
+    s = s.replace(old_index, new_index, 1)
+
 old_lookup = "    const lookup = { items, byId, bySelector, byDisplay, searchRows, isBoolean };\n"
 new_lookup = "    const lookup = { items, byId, bySelector, byDisplay, searchRows, isBoolean, resolutionCache: new Map() };\n"
 if old_lookup not in s:
@@ -64,4 +80,4 @@ else:
     s = s.replace(old_block, new_block, 1)
 
 p.write_text(s, encoding='utf-8')
-print('v1.9.31 dictionary resolution cache patch applied')
+print('v1.9.31 dictionary cache/index patch applied')
