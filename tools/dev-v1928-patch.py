@@ -3,12 +3,10 @@ import re
 
 path = Path('tessa-matrix-studio.user.js')
 text = path.read_text(encoding='utf-8')
-if 'readMatrixRowFromCard(card, link, structure, caches = {})' in text:
-    print('v1.9.28 production patch already present')
-    raise SystemExit(0)
 
-marker = '    async loadSnapshot(structure) {'
-helper = r'''    readMatrixRowFromCard(card, link, structure, caches = {}) {
+if 'readMatrixRowFromCard(card, link, structure, caches = {})' not in text:
+    marker = '    async loadSnapshot(structure) {'
+    helper = r'''    readMatrixRowFromCard(card, link, structure, caches = {}) {
       const criterionIdCache = caches.criterionIdCache || null;
       const roleIdCache = caches.roleIdCache || null;
       const roleIdByFunctionCache = caches.roleIdByFunctionCache || null;
@@ -62,55 +60,35 @@ helper = r'''    readMatrixRowFromCard(card, link, structure, caches = {}) {
           }
         }
       }
-
       return { ...link, card, values, roles, flat, fingerprint: fingerprintFlat(flat) };
     }
 
 '''
-if marker not in text:
-    raise SystemExit('loadSnapshot marker not found')
-text = text.replace(marker, helper + marker, 1)
-
-pattern = re.compile(
-    r"      const loadedRows = await mapConcurrent\(links, PERFORMANCE\.SnapshotCardGetConcurrency, async \(link, i\) => \{[\s\S]*?      \}\);\n      snapshotRows\.push\(\.\.\.loadedRows\);",
-    re.M,
-)
-replacement = r'''      const loadedRows = await mapConcurrent(links, PERFORMANCE.SnapshotCardGetConcurrency, async (link, i) => {
+    if marker not in text:
+        raise SystemExit('loadSnapshot marker not found')
+    text = text.replace(marker, helper + marker, 1)
+    pattern = re.compile(r"      const loadedRows = await mapConcurrent\(links, PERFORMANCE\.SnapshotCardGetConcurrency, async \(link, i\) => \{[\s\S]*?      \}\);\n      snapshotRows\.push\(\.\.\.loadedRows\);", re.M)
+    replacement = r'''      const loadedRows = await mapConcurrent(links, PERFORMANCE.SnapshotCardGetConcurrency, async (link, i) => {
         if (APP.abortRequested) throw new Error('Операция остановлена пользователем.');
         const card = await this.getCard(link.rowCardId);
-        return this.readMatrixRowFromCard(card, link, structure, {
-          criterionIdCache,
-          roleIdCache,
-          roleIdByFunctionCache,
-        });
+        return this.readMatrixRowFromCard(card, link, structure, { criterionIdCache, roleIdCache, roleIdByFunctionCache });
       });
       snapshotRows.push(...loadedRows);'''
-text, count = pattern.subn(replacement, text, count=1)
-if count != 1:
-    raise SystemExit(f'loadSnapshot decoder replacement count={count}')
+    text, count = pattern.subn(replacement, text, count=1)
+    if count != 1:
+        raise SystemExit(f'loadSnapshot decoder replacement count={count}')
+    old_delete = """        // DeleteRow is a custom request without CardStoreRequest.AffectVersion.\n        // Re-read the target immediately before deletion and fail closed on any drift.\n        const deleteSnapshot = await bridge.loadSnapshot(structure);\n        const deleteTarget = (deleteSnapshot.rows || []).find(row =>\n          canonicalValue(row.rowCardId) === canonicalValue(prepared.current.rowCardId));\n        if (!deleteTarget) {\n          throw new Error(`Удаление строки TESSA ${action.currentRow.index + 1} пропущено: строка исчезла после предварительной проверки. Обновите Excel и проверьте изменения заново.`);\n        }\n"""
+    new_delete = """        // DeleteRow is a custom request without CardStoreRequest.AffectVersion.\n        // Read only the target card immediately before deletion instead of reloading the whole matrix.\n        const deleteCard = await bridge.getCard(prepared.current.rowCardId);\n        const deleteTarget = bridge.readMatrixRowFromCard(deleteCard, {\n          index: prepared.current.index, rowCardId: prepared.current.rowCardId, versionId: prepared.current.versionId,\n          rowName: prepared.current.rowName, source: 'targeted-delete-recheck',\n        }, structure);\n"""
+    if old_delete not in text:
+        raise SystemExit('DELETE snapshot block not found')
+    text = text.replace(old_delete, new_delete, 1)
 
-old_delete = r'''        // DeleteRow is a custom request without CardStoreRequest.AffectVersion.
-        // Re-read the target immediately before deletion and fail closed on any drift.
-        const deleteSnapshot = await bridge.loadSnapshot(structure);
-        const deleteTarget = (deleteSnapshot.rows || []).find(row =>
-          canonicalValue(row.rowCardId) === canonicalValue(prepared.current.rowCardId));
-        if (!deleteTarget) {
-          throw new Error(`Удаление строки TESSA ${action.currentRow.index + 1} пропущено: строка исчезла после предварительной проверки. Обновите Excel и проверьте изменения заново.`);
-        }
-'''
-new_delete = r'''        // DeleteRow is a custom request without CardStoreRequest.AffectVersion.
-        // Read only the target card immediately before deletion instead of reloading the whole matrix.
-        const deleteCard = await bridge.getCard(prepared.current.rowCardId);
-        const deleteTarget = bridge.readMatrixRowFromCard(deleteCard, {
-          index: prepared.current.index,
-          rowCardId: prepared.current.rowCardId,
-          versionId: prepared.current.versionId,
-          rowName: prepared.current.rowName,
-          source: 'targeted-delete-recheck',
-        }, structure);
-'''
-if old_delete not in text:
-    raise SystemExit('DELETE snapshot block not found')
-text = text.replace(old_delete, new_delete, 1)
+version_guard_marker = '      const roleIdByFunctionCache = caches.roleIdByFunctionCache || null;\n'
+version_guard = '''      const versionsSection = this.section(card, S.Versions);\n      const versionExists = (versionsSection?.rows || []).some(row =>\n        !this.isDeleted(row) && canonicalValue(row.rowId) === canonicalValue(link.versionId));\n      if (!versionExists) {\n        throw new Error(`MatrixVersionID ${link.versionId || ''} для строки ${link.rowCardId || ''} больше не существует.`);\n      }\n'''
+if 'больше не существует.`);' not in text:
+    if version_guard_marker not in text:
+        raise SystemExit('readMatrixRowFromCard cache marker not found')
+    text = text.replace(version_guard_marker, version_guard_marker + version_guard, 1)
+
 path.write_text(text, encoding='utf-8')
 print('v1.9.28 production patch applied')
