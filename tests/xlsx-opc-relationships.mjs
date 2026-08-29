@@ -99,8 +99,8 @@ for (const [label, target] of [
     `${label}: unsafe Relationship must fail closed, got ${error?.message || 'no error'}`);
 }
 
-// OPC TargetMode is authoritative. A relationship explicitly marked External must
-// never be resolved to a local ZIP part even when its Target text looks harmless.
+// OPC TargetMode is authoritative. This is a separate signal from the Target URI text:
+// an explicitly External relationship must never be mapped back onto a local ZIP member.
 let externalModeError = null;
 try {
   await E.readXlsxArrayBuffer(
