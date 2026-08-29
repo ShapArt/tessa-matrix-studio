@@ -24,18 +24,20 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
-      - name: Apply minimal dictionary cache patch
-        run: python3 tools/dev-v1931-dictionary-cache-patch.py
-      - name: Commit production patch
+      - name: Apply final production and release metadata
         run: |
-          if git diff --quiet -- tessa-matrix-studio.user.js; then
-            echo 'No production patch required'
+          python3 tools/dev-v1931-dictionary-cache-patch.py
+          python3 tools/dev-v1931-release.py
+      - name: Commit v1.9.31 changes
+        run: |
+          if git diff --quiet -- tessa-matrix-studio.user.js package.json README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml; then
+            echo 'No v1.9.31 changes required'
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add tessa-matrix-studio.user.js
-          git commit -m 'perf: cache repeated dictionary resolutions'
+          git add tessa-matrix-studio.user.js package.json README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml
+          git commit -m 'chore: finalize v1.9.31 release metadata'
           git push origin HEAD:${{ github.event.pull_request.head.ref }}
 
   tests:
