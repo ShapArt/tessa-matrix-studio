@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.28
+// @version      1.9.29
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.28',
+    version: '1.9.29',
     plan: null,
     review: createPlanReviewState(),
     workbook: null,
@@ -974,8 +974,10 @@
   function parseSharedStrings(xml) {
     if (!xml) return [];
     const items = [];
-    for (const si of xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/gi)) {
-      const parts = [...si[1].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/gi)].map(x => xmlDecode(x[1]));
+    const itemRegex = /<(?:[A-Za-z_][\w.-]*:)?si\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?si>/gi;
+    const textRegex = /<(?:[A-Za-z_][\w.-]*:)?t\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?t>/gi;
+    for (const si of xml.matchAll(itemRegex)) {
+      const parts = [...si[1].matchAll(textRegex)].map(x => xmlDecode(x[1]));
       items.push(parts.join(''));
     }
     return items;
@@ -1123,7 +1125,17 @@
           const v = cellBody.match(/<(?:[A-Za-z_][\w.-]*:)?v\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?v>/i);
           if (v) {
             const raw = xmlDecode(v[1]);
-            value = type === 's' ? (sharedStrings[Number(raw)] ?? '') : raw;
+            if (type === 's') {
+              const indexText = String(raw).trim();
+              if (!/^(?:0|[1-9]\d*)$/.test(indexText)) {
+                throw xlsxArchiveError(`некорректный индекс общей строки «${indexText || '(пусто)'}» в sharedStrings.`);
+              }
+              const sharedIndex = Number(indexText);
+              if (!Number.isSafeInteger(sharedIndex) || sharedIndex < 0 || sharedIndex >= sharedStrings.length) {
+                throw xlsxArchiveError(`индекс общей строки ${indexText} выходит за предел таблицы sharedStrings (${sharedStrings.length}).`);
+              }
+              value = sharedStrings[sharedIndex];
+            } else value = raw;
           }
         }
         values[coordinate.col] = value;
