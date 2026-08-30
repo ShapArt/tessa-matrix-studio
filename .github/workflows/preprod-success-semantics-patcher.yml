@@ -1,0 +1,42 @@
+name: Apply preprod success semantics patch
+
+on:
+  push:
+    branches:
+      - feat/preprod-mega-uat-hardening
+    paths:
+      - .github/workflows/preprod-success-semantics-patcher.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/preprod-mega-uat-hardening
+          fetch-depth: 0
+      - name: Apply deterministic success semantics patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tessa-matrix-studio.user.js')
+          text = path.read_text(encoding='utf-8')
+          old = "    result.success = !cancelled && !result.verificationIncomplete;"
+          new = "    result.success = result.status === 'completed';"
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one success marker, got {text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+      - name: Commit patched source and remove patch runner
+        shell: bash
+        run: |
+          rm .github/workflows/preprod-success-semantics-patcher.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js .github/workflows/preprod-success-semantics-patcher.yml
+          git commit -m "fix: make Apply success mean fully completed"
+          git push origin HEAD:feat/preprod-mega-uat-hardening
