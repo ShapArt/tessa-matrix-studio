@@ -1,0 +1,70 @@
+name: Apply preprod accounting patch
+
+on:
+  push:
+    branches:
+      - feat/preprod-mega-uat-hardening
+    paths:
+      - .github/workflows/preprod-accounting-patcher.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/preprod-mega-uat-hardening
+          fetch-depth: 0
+      - name: Apply deterministic accounting patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tessa-matrix-studio.user.js')
+          text = path.read_text(encoding='utf-8')
+
+          marker = """    return { count, warning, blocked, reason };\n  }\n\n  /**\n   * Применяет только заранее построенный и прошедший preflight план.\n"""
+          replacement = """    return { count, warning, blocked, reason };\n  }\n\n  /**\n   * Финализирует отчёт Apply так, чтобы два уровня счётчиков можно было сверить:\n   * requested = prepared + preflightSkipped; prepared = applied + storeSkipped + notStarted.\n   * sourceSkippedCount относится к строкам Excel, которые planner уже исключил из mutation-plan.\n   */\n  function finalizeApplyResult(result, options = {}) {\n    const cancelled = Boolean(options.cancelled ?? result?.cancelled);\n    result.appliedCount = (result.rows || []).filter(row => row.status === 'ok').length;\n    result.storeSkippedCount = (result.rows || []).filter(row => row.status === 'skipped').length;\n    result.failedCount = result.storeSkippedCount;\n    result.notStartedCount = Math.max(0, Number(result.plannedCount || 0) - Number(result.startedCount || 0));\n    result.skippedCount = (result.skipped || []).length;\n    result.cancelled = cancelled;\n    result.status = cancelled ? 'cancelled' : (result.skippedCount > 0 || result.failedCount > 0 ? 'partial' : 'completed');\n    result.partial = result.status !== 'completed';\n    result.success = !cancelled;\n    return result;\n  }\n\n  function applyResultMessage(result) {\n    const applied = Number(result?.appliedCount || 0);\n    const skipped = Number(result?.skippedCount || 0);\n    const notStarted = Number(result?.notStartedCount || 0);\n    if (result?.cancelled || result?.status === 'cancelled') {\n      return `Применение остановлено.\\n\\nПрименено: ${applied}\\nПропущено: ${skipped}\\nНе начато: ${notStarted}\\n\\nУже выполненные изменения не откатывались. Скачайте свежую выгрузку Excel и постройте Preview заново.`;\n    }\n    if (result?.partial || result?.status === 'partial') {\n      return `Применение завершено частично.\\n\\nПрименено: ${applied}\\nПропущено: ${skipped}\\n\\nПропущенные или конфликтующие строки не применялись. Скачайте свежую выгрузку Excel перед продолжением.`;\n    }\n    return `Готово.\\n\\nПрименено: ${applied}\\nПропущено: ${skipped}\\n\\nВсе подготовленные изменения применены.`;\n  }\n\n  /**\n   * Применяет только заранее построенный и прошедший preflight план.\n"""
+          if marker not in text:
+              raise SystemExit('helper insertion marker not found')
+          text = text.replace(marker, replacement, 1)
+
+          old_init = """      skipped: [...(plan.skippedRows || []), ...runtimeSkips],\n      success: false,\n      partial: false,\n      status: 'running',\n      cancelled: false,\n      plannedCount: totalToStore,\n      startedCount: 0,\n      appliedCount: 0,\n      skippedCount: 0,\n      failedCount: 0,\n      notStartedCount: totalToStore,\n"""
+          new_init = """      skipped: [...(plan.skippedRows || []), ...runtimeSkips],\n      success: false,\n      partial: false,\n      status: 'running',\n      cancelled: false,\n      sourceSkippedCount: (plan.skippedRows || []).length,\n      preflightSkippedCount: runtimeSkips.length,\n      requestedCount: executable.length,\n      plannedCount: totalToStore,\n      startedCount: 0,\n      appliedCount: 0,\n      skippedCount: 0,\n      storeSkippedCount: 0,\n      failedCount: 0,\n      notStartedCount: totalToStore,\n"""
+          if old_init not in text:
+              raise SystemExit('result init marker not found')
+          text = text.replace(old_init, new_init, 1)
+
+          old_final = """    result.finishedAt = nowIso();\n    result.appliedCount = result.rows.filter(row => row.status === 'ok').length;\n    result.failedCount = result.rows.filter(row => row.status === 'skipped').length;\n    result.skippedCount = result.skipped.length;\n    result.notStartedCount = Math.max(0, result.plannedCount - result.startedCount);\n    result.cancelled = cancelled;\n    result.status = cancelled ? 'cancelled' : (result.skippedCount > 0 || result.failedCount > 0 ? 'partial' : 'completed');\n    result.partial = result.status !== 'completed';\n    result.success = !cancelled;\n    const resultLevel = result.partial ? 'warn' : 'info';\n"""
+          new_final = """    result.finishedAt = nowIso();\n    finalizeApplyResult(result, { cancelled });\n    const resultLevel = result.partial ? 'warn' : 'info';\n"""
+          if old_final not in text:
+              raise SystemExit('result finalization marker not found')
+          text = text.replace(old_final, new_final, 1)
+
+          old_alert = """      try { const reviewedPlan = buildReviewedPlan(APP.plan, APP.review); const result = await applyPlan(reviewedPlan); if (result) alert(`Готово.\\\n\\\nПрименено: ${result.appliedCount}\\\nПропущено: ${result.skippedCount}\\\n\\\n${result.partial ? 'Ошибочные строки не применялись; остальные изменения сохранены.' : 'Все подготовленные изменения применены.'}`); }\n"""
+          new_alert = """      try { const reviewedPlan = buildReviewedPlan(APP.plan, APP.review); const result = await applyPlan(reviewedPlan); if (result) alert(applyResultMessage(result)); }\n"""
+          if old_alert not in text:
+              raise SystemExit('apply alert marker not found')
+          text = text.replace(old_alert, new_alert, 1)
+
+          old_exports = """    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch,\n"""
+          new_exports = """    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch, finalizeApplyResult, applyResultMessage,\n"""
+          if old_exports not in text:
+              raise SystemExit('test export marker not found')
+          text = text.replace(old_exports, new_exports, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+      - name: Commit patched source and remove patch runner
+        shell: bash
+        run: |
+          rm .github/workflows/preprod-accounting-patcher.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js .github/workflows/preprod-accounting-patcher.yml
+          git commit -m "fix: reconcile Apply result accounting and cancelled UX"
+          git push origin HEAD:feat/preprod-mega-uat-hardening
