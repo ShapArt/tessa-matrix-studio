@@ -5393,9 +5393,10 @@
     result.notStartedCount = Math.max(0, Number(result.plannedCount || 0) - Number(result.startedCount || 0));
     result.skippedCount = (result.skipped || []).length;
     result.cancelled = cancelled;
-    result.status = cancelled ? 'cancelled' : (result.skippedCount > 0 || result.failedCount > 0 ? 'partial' : 'completed');
+    result.verificationIncomplete = Boolean(result.verificationIncomplete || result.refreshError);
+    result.status = cancelled ? 'cancelled' : (result.verificationIncomplete || result.skippedCount > 0 || result.failedCount > 0 ? 'partial' : 'completed');
     result.partial = result.status !== 'completed';
-    result.success = !cancelled;
+    result.success = !cancelled && !result.verificationIncomplete;
     return result;
   }
 
@@ -5405,6 +5406,9 @@
     const notStarted = Number(result?.notStartedCount || 0);
     if (result?.cancelled || result?.status === 'cancelled') {
       return `Применение остановлено.\n\nПрименено: ${applied}\nПропущено: ${skipped}\nНе начато: ${notStarted}\n\nУже выполненные изменения не откатывались. Скачайте свежую выгрузку Excel и постройте Preview заново.`;
+    }
+    if (result?.verificationIncomplete || result?.refreshError) {
+      return `Запись завершена, но итоговое состояние TESSA не удалось перечитать.\n\nПрименено по ответам Store: ${applied}\nПропущено: ${skipped}\n\nНе повторяйте старый Apply: уже выполненные записи могли сохраниться. Обновите страницу и скачайте свежую выгрузку Excel, затем постройте Preview заново.`;
     }
     if (result?.partial || result?.status === 'partial') {
       return `Применение завершено частично.\n\nПрименено: ${applied}\nПропущено: ${skipped}\n\nПропущенные или конфликтующие строки не применялись. Скачайте свежую выгрузку Excel перед продолжением.`;
@@ -5470,6 +5474,8 @@
       storeSkippedCount: 0,
       failedCount: 0,
       notStartedCount: totalToStore,
+      verificationIncomplete: false,
+      refreshError: null,
     };
     let cancelled = false;
     const shouldStopBeforeNextMutation = () => {
@@ -5555,7 +5561,13 @@
     }
 
     setProgress(96, cancelled ? 'Фиксирую остановленную операцию' : 'Обновляю карточку TESSA', 'Получаю итоговое состояние');
-    await bridge.refresh();
+    try {
+      await bridge.refresh();
+    } catch (error) {
+      result.refreshError = String(error?.message || error || 'Не удалось обновить карточку TESSA после записи.');
+      result.verificationIncomplete = true;
+      log(`Изменения записаны, но итоговое обновление карточки TESSA завершилось ошибкой: ${result.refreshError}`, 'warn', error);
+    }
     result.finishedAt = nowIso();
     finalizeApplyResult(result, { cancelled });
     const resultLevel = result.partial ? 'warn' : 'info';
