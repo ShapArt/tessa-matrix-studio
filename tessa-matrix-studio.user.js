@@ -5360,6 +5360,23 @@
   }
 
   /**
+   * Operational write ceiling. XLSX/planner may analyze larger books, but one Apply
+   * is intentionally bounded so an accidental bulk edit cannot fire thousands of
+   * CardStore/CardRequest calls from a single confirmation.
+   */
+  function evaluateApplyBatch(actions) {
+    const count = (actions || []).filter(action => action?.type && action.type !== 'noop').length;
+    const blocked = count > 2000;
+    const warning = !blocked && count > 500;
+    const reason = blocked
+      ? `Пакет содержит ${count} операций. За один Apply разрешено не более 2000 операций; разделите изменения на несколько контролируемых пакетов.`
+      : warning
+        ? `Большой пакет: ${count} операций. Перед продолжением дополнительно проверьте Preview и подтвердите массовое применение.`
+        : null;
+    return { count, warning, blocked, reason };
+  }
+
+  /**
    * Применяет только заранее построенный и прошедший preflight план.
    * Каждая операция верифицируется отдельно; при частичной ошибке остальные строки
    * не маскируются как успешные, а результат сохраняется в JSON-отчёт.
@@ -5369,6 +5386,14 @@
     if (plan?.safety?.blocked) throw new Error(`Файл нельзя применить: ${plan.safety.blockedReasons.join(' ')}`);
     const executable = (plan.actions || []).filter(action => action.type !== 'noop');
     if (!executable.length) throw new Error(plan.skippedRows?.length ? 'Нет корректных изменений для применения: все изменяемые строки будут пропущены.' : 'Изменений для применения нет.');
+    const batch = evaluateApplyBatch(executable);
+    if (batch.blocked) throw new Error(batch.reason);
+    if (batch.warning) {
+      const okBatch = window.confirm(`${batch.reason}
+
+Продолжить?`);
+      if (!okBatch) return null;
+    }
     if (plan.actions.some(a => a.match?.lowConfidence)) {
       const okLow = window.confirm('Есть строки с низкой уверенностью сопоставления. Продолжить после проверки предпросмотра?');
       if (!okLow) return null;
@@ -5945,7 +5970,7 @@
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, mergeWorkbookIntoCurrentSnapshot, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
-    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard,
+    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch,
     createPlanReviewState, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
