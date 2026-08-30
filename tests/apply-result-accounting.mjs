@@ -94,5 +94,8 @@ const completed = {
 E.finalizeApplyResult(completed, { cancelled: false });
 assert(completed.status === 'completed' && completed.partial === false && completed.success === true,
   `only a fully completed Apply may claim success=true: ${JSON.stringify(completed)}`);
+const completedMessage = E.applyResultMessage(completed);
+assert(/все подготовленные изменения применены/i.test(completedMessage),
+  `completed UX must explicitly confirm all prepared changes: ${completedMessage}`);
 
 console.log('TESSA Matrix Studio Apply result accounting/UX regression: OK');
