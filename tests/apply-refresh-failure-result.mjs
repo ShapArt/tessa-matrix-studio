@@ -104,11 +104,19 @@ try {
 assert(!thrown, `post-store refresh failure must not erase Apply result: ${thrown?.message || thrown}`);
 assert(stores === 1, `expected one successful Store before refresh failure, got ${stores}`);
 assert(result, 'Apply must return a result after refresh failure');
+assert(result.requestedCount === 1, `requestedCount expected 1, got ${result.requestedCount}`);
+assert(result.plannedCount === 1, `plannedCount expected 1, got ${result.plannedCount}`);
+assert(result.startedCount === 1, `startedCount expected 1, got ${result.startedCount}`);
 assert(result.appliedCount === 1, `appliedCount expected 1, got ${result.appliedCount}`);
+assert(result.storeSkippedCount === 0, `storeSkippedCount expected 0, got ${result.storeSkippedCount}`);
+assert(result.notStartedCount === 0, `notStartedCount expected 0, got ${result.notStartedCount}`);
+assert(result.skippedCount === 0, `skippedCount expected 0, got ${result.skippedCount}`);
 assert(result.verificationIncomplete === true, `verificationIncomplete flag missing: ${JSON.stringify(result)}`);
 assert(/refresh|network|обнов/i.test(String(result.refreshError || '')), `refreshError missing: ${JSON.stringify(result)}`);
 assert(result.status === 'partial', `refresh failure must be partial, got ${result.status}`);
 assert(result.success === false, `refresh failure must not claim full success: ${JSON.stringify(result)}`);
+assert(result.plannedCount === result.appliedCount + result.storeSkippedCount + result.notStartedCount,
+  `refresh recovery accounting mismatch: ${JSON.stringify(result)}`);
 
 const message = E.applyResultMessage(result);
 assert(/не удалось|не подтвержден|не удалось перечитать|обнов/i.test(message), `refresh UX must explain verification failure: ${message}`);
