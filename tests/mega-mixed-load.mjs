@@ -92,7 +92,11 @@ const cloneWorkbook = workbook => ({
   const workbook = cloneWorkbook(baseline);
   const signerIndex = workbook.headers.indexOf('Подписание');
   const signerIdIndex = workbook.headers.indexOf('Подписание__ID');
-  assert(signerIndex >= 0 && signerIdIndex >= 0, 'mixed workbook signer columns unavailable');
+  const rowCardIndex = workbook.schemaTokens.indexOf('system:rowCardId');
+  const versionIndex = workbook.schemaTokens.indexOf('system:versionId');
+  const fingerprintIndex = workbook.schemaTokens.indexOf('system:baseFingerprint');
+  assert([signerIndex, signerIdIndex, rowCardIndex, versionIndex, fingerprintIndex].every(index => index >= 0),
+    'mixed workbook required columns unavailable');
 
   // 100 UPDATEs. Donors 100..199 map to a different signer than targets 0..99.
   for (let index = 0; index < 100; index += 1) {
@@ -110,12 +114,15 @@ const cloneWorkbook = workbook => ({
   // 5 physical DELETEs from a high range, well below destructive guard limits.
   for (const index of [904, 903, 902, 901, 900]) workbook.rows.splice(index, 1);
 
-  // 50 copied rows -> ADD. Hidden source identity is intentionally copied; signer is changed.
+  // 50 genuine new rows -> ADD. Visible values may be copied, but hidden TESSA identity is cleared.
   let nextExcelRow = Math.max(...workbook.rows.map(row => Number(row.excelRow) || 0)) + 1;
   for (let offset = 0; offset < 50; offset += 1) {
     const source = workbook.rows[300 + offset];
     const donor = workbook.rows[400 + offset];
     const added = { excelRow: nextExcelRow++, values: [...source.values] };
+    added.values[rowCardIndex] = '';
+    added.values[versionIndex] = '';
+    added.values[fingerprintIndex] = '';
     added.values[signerIndex] = donor.values[signerIndex];
     added.values[signerIdIndex] = donor.values[signerIdIndex];
     workbook.rows.push(added);
