@@ -4892,13 +4892,18 @@
   function deletionGuard(plan) {
     const deleteCount = Number(plan?.counts?.delete || 0);
     const snapshotCount = Number(plan?.snapshot?.rows?.length || plan?.sourceRowCount || 0);
-    if (!deleteCount || !snapshotCount) return { blocked: false, deleteCount, snapshotCount, ratio: 0 };
+    if (!deleteCount || !snapshotCount) return { blocked: false, deleteCount, snapshotCount, ratio: 0, rule: null, reason: null };
     const ratio = deleteCount / snapshotCount;
-    const blocked = deleteCount >= 10 && ratio >= 0.20;
-    return {
-      blocked, deleteCount, snapshotCount, ratio,
-      reason: blocked ? `Excel удаляет ${deleteCount} из ${snapshotCount} строк (${Math.round(ratio * 100)}%). Эти удаления будут пропущены; разделите массовое удаление на несколько меньших пакетов.` : null,
-    };
+    const absoluteBlocked = deleteCount >= 100;
+    const ratioBlocked = deleteCount >= 10 && ratio >= 0.20;
+    const rule = absoluteBlocked ? 'absolute' : ratioBlocked ? 'ratio' : null;
+    const blocked = Boolean(rule);
+    const reason = rule === 'absolute'
+      ? `Excel удаляет ${deleteCount} строк. За один пакет нельзя удалять 100 и более строк; разделите массовое удаление на несколько контролируемых пакетов.`
+      : rule === 'ratio'
+        ? `Excel удаляет ${deleteCount} из ${snapshotCount} строк (${Math.round(ratio * 100)}%). Эти удаления будут пропущены; разделите массовое удаление на несколько меньших пакетов.`
+        : null;
+    return { blocked, deleteCount, snapshotCount, ratio, rule, reason };
   }
 
   function evaluatePlanSafety(plan, bridge) {
