@@ -45,6 +45,7 @@
     version: '1.9.31',
     plan: null,
     review: createPlanReviewState(),
+    previewView: createPreviewViewState(),
     workbook: null,
     snapshot: null,
     structure: null,
@@ -5060,6 +5061,7 @@
     APP.structure = structure;
     APP.snapshot = snapshot;
     APP.review = createPlanReviewState();
+    APP.previewView = createPreviewViewState();
     APP.plan = previewPlan;
     renderPlan(previewPlan);
     const visible = previewPlan.actions.filter(action => action.type !== 'noop').length;
@@ -5499,6 +5501,72 @@
   // -> применить. Технические детали остаются внутри отчёта и не перегружают пользователя.
   // ---------------------------------------------------------------------------
 
+  /**
+   * Session-only view state for large Preview. It never changes the plan itself and
+   * therefore cannot alter Apply semantics by paging/filtering the DOM.
+   */
+  function createPreviewViewState(overrides = {}) {
+    const pageSize = Math.max(1, Math.min(200, Math.trunc(Number(overrides.pageSize) || 40)));
+    const page = Math.max(1, Math.trunc(Number(overrides.page) || 1));
+    const filter = ['all', 'update', 'add', 'delete', 'skip'].includes(canonicalValue(overrides.filter))
+      ? canonicalValue(overrides.filter)
+      : 'all';
+    return { page, pageSize, filter, query: normalizeSpace(overrides.query || '') };
+  }
+
+  function previewActionSearchText(action) {
+    const parts = [
+      action?.type,
+      action?.excelRow?.excelRow,
+      action?.currentRow?.index !== undefined ? Number(action.currentRow.index) + 1 : '',
+      ...(action?.changes || []).flatMap(change => [change?.label, change?.key, ...(change?.before || []), ...(change?.after || [])]),
+      ...Object.values(action?.excelRow?.flat || {}).flat(),
+      ...Object.values(action?.currentRow?.flat || {}).flat(),
+    ];
+    return canonicalValue(parts.filter(value => value !== null && value !== undefined).join(' '));
+  }
+
+  /**
+   * Selects exactly one Preview page from the full plan. Review state is accepted so
+   * callers can share one signature with renderPlan, but paging itself deliberately
+   * uses source plan actions: a fully excluded UPDATE must remain reachable to restore.
+   */
+  function selectPreviewItems(plan, review = null, viewState = null) {
+    void review;
+    const state = createPreviewViewState(viewState || {});
+    const query = canonicalValue(state.query);
+    let items;
+    if (state.filter === 'skip') {
+      items = (plan?.skippedRows || []).map(skip => ({ kind: 'skip', skip }));
+      if (query) {
+        items = items.filter(item => canonicalValue(`${item.skip?.excelRow || ''} ${item.skip?.reason || ''}`).includes(query));
+      }
+    } else {
+      items = (plan?.actions || [])
+        .filter(action => action?.type && action.type !== 'noop')
+        .filter(action => state.filter === 'all' || action.type === state.filter)
+        .map(action => ({ kind: 'action', action }));
+      if (query) items = items.filter(item => previewActionSearchText(item.action).includes(query));
+    }
+
+    const total = items.length;
+    const pageCount = Math.max(1, Math.ceil(total / state.pageSize));
+    const page = Math.min(state.page, pageCount);
+    const offset = (page - 1) * state.pageSize;
+    const pageItems = items.slice(offset, offset + state.pageSize);
+    return {
+      items: pageItems,
+      total,
+      page,
+      pageSize: state.pageSize,
+      pageCount,
+      start: total ? offset + 1 : 0,
+      end: total ? offset + pageItems.length : 0,
+      filter: state.filter,
+      query: state.query,
+    };
+  }
+
   function cherkizovoLogoSvg() {
     return `<svg viewBox="0 0 192.756 192.756" aria-hidden="true" focusable="false"><path fill="#E31E24" d="M162.854 63.44c10.303 20.271 11.299 48.019-.664 67.957-16.449 26.752-46.689 41.541-77.263 37.719-26.086-2.492-52.505-21.104-61.81-46.357-9.637-23.76-3.655-53.502 14.123-72.278 21.268-23.262 56.659-31.902 86.567-19.772 15.951 6.478 30.24 16.78 39.047 32.731z"/><path fill="#fff" d="M117.66 53.471c.996 3.323 1.494 6.646-.5 9.471-5.98 6.48-15.451 8.806-24.258 6.646-4.486-.831-9.305-3.656-11.465-7.81-1.33-4.154.831-7.976 3.157-10.8 8.806-6.646 24.591-7.145 32.235 2.493z"/><path fill="#fff" d="M79.277 69.255c6.646 13.292-1.495 29.077 3.656 40.209.831 2.326 3.489 1.33 5.316 1.496 6.813-3.324 5.317-10.635 9.471-15.453 4.154-9.637 14.289-15.951 24.426-16.616 11.631-.665 23.428 5.982 28.246 17.114 4.486 9.471 4.154 23.096-2.824 31.57-4.986 8.807-14.291 12.295-23.262 13.957-8.309.166-15.951-4.818-19.607-12.295-2.16-5.484-3.82-12.463 0-17.779 4.652-9.139 23.428-9.139 16.615-23.096-2.99-2.327-6.314-5.151-10.467-3.324-13.293 7.976-13.625 23.761-19.607 35.89-4.486 9.305-9.471 22.264-21.767 22.93-8.972 1.494-16.117-2.99-20.77-10.469-6.812-16.615-6.812-37.219-9.471-54.997.332-7.975 4.818-15.951 12.462-19.606 10.47-4.651 22.266.334 27.583 10.469z"/></svg>`;
   }
@@ -5535,10 +5603,32 @@
 
     // Показываем исходные найденные действия, а не только effective actions: иначе
     // полностью отключённая строка исчезнет из preview и её нельзя будет вернуть.
-    const visible = plan.actions.filter(action => action.type !== 'noop');
-    const previewLimit = 40;
-    const previewActions = visible.slice(0, previewLimit);
-    if (!visible.length && !skipped.length) table.innerHTML = '<div class="tms-empty">Изменений нет.</div>';
+    APP.previewView = createPreviewViewState(APP.previewView || {});
+    const selection = selectPreviewItems(plan, APP.review, APP.previewView);
+    APP.previewView.page = selection.page;
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'tms-preview-toolbar';
+    const filterButton = (value, label) => `<button type="button" class="tms-preview-filter${selection.filter === value ? ' tms-active' : ''}" data-preview-filter="${value}">${label}</button>`;
+    toolbar.innerHTML = `
+      <div class="tms-preview-filters">
+        ${filterButton('all', 'Все')}${filterButton('update', 'Изменить')}${filterButton('add', 'Добавить')}${filterButton('delete', 'Удалить')}${filterButton('skip', 'Пропустить')}
+      </div>
+      <input id="tms-preview-query" class="tms-preview-query" type="search" placeholder="Найти строку или значение" value="${escapeHtml(selection.query)}">
+      <div class="tms-preview-pager">
+        <button type="button" data-preview-page="${Math.max(1, selection.page - 1)}" ${selection.page <= 1 ? 'disabled' : ''}>←</button>
+        <span>Показано ${selection.start}–${selection.end} из ${selection.total} · стр. ${selection.page}/${selection.pageCount}</span>
+        <button type="button" data-preview-page="${Math.min(selection.pageCount, selection.page + 1)}" ${selection.page >= selection.pageCount ? 'disabled' : ''}>→</button>
+      </div>`;
+    table.appendChild(toolbar);
+
+    if (!selection.total) {
+      const empty = document.createElement('div');
+      empty.className = 'tms-empty';
+      empty.textContent = selection.filter === 'skip' ? 'Пропущенных строк по этому фильтру нет.' : 'Изменений по этому фильтру нет.';
+      table.appendChild(empty);
+    }
+    const previewActions = selection.items.filter(item => item.kind === 'action').map(item => item.action);
 
     previewActions.forEach(action => {
       const item = document.createElement('details');
@@ -5581,15 +5671,27 @@
       table.appendChild(item);
     });
 
-    if (visible.length > previewLimit) {
-      const more = document.createElement('div');
-      more.className = 'tms-empty';
-      more.textContent = `Ещё ${visible.length - previewLimit} изменений не развёрнуты. Счётчики сверху учитывают весь план.`;
-      table.appendChild(more);
-    }
+    selection.items.filter(item => item.kind === 'skip').forEach(({ skip }) => {
+      const item = document.createElement('details');
+      item.className = 'tms-action tms-action-skip';
+      item.innerHTML = `<summary><b>ПРОПУСТИТЬ</b> — ${skip?.excelRow ? `Excel ${escapeHtml(skip.excelRow)}` : 'строка без номера'}</summary><div class="tms-action-body">${escapeHtml(skip?.reason || 'Причина не указана')}</div>`;
+      table.appendChild(item);
+    });
 
-    // Делегируем клики одной функцией: renderPlan может пересобирать карточки сколько угодно.
+    // Делегируем навигацию и review-клики: renderPlan может пересобирать карточки сколько угодно.
     table.onclick = event => {
+      const filter = event.target?.closest?.('button[data-preview-filter]');
+      if (filter && !APP.busy) {
+        APP.previewView = createPreviewViewState({ ...APP.previewView, filter: filter.dataset.previewFilter, page: 1 });
+        renderPlan(APP.plan);
+        return;
+      }
+      const pager = event.target?.closest?.('button[data-preview-page]');
+      if (pager && !pager.disabled && !APP.busy) {
+        APP.previewView = createPreviewViewState({ ...APP.previewView, page: Number(pager.dataset.previewPage) || 1 });
+        renderPlan(APP.plan);
+        return;
+      }
       const button = event.target?.closest?.('button[data-review-action]');
       if (!button || !APP.plan || APP.busy) return;
       const sourceAction = (APP.plan.actions || []).find(candidate => planReviewActionKey(candidate) === button.dataset.reviewAction);
@@ -5603,6 +5705,15 @@
         setPlanReviewChange(APP.review, sourceAction, changeKey, !currentlyExcluded);
       }
       renderPlan(APP.plan);
+    };
+    table.oninput = event => {
+      if (event.target?.id !== 'tms-preview-query' || APP.busy) return;
+      APP.previewView = createPreviewViewState({ ...APP.previewView, query: event.target.value, page: 1 });
+      renderPlan(APP.plan);
+      requestAnimationFrame(() => {
+        const queryInput = document.querySelector('#tms-preview-query');
+        if (queryInput) { queryInput.focus(); queryInput.setSelectionRange(queryInput.value.length, queryInput.value.length); }
+      });
     };
 
     const executableCount = reviewed.actions.filter(action => action.type !== 'noop').length;
@@ -5669,7 +5780,7 @@
       #tms-panel{position:fixed;right:22px;bottom:88px;width:min(500px,calc(100vw - 30px));max-height:min(780px,calc(100vh - 110px));z-index:2147483646;background:var(--tms-bg);color:var(--tms-ink);border:1px solid var(--tms-line);border-radius:20px;box-shadow:0 24px 70px #0004;font:13px/1.45 Arial,sans-serif;display:none;overflow:hidden}
       #tms-panel.tms-open{display:flex;flex-direction:column;animation:tms-panel-in .22s ease-out}.tms-head{display:flex;align-items:center;gap:12px;padding:14px 16px;background:#fff;border-bottom:1px solid var(--tms-line);cursor:move;user-select:none}.tms-brand{width:34px;height:34px;border-radius:11px;background:var(--tms-red);color:#fff;display:grid;place-items:center;font-weight:900;font-size:17px}.tms-title{flex:1;min-width:0}.tms-title strong{display:block;font-size:14px}.tms-title small{display:block;color:var(--tms-muted);font-size:11px;margin-top:1px}.tms-close,.tms-help{border:0;background:transparent;color:#555;font-size:20px;cursor:pointer;border-radius:8px;padding:4px 7px}.tms-help{font-size:15px;font-weight:700}.tms-close:hover,.tms-help:hover{background:#f4f4f4}
       .tms-body{padding:14px 16px 16px;overflow:auto;background:linear-gradient(180deg,#fff 0,#fff 55%,#fffafa 100%)}.tms-status{padding:11px 12px;border-radius:13px;background:#f7f7f7;color:#555;margin-bottom:12px;border:1px solid #ededed;transition:.2s}.tms-status-line{display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:700;color:#353535}.tms-progress-percent{font-variant-numeric:tabular-nums;color:var(--tms-red);font-size:11px}.tms-progress-track{height:7px;border-radius:999px;background:#e9e9e9;overflow:hidden;margin:8px 0 5px;position:relative}.tms-progress-fill{height:100%;width:0;background:linear-gradient(90deg,var(--tms-red),#ff5b60);border-radius:inherit;transition:width .28s ease;position:relative;overflow:hidden}.tms-busy .tms-progress-fill::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,#ffffff80,transparent);transform:translateX(-100%);animation:tms-shimmer 1.15s linear infinite}.tms-progress-detail{min-height:16px;font-size:11px;color:#777}.tms-step{display:grid;gap:8px;margin-bottom:10px;padding:11px 12px;border:1px solid #ececec;border-radius:14px;background:#fff;box-shadow:0 2px 8px #00000008}.tms-step-apply{border-color:#f2c5c7;background:linear-gradient(135deg,#fff 0,#fff6f6 100%)}.tms-step-label{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#777;font-weight:800}.tms-step-caption{font-size:11px;color:#777;margin-top:-2px}.tms-row{display:flex;gap:8px;flex-wrap:wrap}.tms-controls button,.tms-file-label{border:1px solid #d9d9d9;background:#fff;color:#292929;border-radius:11px;padding:9px 12px;cursor:pointer;font-weight:600;transition:.15s}.tms-controls button:hover,.tms-file-label:hover{border-color:#b9b9b9;background:#fafafa}.tms-controls button.tms-primary{background:var(--tms-red);border-color:var(--tms-red);color:#fff}.tms-controls button.tms-primary:hover{background:var(--tms-red-dark);border-color:var(--tms-red-dark)}.tms-controls button:disabled,.tms-file-label.tms-disabled{opacity:.42;cursor:not-allowed}.tms-controls button.tms-ghost{color:#666}.tms-controls button.tms-danger{color:var(--tms-red-dark)}#tms-file{display:none}.tms-file-name{font-size:12px;color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;padding:1px 2px}
-      .tms-counters{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:10px 0}.tms-count{padding:8px 5px;border-radius:11px;text-align:center;font-size:10px;border:1px solid transparent}.tms-count b{display:block;font-size:16px;margin-top:1px}.tms-update{background:#fff7e6;border-color:#f4dfae}.tms-add{background:#edf9f1;border-color:#ccebd7}.tms-delete{background:#fff1f1;border-color:#f2cccc}.tms-noop{background:#f5f5f5;border-color:#e9e9e9}.tms-skip{background:#f6f1ff;border-color:#e1d4f7;color:#62438b}.tms-warning,.tms-skipped-box{margin-top:8px;padding:9px 11px;border-radius:11px;background:#fffaf0;color:#624f21;border:1px solid #f0e1b5}.tms-warning summary,.tms-skipped-box summary{cursor:pointer}.tms-skipped-box{background:#f7f3ff;color:#533b77;border-color:#e2d7f5}.tms-skip-line{padding:6px 0;border-top:1px dashed #e6ddf2}.tms-skip-more{padding-top:7px;font-weight:700}.tms-fatal{margin-top:8px;padding:11px 12px;border-radius:11px;background:#fff0f0;color:#8f1418;border:1px solid #f3b9bb}.tms-action{margin:7px 0;border:1px solid var(--tms-line);border-radius:11px;padding:8px 10px;background:#fff}.tms-action-update{border-left:4px solid #d99a00}.tms-action-add{border-left:4px solid #238b4a}.tms-action-delete{border-left:4px solid #c62828}.tms-action summary{cursor:pointer}.tms-action-body{padding:8px 2px 1px}.tms-review-row-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0 8px}.tms-review-btn{border:1px solid #d6d6d6;background:#fff;color:#555;border-radius:9px;padding:5px 8px;font:600 11px/1.2 Arial,sans-serif;cursor:pointer}.tms-review-btn:hover{border-color:#aaa;background:#f8f8f8}.tms-review-btn[aria-pressed="true"]{border-color:#b9b9b9;background:#f0f0f0;color:#444}.tms-diff{padding:7px 0;border-top:1px dashed #e5e5e5;transition:.15s opacity,.15s background}.tms-diff-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.tms-diff-excluded{opacity:.58;background:#f7f7f7;margin:0 -6px;padding:7px 6px}.tms-diff-excluded .tms-before,.tms-diff-excluded .tms-after{text-decoration:line-through}.tms-review-row-excluded{background:#f7f7f7;border-left-color:#aaa}.tms-review-state{font-size:10px;color:#777;font-weight:700}.tms-review-note{margin-top:8px;padding:9px 11px;border-radius:11px;background:#f4f7fb;color:#485466;border:1px solid #dbe3ee}.tms-before{color:#8a3232}.tms-after{color:#17683a}.tms-empty{padding:15px;text-align:center;color:#777}.tms-help-card{display:none;margin-bottom:12px;padding:13px;border-radius:14px;border:1px solid #f0c9cb;background:linear-gradient(135deg,#fff,#fff6f6);animation:tms-pop .18s ease-out}.tms-help-card.tms-show{display:block}.tms-help-card h3{font-size:14px;margin:0 0 8px}.tms-help-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.tms-help-item{padding:8px 9px;border:1px solid #eee;border-radius:10px;background:#fff;font-size:11px}.tms-help-item b{display:block;margin-bottom:2px}.tms-help-note{margin-top:8px;padding:8px 9px;border-radius:10px;background:#fff0f1;font-size:11px}.tms-help-close{margin-top:9px;width:100%;border:1px solid #ddd;background:#fff;border-radius:10px;padding:7px;cursor:pointer;font-weight:700}@keyframes tms-panel-in{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}@keyframes tms-pop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}@keyframes tms-shimmer{to{transform:translateX(100%)}}#tms-apply{width:100%;padding:11px 14px;font-size:13px;box-shadow:0 8px 18px #e31e2420}
+      .tms-counters{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:10px 0}.tms-count{padding:8px 5px;border-radius:11px;text-align:center;font-size:10px;border:1px solid transparent}.tms-count b{display:block;font-size:16px;margin-top:1px}.tms-update{background:#fff7e6;border-color:#f4dfae}.tms-add{background:#edf9f1;border-color:#ccebd7}.tms-delete{background:#fff1f1;border-color:#f2cccc}.tms-noop{background:#f5f5f5;border-color:#e9e9e9}.tms-skip{background:#f6f1ff;border-color:#e1d4f7;color:#62438b}.tms-warning,.tms-skipped-box{margin-top:8px;padding:9px 11px;border-radius:11px;background:#fffaf0;color:#624f21;border:1px solid #f0e1b5}.tms-warning summary,.tms-skipped-box summary{cursor:pointer}.tms-skipped-box{background:#f7f3ff;color:#533b77;border-color:#e2d7f5}.tms-skip-line{padding:6px 0;border-top:1px dashed #e6ddf2}.tms-skip-more{padding-top:7px;font-weight:700}.tms-fatal{margin-top:8px;padding:11px 12px;border-radius:11px;background:#fff0f0;color:#8f1418;border:1px solid #f3b9bb}.tms-action{margin:7px 0;border:1px solid var(--tms-line);border-radius:11px;padding:8px 10px;background:#fff}.tms-action-update{border-left:4px solid #d99a00}.tms-action-add{border-left:4px solid #238b4a}.tms-action-delete{border-left:4px solid #c62828}.tms-action summary{cursor:pointer}.tms-action-body{padding:8px 2px 1px}.tms-review-row-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0 8px}.tms-review-btn{border:1px solid #d6d6d6;background:#fff;color:#555;border-radius:9px;padding:5px 8px;font:600 11px/1.2 Arial,sans-serif;cursor:pointer}.tms-review-btn:hover{border-color:#aaa;background:#f8f8f8}.tms-review-btn[aria-pressed="true"]{border-color:#b9b9b9;background:#f0f0f0;color:#444}.tms-diff{padding:7px 0;border-top:1px dashed #e5e5e5;transition:.15s opacity,.15s background}.tms-diff-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.tms-diff-excluded{opacity:.58;background:#f7f7f7;margin:0 -6px;padding:7px 6px}.tms-diff-excluded .tms-before,.tms-diff-excluded .tms-after{text-decoration:line-through}.tms-review-row-excluded{background:#f7f7f7;border-left-color:#aaa}.tms-review-state{font-size:10px;color:#777;font-weight:700}.tms-review-note{margin-top:8px;padding:9px 11px;border-radius:11px;background:#f4f7fb;color:#485466;border:1px solid #dbe3ee}.tms-before{color:#8a3232}.tms-after{color:#17683a}.tms-preview-toolbar{display:grid;gap:7px;margin:9px 0 10px;padding:9px;border:1px solid #e8e8e8;border-radius:12px;background:#fafafa}.tms-preview-filters{display:flex;gap:5px;flex-wrap:wrap}.tms-preview-filter,.tms-preview-pager button{border:1px solid #d8d8d8;background:#fff;border-radius:8px;padding:5px 8px;font:600 10px/1.2 Arial,sans-serif;cursor:pointer}.tms-preview-filter.tms-active{border-color:var(--tms-red);color:var(--tms-red-dark);background:#fff4f4}.tms-preview-query{width:100%;box-sizing:border-box;border:1px solid #d8d8d8;border-radius:9px;padding:7px 9px;font:12px Arial,sans-serif}.tms-preview-pager{display:flex;align-items:center;justify-content:space-between;gap:8px;color:#666;font-size:10px}.tms-preview-pager button:disabled{opacity:.35;cursor:not-allowed}.tms-action-skip{border-left:4px solid #7352a1}.tms-empty{padding:15px;text-align:center;color:#777}.tms-help-card{display:none;margin-bottom:12px;padding:13px;border-radius:14px;border:1px solid #f0c9cb;background:linear-gradient(135deg,#fff,#fff6f6);animation:tms-pop .18s ease-out}.tms-help-card.tms-show{display:block}.tms-help-card h3{font-size:14px;margin:0 0 8px}.tms-help-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.tms-help-item{padding:8px 9px;border:1px solid #eee;border-radius:10px;background:#fff;font-size:11px}.tms-help-item b{display:block;margin-bottom:2px}.tms-help-note{margin-top:8px;padding:8px 9px;border-radius:10px;background:#fff0f1;font-size:11px}.tms-help-close{margin-top:9px;width:100%;border:1px solid #ddd;background:#fff;border-radius:10px;padding:7px;cursor:pointer;font-weight:700}@keyframes tms-panel-in{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}@keyframes tms-pop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}@keyframes tms-shimmer{to{transform:translateX(100%)}}#tms-apply{width:100%;padding:11px 14px;font-size:13px;box-shadow:0 8px 18px #e31e2420}
       @media(max-width:650px){#tms-panel{right:8px;bottom:74px;width:calc(100vw - 16px)}#tms-launch{right:10px;bottom:10px}.tms-counters{grid-template-columns:repeat(2,1fr)}}
     `;
     document.head.appendChild(style);
@@ -5830,7 +5941,7 @@
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, mergeWorkbookIntoCurrentSnapshot, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard,
-    createPlanReviewState, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan,
+    createPlanReviewState, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
     preflightPlan, applyPreflightPreview, applyPlan, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
