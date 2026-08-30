@@ -86,7 +86,9 @@ const cloneWorkbook = workbook => ({
     `500 sanity produced mutations: ${JSON.stringify(plan.counts)}`);
 }
 
-// 1000 rows: deterministic mixed user workload.
+// 1000 rows: deterministic mixed UPDATE + ADD + SKIP workload.
+// Physical DELETE is verified separately below because V6 intentionally fails closed on
+// simultaneous missing baseline identities + brand-new no-identity rows.
 {
   const { snapshot, workbook: baseline } = await roundtrip(1000, 200);
   const workbook = cloneWorkbook(baseline);
@@ -111,9 +113,6 @@ const cloneWorkbook = workbook => ({
     workbook.rows[index].values[signerIdIndex] = '';
   }
 
-  // 5 physical DELETEs from a high range, well below destructive guard limits.
-  for (const index of [904, 903, 902, 901, 900]) workbook.rows.splice(index, 1);
-
   // 50 genuine new rows -> ADD. Visible values may be copied, but hidden TESSA identity is cleared.
   let nextExcelRow = Math.max(...workbook.rows.map(row => Number(row.excelRow) || 0)) + 1;
   for (let offset = 0; offset < 50; offset += 1) {
@@ -129,12 +128,11 @@ const cloneWorkbook = workbook => ({
   }
 
   const plan = E.buildPlan(workbook, structure, snapshot);
-  const expected = { update: 100, add: 50, delete: 5, noop: 885, skip: 10 };
+  const expected = { update: 100, add: 50, delete: 0, noop: 890, skip: 10 };
   for (const [key, value] of Object.entries(expected)) {
     assert(plan.counts[key] === value, `mixed ${key}: expected ${value}, got ${plan.counts[key]} (${JSON.stringify(plan.counts)})`);
   }
-  assert(E.deletionGuard(plan).blocked === false, `5/1000 mixed DELETE unexpectedly blocked: ${JSON.stringify(E.deletionGuard(plan))}`);
-  assert(E.evaluateApplyBatch(plan.actions).blocked === false, 'mixed 155-mutation plan unexpectedly hit batch hard limit');
+  assert(E.evaluateApplyBatch(plan.actions).blocked === false, 'mixed 150-mutation plan unexpectedly hit batch hard limit');
 
   // Full-plan review: page 3 must remain reachable, then exclude one far UPDATE by stable identity.
   const page3 = E.selectPreviewItems(plan, E.createPlanReviewState(), E.createPreviewViewState({ filter: 'update', page: 3, pageSize: 40 }));
@@ -146,6 +144,15 @@ const cloneWorkbook = workbook => ({
   E.setPlanReviewRow(review, farAction, true);
   const reviewed = E.buildReviewedPlan(plan, review);
   assert(reviewed.counts.update === 99, `far-page exclusion expected 99 UPDATEs, got ${reviewed.counts.update}`);
+
+  // Same UAT suite, fresh workbook: 5 proven physical DELETEs remain their own controlled package.
+  const deleteWorkbook = cloneWorkbook(baseline);
+  for (const index of [904, 903, 902, 901, 900]) deleteWorkbook.rows.splice(index, 1);
+  const deletePlan = E.buildPlan(deleteWorkbook, structure, snapshot);
+  assert(deletePlan.counts.delete === 5 && deletePlan.counts.noop === 995 && deletePlan.counts.update === 0 && deletePlan.counts.add === 0 && deletePlan.counts.skip === 0,
+    `physical DELETE phase mismatch: ${JSON.stringify(deletePlan.counts)} issues=${JSON.stringify(deletePlan.issues)}`);
+  assert(E.deletionGuard(deletePlan).blocked === false,
+    `5/1000 DELETE package unexpectedly blocked: ${JSON.stringify(E.deletionGuard(deletePlan))}`);
 }
 
 // 5000 rows: full XLSX export -> import -> planner on a large untouched matrix.
