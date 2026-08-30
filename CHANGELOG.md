@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.9.32 — 2026-08-30
+
+- Preview больших планов больше не ограничен первыми 40 действиями: добавлены постраничный просмотр, фильтры UPDATE/ADD/DELETE/SKIP и поиск по строке/значениям; selective review доступен для любой операции полного плана;
+- destructive DELETE guard дополнен абсолютным hard-stop: 100 и более удалений одним пакетом блокируются независимо от доли матрицы; существующий порог 10+ DELETE при >=20% матрицы сохранён;
+- Apply получил operational ceiling: 501–2000 мутаций требуют дополнительного подтверждения, более 2000 блокируются до создания TESSA bridge и любых TESSA-вызовов;
+- Stop во время Apply больше не теряет границу частичного выполнения: результат получает статусы `completed / partial / cancelled` и точные `planned/started/applied/skipped/failed/notStarted` счётчики без обещания rollback уже выполненных записей;
+- добавлен mega mixed-load regression: 500-row sanity, 1000-row UPDATE+ADD+SKIP, отдельный свежий physical DELETE пакет и 5000-row export → import → plan; на GitHub runner mega 5000 roundtrip занимает около 1.3 с, полный mega-suite около 1.9 с при ~80 MiB heap growth;
+- зафиксировано fail-closed правило V6: физический DELETE и новые no-identity ADD выполняются отдельными свежими пакетами, потому что их смешение может быть неотличимо от потери hidden MatrixRowID/MatrixVersionID;
+- production-runbook уточнён: GitHub Release Immutability — отдельная настройка репозитория, а не следствие SHA-256/CI; её необходимо включить вручную перед production release.
+
 ## 1.9.31 — 2026-08-29
 
 - повторные fragment/not-found разрешения одного значения во встроенном справочнике теперь используют bounded per-catalog cache (до 2048 результатов) вместо повторного линейного сканирования большого `searchRows`;

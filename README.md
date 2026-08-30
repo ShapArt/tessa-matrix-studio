@@ -6,13 +6,13 @@
 
 Выгрузка матрицы в Excel → массовая правка → проверка изменений → безопасное применение в TESSA.
 
-[![Version](https://img.shields.io/badge/version-1.9.31-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.9.32-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-userscript-24292F?style=flat-square&logo=tampermonkey)](https://www.tampermonkey.net/)
 
 ### [УСТАНОВИТЬ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js) · [СКАЧАТЬ РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [ОТКРЫТЬ КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [СООБЩИТЬ ОБ ОШИБКЕ](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.9.31 · Автор: Шаповалов Артём**
+**v1.9.32 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -56,6 +56,12 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 > [!NOTE]
 > Начиная с **v1.9.31**, повторяющиеся fragment/not-found проверки во встроенных справочниках кэшируются в ограниченном per-catalog cache, поэтому одинаковая ошибка в сотнях строк Excel не пересканирует большой справочник для каждой строки. Индекс exact ID больше не дублирует одну запись при пустом `RoleTypeID`. Regression покрывает 25 000+ записей с export → import → plan и неоднозначными display names. XLSX-reader также учитывает OPC `TargetMode`: `External` fail-closed отклоняется даже при локально выглядящем `Target`, а безопасные internal/root-relative/dot-segment пути продолжают поддерживаться.
 
+> [!NOTE]
+> Начиная с **v1.9.32**, большой Preview больше не ограничен первыми 40 операциями: доступны страницы, фильтры `Изменить / Добавить / Удалить / Пропустить` и поиск, поэтому selective review работает для любой операции плана. Для записи введён operational guard: до 500 мутаций Apply выполняется штатно, 501–2000 требуют дополнительного подтверждения, а более 2000 блокируются до обращения к TESSA. Удаление 100 и более строк одним пакетом также блокируется независимо от процента матрицы. Кнопка Stop завершает текущую границу безопасно: уже выполненные записи не откатываются, а JSON-результат фиксирует `applied / skipped / failed / notStarted`.
+
+> [!IMPORTANT]
+> В Roundtrip V6 физический DELETE и новые строки без MatrixRowID/MatrixVersionID нельзя смешивать в одном файле: такая комбинация неотличима от повреждения hidden identity и поэтому fail-closed блокируется. Выполняйте DELETE и ADD отдельными пакетами из свежих выгрузок.
+
 ---
 
 # Быстрый старт
@@ -63,7 +69,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.9.31** в Tampermonkey.
+2. Подтвердите установку версии **1.9.32** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -125,7 +131,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Перед подтверждением проверьте:
 
 - **Название:** `TESSA Matrix Studio — Черкизово`
-- **Версия:** `1.9.31`
+- **Версия:** `1.9.32`
 - **Автор:** `Шаповалов Артём`
 - **Разрешения:** `@grant none`
 - **Область запуска:** только домены TESSA Черкизово
@@ -417,7 +423,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.9.31**
+Текущая версия: **1.9.32**
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)
