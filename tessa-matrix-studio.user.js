@@ -5381,6 +5381,38 @@
   }
 
   /**
+   * Финализирует отчёт Apply так, чтобы два уровня счётчиков можно было сверить:
+   * requested = prepared + preflightSkipped; prepared = applied + storeSkipped + notStarted.
+   * sourceSkippedCount относится к строкам Excel, которые planner уже исключил из mutation-plan.
+   */
+  function finalizeApplyResult(result, options = {}) {
+    const cancelled = Boolean(options.cancelled ?? result?.cancelled);
+    result.appliedCount = (result.rows || []).filter(row => row.status === 'ok').length;
+    result.storeSkippedCount = (result.rows || []).filter(row => row.status === 'skipped').length;
+    result.failedCount = result.storeSkippedCount;
+    result.notStartedCount = Math.max(0, Number(result.plannedCount || 0) - Number(result.startedCount || 0));
+    result.skippedCount = (result.skipped || []).length;
+    result.cancelled = cancelled;
+    result.status = cancelled ? 'cancelled' : (result.skippedCount > 0 || result.failedCount > 0 ? 'partial' : 'completed');
+    result.partial = result.status !== 'completed';
+    result.success = !cancelled;
+    return result;
+  }
+
+  function applyResultMessage(result) {
+    const applied = Number(result?.appliedCount || 0);
+    const skipped = Number(result?.skippedCount || 0);
+    const notStarted = Number(result?.notStartedCount || 0);
+    if (result?.cancelled || result?.status === 'cancelled') {
+      return `Применение остановлено.\n\nПрименено: ${applied}\nПропущено: ${skipped}\nНе начато: ${notStarted}\n\nУже выполненные изменения не откатывались. Скачайте свежую выгрузку Excel и постройте Preview заново.`;
+    }
+    if (result?.partial || result?.status === 'partial') {
+      return `Применение завершено частично.\n\nПрименено: ${applied}\nПропущено: ${skipped}\n\nПропущенные или конфликтующие строки не применялись. Скачайте свежую выгрузку Excel перед продолжением.`;
+    }
+    return `Готово.\n\nПрименено: ${applied}\nПропущено: ${skipped}\n\nВсе подготовленные изменения применены.`;
+  }
+
+  /**
    * Применяет только заранее построенный и прошедший preflight план.
    * Каждая операция верифицируется отдельно; при частичной ошибке остальные строки
    * не маскируются как успешные, а результат сохраняется в JSON-отчёт.
@@ -5428,10 +5460,14 @@
       partial: false,
       status: 'running',
       cancelled: false,
+      sourceSkippedCount: (plan.skippedRows || []).length,
+      preflightSkippedCount: runtimeSkips.length,
+      requestedCount: executable.length,
       plannedCount: totalToStore,
       startedCount: 0,
       appliedCount: 0,
       skippedCount: 0,
+      storeSkippedCount: 0,
       failedCount: 0,
       notStartedCount: totalToStore,
     };
@@ -5521,14 +5557,7 @@
     setProgress(96, cancelled ? 'Фиксирую остановленную операцию' : 'Обновляю карточку TESSA', 'Получаю итоговое состояние');
     await bridge.refresh();
     result.finishedAt = nowIso();
-    result.appliedCount = result.rows.filter(row => row.status === 'ok').length;
-    result.failedCount = result.rows.filter(row => row.status === 'skipped').length;
-    result.skippedCount = result.skipped.length;
-    result.notStartedCount = Math.max(0, result.plannedCount - result.startedCount);
-    result.cancelled = cancelled;
-    result.status = cancelled ? 'cancelled' : (result.skippedCount > 0 || result.failedCount > 0 ? 'partial' : 'completed');
-    result.partial = result.status !== 'completed';
-    result.success = !cancelled;
+    finalizeApplyResult(result, { cancelled });
     const resultLevel = result.partial ? 'warn' : 'info';
     log(`Готово. Статус: ${result.status}; применено: ${result.appliedCount}; пропущено: ${result.skippedCount}; не начато: ${result.notStartedCount}.`, resultLevel);
     downloadJson(result, `TESSA_Matrix_Apply_${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
@@ -5968,7 +5997,7 @@
     });
     panel.querySelector('#tms-apply').addEventListener('click', async () => {
       if (APP.busy) return; setBusy(true);
-      try { const reviewedPlan = buildReviewedPlan(APP.plan, APP.review); const result = await applyPlan(reviewedPlan); if (result) alert(`Готово.\n\nПрименено: ${result.appliedCount}\nПропущено: ${result.skippedCount}\n\n${result.partial ? 'Ошибочные строки не применялись; остальные изменения сохранены.' : 'Все подготовленные изменения применены.'}`); }
+      try { const reviewedPlan = buildReviewedPlan(APP.plan, APP.review); const result = await applyPlan(reviewedPlan); if (result) alert(applyResultMessage(result)); }
       catch (error) {
         const message = friendlyErrorMessage(error); log(message, 'error', error);
         downloadJson({ app: { name: APP.name, version: APP.version }, planId: APP.plan?.id, failedAt: nowIso(), error: message, technicalError: error?.message || String(error), matrixId: APP.plan?.matrixId || null, logs: APP.logs.slice(-120) }, `TESSA_Matrix_ErrorReport_${Date.now()}.json`);
@@ -5996,7 +6025,7 @@
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, mergeWorkbookIntoCurrentSnapshot, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
-    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch,
+    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
