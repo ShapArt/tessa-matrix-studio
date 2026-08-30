@@ -180,6 +180,10 @@
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+  function requestApplyAbort() {
+    APP.abortRequested = true;
+  }
+
   /**
    * Выполняет независимые операции с ограниченной конкуренцией.
    * Так мы ускоряем сотни CardGet, не создавая всплеск запросов к TESSA.
@@ -5422,12 +5426,26 @@
       skipped: [...(plan.skippedRows || []), ...runtimeSkips],
       success: false,
       partial: false,
+      status: 'running',
+      cancelled: false,
+      plannedCount: totalToStore,
+      startedCount: 0,
       appliedCount: 0,
       skippedCount: 0,
+      failedCount: 0,
+      notStartedCount: totalToStore,
+    };
+    let cancelled = false;
+    const shouldStopBeforeNextMutation = () => {
+      if (!APP.abortRequested) return false;
+      cancelled = true;
+      result.cancelled = true;
+      return true;
     };
 
     for (const prepared of preparedUpdates.values()) {
-      if (APP.abortRequested) throw new Error('Операция остановлена пользователем.');
+      if (shouldStopBeforeNextMutation()) break;
+      result.startedCount += 1;
       const action = prepared.action;
       try {
         log(`Обновляю строку Excel ${action.excelRow.excelRow}`);
@@ -5442,8 +5460,9 @@
       tickStoreProgress(isOverwriteMatch(action.match) ? 'Заменяю строки' : 'Обновляю строки');
     }
 
-    for (const created of preparedAdds.values()) {
-      if (APP.abortRequested) throw new Error('Операция остановлена пользователем.');
+    if (!cancelled) for (const created of preparedAdds.values()) {
+      if (shouldStopBeforeNextMutation()) break;
+      result.startedCount += 1;
       const action = created.action;
       try {
         log(`Добавляю строку Excel ${action.excelRow.excelRow}`);
@@ -5464,8 +5483,9 @@
       tickStoreProgress('Добавляю строки');
     }
 
-    for (const prepared of readyDeletes) {
-      if (APP.abortRequested) throw new Error('Операция остановлена пользователем.');
+    if (!cancelled) for (const prepared of readyDeletes) {
+      if (shouldStopBeforeNextMutation()) break;
+      result.startedCount += 1;
       const action = prepared.action;
       try {
         const missingDependencies = (prepared.dependsOnExcelRows || [])
@@ -5498,16 +5518,22 @@
       tickStoreProgress('Удаляю строки');
     }
 
-    setProgress(96, 'Обновляю карточку TESSA', 'Получаю итоговое состояние');
+    setProgress(96, cancelled ? 'Фиксирую остановленную операцию' : 'Обновляю карточку TESSA', 'Получаю итоговое состояние');
     await bridge.refresh();
     result.finishedAt = nowIso();
     result.appliedCount = result.rows.filter(row => row.status === 'ok').length;
+    result.failedCount = result.rows.filter(row => row.status === 'skipped').length;
     result.skippedCount = result.skipped.length;
-    result.partial = result.skippedCount > 0;
-    result.success = true;
-    log(`Готово. Применено: ${result.appliedCount}; пропущено: ${result.skippedCount}.`, result.partial ? 'warn' : 'info');
+    result.notStartedCount = Math.max(0, result.plannedCount - result.startedCount);
+    result.cancelled = cancelled;
+    result.status = cancelled ? 'cancelled' : (result.skippedCount > 0 || result.failedCount > 0 ? 'partial' : 'completed');
+    result.partial = result.status !== 'completed';
+    result.success = !cancelled;
+    const resultLevel = result.partial ? 'warn' : 'info';
+    log(`Готово. Статус: ${result.status}; применено: ${result.appliedCount}; пропущено: ${result.skippedCount}; не начато: ${result.notStartedCount}.`, resultLevel);
     downloadJson(result, `TESSA_Matrix_Apply_${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
-    setProgress(100, result.partial ? 'Применение завершено с пропусками' : 'Все изменения применены', `Применено: ${result.appliedCount} · пропущено: ${result.skippedCount}`);
+    const progressLabel = cancelled ? 'Применение остановлено' : result.partial ? 'Применение завершено с пропусками' : 'Все изменения применены';
+    setProgress(100, progressLabel, `Применено: ${result.appliedCount} · пропущено: ${result.skippedCount} · не начато: ${result.notStartedCount}`);
     return result;
   }
 
@@ -5911,7 +5937,7 @@
     const helpCard = panel.querySelector('#tms-help-card');
     panel.querySelector('.tms-help').addEventListener('click', () => helpCard?.classList.toggle('tms-show'));
     panel.querySelector('#tms-help-close').addEventListener('click', () => helpCard?.classList.remove('tms-show'));
-    panel.querySelector('#tms-stop').addEventListener('click', () => { APP.abortRequested = true; });
+    panel.querySelector('#tms-stop').addEventListener('click', requestApplyAbort);
     panel.querySelector('#tms-file').addEventListener('change', event => {
       const file = event.target.files?.[0]; panel.querySelector('#tms-file-name').textContent = file?.name || 'Файл не выбран'; panel.querySelector('#tms-refresh-excel').disabled = !file && !APP.workbook?.roundtrip?.enabled;
     });
@@ -5974,7 +6000,7 @@
     createPlanReviewState, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
-    preflightPlan, applyPreflightPreview, applyPlan, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
+    preflightPlan, applyPreflightPreview, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, compactPlanForExport,
     TessaBridge,
