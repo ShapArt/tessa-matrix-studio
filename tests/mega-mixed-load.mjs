@@ -73,6 +73,11 @@ async function roundtrip(size, signerPool = 200) {
   return { snapshot, workbook, bytes };
 }
 
+const cloneWorkbook = workbook => ({
+  ...workbook,
+  rows: workbook.rows.map(row => ({ excelRow: row.excelRow, values: [...row.values] })),
+});
+
 // 500 rows: quick sanity roundtrip.
 {
   const { snapshot, workbook } = await roundtrip(500, 100);
@@ -83,14 +88,15 @@ async function roundtrip(size, signerPool = 200) {
 
 // 1000 rows: deterministic mixed user workload.
 {
-  const { snapshot, workbook } = await roundtrip(1000, 200);
+  const { snapshot, workbook: baseline } = await roundtrip(1000, 200);
+  const workbook = cloneWorkbook(baseline);
   const signerIndex = workbook.headers.indexOf('Подписание');
   const signerIdIndex = workbook.headers.indexOf('Подписание__ID');
   assert(signerIndex >= 0 && signerIdIndex >= 0, 'mixed workbook signer columns unavailable');
 
-  // 100 UPDATEs. Keep organizations unique; rotate to a different known signer.
+  // 100 UPDATEs. Donors 100..199 map to a different signer than targets 0..99.
   for (let index = 0; index < 100; index += 1) {
-    const donor = workbook.rows[200 + index];
+    const donor = workbook.rows[100 + index];
     workbook.rows[index].values[signerIndex] = donor.values[signerIndex];
     workbook.rows[index].values[signerIdIndex] = donor.values[signerIdIndex];
   }
