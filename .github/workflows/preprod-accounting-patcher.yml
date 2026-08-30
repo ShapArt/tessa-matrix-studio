@@ -45,11 +45,15 @@ jobs:
               raise SystemExit('result finalization marker not found')
           text = text.replace(old_final, new_final, 1)
 
-          old_alert = """      try { const reviewedPlan = buildReviewedPlan(APP.plan, APP.review); const result = await applyPlan(reviewedPlan); if (result) alert(`Готово.\\\n\\\nПрименено: ${result.appliedCount}\\\nПропущено: ${result.skippedCount}\\\n\\\n${result.partial ? 'Ошибочные строки не применялись; остальные изменения сохранены.' : 'Все подготовленные изменения применены.'}`); }\n"""
-          new_alert = """      try { const reviewedPlan = buildReviewedPlan(APP.plan, APP.review); const result = await applyPlan(reviewedPlan); if (result) alert(applyResultMessage(result)); }\n"""
-          if old_alert not in text:
-              raise SystemExit('apply alert marker not found')
-          text = text.replace(old_alert, new_alert, 1)
+          alert_start = "      try { const reviewedPlan = buildReviewedPlan(APP.plan, APP.review); const result = await applyPlan(reviewedPlan); if (result) alert(`Готово."
+          catch_marker = "      catch (error) {"
+          start = text.find(alert_start)
+          if start < 0:
+              raise SystemExit('apply alert start marker not found')
+          end = text.find(catch_marker, start)
+          if end < 0:
+              raise SystemExit('apply alert catch marker not found')
+          text = text[:start] + "      try { const reviewedPlan = buildReviewedPlan(APP.plan, APP.review); const result = await applyPlan(reviewedPlan); if (result) alert(applyResultMessage(result)); }\n" + text[end:]
 
           old_exports = """    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch,\n"""
           new_exports = """    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch, finalizeApplyResult, applyResultMessage,\n"""
