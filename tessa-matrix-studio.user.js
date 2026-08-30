@@ -5396,7 +5396,7 @@
     result.verificationIncomplete = Boolean(result.verificationIncomplete || result.refreshError);
     result.status = cancelled ? 'cancelled' : (result.verificationIncomplete || result.skippedCount > 0 || result.failedCount > 0 ? 'partial' : 'completed');
     result.partial = result.status !== 'completed';
-    result.success = !cancelled && !result.verificationIncomplete;
+    result.success = result.status === 'completed';
     return result;
   }
 
