@@ -20,6 +20,8 @@ vm.runInThisContext(code, { filename: 'tessa-matrix-studio.user.js' });
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 const O = E.constants.OPERAND;
 assert(typeof E.requestApplyAbort === 'function', 'requestApplyAbort is missing');
+assert(typeof E.finalizeApplyResult === 'function', 'finalizeApplyResult is missing');
+assert(typeof E.applyResultMessage === 'function', 'applyResultMessage is missing');
 
 const structure = {
   templateId: 'cancel-template',
@@ -120,11 +122,24 @@ try {
 
 assert(result && result.status === 'cancelled', `expected cancelled result, got ${JSON.stringify(result)}`);
 assert(result.cancelled === true, `cancelled flag missing: ${JSON.stringify(result)}`);
+assert(result.sourceSkippedCount === 0, `sourceSkippedCount expected 0, got ${result.sourceSkippedCount}`);
+assert(result.preflightSkippedCount === 0, `preflightSkippedCount expected 0, got ${result.preflightSkippedCount}`);
+assert(result.requestedCount === 4, `requestedCount expected 4, got ${result.requestedCount}`);
 assert(result.plannedCount === 4, `plannedCount expected 4, got ${result.plannedCount}`);
 assert(result.startedCount === 2, `startedCount expected 2, got ${result.startedCount}`);
 assert(result.appliedCount === 2, `appliedCount expected 2, got ${result.appliedCount}`);
+assert(result.storeSkippedCount === 0, `storeSkippedCount expected 0, got ${result.storeSkippedCount}`);
 assert(result.failedCount === 0, `failedCount expected 0, got ${result.failedCount}`);
 assert(result.notStartedCount === 2, `notStartedCount expected 2, got ${result.notStartedCount}`);
+assert(result.requestedCount === result.plannedCount + result.preflightSkippedCount,
+  `requested/preflight accounting mismatch: ${JSON.stringify(result)}`);
+assert(result.plannedCount === result.appliedCount + result.storeSkippedCount + result.notStartedCount,
+  `prepared/store accounting mismatch: ${JSON.stringify(result)}`);
 assert(stores === 2, `Apply continued after cancellation: stores=${stores}`);
+
+const message = E.applyResultMessage(result);
+assert(/останов/i.test(message), `cancelled UX must say operation was stopped: ${message}`);
+assert(/не начато\s*:\s*2/i.test(message), `cancelled UX must expose not-started count: ${message}`);
+assert(/свеж/i.test(message), `cancelled UX must require a fresh export: ${message}`);
 
 console.log('TESSA Matrix Studio exact cancelled Apply result: OK');
