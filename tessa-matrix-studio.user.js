@@ -5562,6 +5562,31 @@
     return { count, warning, blocked, reason };
   }
 
+  function applyAvailability(plan, review = null) {
+    const reviewed = buildReviewedPlan(plan, review);
+    const safety = reviewed?.safety || plan?.safety || { blocked: false, blockedReasons: [] };
+    const batch = evaluateApplyBatch(reviewed?.actions || []);
+    const safetyReasons = safety.blocked ? [...(safety.blockedReasons || [])] : [];
+    const blockedReasons = batch.blocked ? [...safetyReasons, batch.reason].filter(Boolean) : safetyReasons;
+    const blocked = Boolean(safety.blocked || batch.blocked);
+    const canApply = Boolean(batch.count > 0 && !blocked);
+    const label = batch.blocked
+      ? `Пакет слишком большой · ${batch.count} / 2000`
+      : batch.count
+        ? `Применить к TESSA · ${batch.count}`
+        : 'Применить к TESSA';
+    return {
+      count: batch.count,
+      warning: batch.warning,
+      blocked,
+      batchBlocked: batch.blocked,
+      canApply,
+      reason: batch.blocked ? batch.reason : (blockedReasons[0] || null),
+      blockedReasons,
+      label,
+    };
+  }
+
   function previewPreflightPolicy(actions) {
     const batch = evaluateApplyBatch(actions);
     const skipServerAddValidation = Boolean(batch.blocked);
@@ -5896,6 +5921,7 @@
     const table = document.querySelector('#tms-plan');
     if (!summary || !table) return;
     const reviewed = buildReviewedPlan(plan, APP.review);
+    const applyState = applyAvailability(plan, APP.review);
     const c = reviewed.counts;
     const skipped = reviewed.skippedRows || [];
     const warnings = (reviewed.warnings || []).slice(0, 8);
@@ -5913,7 +5939,8 @@
       </div>
       ${hasReviewExclusions ? `<div class="tms-review-note"><b>Фильтр применения включён.</b> Отключённые здесь изменения не попадут в TESSA; исходный Excel не изменяется.</div>` : ''}
       ${reviewedSafety.blocked ? `<div class="tms-fatal"><b>Этот набор изменений нельзя безопасно применить</b><br>${(reviewedSafety.blockedReasons || []).map(escapeHtml).join('<br>')}</div>` : ''}
-      ${skipped.length ? `<details class="tms-skipped-box"><summary><b>Пропущено строк: ${skipped.length}</b> · корректные изменения можно применить</summary><div>${skipped.slice(0, 20).map(item => `<div class="tms-skip-line">${item.excelRow ? `Excel ${item.excelRow}: ` : ''}${escapeHtml(item.reason)}</div>`).join('')}${skipped.length > 20 ? `<div class="tms-skip-more">Ещё ${skipped.length - 20}…</div>` : ''}</div></details>` : ''}
+      ${applyState.batchBlocked ? `<div class="tms-fatal"><b>Пакет слишком большой для одного Apply</b><br>${escapeHtml(applyState.reason || '')}<br><span class="tms-review-state">Preview остаётся доступен: можно проверить все строки и подготовить меньший контролируемый пакет.</span></div>` : ''}
+      ${skipped.length ? `<details class="tms-skipped-box"><summary><b>Пропущено строк: ${skipped.length}</b> · ${applyState.blocked ? 'корректные строки проверены, но Apply сейчас заблокирован' : 'корректные изменения можно применить'}</summary><div>${skipped.slice(0, 20).map(item => `<div class="tms-skip-line">${item.excelRow ? `Excel ${item.excelRow}: ` : ''}${escapeHtml(item.reason)}</div>`).join('')}${skipped.length > 20 ? `<div class="tms-skip-more">Ещё ${skipped.length - 20}…</div>` : ''}</div></details>` : ''}
       ${warnings.length ? `<details class="tms-warning"><summary>Нужно проверить</summary><div>${warnings.map(item => `<div>${escapeHtml(item)}</div>`).join('')}</div></details>` : ''}
     `;
 
@@ -6041,11 +6068,19 @@
       });
     };
 
-    const executableCount = reviewed.actions.filter(action => action.type !== 'noop').length;
     const apply = document.querySelector('#tms-apply');
     if (apply) {
-      apply.disabled = !executableCount || Boolean(reviewedSafety.blocked);
-      apply.textContent = executableCount ? `Применить к TESSA · ${executableCount}` : 'Применить к TESSA';
+      apply.disabled = !applyState.canApply;
+      apply.textContent = applyState.label;
+      apply.title = applyState.blocked ? (applyState.reason || 'Применение заблокировано') : '';
+    }
+    const applyNote = document.querySelector('#tms-apply-note');
+    if (applyNote) {
+      applyNote.textContent = applyState.batchBlocked
+        ? `Нужно уменьшить пакет: сейчас ${applyState.count}, максимум 2000 операций за один Apply.`
+        : applyState.warning
+          ? `Большой пакет: ${applyState.count} операций. Перед записью потребуется дополнительное подтверждение.`
+          : '';
     }
   }
 
@@ -6084,7 +6119,9 @@
       const stop = document.querySelector('#tms-stop');
       if (stop) stop.disabled = true;
       const apply = document.querySelector('#tms-apply');
-      if (apply) { const reviewedPlan = buildReviewedPlan(APP.plan, APP.review); const executableCount = reviewedPlan?.actions?.filter(a => a.type !== 'noop').length || 0; apply.disabled = !executableCount || Boolean(reviewedPlan?.safety?.blocked); apply.textContent = executableCount ? `Применить к TESSA · ${executableCount}` : 'Применить к TESSA'; }
+      if (apply) { const availability = applyAvailability(APP.plan, APP.review); apply.disabled = !availability.canApply; apply.textContent = availability.label; apply.title = availability.blocked ? (availability.reason || 'Применение заблокировано') : ''; }
+      const applyNote = document.querySelector('#tms-apply-note');
+      if (applyNote) { const availability = applyAvailability(APP.plan, APP.review); applyNote.textContent = availability.batchBlocked ? `Нужно уменьшить пакет: сейчас ${availability.count}, максимум 2000 операций за один Apply.` : availability.warning ? `Большой пакет: ${availability.count} операций. Перед записью потребуется дополнительное подтверждение.` : ''; }
       const refresh = document.querySelector('#tms-refresh-excel');
       if (refresh) refresh.disabled = !APP.workbook?.roundtrip?.enabled && !document.querySelector('#tms-file')?.files?.length;
       if ((APP.progress?.percent || 0) < 100) {
@@ -6141,7 +6178,7 @@
           <div class="tms-step"><div class="tms-step-label">1 · Подготовить Excel</div><div class="tms-row"><button id="tms-download-current" class="tms-primary">Скачать Excel</button><button id="tms-download-fresh">Скачать со свежими справочниками</button></div><div class="tms-step-caption">Скачайте рабочий Excel или обновите справочники перед редактированием.</div></div>
           <div class="tms-step"><div class="tms-step-label">2 · Выбрать изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"><button id="tms-refresh-excel" class="tms-ghost" disabled>Актуализировать выбранный Excel</button></div><div class="tms-step-caption">Добавит новые поля из текущего шаблона TESSA и постарается сохранить ваши изменения.</div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
           <div class="tms-step"><div class="tms-step-label">3 · Проверить</div><div class="tms-row"><button id="tms-analyze" class="tms-primary">Проверить изменения</button><button id="tms-stop" class="tms-danger" disabled>Отмена</button></div></div>
-          <div class="tms-step tms-step-apply"><div class="tms-step-label">4 · Применить корректные строки</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button></div>
+          <div class="tms-step tms-step-apply"><div class="tms-step-label">4 · Применить корректные строки</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div></div>
         </div>
         <div id="tms-summary"></div><div id="tms-plan"></div>
       </div>`;
@@ -6236,7 +6273,13 @@
       finally { setBusy(false); }
     });
     panel.querySelector('#tms-apply').addEventListener('click', async () => {
-      if (APP.busy) return; setBusy(true);
+      if (APP.busy) return;
+      const availability = applyAvailability(APP.plan, APP.review);
+      if (!availability.canApply) {
+        setProgress(100, 'Apply недоступен', availability.reason || 'Нет операций для применения.');
+        return;
+      }
+      setBusy(true);
       try { const reviewedPlan = buildReviewedPlan(APP.plan, APP.review); const result = await applyPlan(reviewedPlan); if (result) alert(applyResultMessage(result)); }
       catch (error) {
         const message = friendlyErrorMessage(error); log(message, 'error', error);
@@ -6265,7 +6308,7 @@
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, mergeWorkbookIntoCurrentSnapshot, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
-    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch, previewPreflightPolicy, finalizeApplyResult, applyResultMessage,
+    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
