@@ -21,6 +21,9 @@ const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 assert(typeof E.keepReviewedPackage === 'function', 'keepReviewedPackage is missing');
 assert(typeof E.createPlanReviewState === 'function', 'createPlanReviewState is missing');
 assert(typeof E.buildReviewedPlan === 'function', 'buildReviewedPlan is missing');
+assert(code.includes('data-review-package="keep"'), 'bulk keep control is missing from Preview UI');
+assert(code.includes('data-review-package="reset"'), 'bulk reset control is missing from Preview UI');
+assert(code.includes('Оставить в Apply'), 'bulk package action label is missing');
 
 const action = (type, row) => ({
   type,
