@@ -17,11 +17,10 @@ if text.count(old) != 1:
     raise SystemExit(f'render applyState marker count={text.count(old)}')
 text = text.replace(old, new, 1)
 
-# Insert the inline blocked-batch card immediately before the skipped-row details.
-skip_anchor = '      ${skipped.length ? `<details class=\\"tms-skipped-box\\">'
+skip_anchor = '      ${skipped.length ?'
 if text.count(skip_anchor) != 1:
     raise SystemExit(f'skip anchor count={text.count(skip_anchor)}')
-batch_card = '      ${applyState.batchBlocked ? `<div class=\\"tms-fatal\\"><b>Пакет слишком большой для одного Apply</b><br>${escapeHtml(applyState.reason || \'\')}<br><span class=\\"tms-review-state\\">Preview остаётся доступен: можно проверить все строки и подготовить меньший контролируемый пакет.</span></div>` : \'\'}\n'
+batch_card = '''      ${applyState.batchBlocked ? `<div class="tms-fatal"><b>Пакет слишком большой для одного Apply</b><br>${escapeHtml(applyState.reason || '')}<br><span class="tms-review-state">Preview остаётся доступен: можно проверить все строки и подготовить меньший контролируемый пакет.</span></div>` : ''}\n'''
 text = text.replace(skip_anchor, batch_card + skip_anchor, 1)
 
 old = '${skipped.length}</b> · корректные изменения можно применить</summary>'
@@ -37,9 +36,9 @@ if text.count(old) != 1:
     raise SystemExit(f'render apply button marker count={text.count(old)}')
 text = text.replace(old, new, 1)
 
-# 4) Add an inline caption under the button.
-old = '''<div class=\\"tms-step tms-step-apply\\"><div class=\\"tms-step-label\\">4 · Применить корректные строки</div><button id=\\"tms-apply\\" class=\\"tms-primary\\" disabled>Применить к TESSA</button></div>'''
-new = '''<div class=\\"tms-step tms-step-apply\\"><div class=\\"tms-step-label\\">4 · Применить корректные строки</div><button id=\\"tms-apply\\" class=\\"tms-primary\\" disabled>Применить к TESSA</button><div id=\\"tms-apply-note\\" class=\\"tms-step-caption\\"></div></div>'''
+# 4) Add an inline caption under the button without depending on quote escaping.
+old = '>Применить к TESSA</button></div>'
+new = '>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div></div>'
 if text.count(old) != 1:
     raise SystemExit(f'apply caption marker count={text.count(old)}')
 text = text.replace(old, new, 1)
