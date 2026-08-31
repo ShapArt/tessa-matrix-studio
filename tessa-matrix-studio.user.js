@@ -5655,7 +5655,7 @@
     if (result?.partial || result?.status === 'partial') {
       return `Применение завершено частично.\n\nПрименено: ${applied}\nПропущено: ${skipped}\n\nПропущенные или конфликтующие строки не применялись. Скачайте свежую выгрузку Excel перед продолжением.`;
     }
-    return `Готово.\n\nПрименено: ${applied}\nПропущено: ${skipped}\n\nВсе подготовленные изменения применены.`;
+    return `Готово.\n\nПрименено: ${applied}\nПропущено: ${skipped}\n\nВсе подготовленные изменения применены. Перед следующим пакетом скачайте свежий Excel или обновите страницу TESSA.`;
   }
 
   /**
@@ -5834,14 +5834,13 @@
       tickStoreProgress('Удаляю строки');
     }
 
-    setProgress(96, cancelled ? 'Фиксирую остановленную операцию' : 'Обновляю карточку TESSA', 'Получаю итоговое состояние');
-    try {
-      await bridge.refresh();
-    } catch (error) {
-      result.refreshError = String(error?.message || error || 'Не удалось обновить карточку TESSA после записи.');
-      result.verificationIncomplete = true;
-      log(`Изменения записаны, но итоговое обновление карточки TESSA завершилось ошибкой: ${result.refreshError}`, 'warn', error);
-    }
+    // Не форсим editor.refreshCard() сразу после Store/Delete. В маршрутной матрице
+    // нативный TestMatrixView при reload сам получает MatrixRow.WriteHeartbit writer-lock;
+    // немедленный full-card refresh после пачки записей создаёт лишнюю гонку блокировок
+    // и может показать системный 400/ObtainWriterLock, хотя сами Store уже успешны.
+    // Следующее чтение всегда начинается со свежей выгрузки/нового Preview.
+    setProgress(96, cancelled ? 'Фиксирую остановленную операцию' : 'Завершаю применение',
+      cancelled ? 'Сохраняю точную границу выполненных операций' : 'Запись завершена · карточка TESSA автоматически не перезагружается');
     result.finishedAt = nowIso();
     finalizeApplyResult(result, { cancelled });
     const resultLevel = result.partial ? 'warn' : 'info';
