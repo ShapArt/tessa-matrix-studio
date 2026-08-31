@@ -29,3 +29,5 @@ jobs:
           git add tessa-matrix-studio.user.js scripts/preprod_patch_apply_preview_batch_ux.py .github/workflows/preprod-apply-preview-batch-ux-patcher.yml
           git commit -m "fix: disable oversized Apply in Preview"
           git push origin HEAD:feat/preprod-mega-uat-hardening
+
+# retry marker: robust summary anchor
