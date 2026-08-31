@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.33
+// @version      1.9.34
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.33',
+    version: '1.9.34',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -1191,7 +1191,8 @@
     let parsedCellCount = 0;
     let nextImplicitRow = 1;
 
-    for (const rowMatch of xml.matchAll(/<(?:[A-Za-z_][\w.-]*:)?row\b([^>]*)>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?row>/gi)) {
+    const rowRegex = /<(?:[A-Za-z_][\w.-]*:)?row\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?row>)/gi;
+    for (const rowMatch of xml.matchAll(rowRegex)) {
       parsedRowCount += 1;
       if (parsedRowCount > limits.MaxParsedRows) {
         throw xlsxArchiveError(`слишком много строк SpreadsheetML (${parsedRowCount} > ${limits.MaxParsedRows}).`);
