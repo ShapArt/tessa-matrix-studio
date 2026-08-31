@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.35
+// @version      1.9.36
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.35',
+    version: '1.9.36',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -4763,7 +4763,10 @@
     const limit = Math.max(0, Math.min(2000, Math.trunc(Number(options.limit) || 0)));
     const state = review || createPlanReviewState();
     const executable = (plan.actions || []).filter(action => action?.type && action.type !== 'noop');
-    const candidates = executable.filter(action => filter === 'all' || action.type === filter);
+    const query = canonicalValue(options.query || '');
+    const candidates = executable
+      .filter(action => filter === 'all' || action.type === filter)
+      .filter(action => !query || previewActionSearchText(action).includes(query));
     const keepKeys = new Set(candidates.slice(0, limit).map(planReviewActionKey));
 
     executable.forEach(action => {
@@ -5962,7 +5965,7 @@
       </div>
       ${hasReviewExclusions ? `<div class="tms-review-note"><b>Фильтр применения включён.</b> Отключённые здесь изменения не попадут в TESSA; исходный Excel не изменяется.</div>` : ''}
       ${reviewedSafety.blocked ? `<div class="tms-fatal"><b>Этот набор изменений нельзя безопасно применить</b><br>${(reviewedSafety.blockedReasons || []).map(escapeHtml).join('<br>')}</div>` : ''}
-      ${applyState.batchBlocked ? `<div class="tms-fatal"><b>Пакет слишком большой для одного Apply</b><br>${escapeHtml(applyState.reason || '')}<br><span class="tms-review-state">Preview остаётся доступен: можно проверить все строки и подготовить меньший контролируемый пакет.</span></div>` : ''}
+      ${applyState.batchBlocked ? `<div class="tms-fatal"><b>Пакет для Apply превышает лимит</b><br>Сейчас: ${applyState.count} · максимум: 2000. Ниже в Preview выберите тип/поиск, размер пакета и нажмите «Оставить в Apply».</div>` : ''}
       ${skipped.length ? `<details class="tms-skipped-box"><summary><b>Пропущено строк: ${skipped.length}</b> · ${applyState.blocked ? 'корректные строки проверены, но Apply сейчас заблокирован' : 'корректные изменения можно применить'}</summary><div>${skipped.slice(0, 20).map(item => `<div class="tms-skip-line">${item.excelRow ? `Excel ${item.excelRow}: ` : ''}${escapeHtml(item.reason)}</div>`).join('')}${skipped.length > 20 ? `<div class="tms-skip-more">Ещё ${skipped.length - 20}…</div>` : ''}</div></details>` : ''}
       ${warnings.length ? `<details class="tms-warning"><summary>Нужно проверить</summary><div>${warnings.map(item => `<div>${escapeHtml(item)}</div>`).join('')}</div></details>` : ''}
     `;
@@ -5992,7 +5995,13 @@
         </select>
         <button type="button" data-review-package="keep" ${selection.filter === 'skip' ? 'disabled' : ''}>Оставить в Apply</button>
         <button type="button" data-review-package="reset">Вернуть всё</button>
-        <span>${selection.filter === 'all' ? 'Из всех операций' : selection.filter === 'skip' ? 'Пропущенные строки не применяются' : `Только: ${selection.filter === 'update' ? 'изменить' : selection.filter === 'add' ? 'добавить' : 'удалить'}`}</span>
+        <span>${selection.filter === 'skip'
+          ? 'Пропущенные строки не применяются'
+          : selection.query
+            ? 'По текущему фильтру и поиску'
+            : selection.filter === 'all'
+              ? 'Из всех операций'
+              : `Только: ${selection.filter === 'update' ? 'изменить' : selection.filter === 'add' ? 'добавить' : 'удалить'}`}</span>
       </div>
       <div class="tms-preview-pager">
         <button type="button" data-preview-page="${Math.max(1, selection.page - 1)}" ${selection.page <= 1 ? 'disabled' : ''}>←</button>
@@ -6082,7 +6091,11 @@
         } else if (packageButton.dataset.reviewPackage === 'keep') {
           const limitInput = table.querySelector?.('#tms-review-package-limit') || document.querySelector('#tms-review-package-limit');
           const limit = Math.max(0, Math.trunc(Number(limitInput?.value) || 0));
-          APP.review = keepReviewedPackage(APP.plan, APP.review, { filter: APP.previewView.filter, limit });
+          APP.review = keepReviewedPackage(APP.plan, APP.review, {
+            filter: APP.previewView.filter,
+            query: APP.previewView.query,
+            limit,
+          });
         }
         APP.previewView = createPreviewViewState({ ...APP.previewView, page: 1 });
         renderPlan(APP.plan);
@@ -6224,7 +6237,7 @@
           <div class="tms-step"><div class="tms-step-label">1 · Подготовить Excel</div><div class="tms-row"><button id="tms-download-current" class="tms-primary">Скачать Excel</button><button id="tms-download-fresh">Скачать со свежими справочниками</button></div><div class="tms-step-caption">Скачайте рабочий Excel или обновите справочники перед редактированием.</div></div>
           <div class="tms-step"><div class="tms-step-label">2 · Выбрать изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"><button id="tms-refresh-excel" class="tms-ghost" disabled>Актуализировать выбранный Excel</button></div><div class="tms-step-caption">Добавит новые поля из текущего шаблона TESSA и постарается сохранить ваши изменения.</div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
           <div class="tms-step"><div class="tms-step-label">3 · Проверить</div><div class="tms-row"><button id="tms-analyze" class="tms-primary">Проверить изменения</button><button id="tms-stop" class="tms-danger" disabled>Отмена</button></div></div>
-          <div class="tms-step tms-step-apply"><div class="tms-step-label">4 · Применить корректные строки</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div></div>
+          <div class="tms-step tms-step-apply"><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div></div>
         </div>
         <div id="tms-summary"></div><div id="tms-plan"></div>
       </div>`;
