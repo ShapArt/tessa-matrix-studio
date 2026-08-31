@@ -13,8 +13,9 @@ vm.runInThisContext(code, { filename: 'tessa-matrix-studio.user.js' });
 
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 assert(typeof E.applyPreflightPreview === 'function', 'applyPreflightPreview is missing');
-assert(code.includes("preflightPlan(plan, { previewOnly: true, bridge, structure })"), 'analyze must run Preview preflight against a freshly reloaded TESSA snapshot');
-assert(!code.includes("preflightPlan(plan, { previewOnly: true, bridge, structure, fresh: snapshot })"), 'Preview preflight must not reuse the potentially cached planner snapshot');
+assert(code.includes("onProgress: previewProgress"), 'analyze must surface incremental Preview preflight progress');
+assert(code.includes("preflightPlan(plan, { previewOnly: true, bridge, structure, onProgress: previewProgress })"), 'analyze must run Preview preflight against a freshly reloaded TESSA snapshot with progress reporting');
+assert(!code.includes("fresh: snapshot"), 'Preview preflight must not reuse the potentially cached planner snapshot');
 assert(code.includes("if (!previewOnly) assertNativeEditMode();"), 'Preview preflight must stay non-mutating and must not require native edit mode');
 
 const goodUpdate = { type: 'update', excelRow: { excelRow: 18 }, changes: [{ key: 'org' }] };
@@ -37,6 +38,7 @@ const preflight = {
   preparedUpdates: new Map([[18, { action: goodUpdate }]]),
   preparedAdds: new Map(),
   readyDeletes: [],
+  previewPolicy: { skipServerAddValidation: false, applyBlocked: false },
 };
 
 const reviewed = E.applyPreflightPreview(plan, preflight);
@@ -53,5 +55,6 @@ assert(reviewed.counts.delete === 0, `runtime-skipped DELETE remained in counter
 assert(reviewed.counts.skip === 3, `skip counter must include planner + preflight skips: ${JSON.stringify(reviewed.counts)}`);
 assert(reviewed.preflightPreview?.validated === true, 'preview validation marker is missing');
 assert(reviewed.preflightPreview?.runtimeSkipCount === 2, 'runtime skip summary is missing');
+assert(reviewed.preflightPreview?.serverAddValidationSkipped === false, 'normal Preview must report deep ADD validation');
 
 console.log('TESSA Matrix Studio preview preflight projection regression: OK');
