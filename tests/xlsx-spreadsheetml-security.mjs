@@ -4,7 +4,13 @@ import vm from 'node:vm';
 const code = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
-assert(code.includes('// @version      1.9.34'), 'self-closing row fix must ship as userscript v1.9.34');
+const versionMatch = code.match(/^\/\/ @version\s+(\d+)\.(\d+)\.(\d+)$/m);
+assert(versionMatch, 'userscript @version is missing');
+const versionTuple = versionMatch.slice(1).map(Number);
+const atLeast1934 = versionTuple[0] > 1
+  || (versionTuple[0] === 1 && versionTuple[1] > 9)
+  || (versionTuple[0] === 1 && versionTuple[1] === 9 && versionTuple[2] >= 34);
+assert(atLeast1934, `self-closing row support requires userscript >=1.9.34, got ${versionMatch[0]}`);
 assert(code.includes("const body = rowMatch[2] || '';"), 'self-closing row body must fall back to an empty string');
 // Keep the documented production ceilings under regression control. Runtime tests below
 // use tiny Node-only overrides so pathological cases stay fast in CI.
