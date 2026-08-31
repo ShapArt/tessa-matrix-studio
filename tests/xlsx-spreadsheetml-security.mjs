@@ -58,8 +58,8 @@ const sparse = E.parseSheetXml(worksheet('<row r="10"><c r="A10" t="str"><v>x</v
 assert(sparse.rows.length === 10, `sparse row index was not preserved: length=${sparse.rows.length}`);
 assert(Object.keys(sparse.rows).length === 1 && sparse.rows[9]?.[0] === 'x', `sparse gaps were materialized: keys=${Object.keys(sparse.rows).length}`);
 
-// Legal SpreadsheetML may serialize an empty physical row as <row r="2"/>. The parser must
-// consume that row as row 2 instead of treating it as the opening tag of the following row 3.
+// Regression for the browser failure reported against the MAX UAT workbook:
+// a legal empty physical row must not consume the following row and make A3 look like it lives in row 2.
 const selfClosingRow = E.parseSheetXml(
   worksheet('<row r="1"><c r="A1" t="str"><v>title</v></c></row><row r="2"/><row r="3"><c r="A3" t="str"><v>header</v></c></row>'),
   [],
