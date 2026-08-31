@@ -61,6 +61,16 @@ const sparse = E.parseSheetXml(worksheet('<row r="10"><c r="A10" t="str"><v>x</v
 assert(sparse.rows.length === 10, `sparse row index was not preserved: length=${sparse.rows.length}`);
 assert(Object.keys(sparse.rows).length === 1 && sparse.rows[9]?.[0] === 'x', `sparse gaps were materialized: keys=${Object.keys(sparse.rows).length}`);
 
+// Legal SpreadsheetML may serialize an empty physical row as <row r="2"/>. The parser must
+// consume that row as row 2 instead of treating it as the opening tag of the following row 3.
+const selfClosingRow = E.parseSheetXml(
+  worksheet('<row r="1"><c r="A1" t="str"><v>title</v></c></row><row r="2"/><row r="3"><c r="A3" t="str"><v>header</v></c></row>'),
+  [],
+);
+assert(selfClosingRow.rows.length === 3, `self-closing row was not preserved: length=${selfClosingRow.rows.length}`);
+assert(Array.isArray(selfClosingRow.rows[1]) && selfClosingRow.rows[1].length === 0, 'self-closing row 2 must parse as an empty row');
+assert(selfClosingRow.rows[2]?.[0] === 'header', `row after self-closing row shifted/corrupted: ${JSON.stringify(selfClosingRow.rows[2])}`);
+
 // Excel itself ends at XFD (16,384 columns); XFE must never be materialized.
 expectRejected(
   worksheet('<row r="1"><c r="XFE1" t="str"><v>x</v></c></row>'),
