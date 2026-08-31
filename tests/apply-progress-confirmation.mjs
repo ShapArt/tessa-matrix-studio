@@ -95,6 +95,8 @@ assert(createStarted, 'ADD preflight did not reach the simulated TESSA request')
 const waiting = progress.find(item => /нов(ые|ых) строк/i.test(item.label) && /0 из 1/.test(item.detail));
 assert(waiting, `before the first TESSA response UI must show 0/1 and the active ADD phase: ${JSON.stringify(progress)}`);
 
+// The heartbeat reports an actually pending TESSA call; it does not invent progress or
+// impose a client timeout on a request that the server may legitimately finish later.
 const progressCountBeforeHeartbeat = progress.length;
 await sleep(1100);
 assert(progress.length > progressCountBeforeHeartbeat,
