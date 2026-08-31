@@ -6,13 +6,13 @@
 
 Выгрузка матрицы в Excel → массовая правка → проверка изменений → безопасное применение в TESSA.
 
-[![Version](https://img.shields.io/badge/version-1.9.36-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.9.37-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-userscript-24292F?style=flat-square&logo=tampermonkey)](https://www.tampermonkey.net/)
 
 ### [УСТАНОВИТЬ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js) · [СКАЧАТЬ РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [ОТКРЫТЬ КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [СООБЩИТЬ ОБ ОШИБКЕ](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.9.36 · Автор: Шаповалов Артём**
+**v1.9.37 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -65,6 +65,9 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 > [!NOTE]
 > Начиная с **v1.9.36**, большой Preview можно превратить в контролируемый пакет без ручного отключения тысяч строк: блок **«Пакет для Apply»** оставляет первые `1 / 10 / 100 / 500 / 2000` операций из текущего фильтра **и текущего поиска**. Остальные операции используют обычный selective review и не попадают в Apply; **«Вернуть всё»** восстанавливает исходный план. Это не обходит operational guards — каждый реально применяемый пакет по-прежнему проходит свежий серверный preflight перед записью.
 
+> [!NOTE]
+> Начиная с **v1.9.37**, Studio не форсирует полный `refreshCard()` сразу после Store/Delete: живой UAT показал, что нативный `TestMatrixView / MtxRouteMatrixDummyView` может в этот момент столкнуться с `MatrixRow.WriteHeartbit` writer-lock и показать системный HTTP 400 уже после успешной записи. После начавшейся записи старый Preview автоматически считается устаревшим и не может быть применён повторно. Диагностические JSON также больше не скачиваются автоматически: последний Apply/ErrorReport хранится в памяти вкладки и сохраняется только по явной кнопке **«Скачать отчёт»**.
+
 > [!IMPORTANT]
 > В Roundtrip V6 физический DELETE и новые строки без MatrixRowID/MatrixVersionID нельзя смешивать в одном файле: такая комбинация неотличима от повреждения hidden identity и поэтому fail-closed блокируется. Выполняйте DELETE и ADD отдельными пакетами из свежих выгрузок.
 
@@ -75,7 +78,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.9.36** в Tampermonkey.
+2. Подтвердите установку версии **1.9.37** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -322,6 +325,7 @@ Studio показывает:
 | **Актуализировать выбранный Excel** | перенести ваши правки в актуальную Excel-структуру, если в TESSA появились новые поля |
 | **Проверить изменения** | построить diff без записи в TESSA |
 | **Применить к TESSA** | выполнить проверенный план изменений |
+| **Скачать отчёт** | вручную сохранить последний Apply/ErrorReport JSON, если он нужен для диагностики |
 | **Отмена** | остановить операцию, если текущий этап допускает отмену |
 
 ---
@@ -429,7 +433,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.9.36**
+Текущая версия: **1.9.37**
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)
