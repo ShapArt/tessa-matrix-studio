@@ -17,10 +17,17 @@ if text.count(old) != 1:
     raise SystemExit(f'render applyState marker count={text.count(old)}')
 text = text.replace(old, new, 1)
 
-old = '''      ${reviewedSafety.blocked ? `<div class=\\"tms-fatal\\"><b>Этот набор изменений нельзя безопасно применить</b><br>${(reviewedSafety.blockedReasons || []).map(escapeHtml).join('<br>')}</div>` : ''}\n      ${skipped.length ? `<details class=\\"tms-skipped-box\\"><summary><b>Пропущено строк: ${skipped.length}</b> · корректные изменения можно применить</summary><div>${skipped.slice(0, 20).map(item => `<div class=\\"tms-skip-line\\">${item.excelRow ? `Excel ${item.excelRow}: ` : ''}${escapeHtml(item.reason)}</div>`).join('')}${skipped.length > 20 ? `<div class=\\"tms-skip-more\\">Ещё ${skipped.length - 20}…</div>` : ''}</div></details>` : ''}'''
-new = '''      ${reviewedSafety.blocked ? `<div class=\\"tms-fatal\\"><b>Этот набор изменений нельзя безопасно применить</b><br>${(reviewedSafety.blockedReasons || []).map(escapeHtml).join('<br>')}</div>` : ''}\n      ${applyState.batchBlocked ? `<div class=\\"tms-fatal\\"><b>Пакет слишком большой для одного Apply</b><br>${escapeHtml(applyState.reason || '')}<br><span class=\\"tms-review-state\\">Preview остаётся доступен: можно проверить все строки и подготовить меньший контролируемый пакет.</span></div>` : ''}\n      ${skipped.length ? `<details class=\\"tms-skipped-box\\"><summary><b>Пропущено строк: ${skipped.length}</b> · ${applyState.blocked ? 'корректные строки проверены, но Apply сейчас заблокирован' : 'корректные изменения можно применить'}</summary><div>${skipped.slice(0, 20).map(item => `<div class=\\"tms-skip-line\\">${item.excelRow ? `Excel ${item.excelRow}: ` : ''}${escapeHtml(item.reason)}</div>`).join('')}${skipped.length > 20 ? `<div class=\\"tms-skip-more\\">Ещё ${skipped.length - 20}…</div>` : ''}</div></details>` : ''}'''
+# Insert the inline blocked-batch card immediately before the skipped-row details.
+skip_anchor = '      ${skipped.length ? `<details class=\\"tms-skipped-box\\">'
+if text.count(skip_anchor) != 1:
+    raise SystemExit(f'skip anchor count={text.count(skip_anchor)}')
+batch_card = '      ${applyState.batchBlocked ? `<div class=\\"tms-fatal\\"><b>Пакет слишком большой для одного Apply</b><br>${escapeHtml(applyState.reason || \'\')}<br><span class=\\"tms-review-state\\">Preview остаётся доступен: можно проверить все строки и подготовить меньший контролируемый пакет.</span></div>` : \'\'}\n'
+text = text.replace(skip_anchor, batch_card + skip_anchor, 1)
+
+old = '${skipped.length}</b> · корректные изменения можно применить</summary>'
+new = "${skipped.length}</b> · ${applyState.blocked ? 'корректные строки проверены, но Apply сейчас заблокирован' : 'корректные изменения можно применить'}</summary>"
 if text.count(old) != 1:
-    raise SystemExit(f'summary blocker marker count={text.count(old)}')
+    raise SystemExit(f'skipped summary marker count={text.count(old)}')
 text = text.replace(old, new, 1)
 
 # 3) Replace the render-time Apply button state with the shared availability helper.
