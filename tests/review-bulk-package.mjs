@@ -27,8 +27,14 @@ assert(code.includes('Оставить в Apply'), 'bulk package action label is
 
 const action = (type, row) => ({
   type,
-  excelRow: { excelRow: row, flat: { ScenarioID: `${type.toUpperCase()}-${row}` } },
-  changes: type === 'update' ? [{ key: 'Field', before: 'A', after: 'B' }] : [],
+  excelRow: {
+    excelRow: row,
+    flat: { ScenarioID: [`${type.toUpperCase()}-${row}`] },
+    ids: {},
+    compare: {},
+    columns: [],
+  },
+  changes: type === 'update' ? [{ key: 'Field', before: ['A'], after: ['B'] }] : [],
 });
 
 const plan = {
@@ -41,22 +47,25 @@ const plan = {
 };
 
 const addOnly = E.keepReviewedPackage(plan, E.createPlanReviewState(), { filter: 'add', limit: 2 });
-const addOnlyPlan = E.buildReviewedPlan(plan, addOnly);
-const addTypes = addOnlyPlan.actions.filter(a => a.type !== 'noop').map(a => `${a.type}:${a.excelRow.excelRow}`);
-assert(JSON.stringify(addTypes) === JSON.stringify(['add:20', 'add:21']), `add package mismatch: ${JSON.stringify(addTypes)}`);
+const keepAddKeys = [...addOnly.excludedRows];
+assert(addOnly.excludedRows.has(E.planReviewActionKey(plan.actions[0])), 'non-ADD update must be excluded');
+assert(!addOnly.excludedRows.has(E.planReviewActionKey(plan.actions[2])), 'first ADD must stay enabled');
+assert(!addOnly.excludedRows.has(E.planReviewActionKey(plan.actions[3])), 'second ADD must stay enabled');
+assert(addOnly.excludedRows.has(E.planReviewActionKey(plan.actions[4])), 'third ADD must be excluded');
+assert(keepAddKeys.length === 6, `expected 6 excluded actions, got ${keepAddKeys.length}`);
 
 const firstThree = E.keepReviewedPackage(plan, E.createPlanReviewState(), { filter: 'all', limit: 3 });
-const firstThreePlan = E.buildReviewedPlan(plan, firstThree);
-const firstTypes = firstThreePlan.actions.filter(a => a.type !== 'noop').map(a => `${a.type}:${a.excelRow.excelRow}`);
-assert(JSON.stringify(firstTypes) === JSON.stringify(['update:10', 'update:11', 'add:20']), `all package mismatch: ${JSON.stringify(firstTypes)}`);
+assert(!firstThree.excludedRows.has(E.planReviewActionKey(plan.actions[0])), 'first operation must stay enabled');
+assert(!firstThree.excludedRows.has(E.planReviewActionKey(plan.actions[1])), 'second operation must stay enabled');
+assert(!firstThree.excludedRows.has(E.planReviewActionKey(plan.actions[2])), 'third operation must stay enabled');
+assert(firstThree.excludedRows.has(E.planReviewActionKey(plan.actions[3])), 'fourth operation must be excluded');
 
 const zero = E.keepReviewedPackage(plan, E.createPlanReviewState(), { filter: 'add', limit: 0 });
-assert(E.buildReviewedPlan(plan, zero).actions.every(a => a.type === 'noop'), 'limit 0 must exclude every executable action');
+assert(zero.excludedRows.size === plan.actions.length, `limit 0 must exclude all ${plan.actions.length} actions`);
 
 const hugePlan = { actions: Array.from({ length: 2105 }, (_, i) => action('add', 1000 + i)), skippedRows: [] };
 const capped = E.keepReviewedPackage(hugePlan, E.createPlanReviewState(), { filter: 'add', limit: 9999 });
-const cappedCount = E.buildReviewedPlan(hugePlan, capped).actions.filter(a => a.type === 'add').length;
-assert(cappedCount === 2000, `bulk package must clamp to operational ceiling 2000, got ${cappedCount}`);
+assert(capped.excludedRows.size === 105, `bulk package must clamp to 2000 and exclude 105, got ${capped.excludedRows.size}`);
 
 let threw = false;
 try { E.keepReviewedPackage(plan, E.createPlanReviewState(), { filter: 'skip', limit: 1 }); }
