@@ -5,7 +5,13 @@ const code = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.me
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-assert(/^\/\/ @version\s+1\.9\.34$/m.test(code), 'this cancellation/delivery fix must ship under userscript @version 1.9.34');
+const versionMatch = code.match(/^\/\/ @version\s+(\d+)\.(\d+)\.(\d+)$/m);
+assert(versionMatch, 'userscript @version is missing');
+const versionTuple = versionMatch.slice(1).map(Number);
+const atLeast1934 = versionTuple[0] > 1
+  || (versionTuple[0] === 1 && versionTuple[1] > 9)
+  || (versionTuple[0] === 1 && versionTuple[1] === 9 && versionTuple[2] >= 34);
+assert(atLeast1934, `pending-preflight Stop requires userscript >=1.9.34, got ${versionMatch[0]}`);
 
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
