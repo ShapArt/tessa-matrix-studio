@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.38 — 2026-08-31
+
+- global workbook blocker (например, Excel от другой MatrixID/TemplateID) теперь является единственной авторитетной причиной отказа в пользовательском Preview;
+- вторичные row-level SKIP, накопленные до обнаружения глобального контекстного blocker, скрываются из UI и счётчиков вместо тысяч однотипных сообщений про hidden identity;
+- исходные candidate actions / skipped rows / counts сохраняются только как диагностический payload, поэтому fail-closed guards не ослабляются и данные для расследования не теряются;
+- добавлен RED→GREEN regression, воспроизводящий живой UAT: wrong-matrix blocker + 2000 candidate actions + 2130 secondary identity issues;
+- версия поднята до 1.9.38.
+
 ## 1.9.37 — 2026-08-31
 
 - живой Apply подтвердил успешную запись 13/13 операций, но после Store нативный `TestMatrixView / MtxRouteMatrixDummyView` дважды показывал HTTP 400 `ObtainWriterLock for MatrixRow.WriteHeartbit...`;
