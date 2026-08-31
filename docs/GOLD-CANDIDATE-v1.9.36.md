@@ -7,6 +7,7 @@ Status document for PR #46. Automated evidence must always be read from the late
 - Large Preview is fully reviewable: paging, type filters, search and selective review beyond the first 40 actions.
 - UPDATE supports whole-row/per-field exclusion; ADD and DELETE support whole-operation exclusion/restore.
 - Large Preview can be reduced through **«Пакет для Apply»** to `1 / 10 / 100 / 500 / 2000` operations. Selection follows both the active type filter and active Preview search; **«Вернуть всё»** restores the source review state.
+- `review-bulk-package.mjs` pins the package-builder contract, including the search-scoped case where a visible searched ADD must be the one retained for Apply rather than the first ADD outside the search result.
 - Apply limits remain defense-in-depth: `<=500` normal, `501–2000` extra confirmation, `>2000` hard block both in Preview availability and inside `applyPlan()`.
 - DELETE safety remains `>=100` absolute hard block plus `>=10 && >=20%` ratio guard; the redundant DELETE-only browser confirm is intentionally absent.
 - Stop/preflight cancellation, partial-result accounting, refresh-after-Store recovery, race guards, baseline identity and XLSX ZIP/XML/OPC protections remain in the full regression suite.
