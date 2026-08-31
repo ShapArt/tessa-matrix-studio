@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# Trigger after workflow creation.
 p = Path('tessa-matrix-studio.user.js')
 s = p.read_text(encoding='utf-8')
 
@@ -33,7 +34,6 @@ new = """        rememberReport({ app: { name: APP.name, version: APP.version },
 if old not in s: raise SystemExit('error auto-download block missing')
 s = s.replace(old, new, 1)
 
-# Export helpers for focused browser-less regression/debugging.
 old = """    normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail,\n"""
 new = """    normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport,\n"""
 if old not in s: raise SystemExit('export anchor missing')
