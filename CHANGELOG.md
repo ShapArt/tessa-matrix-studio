@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.35 — 2026-08-31
+
+- live MAX UAT подтвердил корректный hard-stop для пакета на 8505 операций, но выявил UX-разрыв: кнопка Apply оставалась кликабельной, поэтому ожидаемый лимит >2000 показывался как modal-ошибка и автоматически скачивал ErrorReport;
+- Preview теперь вычисляет единое `applyAvailability`: operational ceiling, общий safety-state и selective review определяют доступность Apply до клика;
+- при >2000 операций кнопка Apply disabled и показывает `Пакет слишком большой · N / 2000`, рядом выводится встроенное объяснение, а Preview/paging/filter/search остаются доступными;
+- ожидаемый policy-block больше не создаёт `TESSA_Matrix_ErrorReport_*.json` и не открывает alert; внутренний hard-stop `applyPlan()` сохранён как defense-in-depth;
+- добавлен regression на форму реального UAT: 8505 executable + 4 SKIP должны быть blocked в Preview, 2000 операций остаются разрешёнными, пустой план не включает Apply.
+
 ## 1.9.34 — 2026-08-31
 
 - XLSX SpreadsheetML parser корректно принимает легальные self-closing пустые строки вида `<row r="2"/>`; раньше row-regex ошибочно захватывал следующую строку и мог сообщать `A3 ... находится внутри строки 2`;
