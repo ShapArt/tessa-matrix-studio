@@ -63,7 +63,11 @@ assert(reviewed.actions[1].type === 'delete', 'restoring DELETE must restore the
 
 assert(!code.includes("const rowExcluded = action.type === 'update' &&"), 'row exclusion UI must not be UPDATE-only');
 assert(!code.includes("if (!sourceAction || sourceAction.type !== 'update') return;"), 'review click handler must not reject ADD/DELETE row exclusion');
-assert(/action\.type === 'add'[\s\S]{0,700}data-review-row|data-review-row[\s\S]{0,700}action\.type === 'add'/.test(code),
-  'ADD Preview must expose a whole-operation review control');
+assert(code.includes("const supportsWholeActionReview = action.type === 'update' || action.type === 'add' || action.type === 'delete';"),
+  'Preview must explicitly support whole-operation review for UPDATE/ADD/DELETE');
+assert(code.includes("} else if (action.type === 'add') body.innerHTML = `${rowReviewControl}"),
+  'ADD Preview must render the whole-operation review control');
+assert(code.includes("else body.innerHTML = `${rowReviewControl}${flatToHtml(action.currentRow.flat, plan.columnMap)}`;"),
+  'DELETE Preview must render the whole-operation review control');
 
 console.log('TESSA Matrix Studio selective review for ADD/DELETE: OK');
