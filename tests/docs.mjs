@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 
-// Релизный контракт сверяет публичный README, changelog и issue-template с фактической версией userscript.
+// Релизный контракт сверяет публичный README, changelog, runbook и issue-template с фактической версией userscript.
 const read = (path) => fs.readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
@@ -9,6 +9,7 @@ const assert = (condition, message) => {
 const script = read('tessa-matrix-studio.user.js');
 const readme = read('README.md');
 const changelog = read('CHANGELOG.md');
+const runbook = read('docs/PRODUCTION-RUNBOOK.md');
 const bugTemplate = read('.github/ISSUE_TEMPLATE/bug_report.yml');
 const pkg = JSON.parse(read('package.json'));
 
@@ -43,7 +44,7 @@ assert(readme.includes('Tampermonkey → Dashboard / Панель управле
 assert(readme.includes('Utilities / Сервис'), 'README lost Tampermonkey Utilities fallback');
 assert(readme.includes('В разделе **URL** вставьте:'), 'README lost manual URL import field');
 
-assert(readme.includes('baseline-ledger'), 'README must explain the V6 baseline ledger used for DELETE/integrity safety');
+assert(runbook.includes('baseline-ledger'), 'production runbook must explain the V6 baseline ledger used for DELETE/integrity safety');
 assert(!readme.includes('# Боевой UAT перед раздачей пользователям'), 'public README must not contain the internal pre-release UAT block');
 assert(!readme.includes('Стоп-критерии'), 'public README must not contain the removed UAT stop-criteria block');
 
