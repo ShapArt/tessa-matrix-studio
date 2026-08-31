@@ -22,6 +22,8 @@ const makeActions = count => Array.from({ length: count }, (_, index) => ({
   changes: [],
 }));
 
+// Live MAX UAT produced exactly this shape: 8505 executable operations plus 4 SKIP.
+// The Preview must expose that as an expected policy block, not as a clickable Apply error.
 const plan = {
   id: 'preview-batch-ux',
   actions: makeActions(8505),
