@@ -1205,7 +1205,7 @@
 
       const values = [];
       const metaValues = [];
-      const body = rowMatch[2];
+      const body = rowMatch[2] || '';
       let nextImplicitCol = 0;
       // В Excel пустая ячейка часто сериализуется как <c .../>. Обрабатываем
       // self-closing и обычную формы одинаково, но координаты проверяем до записи.
