@@ -53,6 +53,7 @@
     busy: false,
     abortRequested: false,
     logs: [],
+    lastReport: null,
     dictionaryCatalog: null,
     progress: { percent: 0, label: 'Готово', detail: '' },
   };
@@ -5714,7 +5715,7 @@
       };
       finalizeApplyResult(result, { cancelled: true });
       log(`Предварительная проверка остановлена. Запись в TESSA не начиналась; не начато: ${result.notStartedCount}.`, 'warn');
-      downloadJson(result, `TESSA_Matrix_Apply_${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+      rememberReport(result, `TESSA_Matrix_Apply_${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
       setProgress(100, 'Применение остановлено', `Запись не начиналась · не начато: ${result.notStartedCount}`);
       return result;
     }
@@ -5845,7 +5846,7 @@
     finalizeApplyResult(result, { cancelled });
     const resultLevel = result.partial ? 'warn' : 'info';
     log(`Готово. Статус: ${result.status}; применено: ${result.appliedCount}; пропущено: ${result.skippedCount}; не начато: ${result.notStartedCount}.`, resultLevel);
-    downloadJson(result, `TESSA_Matrix_Apply_${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+    rememberReport(result, `TESSA_Matrix_Apply_${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
     const progressLabel = cancelled ? 'Применение остановлено' : result.partial ? 'Применение завершено с пропусками' : 'Все изменения применены';
     setProgress(100, progressLabel, `Применено: ${result.appliedCount} · пропущено: ${result.skippedCount} · не начато: ${result.notStartedCount}`);
     return result;
@@ -5857,6 +5858,24 @@
     const a = document.createElement('a');
     a.href = url; a.download = name; a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // Отчёты храним в памяти вкладки. Файл создаётся только по явному клику пользователя.
+  function rememberReport(value, name) {
+    APP.lastReport = { value, name };
+    const button = document.querySelector?.('#tms-download-report');
+    if (button) {
+      button.hidden = false;
+      button.disabled = false;
+      button.title = name || 'Скачать последний диагностический отчёт';
+    }
+    return APP.lastReport;
+  }
+
+  function downloadLastReport() {
+    if (!APP.lastReport?.value) return false;
+    downloadJson(APP.lastReport.value, APP.lastReport.name || `TESSA_Matrix_Report_${Date.now()}.json`);
+    return true;
   }
 
   function jsonReplacer(key, value) {
@@ -6236,7 +6255,7 @@
           <div class="tms-step"><div class="tms-step-label">1 · Подготовить Excel</div><div class="tms-row"><button id="tms-download-current" class="tms-primary">Скачать Excel</button><button id="tms-download-fresh">Скачать со свежими справочниками</button></div><div class="tms-step-caption">Скачайте рабочий Excel или обновите справочники перед редактированием.</div></div>
           <div class="tms-step"><div class="tms-step-label">2 · Выбрать изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"><button id="tms-refresh-excel" class="tms-ghost" disabled>Актуализировать выбранный Excel</button></div><div class="tms-step-caption">Добавит новые поля из текущего шаблона TESSA и постарается сохранить ваши изменения.</div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
           <div class="tms-step"><div class="tms-step-label">3 · Проверить</div><div class="tms-row"><button id="tms-analyze" class="tms-primary">Проверить изменения</button><button id="tms-stop" class="tms-danger" disabled>Отмена</button></div></div>
-          <div class="tms-step tms-step-apply"><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div></div>
+          <div class="tms-step tms-step-apply"><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><button id="tms-download-report" class="tms-ghost" hidden disabled>Скачать отчёт</button><div id="tms-apply-note" class="tms-step-caption"></div></div>
         </div>
         <div id="tms-summary"></div><div id="tms-plan"></div>
       </div>`;
@@ -6330,6 +6349,7 @@
       catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); alert(message); }
       finally { setBusy(false); }
     });
+    panel.querySelector('#tms-download-report').addEventListener('click', () => { downloadLastReport(); });
     panel.querySelector('#tms-apply').addEventListener('click', async () => {
       if (APP.busy) return;
       const availability = applyAvailability(APP.plan, APP.review);
@@ -6341,8 +6361,8 @@
       try { const reviewedPlan = buildReviewedPlan(APP.plan, APP.review); const result = await applyPlan(reviewedPlan); if (result) alert(applyResultMessage(result)); }
       catch (error) {
         const message = friendlyErrorMessage(error); log(message, 'error', error);
-        downloadJson({ app: { name: APP.name, version: APP.version }, planId: APP.plan?.id, failedAt: nowIso(), error: message, technicalError: error?.message || String(error), matrixId: APP.plan?.matrixId || null, logs: APP.logs.slice(-120) }, `TESSA_Matrix_ErrorReport_${Date.now()}.json`);
-        alert(`${message}\n\nЕсли понадобится разбор ошибки, приложите автоматически скачанный файл TESSA_Matrix_ErrorReport_*.json.`);
+        rememberReport({ app: { name: APP.name, version: APP.version }, planId: APP.plan?.id, failedAt: nowIso(), error: message, technicalError: error?.message || String(error), matrixId: APP.plan?.matrixId || null, logs: APP.logs.slice(-120) }, `TESSA_Matrix_ErrorReport_${Date.now()}.json`);
+        alert(`${message}\n\nЕсли понадобится разбор ошибки, нажмите «Скачать отчёт» в Studio.`);
       } finally { setBusy(false); }
     });
   }
@@ -6362,7 +6382,7 @@
   }
 
   window.__TESSA_MATRIX_SYNC_EXPORTS__ = {
-    normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail,
+    normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, mergeWorkbookIntoCurrentSnapshot, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
