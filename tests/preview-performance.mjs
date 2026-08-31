@@ -56,6 +56,64 @@ assert(/1 из 2.?000/.test(early) && /оцениваю/i.test(early), `early pr
 const stable = E.workProgressDetail({ completed: 500, total: 2000, elapsedMs: 10000 });
 assert(/500 из 2.?000/.test(stable) && /~30 сек осталось/.test(stable), `stable progress must contain ETA: ${stable}`);
 
+// Behavioral contract: once the plan is over the Apply ceiling, Preview may do
+// local identity/reference/role validation, but it must not call CardNew or duplicate
+// validation thousands of times for a package that cannot be applied as a whole.
+let assertCanCreateCalls = 0;
+let cardNewCalls = 0;
+let duplicateCalls = 0;
+const fn = { id: 'fn-required' };
+const structure = { templateId: 'tpl', conditions: [], functions: [fn] };
+const fresh = {
+  matrixId: 'matrix-1',
+  rows: [],
+  criterionIdCache: new Map(),
+  roleIdByFunctionCache: new Map(),
+  roleIdCache: new Map(),
+};
+const bridge = {
+  matrixInfo: () => ({ StateName: 'Черновик' }),
+  localizeValue: value => value,
+  assertCanCreateRows: () => { assertCanCreateCalls += 1; throw new Error('must not probe CardNew capability on blocked Preview'); },
+  resolveRole: () => ({ id: 'role-1', roleTypeId: 1 }),
+  createRowCard: async () => { cardNewCalls += 1; throw new Error('CardNew must not run on >2000 Preview'); },
+  validateDuplicate: async () => { duplicateCalls += 1; throw new Error('duplicate validation must not run on >2000 Preview'); },
+};
+const fastActions = Array.from({ length: 2001 }, (_, i) => {
+  const columns = new Map([[fn.id, { key: 'fn' }]]);
+  return {
+    type: 'add',
+    excelRow: {
+      excelRow: 151 + i,
+      columns,
+      flat: { fn: ['Исполнитель QA'] },
+      ids: { fn: ['role-1|1'] },
+    },
+  };
+});
+const fastPlan = {
+  matrixId: 'matrix-1',
+  safety: { blocked: false, blockedReasons: [] },
+  actions: fastActions,
+  skippedRows: [],
+  counts: E.countActions(fastActions, []),
+};
+const fastPreflight = await E.preflightPlan(fastPlan, {
+  previewOnly: true,
+  bridge,
+  structure,
+  fresh,
+  onProgress: () => {},
+});
+assert(fastPreflight.previewPolicy?.skipServerAddValidation === true,
+  `behavioral preflight did not select fast policy: ${JSON.stringify(fastPreflight.previewPolicy)}`);
+assert(fastPreflight.preparedAdds.size === 2001,
+  `local Preview must retain all valid ADDs, got ${fastPreflight.preparedAdds.size}`);
+assert(fastPreflight.runtimeSkips.length === 0,
+  `valid local ADDs unexpectedly skipped: ${JSON.stringify(fastPreflight.runtimeSkips.slice(0, 3))}`);
+assert(assertCanCreateCalls === 0 && cardNewCalls === 0 && duplicateCalls === 0,
+  `blocked large Preview made server ADD calls: capability=${assertCanCreateCalls}, CardNew=${cardNewCalls}, duplicate=${duplicateCalls}`);
+
 assert(code.includes('skipServerAddValidation'), 'preflightPlan must consume the fast-preview policy');
 assert(code.includes('PreflightAddConcurrency'), 'deep ADD preflight must have a bounded concurrency setting');
 assert(code.includes('yieldToMain'), 'large local Preview must yield so progress can repaint');
