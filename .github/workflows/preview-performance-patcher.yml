@@ -1,0 +1,454 @@
+name: Apply Preview performance patch
+
+on:
+  push:
+    branches:
+      - feat/preprod-mega-uat-hardening
+    paths:
+      - .github/workflows/preview-performance-patcher.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/preprod-mega-uat-hardening
+          fetch-depth: 0
+      - name: Apply deterministic Preview performance patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tessa-matrix-studio.user.js')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one marker, got {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+          """  const PERFORMANCE = Object.freeze({
+            SnapshotCardGetConcurrency: 6,
+            PreviewSnapshotTtlMs: 15 * 60 * 1000,
+            ZipConcurrency: 4,
+          });""",
+          """  const PERFORMANCE = Object.freeze({
+            SnapshotCardGetConcurrency: 6,
+            PreflightAddConcurrency: 4,
+            PreviewSnapshotTtlMs: 15 * 60 * 1000,
+            PreviewYieldDeadlineMs: 40,
+            ZipConcurrency: 4,
+          });""",
+          'performance constants')
+
+          replace_once(
+          """  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+          function requestApplyAbort() {""",
+          """  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+          const monotonicNow = () => Number(globalThis.performance?.now?.() ?? Date.now());
+
+          async function yieldToMain() {
+            if (globalThis.scheduler?.yield) {
+              await globalThis.scheduler.yield();
+              return;
+            }
+            await sleep(0);
+          }
+
+          function estimateRemainingMs({ completed, total, elapsedMs }) {
+            const done = Math.max(0, Number(completed) || 0);
+            const size = Math.max(0, Number(total) || 0);
+            const elapsed = Math.max(0, Number(elapsedMs) || 0);
+            if (!size || done <= 0 || elapsed <= 0) return null;
+            if (done >= size) return 0;
+            return Math.max(0, Math.round((elapsed / done) * (size - done)));
+          }
+
+          function formatEtaMs(ms) {
+            const value = Math.max(0, Number(ms) || 0);
+            if (value < 5000) return 'меньше 5 сек';
+            const totalSeconds = Math.max(1, Math.round(value / 1000));
+            if (totalSeconds < 60) return `${totalSeconds} сек`;
+            const totalMinutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            if (totalMinutes < 60) return seconds ? `${totalMinutes} мин ${seconds} сек` : `${totalMinutes} мин`;
+            const hours = Math.floor(totalMinutes / 60);
+            const minutes = totalMinutes % 60;
+            return minutes ? `${hours} ч ${minutes} мин` : `${hours} ч`;
+          }
+
+          function formatProgressCount(value) {
+            return String(Math.max(0, Math.trunc(Number(value) || 0))).replace(/\\B(?=(\\d{3})+(?!\\d))/g, ' ');
+          }
+
+          function workProgressDetail({ completed, total, elapsedMs }) {
+            const done = Math.max(0, Number(completed) || 0);
+            const size = Math.max(0, Number(total) || 0);
+            const elapsed = Math.max(0, Number(elapsedMs) || 0);
+            let tail = 'оцениваю время…';
+            if (done >= size && size > 0) {
+              tail = 'готово';
+            } else if (done >= 5 && elapsed >= 500) {
+              const eta = estimateRemainingMs({ completed: done, total: size, elapsedMs: elapsed });
+              if (eta !== null) tail = `~${formatEtaMs(eta)} осталось`;
+            }
+            return `${formatProgressCount(done)} из ${formatProgressCount(size)} · ${tail}`;
+          }
+
+          function requestApplyAbort() {""",
+          'eta helpers')
+
+          replace_once(
+          """    let previewPlan = plan;
+            if (!plan.safety.blocked && plan.actions.some(action => action.type !== 'noop')) {
+              setProgress(92, 'Проверяю применимость', 'Справочники, дубли и зависимости перед Apply');
+              const previewPreflight = await preflightPlan(plan, { previewOnly: true, bridge, structure });
+              previewPlan = applyPreflightPreview(plan, previewPreflight);
+              if (previewPlan.preflightPreview.runtimeSkipCount) {
+                log(`Предварительная проверка: ${previewPlan.preflightPreview.runtimeSkipCount} операций заранее переведены в ПРОПУСТИТЬ.`, 'warn');
+              }
+            }""",
+          """    let previewPlan = plan;
+            if (!plan.safety.blocked && plan.actions.some(action => action.type !== 'noop')) {
+              const previewPolicy = previewPreflightPolicy(plan.actions);
+              if (previewPolicy.skipServerAddValidation) log(previewPolicy.reason, 'warn');
+              const previewProgress = (phasePercent, label, detail = '') => {
+                const bounded = Math.max(10, Math.min(42, Number(phasePercent) || 10));
+                const percent = 70 + Math.round(((bounded - 10) / 32) * 28);
+                setProgress(percent, `6/6 · ${label}`, detail);
+              };
+              setProgress(70, '6/6 · Проверяю применимость', previewPolicy.skipServerAddValidation
+                ? 'Большой пакет: быстрый локальный Preview без тысяч лишних CardNew/duplicate запросов'
+                : 'Справочники, дубли и зависимости перед Apply');
+              const previewPreflight = await preflightPlan(plan, { previewOnly: true, bridge, structure, onProgress: previewProgress });
+              previewPlan = applyPreflightPreview(plan, previewPreflight);
+              if (previewPlan.preflightPreview.runtimeSkipCount) {
+                log(`Предварительная проверка: ${previewPlan.preflightPreview.runtimeSkipCount} операций заранее переведены в ПРОПУСТИТЬ.`, 'warn');
+              }
+            }""",
+          'analyze preview preflight')
+
+          replacements = [
+            ("setProgress(8, 'Читаю Excel', file.name);", "setProgress(5, '1/6 · Читаю Excel', file.name);", 'analyze stage 1'),
+            ("setProgress(22, 'Excel прочитан', `${workbook.rows.length} строк данных`);", "setProgress(18, '1/6 · Excel прочитан', `${workbook.rows.length} строк данных`);", 'analyze stage 1 done'),
+            ("setProgress(30, 'Подключаюсь к TESSA', 'Проверяю открытую матрицу');", "setProgress(22, '2/6 · Подключаюсь к TESSA', 'Проверяю открытую матрицу');", 'analyze stage 2'),
+            ("setProgress(42, 'Читаю структуру TESSA', 'Критерии и функции');", "setProgress(32, '3/6 · Читаю структуру TESSA', 'Критерии и функции');", 'analyze stage 3'),
+            ("setProgress(canReuseSnapshot ? 58 : 52, canReuseSnapshot ? 'Использую свежий снимок' : 'Читаю строки TESSA', canReuseSnapshot ? 'Повторная загрузка не нужна' : 'Сверяю текущие строки');", "setProgress(canReuseSnapshot ? 48 : 40, canReuseSnapshot ? '3/6 · Использую свежий снимок' : '3/6 · Читаю строки TESSA', canReuseSnapshot ? 'Повторная загрузка не нужна' : 'Сверяю текущие строки');", 'analyze snapshot'),
+            ("setProgress(72, 'Сопоставляю Excel и TESSA', `${snapshot.rows.length} строк в TESSA`);", "setProgress(55, '4/6 · Сопоставляю Excel и TESSA', `${snapshot.rows.length} строк в TESSA`);", 'analyze stage 4'),
+            ("setProgress(88, 'Проверяю безопасность', 'Дубли, права, удаления и неоднозначности');", "setProgress(62, '5/6 · Проверяю безопасность', 'Дубли, права, удаления и неоднозначности');", 'analyze stage 5'),
+          ]
+          for old, new, label in replacements:
+              replace_once(old, new, label)
+
+          replace_once(
+          """    const warnings = [...(plan.warnings || [])];
+            if (runtimeSkipCount) {
+              warnings.push(`Предварительная проверка до Apply: ${runtimeSkipCount} операций переведены в ПРОПУСТИТЬ. Причины показаны выше.`);
+            }
+            return {
+              ...plan,
+              actions,
+              skippedRows,
+              warnings,
+              counts: countActions(actions, skippedRows),
+              preflightPreview: {
+                validated: true,
+                runtimeSkipCount,
+                attemptedCount: (plan.actions || []).filter(action => action.type !== 'noop').length,
+                executableCount: actions.filter(action => action.type !== 'noop').length,
+                validatedAt: nowIso(),
+              },
+            };""",
+          """    const warnings = [...(plan.warnings || [])];
+            if (runtimeSkipCount) {
+              warnings.push(`Предварительная проверка до Apply: ${runtimeSkipCount} операций переведены в ПРОПУСТИТЬ. Причины показаны выше.`);
+            }
+            const serverAddValidationSkipped = Boolean(preflight?.previewPolicy?.skipServerAddValidation);
+            if (serverAddValidationSkipped && preflight?.previewPolicy?.reason) warnings.push(preflight.previewPolicy.reason);
+            return {
+              ...plan,
+              actions,
+              skippedRows,
+              warnings,
+              counts: countActions(actions, skippedRows),
+              preflightPreview: {
+                validated: true,
+                runtimeSkipCount,
+                attemptedCount: (plan.actions || []).filter(action => action.type !== 'noop').length,
+                executableCount: actions.filter(action => action.type !== 'noop').length,
+                serverAddValidationSkipped,
+                applyBlockedByBatch: Boolean(preflight?.previewPolicy?.applyBlocked),
+                validatedAt: nowIso(),
+              },
+            };""",
+          'preview projection metadata')
+
+          replace_once(
+          """  async function preflightPlan(plan, options = {}) {
+            const previewOnly = Boolean(options.previewOnly);
+            const preflightProgress = previewOnly ? () => {} : setProgress;
+            preflightProgress(10, 'Предварительная проверка', 'Перечитываю матрицу перед записью');""",
+          """  async function preflightPlan(plan, options = {}) {
+            const previewOnly = Boolean(options.previewOnly);
+            const preflightProgress = typeof options.onProgress === 'function'
+              ? options.onProgress
+              : (previewOnly ? () => {} : setProgress);
+            const previewPolicy = previewOnly
+              ? previewPreflightPolicy(plan?.actions || [])
+              : { applyBlocked: false, skipServerAddValidation: false, reason: null };
+            const skipServerAddValidation = Boolean(previewPolicy.skipServerAddValidation);
+            preflightProgress(10, 'Предварительная проверка', 'Перечитываю матрицу перед записью');""",
+          'preflight header')
+
+          old_add = """    // ADD: если конкретная новая строка не проходит справочник/дубликат/тип — пропускаем её.
+            const addActions = plan.actions.filter(x => x.type === 'add');
+            let createCapabilityError = null;
+            if (addActions.length) {
+              try { bridge.assertCanCreateRows(); } catch (error) { createCapabilityError = error; }
+            }
+            for (const action of addActions) {
+              try {
+                if (createCapabilityError) throw createCapabilityError;
+
+                // copied-row-auto-add создаёт новую identity, но данные пришли из существующей
+                // source-строки. Source мог измениться уже после Preview, поэтому provenance
+                // сохраняется в match и повторно сверяется непосредственно перед CardNew.
+                if (action.match?.matchedBy === 'copied-row-auto-add') {
+                  const sourceVersionId = canonicalValue(action.match.sourceVersionId || '');
+                  const sourceRowCardId = canonicalValue(action.match.sourceRowCardId || '');
+                  const sourceCurrent = (sourceVersionId ? freshByVersion.get(sourceVersionId) : null)
+                    || (sourceRowCardId ? freshByCard.get(sourceRowCardId) : null);
+                  if (!sourceCurrent) throw new Error(`Исходная строка Excel ${action.excelRow.excelRow} исчезла после предпросмотра.`);
+                  const sourceExpectedFingerprint = canonicalValue(action.match.sourceFingerprint || '');
+                  const sourceFreshFingerprint = canonicalValue(sourceCurrent.fingerprint || fingerprintFlat(sourceCurrent.flat || {}));
+                  if (!sourceExpectedFingerprint || sourceExpectedFingerprint !== sourceFreshFingerprint) {
+                    throw new Error(`Исходная строка Excel ${action.excelRow.excelRow} изменилась в TESSA после предпросмотра.`);
+                  }
+                }
+
+                await hydrateMissingIdsForAction(action, structure, fresh, bridge);
+                for (const condition of structure.conditions) {
+                  const column = action.excelRow.columns.get(condition.criterionRowId);
+                  if (!column) continue;
+                  const displays = action.excelRow.flat[column.key] || [];
+                  const ids = action.excelRow.ids[column.key] || [];
+                  displays.forEach((display, i) => bridge.resolveCriterion(condition, display, ids[i] || null, fresh));
+                }
+                let roleCount = 0;
+                for (const fn of structure.functions) {
+                  const column = action.excelRow.columns.get(fn.id);
+                  if (!column) continue;
+                  const displays = action.excelRow.flat[column.key] || [];
+                  const ids = action.excelRow.ids[column.key] || [];
+                  displays.forEach((display, i) => { bridge.resolveRole(fn, display, ids[i] || null, fresh); roleCount += 1; });
+                }
+                if (!roleCount) throw new Error(`В строке Excel ${action.excelRow.excelRow} не указан ни один исполнитель.`);
+                const created = await bridge.createRowCard(structure.templateId);
+                log(`Подготавливаю новую строку Excel ${action.excelRow.excelRow} через CardService.${created.newMethod}`);
+                bridge.rebuildRowCard(created.card, created.versionId, action.excelRow, structure, fresh);
+                await bridge.validateDuplicate(created.card, created.versionId);
+                preparedAdds.set(action.excelRow.excelRow, { action, ...created });
+              } catch (error) {
+                const excelRow = Number(action.excelRow?.excelRow);
+                if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
+                runtimeSkippedActions.add(action);
+                runtimeSkips.push(runtimeSkip(action, error, 'preflight-add'));
+              }
+            }
+
+            preflightProgress(36, 'Проверяю новые строки', `Проверено: ${plan.actions.filter(x => x.type === 'add').length}`);"""
+
+          new_add = """    // ADD: локальные справочники/типы проверяются всегда. Серверный CardNew +
+            // ValidateDuplicate нужен для применяемых пакетов, но для Preview >2000 он только
+            // создаёт тысячи сетевых запросов к пакету, который всё равно нельзя Apply.
+            const addActions = plan.actions.filter(x => x.type === 'add');
+            let createCapabilityError = null;
+            if (addActions.length && !skipServerAddValidation) {
+              try { bridge.assertCanCreateRows(); } catch (error) { createCapabilityError = error; }
+            }
+            const addStartedAt = monotonicNow();
+            let completedAdds = 0;
+            let lastYieldAt = addStartedAt;
+
+            const validateAddAction = async action => {
+              try {
+                if (!skipServerAddValidation && createCapabilityError) throw createCapabilityError;
+
+                if (action.match?.matchedBy === 'copied-row-auto-add') {
+                  const sourceVersionId = canonicalValue(action.match.sourceVersionId || '');
+                  const sourceRowCardId = canonicalValue(action.match.sourceRowCardId || '');
+                  const sourceCurrent = (sourceVersionId ? freshByVersion.get(sourceVersionId) : null)
+                    || (sourceRowCardId ? freshByCard.get(sourceRowCardId) : null);
+                  if (!sourceCurrent) throw new Error(`Исходная строка Excel ${action.excelRow.excelRow} исчезла после предпросмотра.`);
+                  const sourceExpectedFingerprint = canonicalValue(action.match.sourceFingerprint || '');
+                  const sourceFreshFingerprint = canonicalValue(sourceCurrent.fingerprint || fingerprintFlat(sourceCurrent.flat || {}));
+                  if (!sourceExpectedFingerprint || sourceExpectedFingerprint !== sourceFreshFingerprint) {
+                    throw new Error(`Исходная строка Excel ${action.excelRow.excelRow} изменилась в TESSA после предпросмотра.`);
+                  }
+                }
+
+                await hydrateMissingIdsForAction(action, structure, fresh, bridge);
+                for (const condition of structure.conditions) {
+                  const column = action.excelRow.columns.get(condition.criterionRowId);
+                  if (!column) continue;
+                  const displays = action.excelRow.flat[column.key] || [];
+                  const ids = action.excelRow.ids[column.key] || [];
+                  displays.forEach((display, i) => bridge.resolveCriterion(condition, display, ids[i] || null, fresh));
+                }
+                let roleCount = 0;
+                for (const fn of structure.functions) {
+                  const column = action.excelRow.columns.get(fn.id);
+                  if (!column) continue;
+                  const displays = action.excelRow.flat[column.key] || [];
+                  const ids = action.excelRow.ids[column.key] || [];
+                  displays.forEach((display, i) => { bridge.resolveRole(fn, display, ids[i] || null, fresh); roleCount += 1; });
+                }
+                if (!roleCount) throw new Error(`В строке Excel ${action.excelRow.excelRow} не указан ни один исполнитель.`);
+
+                if (skipServerAddValidation) {
+                  return { action, prepared: { action, previewLocalOnly: true } };
+                }
+
+                const created = await bridge.createRowCard(structure.templateId);
+                log(`Подготавливаю новую строку Excel ${action.excelRow.excelRow} через CardService.${created.newMethod}`);
+                bridge.rebuildRowCard(created.card, created.versionId, action.excelRow, structure, fresh);
+                await bridge.validateDuplicate(created.card, created.versionId);
+                return { action, prepared: { action, ...created } };
+              } catch (error) {
+                return { action, error };
+              }
+            };
+
+            const recordAddResult = result => {
+              if (!result?.error) {
+                preparedAdds.set(result.action.excelRow.excelRow, result.prepared);
+                return;
+              }
+              const excelRow = Number(result.action?.excelRow?.excelRow);
+              if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
+              runtimeSkippedActions.add(result.action);
+              runtimeSkips.push(runtimeSkip(result.action, result.error, 'preflight-add'));
+            };
+
+            const reportAddProgress = () => {
+              completedAdds += 1;
+              const elapsedMs = Math.max(0, monotonicNow() - addStartedAt);
+              const percent = addActions.length ? 28 + Math.round((completedAdds / addActions.length) * 8) : 36;
+              preflightProgress(percent,
+                skipServerAddValidation ? 'Быстрый Preview новых строк' : 'Проверяю новые строки',
+                workProgressDetail({ completed: completedAdds, total: addActions.length, elapsedMs }));
+            };
+
+            if (skipServerAddValidation) {
+              for (const action of addActions) {
+                recordAddResult(await validateAddAction(action));
+                reportAddProgress();
+                const current = monotonicNow();
+                if (current - lastYieldAt >= PERFORMANCE.PreviewYieldDeadlineMs) {
+                  await yieldToMain();
+                  lastYieldAt = monotonicNow();
+                }
+              }
+            } else {
+              const results = await mapConcurrent(addActions, PERFORMANCE.PreflightAddConcurrency, async action => {
+                const result = await validateAddAction(action);
+                reportAddProgress();
+                return result;
+              });
+              results.forEach(recordAddResult);
+            }
+
+            preflightProgress(36,
+              skipServerAddValidation ? 'Быстрый Preview новых строк завершён' : 'Проверяю новые строки',
+              workProgressDetail({ completed: addActions.length, total: addActions.length, elapsedMs: Math.max(0, monotonicNow() - addStartedAt) }));"""
+          replace_once(old_add, new_add, 'ADD preflight loop')
+
+          replace_once(
+          """    preflightProgress(42, 'Предварительная проверка завершена', `Готово к записи: ${preparedUpdates.size + preparedAdds.size + readyDeletes.length}`);
+            return { bridge, structure, fresh, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips, runtimeSkippedActions };
+          }
+
+          /**
+           * Operational write ceiling.""",
+          """    preflightProgress(42,
+              skipServerAddValidation ? 'Быстрый Preview завершён' : 'Предварительная проверка завершена',
+              skipServerAddValidation
+                ? `Локально проверено: ${preparedUpdates.size + preparedAdds.size + readyDeletes.length} · глубокая ADD-проверка будет после разделения пакета`
+                : `Готово к записи: ${preparedUpdates.size + preparedAdds.size + readyDeletes.length}`);
+            return { bridge, structure, fresh, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips, runtimeSkippedActions, previewPolicy };
+          }
+
+          /**
+           * Operational write ceiling.""",
+          'preflight return policy')
+
+          replace_once(
+          """  function evaluateApplyBatch(actions) {
+            const count = (actions || []).filter(action => action?.type && action.type !== 'noop').length;
+            const blocked = count > 2000;
+            const warning = !blocked && count > 500;
+            const reason = blocked
+              ? `Пакет содержит ${count} операций. За один Apply разрешено не более 2000 операций; разделите изменения на несколько контролируемых пакетов.`
+              : warning
+                ? `Большой пакет: ${count} операций. Перед продолжением дополнительно проверьте Preview и подтвердите массовое применение.`
+                : null;
+            return { count, warning, blocked, reason };
+          }
+
+          /**
+           * Финализирует отчёт Apply""",
+          """  function evaluateApplyBatch(actions) {
+            const count = (actions || []).filter(action => action?.type && action.type !== 'noop').length;
+            const blocked = count > 2000;
+            const warning = !blocked && count > 500;
+            const reason = blocked
+              ? `Пакет содержит ${count} операций. За один Apply разрешено не более 2000 операций; разделите изменения на несколько контролируемых пакетов.`
+              : warning
+                ? `Большой пакет: ${count} операций. Перед продолжением дополнительно проверьте Preview и подтвердите массовое применение.`
+                : null;
+            return { count, warning, blocked, reason };
+          }
+
+          function previewPreflightPolicy(actions) {
+            const batch = evaluateApplyBatch(actions);
+            const skipServerAddValidation = Boolean(batch.blocked);
+            const reason = skipServerAddValidation
+              ? `Большой локальный Preview: ${batch.count} операций. Пакет всё равно заблокирован для Apply (>2000), поэтому тысячи CardNew/duplicate-запросов для ADD в Preview не выполняются. Разделите пакет до 2000 операций — каждая применяемая часть пройдёт глубокую серверную проверку перед записью.`
+              : null;
+            return { applyBlocked: batch.blocked, skipServerAddValidation, count: batch.count, reason };
+          }
+
+          /**
+           * Финализирует отчёт Apply""",
+          'preview policy')
+
+          replace_once(
+          """    normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent,""",
+          """    normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail,""",
+          'helper exports')
+
+          replace_once(
+          """    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch, finalizeApplyResult, applyResultMessage,""",
+          """    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch, previewPreflightPolicy, finalizeApplyResult, applyResultMessage,""",
+          'policy export')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+      - name: Commit patched source and remove patch runner
+        shell: bash
+        run: |
+          rm .github/workflows/preview-performance-patcher.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js .github/workflows/preview-performance-patcher.yml
+          git commit -m "perf: accelerate large Preview and show ETA"
+          git push origin HEAD:feat/preprod-mega-uat-hardening
