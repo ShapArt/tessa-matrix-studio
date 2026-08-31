@@ -53,6 +53,11 @@ assert(JSON.stringify(firstTypes) === JSON.stringify(['update:10', 'update:11', 
 const zero = E.keepReviewedPackage(plan, E.createPlanReviewState(), { filter: 'add', limit: 0 });
 assert(E.buildReviewedPlan(plan, zero).actions.every(a => a.type === 'noop'), 'limit 0 must exclude every executable action');
 
+const hugePlan = { actions: Array.from({ length: 2105 }, (_, i) => action('add', 1000 + i)), skippedRows: [] };
+const capped = E.keepReviewedPackage(hugePlan, E.createPlanReviewState(), { filter: 'add', limit: 9999 });
+const cappedCount = E.buildReviewedPlan(hugePlan, capped).actions.filter(a => a.type === 'add').length;
+assert(cappedCount === 2000, `bulk package must clamp to operational ceiling 2000, got ${cappedCount}`);
+
 let threw = false;
 try { E.keepReviewedPackage(plan, E.createPlanReviewState(), { filter: 'skip', limit: 1 }); }
 catch { threw = true; }
