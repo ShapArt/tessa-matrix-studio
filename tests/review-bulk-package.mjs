@@ -60,6 +60,16 @@ assert(!firstThree.excludedRows.has(E.planReviewActionKey(plan.actions[1])), 'se
 assert(!firstThree.excludedRows.has(E.planReviewActionKey(plan.actions[2])), 'third operation must stay enabled');
 assert(firstThree.excludedRows.has(E.planReviewActionKey(plan.actions[3])), 'fourth operation must be excluded');
 
+// Package selection is rendered inside the same toolbar as Preview search. The action set
+// must therefore match what the user can currently see, not merely the type filter.
+const searched = E.keepReviewedPackage(plan, E.createPlanReviewState(), { filter: 'add', query: 'ADD-23', limit: 1 });
+assert(!searched.excludedRows.has(E.planReviewActionKey(plan.actions[5])), 'the searched ADD-23 row must stay enabled');
+for (const [index, candidate] of plan.actions.entries()) {
+  if (index === 5) continue;
+  assert(searched.excludedRows.has(E.planReviewActionKey(candidate)), `non-matching action ${index} must be excluded by search-scoped package selection`);
+}
+assert(code.includes('query: APP.previewView.query'), 'Preview package UI must pass the active search query to package selection');
+
 const zero = E.keepReviewedPackage(plan, E.createPlanReviewState(), { filter: 'add', limit: 0 });
 assert(zero.excludedRows.size === plan.actions.length, `limit 0 must exclude all ${plan.actions.length} actions`);
 
