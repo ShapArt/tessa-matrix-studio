@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.32
+// @version      1.9.33
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.32',
+    version: '1.9.33',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -233,6 +233,39 @@
 
   function requestApplyAbort() {
     APP.abortRequested = true;
+  }
+
+  function preflightAbortError() {
+    const error = new Error('Предварительная проверка остановлена пользователем.');
+    error.code = 'TMS_PREFLIGHT_ABORTED';
+    return error;
+  }
+
+  function isPreflightAbortError(error) {
+    return error?.code === 'TMS_PREFLIGHT_ABORTED';
+  }
+
+  /**
+   * TESSA internal promises do not expose AbortSignal. During read-only preflight we can
+   * still stop waiting immediately and refuse to schedule further checks. The underlying
+   * already-started request may finish later, but no Store/Delete is allowed from it.
+   */
+  async function awaitPreflightAbortable(promise) {
+    if (APP.abortRequested) throw preflightAbortError();
+    let timer = null;
+    const abortPromise = new Promise((_, reject) => {
+      timer = setInterval(() => {
+        if (!APP.abortRequested) return;
+        if (timer !== null) clearInterval(timer);
+        timer = null;
+        reject(preflightAbortError());
+      }, 25);
+    });
+    try {
+      return await Promise.race([Promise.resolve(promise), abortPromise]);
+    } finally {
+      if (timer !== null) clearInterval(timer);
+    }
   }
 
   /**
@@ -5268,11 +5301,11 @@
     const skipServerAddValidation = Boolean(previewPolicy.skipServerAddValidation);
     preflightProgress(10, 'Предварительная проверка', 'Перечитываю матрицу перед записью');
     if (plan?.safety?.blocked) throw new Error(`Файл нельзя применить: ${plan.safety.blockedReasons.join(' ')}`);
-    const bridge = options.bridge || await TessaBridge.create();
+    const bridge = options.bridge || await awaitPreflightAbortable(TessaBridge.create());
     assertWritableMatrixDraft(bridge);
     if (!previewOnly) assertNativeEditMode();
-    const structure = options.structure || await bridge.requestStructure(bridge.templateId());
-    const fresh = options.fresh || await bridge.loadSnapshot(structure);
+    const structure = options.structure || await awaitPreflightAbortable(bridge.requestStructure(bridge.templateId()));
+    const fresh = options.fresh || await awaitPreflightAbortable(bridge.loadSnapshot(structure));
     preflightProgress(18, 'Сверяю актуальное состояние', `${fresh.rows.length} строк в TESSA`);
     if (fresh.matrixId !== plan.matrixId) throw new Error('Открыта другая матрица. Нажмите «Проверить изменения» ещё раз.');
     const freshByVersion = new Map(fresh.rows.map(row => [canonicalValue(row.versionId), row]));
@@ -5307,6 +5340,7 @@
 
     // UPDATE: каждая строка проверяется независимо. Ошибка одной строки не отменяет пакет.
     for (const action of plan.actions.filter(x => x.type === 'update')) {
+      if (APP.abortRequested) throw preflightAbortError();
       try {
         const current = freshByVersion.get(canonicalValue(action.currentRow.versionId));
         if (!current) throw new Error(`Строка ${action.currentRow.versionId} исчезла после предпросмотра.`);
@@ -5329,7 +5363,7 @@
           }
         }
 
-        await hydrateMissingIdsForAction(action, structure, fresh, bridge);
+        await awaitPreflightAbortable(hydrateMissingIdsForAction(action, structure, fresh, bridge));
         for (const condition of structure.conditions) {
           const column = action.excelRow.columns.get(condition.criterionRowId);
           if (!column) continue;
@@ -5346,11 +5380,12 @@
           displays.forEach((display, i) => { bridge.resolveRole(fn, display, ids[i] || null, fresh); roleCount += 1; });
         }
         if (!roleCount) throw new Error(`В строке Excel ${action.excelRow.excelRow} после изменений не останется исполнителей.`);
-        const card = await bridge.getCard(current.rowCardId);
+        const card = await awaitPreflightAbortable(bridge.getCard(current.rowCardId));
         bridge.rebuildRowCard(card, current.versionId, action.excelRow, structure, fresh);
-        await bridge.validateDuplicate(card, current.versionId);
+        await awaitPreflightAbortable(bridge.validateDuplicate(card, current.versionId));
         preparedUpdates.set(action.excelRow.excelRow, { action, card, current });
       } catch (error) {
+        if (isPreflightAbortError(error)) throw error;
         const excelRow = Number(action.excelRow?.excelRow);
         if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
         runtimeSkippedActions.add(action);
@@ -5380,6 +5415,7 @@
     }
 
     const validateAddAction = async action => {
+      if (APP.abortRequested) throw preflightAbortError();
       try {
         if (!skipServerAddValidation && createCapabilityError) throw createCapabilityError;
         if (action.match?.matchedBy === 'copied-row-auto-add') {
@@ -5394,7 +5430,7 @@
             throw new Error(`Исходная строка Excel ${action.excelRow.excelRow} изменилась в TESSA после предпросмотра.`);
           }
         }
-        await hydrateMissingIdsForAction(action, structure, fresh, bridge);
+        await awaitPreflightAbortable(hydrateMissingIdsForAction(action, structure, fresh, bridge));
         for (const condition of structure.conditions) {
           const column = action.excelRow.columns.get(condition.criterionRowId);
           if (!column) continue;
@@ -5412,12 +5448,13 @@
         }
         if (!roleCount) throw new Error(`В строке Excel ${action.excelRow.excelRow} не указан ни один исполнитель.`);
         if (skipServerAddValidation) return { action, prepared: { action, previewLocalOnly: true } };
-        const created = await bridge.createRowCard(structure.templateId);
+        const created = await awaitPreflightAbortable(bridge.createRowCard(structure.templateId));
         log(`Подготавливаю новую строку Excel ${action.excelRow.excelRow} через CardService.${created.newMethod}`);
         bridge.rebuildRowCard(created.card, created.versionId, action.excelRow, structure, fresh);
-        await bridge.validateDuplicate(created.card, created.versionId);
+        await awaitPreflightAbortable(bridge.validateDuplicate(created.card, created.versionId));
         return { action, prepared: { action, ...created } };
       } catch (error) {
+        if (isPreflightAbortError(error)) throw error;
         return { action, error };
       }
     };
@@ -5480,6 +5517,7 @@
 
     // DELETE тоже проверяется по fingerprint отдельно.
     for (const action of plan.actions.filter(x => x.type === 'delete')) {
+      if (APP.abortRequested) throw preflightAbortError();
       try {
         const current = freshByVersion.get(canonicalValue(action.currentRow.versionId));
         if (!current) throw new Error(`Строка ${action.currentRow.versionId} исчезла после предпросмотра.`);
@@ -5495,6 +5533,8 @@
         runtimeSkips.push(runtimeSkip(action, error, 'preflight-delete'));
       }
     }
+
+    if (APP.abortRequested) throw preflightAbortError();
 
     preflightProgress(42,
       skipServerAddValidation ? 'Быстрый Preview завершён' : 'Предварительная проверка завершена',
@@ -5592,7 +5632,41 @@
     const ok = window.confirm(`Применить корректные изменения к TESSA?\n\nИзменить: ${c.update}\nДобавить: ${c.add}\nУдалить: ${c.delete}\nПропустить: ${c.skip || 0}\n\nОшибочные строки не будут применены.`);
     if (!ok) return null;
     APP.abortRequested = false;
-    const { bridge, structure, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips } = await preflightPlan(plan);
+    let preflight;
+    try {
+      preflight = await preflightPlan(plan);
+    } catch (error) {
+      if (!isPreflightAbortError(error)) throw error;
+      const result = {
+        planId: plan.id,
+        startedAt: nowIso(),
+        finishedAt: nowIso(),
+        rows: [],
+        skipped: [...(plan.skippedRows || [])],
+        success: false,
+        partial: true,
+        status: 'cancelled',
+        cancelled: true,
+        sourceSkippedCount: (plan.skippedRows || []).length,
+        preflightSkippedCount: 0,
+        requestedCount: executable.length,
+        plannedCount: executable.length,
+        startedCount: 0,
+        appliedCount: 0,
+        skippedCount: 0,
+        storeSkippedCount: 0,
+        failedCount: 0,
+        notStartedCount: executable.length,
+        verificationIncomplete: false,
+        refreshError: null,
+      };
+      finalizeApplyResult(result, { cancelled: true });
+      log(`Предварительная проверка остановлена. Запись в TESSA не начиналась; не начато: ${result.notStartedCount}.`, 'warn');
+      downloadJson(result, `TESSA_Matrix_Apply_${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+      setProgress(100, 'Применение остановлено', `Запись не начиналась · не начато: ${result.notStartedCount}`);
+      return result;
+    }
+    const { bridge, structure, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips } = preflight;
     const totalToStore = preparedUpdates.size + preparedAdds.size + readyDeletes.length;
     let storedCount = 0;
     const tickStoreProgress = label => {
