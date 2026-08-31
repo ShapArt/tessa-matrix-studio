@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# Triggered after the workflow exists; deterministic one-shot patch.
 p = Path('tessa-matrix-studio.user.js')
 s = p.read_text(encoding='utf-8')
 old = """    setProgress(96, cancelled ? 'Фиксирую остановленную операцию' : 'Обновляю карточку TESSA', 'Получаю итоговое состояние');\n    try {\n      await bridge.refresh();\n    } catch (error) {\n      result.refreshError = String(error?.message || error || 'Не удалось обновить карточку TESSA после записи.');\n      result.verificationIncomplete = true;\n      log(`Изменения записаны, но итоговое обновление карточки TESSA завершилось ошибкой: ${result.refreshError}`, 'warn', error);\n    }\n    result.finishedAt = nowIso();\n"""
