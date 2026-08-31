@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# Trigger after workflow creation; deterministic one-shot patch.
 p = Path('tessa-matrix-studio.user.js')
 s = p.read_text(encoding='utf-8')
 
