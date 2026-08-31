@@ -3,6 +3,7 @@ import fs from 'node:fs';
 const read = path => fs.readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const script = read('tessa-matrix-studio.user.js');
 const readme = read('README.md');
+const runbook = read('docs/PRODUCTION-RUNBOOK.md');
 const issue = read('.github/ISSUE_TEMPLATE/bug_report.yml');
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
@@ -16,6 +17,6 @@ assert(readme.includes('# Права и безопасность'), 'QA removal 
 assert(readme.includes('# Если что-то не работает'), 'QA removal must not delete troubleshooting');
 assert(readme.includes('Ссылка .user.js открылась как текст или установка не стартовала'), 'manual installation troubleshooting must remain');
 assert(!readme.includes('# Боевой UAT перед раздачей пользователям'), 'public README must not expose the internal manual UAT checklist');
-assert(readme.includes('baseline-ledger'), 'Roundtrip V6 baseline safety documentation must remain');
+assert(runbook.includes('baseline-ledger'), 'Roundtrip V6 baseline safety documentation must remain in the production runbook');
 
 console.log('TESSA Matrix Studio built-in QA generator removal contract: OK');
