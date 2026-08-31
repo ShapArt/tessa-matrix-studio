@@ -1,0 +1,30 @@
+name: Bump v1.9.38 userscript
+
+on:
+  push:
+    branches: [fix/v1.9.38-global-blocker-uat]
+    paths:
+      - '.github/scripts/bump_v1938.py'
+      - '.github/workflows/bump-v1938.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fix/v1.9.38-global-blocker-uat
+      - name: Bump userscript
+        run: python .github/scripts/bump_v1938.py
+      - name: Commit and remove temporary helper
+        shell: bash
+        run: |
+          rm -f .github/scripts/bump_v1938.py .github/workflows/bump-v1938.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tessa-matrix-studio.user.js .github/scripts/bump_v1938.py .github/workflows/bump-v1938.yml
+          git commit -m 'release: bump userscript to 1.9.38'
+          git push origin HEAD:fix/v1.9.38-global-blocker-uat
