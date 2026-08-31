@@ -1,0 +1,31 @@
+name: Apply selective review patch
+
+on:
+  push:
+    branches:
+      - feat/preprod-mega-uat-hardening
+    paths:
+      - .github/workflows/review-all-actions-patcher.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/preprod-mega-uat-hardening
+          fetch-depth: 0
+      - name: Apply patch
+        run: python3 scripts/patch_review_all_actions.py
+      - name: Commit patch and remove temporary runner
+        shell: bash
+        run: |
+          rm -f scripts/patch_review_all_actions.py .github/workflows/review-all-actions-patcher.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tessa-matrix-studio.user.js scripts/patch_review_all_actions.py .github/workflows/review-all-actions-patcher.yml
+          git commit -m 'feat: allow excluding ADD and DELETE in Preview'
+          git push origin HEAD:feat/preprod-mega-uat-hardening
