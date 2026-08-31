@@ -83,7 +83,9 @@
 
   const PERFORMANCE = Object.freeze({
     SnapshotCardGetConcurrency: 6,
+    PreflightAddConcurrency: 4,
     PreviewSnapshotTtlMs: 15 * 60 * 1000,
+    PreviewYieldDeadlineMs: 40,
     ZipConcurrency: 4,
   });
 
@@ -179,6 +181,55 @@
   ];
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const monotonicNow = () => Number(globalThis.performance?.now?.() ?? Date.now());
+
+  async function yieldToMain() {
+    if (globalThis.scheduler?.yield) {
+      await globalThis.scheduler.yield();
+      return;
+    }
+    await sleep(0);
+  }
+
+  function estimateRemainingMs({ completed, total, elapsedMs }) {
+    const done = Math.max(0, Number(completed) || 0);
+    const size = Math.max(0, Number(total) || 0);
+    const elapsed = Math.max(0, Number(elapsedMs) || 0);
+    if (!size || done <= 0 || elapsed <= 0) return null;
+    if (done >= size) return 0;
+    return Math.max(0, Math.round((elapsed / done) * (size - done)));
+  }
+
+  function formatEtaMs(ms) {
+    const value = Math.max(0, Number(ms) || 0);
+    if (value < 5000) return 'меньше 5 сек';
+    const totalSeconds = Math.max(1, Math.round(value / 1000));
+    if (totalSeconds < 60) return `${totalSeconds} сек`;
+    const totalMinutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (totalMinutes < 60) return seconds ? `${totalMinutes} мин ${seconds} сек` : `${totalMinutes} мин`;
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return minutes ? `${hours} ч ${minutes} мин` : `${hours} ч`;
+  }
+
+  function formatProgressCount(value) {
+    return String(Math.max(0, Math.trunc(Number(value) || 0))).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  }
+
+  function workProgressDetail({ completed, total, elapsedMs }) {
+    const done = Math.max(0, Number(completed) || 0);
+    const size = Math.max(0, Number(total) || 0);
+    const elapsed = Math.max(0, Number(elapsedMs) || 0);
+    let tail = 'оцениваю время…';
+    if (done >= size && size > 0) {
+      tail = 'готово';
+    } else if (done >= 5 && elapsed >= 500) {
+      const eta = estimateRemainingMs({ completed: done, total: size, elapsedMs: elapsed });
+      if (eta !== null) tail = `~${formatEtaMs(eta)} осталось`;
+    }
+    return `${formatProgressCount(done)} из ${formatProgressCount(size)} · ${tail}`;
+  }
 
   function requestApplyAbort() {
     APP.abortRequested = true;
@@ -5008,16 +5059,16 @@
   async function analyzeSelectedFile(file) {
     if (!file) throw new Error('Выберите файл .xlsx.');
     APP.abortRequested = false;
-    setProgress(8, 'Читаю Excel', file.name);
+    setProgress(5, '1/6 · Читаю Excel', file.name);
     log(`Читаю ${file.name}`);
     const workbook = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
-    setProgress(22, 'Excel прочитан', `${workbook.rows.length} строк данных`);
+    setProgress(18, '1/6 · Excel прочитан', `${workbook.rows.length} строк данных`);
     log(`Excel: ${workbook.headers.filter(Boolean).length} столбцов, ${workbook.rows.length} строк данных.`);
-    setProgress(30, 'Подключаюсь к TESSA', 'Проверяю открытую матрицу');
+    setProgress(22, '2/6 · Подключаюсь к TESSA', 'Проверяю открытую матрицу');
     const bridge = await TessaBridge.create();
     const templateId = bridge.templateId();
     if (!templateId) throw new Error('В карточке матрицы не найден TemplateID.');
-    setProgress(42, 'Читаю структуру TESSA', 'Критерии и функции');
+    setProgress(32, '3/6 · Читаю структуру TESSA', 'Критерии и функции');
     const structure = await bridge.requestStructure(templateId);
     log(`Структура TESSA: ${structure.conditions.length} критериев, ${structure.functions.length} функций.`);
     const cachedSnapshot = APP.snapshot;
@@ -5031,12 +5082,12 @@
     );
     // Обычный сценарий «скачал → изменил → проверил» не должен второй раз читать сотни карточек.
     // Перед Apply всё равно выполняется свежая серверная проверка, поэтому reuse безопасен для preview.
-    setProgress(canReuseSnapshot ? 58 : 52, canReuseSnapshot ? 'Использую свежий снимок' : 'Читаю строки TESSA', canReuseSnapshot ? 'Повторная загрузка не нужна' : 'Сверяю текущие строки');
+    setProgress(canReuseSnapshot ? 48 : 40, canReuseSnapshot ? '3/6 · Использую свежий снимок' : '3/6 · Читаю строки TESSA', canReuseSnapshot ? 'Повторная загрузка не нужна' : 'Сверяю текущие строки');
     const snapshot = canReuseSnapshot ? cachedSnapshot : await bridge.loadSnapshot(structure);
-    setProgress(72, 'Сопоставляю Excel и TESSA', `${snapshot.rows.length} строк в TESSA`);
+    setProgress(55, '4/6 · Сопоставляю Excel и TESSA', `${snapshot.rows.length} строк в TESSA`);
     log(`Текущее состояние TESSA: ${snapshot.rows.length} строк${canReuseSnapshot ? ' (из текущей сессии)' : ''}.`);
     const plan = buildPlan(workbook, structure, snapshot);
-    setProgress(88, 'Проверяю безопасность', 'Дубли, права, удаления и неоднозначности');
+    setProgress(62, '5/6 · Проверяю безопасность', 'Дубли, права, удаления и неоднозначности');
     plan.safety = evaluatePlanSafety(plan, bridge);
     plan.matrixInfo = plan.safety.matrixInfo;
     if (plan.safety.blocked) {
@@ -5053,8 +5104,17 @@
     }
     let previewPlan = plan;
     if (!plan.safety.blocked && plan.actions.some(action => action.type !== 'noop')) {
-      setProgress(92, 'Проверяю применимость', 'Справочники, дубли и зависимости перед Apply');
-      const previewPreflight = await preflightPlan(plan, { previewOnly: true, bridge, structure });
+      const previewPolicy = previewPreflightPolicy(plan.actions);
+      if (previewPolicy.skipServerAddValidation) log(previewPolicy.reason, 'warn');
+      const previewProgress = (phasePercent, label, detail = '') => {
+        const bounded = Math.max(10, Math.min(42, Number(phasePercent) || 10));
+        const percent = 70 + Math.round(((bounded - 10) / 32) * 28);
+        setProgress(percent, `6/6 · ${label}`, detail);
+      };
+      setProgress(70, '6/6 · Проверяю применимость', previewPolicy.skipServerAddValidation
+        ? 'Большой пакет: быстрый локальный Preview без тысяч лишних CardNew/duplicate запросов'
+        : 'Справочники, дубли и зависимости перед Apply');
+      const previewPreflight = await preflightPlan(plan, { previewOnly: true, bridge, structure, onProgress: previewProgress });
       previewPlan = applyPreflightPreview(plan, previewPreflight);
       if (previewPlan.preflightPreview.runtimeSkipCount) {
         log(`Предварительная проверка: ${previewPlan.preflightPreview.runtimeSkipCount} операций заранее переведены в ПРОПУСТИТЬ.`, 'warn');
@@ -5170,6 +5230,8 @@
     if (runtimeSkipCount) {
       warnings.push(`Предварительная проверка до Apply: ${runtimeSkipCount} операций переведены в ПРОПУСТИТЬ. Причины показаны выше.`);
     }
+    const serverAddValidationSkipped = Boolean(preflight?.previewPolicy?.skipServerAddValidation);
+    if (serverAddValidationSkipped && preflight?.previewPolicy?.reason) warnings.push(preflight.previewPolicy.reason);
     return {
       ...plan,
       actions,
@@ -5181,6 +5243,8 @@
         runtimeSkipCount,
         attemptedCount: (plan.actions || []).filter(action => action.type !== 'noop').length,
         executableCount: actions.filter(action => action.type !== 'noop').length,
+        serverAddValidationSkipped,
+        applyBlockedByBatch: Boolean(preflight?.previewPolicy?.applyBlocked),
         validatedAt: nowIso(),
       },
     };
@@ -5188,7 +5252,13 @@
 
   async function preflightPlan(plan, options = {}) {
     const previewOnly = Boolean(options.previewOnly);
-    const preflightProgress = previewOnly ? () => {} : setProgress;
+    const preflightProgress = typeof options.onProgress === 'function'
+      ? options.onProgress
+      : (previewOnly ? () => {} : setProgress);
+    const previewPolicy = previewOnly
+      ? previewPreflightPolicy(plan?.actions || [])
+      : { applyBlocked: false, skipServerAddValidation: false, reason: null };
+    const skipServerAddValidation = Boolean(previewPolicy.skipServerAddValidation);
     preflightProgress(10, 'Предварительная проверка', 'Перечитываю матрицу перед записью');
     if (plan?.safety?.blocked) throw new Error(`Файл нельзя применить: ${plan.safety.blockedReasons.join(' ')}`);
     const bridge = options.bridge || await TessaBridge.create();
@@ -5283,19 +5353,21 @@
 
     preflightProgress(28, 'Проверяю изменяемые строки', `Проверено: ${plan.actions.filter(x => x.type === 'update').length}`);
 
-    // ADD: если конкретная новая строка не проходит справочник/дубликат/тип — пропускаем её.
+    // ADD: локальные справочники/типы проверяются всегда. Серверный CardNew +
+    // ValidateDuplicate нужен для применяемых пакетов, но для Preview >2000 он только
+    // создаёт тысячи сетевых запросов к пакету, который всё равно нельзя Apply.
     const addActions = plan.actions.filter(x => x.type === 'add');
     let createCapabilityError = null;
-    if (addActions.length) {
+    if (addActions.length && !skipServerAddValidation) {
       try { bridge.assertCanCreateRows(); } catch (error) { createCapabilityError = error; }
     }
-    for (const action of addActions) {
-      try {
-        if (createCapabilityError) throw createCapabilityError;
+    const addStartedAt = monotonicNow();
+    let completedAdds = 0;
+    let lastYieldAt = addStartedAt;
 
-        // copied-row-auto-add создаёт новую identity, но данные пришли из существующей
-        // source-строки. Source мог измениться уже после Preview, поэтому provenance
-        // сохраняется в match и повторно сверяется непосредственно перед CardNew.
+    const validateAddAction = async action => {
+      try {
+        if (!skipServerAddValidation && createCapabilityError) throw createCapabilityError;
         if (action.match?.matchedBy === 'copied-row-auto-add') {
           const sourceVersionId = canonicalValue(action.match.sourceVersionId || '');
           const sourceRowCardId = canonicalValue(action.match.sourceRowCardId || '');
@@ -5308,7 +5380,6 @@
             throw new Error(`Исходная строка Excel ${action.excelRow.excelRow} изменилась в TESSA после предпросмотра.`);
           }
         }
-
         await hydrateMissingIdsForAction(action, structure, fresh, bridge);
         for (const condition of structure.conditions) {
           const column = action.excelRow.columns.get(condition.criterionRowId);
@@ -5326,20 +5397,59 @@
           displays.forEach((display, i) => { bridge.resolveRole(fn, display, ids[i] || null, fresh); roleCount += 1; });
         }
         if (!roleCount) throw new Error(`В строке Excel ${action.excelRow.excelRow} не указан ни один исполнитель.`);
+        if (skipServerAddValidation) return { action, prepared: { action, previewLocalOnly: true } };
         const created = await bridge.createRowCard(structure.templateId);
         log(`Подготавливаю новую строку Excel ${action.excelRow.excelRow} через CardService.${created.newMethod}`);
         bridge.rebuildRowCard(created.card, created.versionId, action.excelRow, structure, fresh);
         await bridge.validateDuplicate(created.card, created.versionId);
-        preparedAdds.set(action.excelRow.excelRow, { action, ...created });
+        return { action, prepared: { action, ...created } };
       } catch (error) {
-        const excelRow = Number(action.excelRow?.excelRow);
-        if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
-        runtimeSkippedActions.add(action);
-        runtimeSkips.push(runtimeSkip(action, error, 'preflight-add'));
+        return { action, error };
       }
+    };
+
+    const recordAddResult = result => {
+      if (!result?.error) {
+        preparedAdds.set(result.action.excelRow.excelRow, result.prepared);
+        return;
+      }
+      const excelRow = Number(result.action?.excelRow?.excelRow);
+      if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
+      runtimeSkippedActions.add(result.action);
+      runtimeSkips.push(runtimeSkip(result.action, result.error, 'preflight-add'));
+    };
+
+    const reportAddProgress = () => {
+      completedAdds += 1;
+      const elapsedMs = Math.max(0, monotonicNow() - addStartedAt);
+      const percent = addActions.length ? 28 + Math.round((completedAdds / addActions.length) * 8) : 36;
+      preflightProgress(percent,
+        skipServerAddValidation ? 'Быстрый Preview новых строк' : 'Проверяю новые строки',
+        workProgressDetail({ completed: completedAdds, total: addActions.length, elapsedMs }));
+    };
+
+    if (skipServerAddValidation) {
+      for (const action of addActions) {
+        recordAddResult(await validateAddAction(action));
+        reportAddProgress();
+        const current = monotonicNow();
+        if (current - lastYieldAt >= PERFORMANCE.PreviewYieldDeadlineMs) {
+          await yieldToMain();
+          lastYieldAt = monotonicNow();
+        }
+      }
+    } else {
+      const results = await mapConcurrent(addActions, PERFORMANCE.PreflightAddConcurrency, async action => {
+        const result = await validateAddAction(action);
+        reportAddProgress();
+        return result;
+      });
+      results.forEach(recordAddResult);
     }
 
-    preflightProgress(36, 'Проверяю новые строки', `Проверено: ${plan.actions.filter(x => x.type === 'add').length}`);
+    preflightProgress(36,
+      skipServerAddValidation ? 'Быстрый Preview новых строк завершён' : 'Проверяю новые строки',
+      workProgressDetail({ completed: addActions.length, total: addActions.length, elapsedMs: Math.max(0, monotonicNow() - addStartedAt) }));
 
     // DELETE тоже проверяется по fingerprint отдельно.
     for (const action of plan.actions.filter(x => x.type === 'delete')) {
@@ -5359,8 +5469,12 @@
       }
     }
 
-    preflightProgress(42, 'Предварительная проверка завершена', `Готово к записи: ${preparedUpdates.size + preparedAdds.size + readyDeletes.length}`);
-    return { bridge, structure, fresh, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips, runtimeSkippedActions };
+    preflightProgress(42,
+      skipServerAddValidation ? 'Быстрый Preview завершён' : 'Предварительная проверка завершена',
+      skipServerAddValidation
+        ? `Локально проверено: ${preparedUpdates.size + preparedAdds.size + readyDeletes.length} · глубокая ADD-проверка будет после разделения пакета`
+        : `Готово к записи: ${preparedUpdates.size + preparedAdds.size + readyDeletes.length}`);
+    return { bridge, structure, fresh, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips, runtimeSkippedActions, previewPolicy };
   }
 
   /**
@@ -5378,6 +5492,15 @@
         ? `Большой пакет: ${count} операций. Перед продолжением дополнительно проверьте Preview и подтвердите массовое применение.`
         : null;
     return { count, warning, blocked, reason };
+  }
+
+  function previewPreflightPolicy(actions) {
+    const batch = evaluateApplyBatch(actions);
+    const skipServerAddValidation = Boolean(batch.blocked);
+    const reason = skipServerAddValidation
+      ? `Большой локальный Preview: ${batch.count} операций. Пакет всё равно заблокирован для Apply (>2000), поэтому тысячи CardNew/duplicate-запросов для ADD в Preview не выполняются. Разделите пакет до 2000 операций — каждая применяемая часть пройдёт глубокую серверную проверку перед записью.`
+      : null;
+    return { applyBlocked: batch.blocked, skipServerAddValidation, count: batch.count, reason };
   }
 
   /**
@@ -6033,11 +6156,11 @@
   }
 
   window.__TESSA_MATRIX_SYNC_EXPORTS__ = {
-    normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent,
+    normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, mergeWorkbookIntoCurrentSnapshot, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
-    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch, finalizeApplyResult, applyResultMessage,
+    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch, previewPreflightPolicy, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
