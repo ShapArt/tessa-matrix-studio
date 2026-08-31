@@ -5371,6 +5371,13 @@
     const addStartedAt = monotonicNow();
     let completedAdds = 0;
     let lastYieldAt = addStartedAt;
+    const addProgressLabel = skipServerAddValidation ? 'Быстрый Preview новых строк' : 'Проверяю новые строки';
+    if (addActions.length) {
+      preflightProgress(29, addProgressLabel,
+        skipServerAddValidation
+          ? `0 из ${formatProgressCount(addActions.length)} · локальная проверка`
+          : `0 из ${formatProgressCount(addActions.length)} · жду ответ TESSA`);
+    }
 
     const validateAddAction = async action => {
       try {
@@ -5429,9 +5436,8 @@
     const reportAddProgress = () => {
       completedAdds += 1;
       const elapsedMs = Math.max(0, monotonicNow() - addStartedAt);
-      const percent = addActions.length ? 28 + Math.round((completedAdds / addActions.length) * 8) : 36;
-      preflightProgress(percent,
-        skipServerAddValidation ? 'Быстрый Preview новых строк' : 'Проверяю новые строки',
+      const percent = addActions.length ? 29 + Math.round((completedAdds / addActions.length) * 7) : 36;
+      preflightProgress(percent, addProgressLabel,
         workProgressDetail({ completed: completedAdds, total: addActions.length, elapsedMs }));
     };
 
@@ -5446,12 +5452,26 @@
         }
       }
     } else {
-      const results = await mapConcurrent(addActions, PERFORMANCE.PreflightAddConcurrency, async action => {
-        const result = await validateAddAction(action);
-        reportAddProgress();
-        return result;
-      });
-      results.forEach(recordAddResult);
+      let heartbeatTimer = null;
+      if (addActions.length) {
+        heartbeatTimer = setInterval(() => {
+          const elapsedMs = Math.max(0, monotonicNow() - addStartedAt);
+          const elapsedSeconds = Math.max(1, Math.floor(elapsedMs / 1000));
+          const percent = 29 + Math.round((completedAdds / addActions.length) * 7);
+          preflightProgress(percent, addProgressLabel,
+            `${formatProgressCount(completedAdds)} из ${formatProgressCount(addActions.length)} · жду ответ TESSA · прошло ${elapsedSeconds} сек`);
+        }, 1000);
+      }
+      try {
+        const results = await mapConcurrent(addActions, PERFORMANCE.PreflightAddConcurrency, async action => {
+          const result = await validateAddAction(action);
+          reportAddProgress();
+          return result;
+        });
+        results.forEach(recordAddResult);
+      } finally {
+        if (heartbeatTimer !== null) clearInterval(heartbeatTimer);
+      }
     }
 
     preflightProgress(36,
@@ -5571,8 +5591,6 @@
     const c = plan.counts;
     const ok = window.confirm(`Применить корректные изменения к TESSA?\n\nИзменить: ${c.update}\nДобавить: ${c.add}\nУдалить: ${c.delete}\nПропустить: ${c.skip || 0}\n\nОшибочные строки не будут применены.`);
     if (!ok) return null;
-    if (c.delete && !window.confirm(`Будет удалено строк: ${c.delete}. Подтвердите удаление отдельно.`)) return null;
-
     APP.abortRequested = false;
     const { bridge, structure, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips } = await preflightPlan(plan);
     const totalToStore = preparedUpdates.size + preparedAdds.size + readyDeletes.length;
