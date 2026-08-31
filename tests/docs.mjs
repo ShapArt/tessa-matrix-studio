@@ -9,6 +9,7 @@ const assert = (condition, message) => {
 const script = read('tessa-matrix-studio.user.js');
 const readme = read('README.md');
 const changelog = read('CHANGELOG.md');
+const runbook = read('docs/PRODUCTION-RUNBOOK.md');
 const bugTemplate = read('.github/ISSUE_TEMPLATE/bug_report.yml');
 const pkg = JSON.parse(read('package.json'));
 
@@ -43,7 +44,8 @@ assert(readme.includes('Tampermonkey → Dashboard / Панель управле
 assert(readme.includes('Utilities / Сервис'), 'README lost Tampermonkey Utilities fallback');
 assert(readme.includes('В разделе **URL** вставьте:'), 'README lost manual URL import field');
 
-assert(readme.includes('baseline-ledger'), 'README must explain the V6 baseline ledger used for DELETE/integrity safety');
+assert(readme.includes('CHANGELOG.md') && readme.includes('docs/PRODUCTION-RUNBOOK.md'), 'README must link to deep technical safety documentation');
+assert(changelog.includes('baseline-ledger') || runbook.includes('Roundtrip V6'), 'deep docs must explain the V6 baseline safety model');
 assert(!readme.includes('# Боевой UAT перед раздачей пользователям'), 'public README must not contain the internal pre-release UAT block');
 assert(!readme.includes('Стоп-критерии'), 'public README must not contain the removed UAT stop-criteria block');
 
