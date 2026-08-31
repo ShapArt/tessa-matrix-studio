@@ -1,16 +1,14 @@
 # TESSA Matrix Studio v1.9.37 — Gold Candidate
 
-Status document for PR #46. Release authority is the exact PR head and its latest `Quality & Security` run.
+Status document for PR #46. Release authority is always the **latest PR head** and its latest `Quality & Security` run. Do not treat a SHA copied into documentation as release authority, because editing this file creates a new commit.
 
-## Exact automated evidence
+## Automated gates
 
-- Candidate head: `8864df4fd4faeb144357591378ac3cef8383033d`.
-- Quality & Security run: `33384630549`.
-- Tests: success.
-- CodeQL: success.
-- Existing large Preview/package-builder, destructive guards, cancellation/result accounting, XLSX security, race guards, legacy/load/high-cardinality regressions remain green.
-- `apply-refresh-failure-result.mjs`: successful Store does not force `editor.refreshCard()` / native matrix-view reload.
-- `apply-report-opt-in.mjs`: Apply/ErrorReport JSON is not automatically downloaded; manual report download remains available.
+The latest PR head must have both **Tests = success** and **CodeQL = success** immediately before integration. The v1.9.37 suite additionally fixes these contracts:
+
+- existing large Preview/package-builder, destructive guards, cancellation/result accounting, XLSX security, race guards, legacy/load/high-cardinality regressions remain green;
+- `apply-refresh-failure-result.mjs`: successful Store does not force `editor.refreshCard()` / native matrix-view reload;
+- `apply-report-opt-in.mjs`: Apply/ErrorReport JSON is not automatically downloaded; manual report download remains available;
 - `apply-plan-consumed.mjs`: any started mutation consumes the old plan/snapshot/bridge; a pre-write cancellation keeps the safe reviewed plan.
 
 ## Live evidence that produced v1.9.37
