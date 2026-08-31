@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.9.38 — 2026-08-31
+
+- live UAT выявил шумный UX при глобальной несовместимости Excel: файл от другой карточки матрицы корректно блокировался, но Preview дополнительно показывал тысячи нерелевантных row-level `ПРОПУСТИТЬ`;
+- global context blockers (другая MatrixID/TemplateID, неподходящий контекст или иная причина `suppressUnsafePreview`) теперь скрывают executable actions и row-level SKIP из пользовательского Preview, оставляя одну глобальную причину блокировки;
+- исходные candidate actions/counts/skippedRows сохраняются отдельно для диагностики, поэтому подавление шума не теряет технические данные и не ослабляет safety;
+- добавлен RED→GREEN regression `global-context-suppression.mjs`; стратегия UAT переведена с искусственных тысяч однотипных ADD на компактное покрытие пользовательских сценариев и граничных классов.
+
 ## 1.9.37 — 2026-08-31
 
 - живой Apply подтвердил успешную запись 13/13 операций, но после Store нативный `TestMatrixView / MtxRouteMatrixDummyView` дважды показывал HTTP 400 `ObtainWriterLock for MatrixRow.WriteHeartbit...`;
