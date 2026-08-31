@@ -5,6 +5,7 @@ const code = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.me
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
 assert(code.includes('// @version      1.9.34'), 'self-closing row fix must ship as userscript v1.9.34');
+assert(code.includes("const body = rowMatch[2] || '';"), 'self-closing row body must fall back to an empty string');
 // Keep the documented production ceilings under regression control. Runtime tests below
 // use tiny Node-only overrides so pathological cases stay fast in CI.
 assert(code.includes('MaxRowNumber: 100000'), 'production SpreadsheetML row ceiling drifted from 100000');
@@ -41,23 +42,18 @@ function expectRejected(xml, expected, label) {
   throw new Error(`${label}: unsafe SpreadsheetML was accepted`);
 }
 
-// Product ceiling: a small XML must not be able to create a 100k+ sparse row array.
 expectRejected(
   worksheet('<row r="100001"><c r="A100001" t="str"><v>x</v></c></row>'),
   /XLSX отклонён.*строк|номер строки|100.?000/i,
   'row-number-ceiling',
 );
 
-// An implicit row after an explicit row at the ceiling must not bypass MaxRowNumber.
-// The implicit cell reference is intentionally omitted too, so the row fallback itself is tested.
 expectRejected(
   worksheet('<row r="10"><c r="A10" t="str"><v>x</v></c></row><row><c t="str"><v>y</v></c></row>'),
   /XLSX отклонён.*номер строки|безопасн.*лимит|строк.*10/i,
   'implicit-row-ceiling',
 );
 
-// Sparse coordinates may increase Array.length, but missing rows must remain holes rather than
-// allocating one empty Array per absent row. This specifically guards memory amplification from gaps.
 const sparse = E.parseSheetXml(worksheet('<row r="10"><c r="A10" t="str"><v>x</v></c></row>'), []);
 assert(sparse.rows.length === 10, `sparse row index was not preserved: length=${sparse.rows.length}`);
 assert(Object.keys(sparse.rows).length === 1 && sparse.rows[9]?.[0] === 'x', `sparse gaps were materialized: keys=${Object.keys(sparse.rows).length}`);
@@ -72,14 +68,12 @@ assert(selfClosingRow.rows.length === 3, `self-closing row was not preserved: le
 assert(Array.isArray(selfClosingRow.rows[1]) && selfClosingRow.rows[1].length === 0, 'self-closing row 2 must parse as an empty row');
 assert(selfClosingRow.rows[2]?.[0] === 'header', `row after self-closing row shifted/corrupted: ${JSON.stringify(selfClosingRow.rows[2])}`);
 
-// Excel itself ends at XFD (16,384 columns); XFE must never be materialized.
 expectRejected(
   worksheet('<row r="1"><c r="XFE1" t="str"><v>x</v></c></row>'),
   /XLSX отклонён.*столб|XFD|16.?384/i,
   'column-ceiling',
 );
 
-// A malicious XML can repeat many physical <row> nodes even when row numbers stay small.
 const repeatedRows = Array.from({ length: 9 }, (_, index) => `<row r="${index + 1}"><c r="A${index + 1}" t="str"><v>x</v></c></row>`).join('');
 expectRejected(
   worksheet(repeatedRows),
@@ -87,7 +81,6 @@ expectRejected(
   'parsed-row-count',
 );
 
-// Likewise cap the number of parsed cells independently of column/row coordinates.
 globalThis.__TESSA_MATRIX_SYNC_TEST_SPREADSHEET_LIMITS__.MaxRowNumber = 100;
 globalThis.__TESSA_MATRIX_SYNC_TEST_SPREADSHEET_LIMITS__.MaxParsedRows = 100;
 const excessiveCells = Array.from({ length: 17 }, (_, index) => {
@@ -100,7 +93,6 @@ expectRejected(
   'parsed-cell-count',
 );
 
-// Ambiguous physical coordinates are rejected instead of silently overwriting data.
 expectRejected(
   worksheet('<row r="1"><c r="A1" t="str"><v>a</v></c><c r="A1" t="str"><v>b</v></c></row>'),
   /XLSX отклонён.*дублирующ.*яче|повтор.*координат/i,
@@ -112,14 +104,13 @@ expectRejected(
   'duplicate-row-number',
 );
 
-// Cell row reference must agree with its enclosing <row r="...">.
+// A genuine mismatch must still fail closed after adding self-closing-row support.
 expectRejected(
   worksheet('<row r="2"><c r="A3" t="str"><v>x</v></c></row>'),
   /XLSX отклонён.*координат.*строк|A3.*2/i,
   'cell-row-mismatch',
 );
 
-// Malformed / zero references fail closed instead of falling back to A1.
 expectRejected(
   worksheet('<row r="1"><c r="A0" t="str"><v>x</v></c></row>'),
   /XLSX отклонён.*координат|A0/i,
