@@ -1,0 +1,30 @@
+name: Apply bulk package review patch
+
+on:
+  push:
+    branches:
+      - feat/preprod-mega-uat-hardening
+    paths:
+      - .github/workflows/preprod-bulk-package-patcher.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/preprod-mega-uat-hardening
+          fetch-depth: 0
+      - name: Patch userscript
+        run: python3 scripts/patch_bulk_review_package.py
+      - name: Commit source and remove patcher
+        run: |
+          rm scripts/patch_bulk_review_package.py .github/workflows/preprod-bulk-package-patcher.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js scripts/patch_bulk_review_package.py .github/workflows/preprod-bulk-package-patcher.yml
+          git commit -m "feat: add bulk reviewed Apply packages"
+          git push origin HEAD:feat/preprod-mega-uat-hardening
