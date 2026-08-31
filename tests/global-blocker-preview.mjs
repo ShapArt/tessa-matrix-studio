@@ -40,7 +40,11 @@ assert(result.counts.update === 0 && result.counts.add === 0 && result.counts.de
   `visible counts must be zero after global blocker: ${JSON.stringify(result.counts)}`);
 assert(result.candidateActions.length === 2000, 'candidate actions must remain available for diagnostics');
 assert(result.candidateSkippedRows.length === 2130, 'candidate row issues must remain available for diagnostics');
-assert(result.candidateCounts.skip === 2130, 'candidate counts must preserve original diagnostics');
+assert(result.candidateCounts.update === 3 && result.candidateCounts.add === 1996 && result.candidateCounts.delete === 1
+  && result.candidateCounts.noop === 127 && result.candidateCounts.skip === 2130,
+  `candidate counts must preserve the full hidden diagnostic picture: ${JSON.stringify(result.candidateCounts)}`);
+assert(result.safety.blocked === true && result.safety.suppressUnsafePreview === true,
+  'global safety blocker flags must remain intact after Preview suppression');
 assert(result.safety.blockedReasons.length === 1 && /другой карточке/.test(result.safety.blockedReasons[0]),
   'the single authoritative global blocker must be preserved');
 
