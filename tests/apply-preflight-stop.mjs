@@ -5,6 +5,8 @@ const code = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.me
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+assert(/^\/\/ @version\s+1\.9\.33$/m.test(code), 'this cancellation/delivery fix must ship under userscript @version 1.9.33');
+
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 globalThis.location = { origin: 'https://tessa.cherkizovsky.net' };
