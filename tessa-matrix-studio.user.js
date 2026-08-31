@@ -4806,10 +4806,17 @@
     if (!plan) return null;
     const state = review || createPlanReviewState();
     const actions = (plan.actions || []).map(action => {
-      if (action.type !== 'update') return action;
       const actionKey = planReviewActionKey(action);
+      const rowExcluded = Boolean(state.excludedRows?.has?.(actionKey));
+      // Whole-operation review is intentionally available for every mutation type.
+      // ADD/DELETE are atomic from the review UI perspective; UPDATE additionally
+      // supports per-field exclusions below.
+      if (rowExcluded && (action.type === 'add' || action.type === 'delete')) {
+        return { ...action, type: 'noop', changes: [], reviewExcluded: true, originalType: action.type };
+      }
+      if (action.type !== 'update') return action;
       const excludedKeys = new Set(reviewExcludedChanges(state, action));
-      if (state.excludedRows?.has?.(actionKey)) {
+      if (rowExcluded) {
         for (const change of action.changes || []) excludedKeys.add(change.key);
       }
       if (!excludedKeys.size) return action;
@@ -5859,21 +5866,25 @@
       const isReplacement = action.type === 'update' && isOverwriteMatch(action.match);
       const label = isReplacement ? 'ЗАМЕНИТЬ' : action.type === 'update' ? 'ИЗМЕНИТЬ' : action.type === 'add' ? 'ДОБАВИТЬ' : 'УДАЛИТЬ';
       const rowText = isReplacement ? `Excel ${action.excelRow.excelRow} → TESSA ${action.currentRow.index + 1}` : action.excelRow ? `Excel ${action.excelRow.excelRow}` : `TESSA ${action.currentRow.index + 1}`;
-      const rowExcluded = action.type === 'update' && Boolean(APP.review?.excludedRows?.has?.(actionKey));
+      const rowExcluded = Boolean(APP.review?.excludedRows?.has?.(actionKey));
+      const supportsWholeActionReview = action.type === 'update' || action.type === 'add' || action.type === 'delete';
       if (rowExcluded) item.classList.add('tms-review-row-excluded');
       item.innerHTML = `<summary><b>${label}</b> — ${rowText}${action.match?.lowConfidence ? ' ⚠' : ''}${rowExcluded ? ' · <span class="tms-review-state">не будет применено</span>' : ''}</summary>`;
       const body = document.createElement('div');
       body.className = 'tms-action-body';
+      const rowButtonLabel = action.type === 'update'
+        ? (rowExcluded ? 'Вернуть все изменения строки' : 'Не применять всю строку')
+        : (rowExcluded ? 'Вернуть операцию' : 'Не применять');
+      const rowReviewControl = supportsWholeActionReview ? `
+        <div class="tms-review-row-actions">
+          <button type="button" class="tms-review-btn tms-review-row-btn" data-review-action="${escapeHtml(actionKey)}" data-review-row="true" aria-pressed="${rowExcluded ? 'true' : 'false'}">${rowButtonLabel}</button>
+        </div>` : '';
 
       if (action.type === 'update') {
         const excludedChanges = reviewExcludedChanges(APP.review, action);
-        const rowButtonLabel = rowExcluded ? 'Вернуть все изменения строки' : 'Не применять всю строку';
         const rowsExcludedIndividually = (action.changes || []).filter(change => excludedChanges.has(change.key)).length;
-        body.innerHTML = `
-          <div class="tms-review-row-actions">
-            <button type="button" class="tms-review-btn tms-review-row-btn" data-review-action="${escapeHtml(actionKey)}" data-review-row="true" aria-pressed="${rowExcluded ? 'true' : 'false'}">${rowButtonLabel}</button>
-            ${!rowExcluded && rowsExcludedIndividually ? `<span class="tms-review-state">Не применяется полей: ${rowsExcludedIndividually}</span>` : ''}
-          </div>
+        body.innerHTML = `${rowReviewControl}
+          ${!rowExcluded && rowsExcludedIndividually ? `<div class="tms-review-state">Не применяется полей: ${rowsExcludedIndividually}</div>` : ''}
           ${(action.changes || []).map(change => {
             const individuallyExcluded = excludedChanges.has(change.key);
             const excluded = rowExcluded || individuallyExcluded;
@@ -5885,8 +5896,8 @@
               ${excluded ? '<div class="tms-review-state">Это изменение не будет применено</div>' : ''}
             </div>`;
           }).join('')}`;
-      } else if (action.type === 'add') body.innerHTML = flatToHtml(action.excelRow.flat, plan.columnMap);
-      else body.innerHTML = flatToHtml(action.currentRow.flat, plan.columnMap);
+      } else if (action.type === 'add') body.innerHTML = `${rowReviewControl}${flatToHtml(action.excelRow.flat, plan.columnMap)}`;
+      else body.innerHTML = `${rowReviewControl}${flatToHtml(action.currentRow.flat, plan.columnMap)}`;
       item.appendChild(body);
       table.appendChild(item);
     });
@@ -5915,11 +5926,12 @@
       const button = event.target?.closest?.('button[data-review-action]');
       if (!button || !APP.plan || APP.busy) return;
       const sourceAction = (APP.plan.actions || []).find(candidate => planReviewActionKey(candidate) === button.dataset.reviewAction);
-      if (!sourceAction || sourceAction.type !== 'update') return;
+      if (!sourceAction) return;
       if (button.hasAttribute('data-review-row')) {
         const currentlyExcluded = Boolean(APP.review?.excludedRows?.has?.(planReviewActionKey(sourceAction)));
         setPlanReviewRow(APP.review, sourceAction, !currentlyExcluded);
       } else if (button.hasAttribute('data-review-change')) {
+        if (sourceAction.type !== 'update') return;
         const changeKey = button.dataset.reviewChange;
         const currentlyExcluded = reviewExcludedChanges(APP.review, sourceAction).has(changeKey);
         setPlanReviewChange(APP.review, sourceAction, changeKey, !currentlyExcluded);
