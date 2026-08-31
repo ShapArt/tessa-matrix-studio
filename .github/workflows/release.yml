@@ -30,6 +30,8 @@ jobs:
 
       - name: Detect userscript change
         id: changed
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -38,11 +40,19 @@ jobs:
             exit 0
           fi
 
-          if git diff-tree --no-commit-id --name-only -r HEAD^ HEAD | grep -qx 'tessa-matrix-studio.user.js'; then
+          PREVIOUS_TAG="$(gh release view --json tagName --jq '.tagName' 2>/dev/null || true)"
+          if [[ -z "$PREVIOUS_TAG" ]]; then
+            echo "No previous published release found; release publication is required."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Comparing latest published release $PREVIOUS_TAG with verified HEAD $(git rev-parse HEAD)."
+          if git diff --name-only "$PREVIOUS_TAG"..HEAD -- tessa-matrix-studio.user.js | grep -qx 'tessa-matrix-studio.user.js'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Production userscript did not change; release publication is skipped."
+            echo "Production userscript did not change since $PREVIOUS_TAG; release publication is skipped."
           fi
 
       - name: Verify
