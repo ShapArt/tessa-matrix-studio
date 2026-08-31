@@ -4748,6 +4748,23 @@
     return acc;
   }
 
+  /**
+   * Глобальная ошибка контекста (другая MatrixID/TemplateID, неподходящее состояние
+   * и т.п.) делает построчный diff нерелевантным. Сохраняем кандидатов только для
+   * диагностики, а пользовательскому Preview показываем один авторитетный blocker.
+   */
+  function suppressUnsafePlanPreview(plan) {
+    if (!plan) return plan;
+    plan.candidateCounts = { ...(plan.counts || countActions([], [])) };
+    plan.candidateActions = Array.isArray(plan.actions) ? plan.actions : [];
+    plan.candidateSkippedRows = Array.isArray(plan.skippedRows) ? plan.skippedRows : [];
+    plan.actions = [];
+    plan.skippedRows = [];
+    plan.counts = countActions([], []);
+    plan.previewSuppressed = true;
+    return plan;
+  }
+
   function createPlanReviewState() {
     return { excludedRows: new Set(), excludedChanges: new Map() };
   }
@@ -5184,11 +5201,7 @@
     if (plan.safety.blocked) {
       log(`Файл нельзя применить в текущем контексте: ${plan.safety.blockedReasons.join(' ')}`, 'warn');
       if (plan.safety.suppressUnsafePreview) {
-        plan.candidateCounts = { ...plan.counts };
-        plan.candidateActions = plan.actions;
-        plan.actions = [];
-        plan.counts = countActions([], plan.skippedRows);
-        plan.previewSuppressed = true;
+        suppressUnsafePlanPreview(plan);
       }
     } else if (plan.skippedRows?.length) {
       log(`Проверка готова: ${plan.skippedRows.length} строк будут пропущены, остальные можно применить.`, 'warn');
@@ -6417,7 +6430,7 @@
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, mergeWorkbookIntoCurrentSnapshot, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, finalizeApplyResult, applyResultMessage,
-    createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems,
+    createPlanReviewState, suppressUnsafePlanPreview, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
     preflightPlan, applyPreflightPreview, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
