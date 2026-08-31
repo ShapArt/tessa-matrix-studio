@@ -5052,6 +5052,17 @@
     return { blocked, deleteCount, snapshotCount, ratio, rule, reason };
   }
 
+  function suppressPlanForUnsafeContext(plan) {
+    plan.candidateCounts = { ...plan.counts };
+    plan.candidateActions = plan.actions;
+    plan.candidateSkippedRows = plan.skippedRows;
+    plan.actions = [];
+    plan.skippedRows = [];
+    plan.counts = countActions([], []);
+    plan.previewSuppressed = true;
+    return plan;
+  }
+
   function evaluatePlanSafety(plan, bridge) {
     const matrixInfo = bridge.matrixInfo();
     const stateLocalizer = typeof bridge?.localizeValue === 'function' ? bridge.localizeValue.bind(bridge) : null;
@@ -5184,11 +5195,7 @@
     if (plan.safety.blocked) {
       log(`Файл нельзя применить в текущем контексте: ${plan.safety.blockedReasons.join(' ')}`, 'warn');
       if (plan.safety.suppressUnsafePreview) {
-        plan.candidateCounts = { ...plan.counts };
-        plan.candidateActions = plan.actions;
-        plan.actions = [];
-        plan.counts = countActions([], plan.skippedRows);
-        plan.previewSuppressed = true;
+        suppressPlanForUnsafeContext(plan);
       }
     } else if (plan.skippedRows?.length) {
       log(`Проверка готова: ${plan.skippedRows.length} строк будут пропущены, остальные можно применить.`, 'warn');
@@ -6419,7 +6426,7 @@
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
-    safePlain, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
+    safePlain, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
     preflightPlan, applyPreflightPreview, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, compactPlanForExport,
