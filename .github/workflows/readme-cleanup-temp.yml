@@ -1,0 +1,87 @@
+name: README Cleanup Temp
+
+on:
+  push:
+    paths:
+      - '.github/readme-cleanup.trigger'
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Simplify README
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('README.md')
+          text = p.read_text(encoding='utf-8')
+
+          text = text.replace(
+              '<br><sub>Реальный интерфейс TESSA Matrix Studio v1.9.3</sub>',
+              '<br><sub>Реальный интерфейс TESSA Matrix Studio</sub>'
+          )
+          text = text.replace('- **Версия:** `1.9.36`', '- **Версия:** `1.9.37`')
+
+          # README is the user-facing entry point, not a version-by-version engineering log.
+          start = 'Начиная с **v1.9.20**, Preview дополнительно выполняет read-only preflight'
+          end = '\n---\n\n# Быстрый старт'
+          i = text.find(start)
+          j = text.find(end, i)
+          if i == -1 or j == -1:
+              raise SystemExit('README preview-history block markers not found')
+          replacement = (
+              'Studio выполняет read-only проверку перед Preview и повторную свежую проверку перед записью. '
+              'Небезопасные или конфликтующие операции переводятся в **ПРОПУСТИТЬ**, а большие планы можно просматривать, '
+              'фильтровать и разбивать на контролируемые пакеты до 2000 операций.\n\n'
+              'Подробные safety-механизмы, ограничения Roundtrip V6 и история изменений вынесены в '
+              '[CHANGELOG.md](CHANGELOG.md) и [production runbook](docs/PRODUCTION-RUNBOOK.md).'
+          )
+          text = text[:i] + replacement + text[j:]
+
+          # Collapse low-level XLSX implementation history into current user-facing behavior.
+          start2 = 'Roundtrip V6 дополнительно хранит на veryHidden-листе **baseline-ledger**'
+          end2 = '\n> [!TIP]\n> Перед первой правкой сохраните исходную выгрузку отдельно.'
+          i2 = text.find(start2)
+          j2 = text.find(end2, i2)
+          if i2 == -1 or j2 == -1:
+              raise SystemExit('README XLSX-history block markers not found')
+          replacement2 = (
+              'Studio хранит скрытую identity/baseline-информацию для точного сопоставления строк и проверяет XLSX fail-closed: '
+              'небезопасная структура файла, повреждённые служебные данные, формулы в редактируемых ячейках и неоднозначные типы '
+              'не доходят до Apply. Точные лимиты и технические детали см. в '
+              '[production runbook](docs/PRODUCTION-RUNBOOK.md).\n'
+          )
+          text = text[:i2] + replacement2 + text[j2:]
+
+          text = text.replace(
+              'Начиная с **v1.9.14**, проверка обновлений и загрузка полного скрипта разделены:',
+              'Проверка обновлений и загрузка полного скрипта разделены:'
+          )
+          text = text.replace(
+              '> Если у вас уже установлена старая **1.9.3** с `jsDelivr @main`, один раз переустановите Studio кнопкой **УСТАНОВИТЬ** выше. После установки **1.9.14+** дальнейшие версии будут проверяться через metadata-файл GitHub Releases автоматически.',
+              '> Если у вас установлена очень старая версия Studio с `jsDelivr @main`, один раз переустановите Studio кнопкой **УСТАНОВИТЬ** выше. Дальнейшие обновления будут проверяться через metadata-файл GitHub Releases автоматически.'
+          )
+
+          p.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit cleanup and self-remove
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/readme-cleanup-temp.yml .github/readme-cleanup.trigger
+          git add README.md
+          git commit -m 'docs: simplify README for users'
+          git push origin HEAD:main
