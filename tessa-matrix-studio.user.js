@@ -4752,6 +4752,29 @@
     return { excludedRows: new Set(), excludedChanges: new Map() };
   }
 
+  // Любая реально начатая запись делает текущий Preview устаревшим. Даже если ответ
+  // Store/Delete неоднозначен, повторно применять тот же план нельзя без свежего чтения.
+  function invalidatePlanStateAfterApply(state, result) {
+    if (!state) return false;
+    const started = Math.max(0, Number(result?.startedCount || 0));
+    const applied = Math.max(0, Number(result?.appliedCount || 0));
+    if (!started && !applied) return false;
+    state.plan = null;
+    state.snapshot = null;
+    state.bridge = null;
+    state.review = createPlanReviewState();
+    state.previewView = createPreviewViewState();
+    return true;
+  }
+
+  function renderPlanConsumedNotice(result) {
+    const summary = document.querySelector?.('#tms-summary');
+    const table = document.querySelector?.('#tms-plan');
+    const applied = Math.max(0, Number(result?.appliedCount || 0));
+    if (summary) summary.innerHTML = `<div class="tms-review-note"><b>Нужна свежая проверка.</b> В TESSA уже началась запись${applied ? `: применено ${applied}` : ''}. Старый Preview больше нельзя применять повторно. Скачайте свежий Excel или обновите страницу, затем снова нажмите «Проверить изменения».</div>`;
+    if (table) table.innerHTML = '';
+  }
+
   /**
    * Keeps only the first N executable operations from the requested Preview filter.
    * Everything outside that package is represented through ordinary review exclusions,
@@ -6358,7 +6381,14 @@
         return;
       }
       setBusy(true);
-      try { const reviewedPlan = buildReviewedPlan(APP.plan, APP.review); const result = await applyPlan(reviewedPlan); if (result) alert(applyResultMessage(result)); }
+      try {
+        const reviewedPlan = buildReviewedPlan(APP.plan, APP.review);
+        const result = await applyPlan(reviewedPlan);
+        if (result) {
+          if (invalidatePlanStateAfterApply(APP, result)) renderPlanConsumedNotice(result);
+          alert(applyResultMessage(result));
+        }
+      }
       catch (error) {
         const message = friendlyErrorMessage(error); log(message, 'error', error);
         rememberReport({ app: { name: APP.name, version: APP.version }, planId: APP.plan?.id, failedAt: nowIso(), error: message, technicalError: error?.message || String(error), matrixId: APP.plan?.matrixId || null, logs: APP.logs.slice(-120) }, `TESSA_Matrix_ErrorReport_${Date.now()}.json`);
@@ -6387,7 +6417,7 @@
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, mergeWorkbookIntoCurrentSnapshot, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, finalizeApplyResult, applyResultMessage,
-    createPlanReviewState, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems,
+    createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
     preflightPlan, applyPreflightPreview, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
