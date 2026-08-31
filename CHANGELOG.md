@@ -35,7 +35,31 @@
 ## 1.9.29 — 2026-08-29
 
 - `sharedStrings.xml` теперь разбирается одинаково для обычных и namespace-prefixed SpreadsheetML-элементов (`<si>/<t>` и `<x:si>/<x:t>`);
-- rich-text runs корректно собираются из нескольких `<t>`-runs в порядке документа;
-- битый `t="s"` index больше не превращается молча в пустую строку — XLSX отклоняется fail-closed;
-- валидная реально пустая shared-string остаётся допустимой; inline strings, обычные `str`, числа, даты и формулы не менялись;
-- добавлен TDD regression pack для namespaced sharedStrings, rich-text concatenation и invalid/out-of-range indexes.
+- rich-text shared strings корректно собираются из нескольких `<t>`-runs в порядке документа;
+- для ячеек `t="s"` индекс общей строки валидируется fail-closed: отрицательные, дробные, нечисловые и выходящие за таблицу ссылки отклоняют XLSX с явной диагностикой вместо тихого значения `''`;
+- валидная shared-string с пустым текстом остаётся допустимой; inline strings, обычные `str`, числа, даты и формулы не менялись;
+- добавлен TDD regression на namespaced sharedStrings, rich-text concatenation и invalid/out-of-range indexes.
+
+## 1.9.28 — 2026-08-29
+
+- DELETE store-time freshness-check больше не вызывает полный `loadSnapshot()` перед каждой удаляемой строкой: используется targeted `CardGet` только конкретной row-card;
+- общий `readMatrixRowFromCard` теперь используется и полным snapshot, и targeted DELETE recheck, поэтому raw fingerprint рассчитывается одной и той же логикой;
+- targeted recheck явно подтверждает наличие живой `MatrixVersionID` в `MtxRouteMatrixRowVersions`; исчезнувшая версия fail-closed переводит DELETE в ПРОПУСТИТЬ;
+- сохранены строгие проверки `RowCardID + MatrixVersionID + raw fingerprint` и локальный partial-apply без auto-merge; клиентское микроокно `CardGet → DeleteRow` остаётся задокументированным ограничением кастомного DELETE;
+- добавлены TDD-regressions на отсутствие повторного full snapshot и исчезнувшую target-version.
+
+## 1.9.27 — 2026-08-29
+
+- UPDATE и ADD теперь отправляются через `CardStoreRequest` с `AffectVersion = true`: TESSA атомарно проверяет версию карточки во время Store и не позволяет молча затереть изменение, сделанное после preflight;
+- перед ADD duplicate-validation повторяется непосредственно перед Store, чтобы строка-дубль, созданная другой сессией после preflight, не была записана;
+- перед кастомным DELETE Studio заново читает матрицу и строго сверяет RowCardID, MatrixVersionID и raw fingerprint удаляемой строки; исчезнувшая или изменившаяся цель переводится в ПРОПУСТИТЬ;
+- конфликт одной операции остаётся локальным: auto-merge не выполняется, зависимые destructive DELETE сохраняют fail-closed поведение, независимые безопасные строки могут продолжить применение;
+- добавлены TDD-regressions для atomic Store version guard, post-preflight ADD duplicate race и post-preflight DELETE target race.
+
+## 1.9.26 — 2026-08-29
+
+- XLSX-reader сохраняет наличие и текст Excel-формулы в metadata рабочей ячейки; формулы в редактируемых критериях fail-closed переводят строку в ПРОПУСТИТЬ, cached `<v>` не применяется как обычное значение;
+- строковый критерий, который Excel сериализовал как numeric cell, блокируется как потенциально преобразованный: исходное отображение могло потерять ведущие нули или измениться через scientific notation, проценты/дроби;
+- number-format classifier различает built-in/custom `percent`, `scientific` и `fraction` наряду с `date`, `text` и `general`;
+- настоящие Int/Decimal в General/Text и Date/DateTime Excel serial продолжают работать без новых ограничений;
+- добавлен TDD regression pack для formula cached values и типовых Excel coercion-сценариев.
