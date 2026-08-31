@@ -4,6 +4,7 @@ import vm from 'node:vm';
 const code = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
+assert(code.includes('// @version      1.9.34'), 'self-closing row fix must ship as userscript v1.9.34');
 // Keep the documented production ceilings under regression control. Runtime tests below
 // use tiny Node-only overrides so pathological cases stay fast in CI.
 assert(code.includes('MaxRowNumber: 100000'), 'production SpreadsheetML row ceiling drifted from 100000');
