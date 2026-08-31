@@ -21,7 +21,7 @@ const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 const O = E.constants.OPERAND;
 
 const structure = {
-  templateId: 'refresh-failure-template',
+  templateId: 'no-auto-refresh-template',
   conditions: [{
     criterionRowId: 'criterion-org', criterionName: 'Организация', operandTypeId: O.ReferenceGuid,
     autocompleteViewName: 'QaOrganizationView', refSection: 'QaOrganizationView',
@@ -43,7 +43,7 @@ const current = {
   flat,
 };
 const snapshot = {
-  matrixId: 'refresh-failure-matrix',
+  matrixId: 'no-auto-refresh-matrix',
   templateId: structure.templateId,
   rows: [current],
   criterionIdCache: new Map(), roleIdByFunctionCache: new Map(), roleIdCache: new Map(),
@@ -51,14 +51,14 @@ const snapshot = {
 const matrixInfo = {
   matrixId: snapshot.matrixId,
   TemplateID: snapshot.templateId,
-  TemplateName: 'Refresh Failure QA',
+  TemplateName: 'No Auto Refresh QA',
   StateName: 'Черновик',
-  Name: 'Refresh Failure QA',
+  Name: 'No Auto Refresh QA',
 };
 
 const catalog = E.mergeSnapshotIntoDictionaryCatalog(null, structure, snapshot);
 const bytes = await E.createRoundtripXlsxBytes(structure, snapshot, matrixInfo, catalog);
-const workbook = await E.readXlsxArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), 'refresh-failure.xlsx');
+const workbook = await E.readXlsxArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), 'no-auto-refresh.xlsx');
 const signerIndex = workbook.headers.indexOf('Подписание');
 const signerIdIndex = workbook.headers.indexOf('Подписание__ID');
 assert(signerIndex >= 0 && signerIdIndex >= 0, 'signer columns unavailable');
@@ -70,6 +70,7 @@ plan.safety = { blocked: false, blockedReasons: [] };
 assert(plan.counts.update === 1, `expected one UPDATE, got ${JSON.stringify(plan.counts)}`);
 
 let stores = 0;
+let refreshCalls = 0;
 const bridge = {
   matrixInfo: () => matrixInfo,
   templateId: () => structure.templateId,
@@ -86,7 +87,7 @@ const bridge = {
   validateDuplicate: async () => {},
   assertCanCreateRows: () => {},
   storeRowCard: async card => { stores += 1; return { cardId: card?.id || 'card-1' }; },
-  refresh: async () => { throw new Error('QA refresh network failure'); },
+  refresh: async () => { refreshCalls += 1; throw new Error('native TestMatrixView refresh must not be forced'); },
 };
 
 const originalCreate = E.TessaBridge.create;
@@ -101,26 +102,17 @@ try {
   E.TessaBridge.create = originalCreate;
 }
 
-assert(!thrown, `post-store refresh failure must not erase Apply result: ${thrown?.message || thrown}`);
-assert(stores === 1, `expected one successful Store before refresh failure, got ${stores}`);
-assert(result, 'Apply must return a result after refresh failure');
-assert(result.requestedCount === 1, `requestedCount expected 1, got ${result.requestedCount}`);
-assert(result.plannedCount === 1, `plannedCount expected 1, got ${result.plannedCount}`);
-assert(result.startedCount === 1, `startedCount expected 1, got ${result.startedCount}`);
+assert(!thrown, `successful Store must not depend on a forced card/view refresh: ${thrown?.message || thrown}`);
+assert(stores === 1, `expected one successful Store, got ${stores}`);
+assert(refreshCalls === 0, `Apply must not force editor.refreshCard()/view reload after Store; got ${refreshCalls} refresh call(s)`);
+assert(result, 'Apply must return a result');
 assert(result.appliedCount === 1, `appliedCount expected 1, got ${result.appliedCount}`);
-assert(result.storeSkippedCount === 0, `storeSkippedCount expected 0, got ${result.storeSkippedCount}`);
-assert(result.notStartedCount === 0, `notStartedCount expected 0, got ${result.notStartedCount}`);
-assert(result.skippedCount === 0, `skippedCount expected 0, got ${result.skippedCount}`);
-assert(result.verificationIncomplete === true, `verificationIncomplete flag missing: ${JSON.stringify(result)}`);
-assert(/refresh|network|обнов/i.test(String(result.refreshError || '')), `refreshError missing: ${JSON.stringify(result)}`);
-assert(result.status === 'partial', `refresh failure must be partial, got ${result.status}`);
-assert(result.success === false, `refresh failure must not claim full success: ${JSON.stringify(result)}`);
-assert(result.plannedCount === result.appliedCount + result.storeSkippedCount + result.notStartedCount,
-  `refresh recovery accounting mismatch: ${JSON.stringify(result)}`);
+assert(result.status === 'completed', `successful Store must stay completed, got ${result.status}`);
+assert(result.success === true, `successful Store must stay success=true: ${JSON.stringify(result)}`);
+assert(result.refreshError === null, `refreshError must stay null when no forced refresh is attempted: ${JSON.stringify(result)}`);
+assert(result.verificationIncomplete === false, `no synthetic refresh failure should mark result partial: ${JSON.stringify(result)}`);
 
 const message = E.applyResultMessage(result);
-assert(/не удалось|не подтвержден|не удалось перечитать|обнов/i.test(message), `refresh UX must explain verification failure: ${message}`);
-assert(/не повтор/i.test(message), `refresh UX must forbid blind retry: ${message}`);
-assert(/свеж/i.test(message), `refresh UX must require fresh state: ${message}`);
+assert(/свеж/i.test(message), `success UX must still recommend a fresh export before further work: ${message}`);
 
-console.log('TESSA Matrix Studio post-store refresh failure result: OK');
+console.log('TESSA Matrix Studio successful Apply does not force native card/view refresh: OK');
