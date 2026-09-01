@@ -1,6 +1,6 @@
 # Compact ALL-cases UAT
 
-Актуально для **TESSA Matrix Studio v1.9.38**.
+Актуально для **TESSA Matrix Studio v1.9.39**.
 
 Этот UAT заменяет старую стратегию с тысячами однотипных искусственных строк. Нагрузка остаётся в автоматических regression-тестах, а ручной UAT проверяет отдельные пользовательские поведения: один сценарий = один понятный кейс.
 
@@ -12,6 +12,21 @@
 - Состояние: `Черновик`
 - Активные сценарии располагаются в Excel rows `15–38`.
 - Глобальные/destructive негативы выполняются **по одному на копии** workbook.
+
+## Live evidence 2026-09-01
+
+Реальный Apply на матрице `f5ec6fe5` подтвердил корректную запись всего mutation-plan: `requested=11`, `planned=11`, `started=11`, `applied=11`, `failed=0`, `notStarted=0`, `verificationIncomplete=false`. Отдельно planner до Apply исключил 12 source-invalid/stale строк.
+
+Для v1.9.39 закреплены следующие ожидания:
+
+- эти 12 source-skipped строк **не делают успешные 11/11 mutations частичным Apply**;
+- успешный результат показывается как `completed / success=true`, а source-skipped выводятся отдельно как строки, не вошедшие в Apply;
+- после Store обновляется только нативное отображение матрицы, без `editor.refreshCard()`;
+- transient `ObtainWriterLock / WriteHeartbit` при refresh получает ограниченный retry, но не меняет успешный Store-result;
+- если автообновление view не удалось, появляется ручная кнопка **Обновить отображение**;
+- обычный успешный Apply показывается inline, без блокирующего browser `alert()`;
+- progress/status закреплён сверху внутри прокручиваемого окна Studio;
+- старый Apply-plan после начавшейся mutation остаётся consumed и повторно не применяется.
 
 ## Почему UAT разделён на ACTIVE / COPY / MANUAL / AUTO
 
@@ -88,7 +103,7 @@
 - Session expiry.
 - Нет прав.
 - Матрица не в редактируемом состоянии.
-- Successful Store без forced `refreshCard()` / `WriteHeartbit` popup.
+- Successful Store с native-view-only auto refresh и без full `refreshCard()`.
 - Diagnostic JSON только по явной кнопке.
 - Старый Apply-plan consumed после начавшейся записи.
 - Fresh export reconciliation после Apply.
@@ -97,16 +112,17 @@
 
 ## Минимальный live GOLD-проход
 
-1. Убедиться, что Studio показывает `v1.9.38`.
+1. Убедиться, что Studio показывает `v1.9.39`.
 2. Открыть UAT workbook на MatrixID `f5ec6fe5-55ce-49a7-9fdd-f24a6e7c11cb`.
 3. Нажать **Проверить изменения**.
 4. Убедиться, что нет global blocker и ACTIVE rows 15–38 классифицированы согласно каталогу.
 5. Проверить filters/search/selective review.
 6. Через **Пакет для Apply** оставить ровно **1 безопасную ADD или UPDATE**, без DELETE.
-7. Apply должен завершиться `completed`, `success=true`.
-8. После Store не должно быть forced-refresh writer-lock popup; JSON не должен скачиваться автоматически; старый Apply-plan должен стать недоступен.
-9. Скачать fresh export и подтвердить, что изменилась только intended row.
-10. На отдельной копии проверить wrong MatrixID: должен быть один global blocker, без row-noise.
+7. Apply должен завершиться `completed`, `success=true`; source-skipped строки отображаются отдельно и не отравляют результат.
+8. Нативное отображение матрицы должно обновиться автоматически без full-card refresh; если writer-lock временный, Studio делает ограниченный retry.
+9. После Store JSON не скачивается автоматически; старый Apply-plan недоступен; progress остаётся видимым при scroll.
+10. Скачать fresh export и подтвердить, что изменилась только intended row.
+11. На отдельной копии проверить wrong MatrixID: должен быть один global blocker, без row-noise.
 
 ## Release gate
 
