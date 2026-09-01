@@ -1,0 +1,33 @@
+name: v1.9.39 patcher
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/v1.9.39-post-apply-ux
+    paths:
+      - tools/patch-v1939.py
+      - .github/workflows/v1939-patcher.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/v1.9.39-post-apply-ux
+          fetch-depth: 0
+      - name: Apply deterministic source patch
+        run: python tools/patch-v1939.py
+      - name: Commit source and remove temporary patcher
+        run: |
+          rm -f tools/patch-v1939.py .github/workflows/v1939-patcher.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js tools/patch-v1939.py .github/workflows/v1939-patcher.yml
+          git diff --cached --exit-code && exit 0
+          git commit -m "feat: improve post-Apply refresh and result UX"
+          git push origin HEAD:feat/v1.9.39-post-apply-ux
