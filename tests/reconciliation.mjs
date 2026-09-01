@@ -37,11 +37,12 @@ function row(card, version, org = 'org-1', person = 'person-1') {
   };
 }
 function receipt(type, current, overrides = {}) {
+  const has = key => Object.prototype.hasOwnProperty.call(overrides, key);
   return {
     type,
-    excelRow: overrides.excelRow ?? 15,
-    rowCardId: overrides.rowCardId ?? current?.rowCardId ?? null,
-    versionId: overrides.versionId ?? current?.versionId ?? null,
+    excelRow: has('excelRow') ? overrides.excelRow : 15,
+    rowCardId: has('rowCardId') ? overrides.rowCardId : (current?.rowCardId ?? null),
+    versionId: has('versionId') ? overrides.versionId : (current?.versionId ?? null),
     expectedSemanticKey: type === 'delete' ? null : E.reconciliationSemanticKey(overrides.expectedRow || current, structure),
   };
 }
