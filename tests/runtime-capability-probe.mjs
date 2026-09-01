@@ -1,0 +1,113 @@
+import fs from 'node:fs';
+import vm from 'node:vm';
+
+const code = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+
+globalThis.window = globalThis;
+globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
+globalThis.location = { origin: 'https://tessa.cherkizovsky.net' };
+globalThis.alert = () => {};
+globalThis.confirm = () => true;
+globalThis.document = {
+  body: { innerText: '' },
+  querySelector: () => null,
+  querySelectorAll: () => [],
+  createElement: () => ({ click() {}, style: {}, set href(_) {}, set download(_) {} }),
+};
+vm.runInThisContext(code, { filename: 'tessa-matrix-studio.user.js' });
+
+const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
+assert(typeof E.probeRuntimeEnvironment === 'function', 'probeRuntimeEnvironment is missing');
+assert(typeof E.inspectNativeViewCapabilitiesReadOnly === 'function', 'inspectNativeViewCapabilitiesReadOnly is missing');
+assert(typeof E.inspectMatrixCapabilitiesReadOnly === 'function', 'inspectMatrixCapabilitiesReadOnly is missing');
+
+const calls = [];
+const fakeService = {
+  get() { calls.push('get'); },
+  request() { calls.push('request'); },
+  store() { calls.push('store'); },
+  new() { calls.push('new'); },
+  create() { calls.push('create'); },
+};
+class FakeStoreRequest {
+  constructor() { this.affectVersion = false; }
+}
+const fakeCards = {
+  CardGetRequest: class {},
+  CardRequest: class {},
+  CardNewRequest: class {},
+  CardStoreRequest: FakeStoreRequest,
+};
+const fakeTypedField = { get: value => value };
+const fakeRequire = id => {
+  if (id === 9855) return fakeCards;
+  if (id === 9814) return { TypedField: fakeTypedField };
+  if (id === 9893) return { CardService: { instance: fakeService } };
+  return {};
+};
+
+const templateId = '22222222-2222-2222-2222-222222222222';
+const fakeMatrixSection = {
+  fields: {
+    tryGetString(key) {
+      if (key === 'TemplateID') return templateId;
+      if (key === 'StateName') return 'Черновик';
+      return null;
+    },
+    tryGetGuid(key) { return key === 'TemplateID' ? templateId : null; },
+    tryGet() { return null; },
+  },
+};
+const fakeCard = {
+  id: '11111111-1111-1111-1111-111111111111',
+  sections: { tryGet: () => fakeMatrixSection },
+};
+const fakeControl = {
+  table: {
+    rows: [{
+      data: new Map([
+        ['MatrixRowID', '33333333-3333-3333-3333-333333333333'],
+        ['MatrixVersionID', '44444444-4444-4444-4444-444444444444'],
+      ]),
+    }],
+  },
+  refresh() {},
+  setPageAndRefresh() {},
+};
+const fakeEditor = { cardModel: { card: fakeCard, controls: new Map([['TestMatrixView', fakeControl]]) } };
+const fakeWorkspace = { editor: fakeEditor };
+const fakeRoot = {
+  tessa: {
+    apiLoader: () => ({ WorkspaceStorage: { instance: { currentCardWorkspace: fakeWorkspace } } }),
+  },
+};
+
+const probe = E.probeRuntimeEnvironment({ root: fakeRoot, extensionRequireFactory: () => fakeRequire });
+assert(probe.runtime.extensionRequire === true, JSON.stringify(probe));
+assert(probe.runtime.apiLoader === true, JSON.stringify(probe));
+assert(probe.cardService.get === true && probe.cardService.request === true, JSON.stringify(probe));
+assert(probe.cardService.store === true && probe.cardService.newOrCreate === true, JSON.stringify(probe));
+assert(probe.constructors.cardGetRequest === true && probe.constructors.cardRequest === true, JSON.stringify(probe));
+assert(probe.constructors.cardStoreRequest === true && probe.constructors.cardNewRequest === true, JSON.stringify(probe));
+assert(probe.constructors.affectVersion === true, `AffectVersion capability not proven: ${JSON.stringify(probe)}`);
+assert(probe.matrix.identity === true && probe.matrix.template === true && probe.matrix.stateReadable === true, JSON.stringify(probe));
+assert(probe.matrix.writableState === true, JSON.stringify(probe));
+assert(probe.nativeView.found === true && probe.nativeView.refresh === true && probe.nativeView.paging === true, JSON.stringify(probe));
+assert(calls.length === 0, `read-only probe invoked CardService methods: ${calls.join(', ')}`);
+
+const missingRootProbe = E.probeRuntimeEnvironment({ root: {}, extensionRequireFactory: () => { throw new Error('no extension runtime'); } });
+assert(missingRootProbe.runtime.extensionRequire === false, JSON.stringify(missingRootProbe));
+assert(missingRootProbe.runtime.apiLoader === false, JSON.stringify(missingRootProbe));
+assert(missingRootProbe.nativeView.found === false, JSON.stringify(missingRootProbe));
+
+const throwingLoaderProbe = E.probeRuntimeEnvironment({
+  root: { tessa: { apiLoader: () => { throw new Error('loader changed'); } } },
+  extensionRequireFactory: () => fakeRequire,
+});
+assert(throwingLoaderProbe.runtime.extensionRequire === true, JSON.stringify(throwingLoaderProbe));
+assert(throwingLoaderProbe.runtime.apiLoader === true, JSON.stringify(throwingLoaderProbe));
+assert(throwingLoaderProbe.runtime.workspace === false, JSON.stringify(throwingLoaderProbe));
+assert(calls.length === 0, `failure-path probe invoked CardService methods: ${calls.join(', ')}`);
+
+console.log('TESSA Matrix Studio read-only runtime capability probe: OK');
