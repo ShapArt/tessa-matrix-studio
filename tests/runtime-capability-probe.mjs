@@ -48,21 +48,25 @@ const fakeRequire = id => {
 };
 
 const templateId = '22222222-2222-2222-2222-222222222222';
-const fakeMatrixSection = {
-  fields: {
-    tryGetString(key) {
-      if (key === 'TemplateID') return templateId;
-      if (key === 'StateName') return 'Черновик';
-      return null;
+function makeMatrixSection(stateName) {
+  return {
+    fields: {
+      tryGetString(key) {
+        if (key === 'TemplateID') return templateId;
+        if (key === 'StateName') return stateName;
+        return null;
+      },
+      tryGetGuid(key) { return key === 'TemplateID' ? templateId : null; },
+      tryGet() { return null; },
     },
-    tryGetGuid(key) { return key === 'TemplateID' ? templateId : null; },
-    tryGet() { return null; },
-  },
-};
-const fakeCard = {
-  id: '11111111-1111-1111-1111-111111111111',
-  sections: { tryGet: () => fakeMatrixSection },
-};
+  };
+}
+function makeCard(stateName) {
+  return {
+    id: '11111111-1111-1111-1111-111111111111',
+    sections: { tryGet: () => makeMatrixSection(stateName) },
+  };
+}
 const fakeControl = {
   table: {
     rows: [{
@@ -75,14 +79,23 @@ const fakeControl = {
   refresh() {},
   setPageAndRefresh() {},
 };
-const fakeEditor = { cardModel: { card: fakeCard, controls: new Map([['TestMatrixView', fakeControl]]) } };
-const fakeWorkspace = { editor: fakeEditor };
-const fakeRoot = {
-  tessa: {
-    apiLoader: () => ({ WorkspaceStorage: { instance: { currentCardWorkspace: fakeWorkspace } } }),
-  },
-};
+function makeRoot(stateName, localization = null) {
+  const editor = { cardModel: { card: makeCard(stateName), controls: new Map([['TestMatrixView', fakeControl]]) } };
+  const workspace = { editor };
+  return {
+    tessa: {
+      apiLoader(id) {
+        if (id === 546914) return { WorkspaceStorage: { instance: { currentCardWorkspace: workspace } } };
+        if (id === 880540 && localization) {
+          return { LocalizationManager: { instance: { localize: localization } } };
+        }
+        return {};
+      },
+    },
+  };
+}
 
+const fakeRoot = makeRoot('Черновик');
 const probe = E.probeRuntimeEnvironment({ root: fakeRoot, extensionRequireFactory: () => fakeRequire });
 assert(probe.runtime.extensionRequire === true, JSON.stringify(probe));
 assert(probe.runtime.apiLoader === true, JSON.stringify(probe));
@@ -95,6 +108,13 @@ assert(probe.matrix.identity === true && probe.matrix.template === true && probe
 assert(probe.matrix.writableState === true, JSON.stringify(probe));
 assert(probe.nativeView.found === true && probe.nativeView.refresh === true && probe.nativeView.paging === true, JSON.stringify(probe));
 assert(calls.length === 0, `read-only probe invoked CardService methods: ${calls.join(', ')}`);
+
+const localizedRoot = makeRoot('$Mtx_Enums_RouteMatrixStates_Draft', value =>
+  value === '$Mtx_Enums_RouteMatrixStates_Draft' ? 'Черновик' : value);
+const localizedProbe = E.probeRuntimeEnvironment({ root: localizedRoot, extensionRequireFactory: () => fakeRequire });
+assert(localizedProbe.matrix.stateReadable === true, JSON.stringify(localizedProbe));
+assert(localizedProbe.matrix.writableState === true, `localized Draft must be writable: ${JSON.stringify(localizedProbe)}`);
+assert(calls.length === 0, `localized probe invoked CardService methods: ${calls.join(', ')}`);
 
 const missingRootProbe = E.probeRuntimeEnvironment({ root: {}, extensionRequireFactory: () => { throw new Error('no extension runtime'); } });
 assert(missingRootProbe.runtime.extensionRequire === false, JSON.stringify(missingRootProbe));
