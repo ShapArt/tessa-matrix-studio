@@ -70,4 +70,26 @@ const editor = { cardModel: { controls: new Map([['TestMatrixView', emptyControl
   assert(Array.isArray(snapshot.rows) && snapshot.rows.length === 0, JSON.stringify(snapshot));
 }
 
+// Zero rows are safe only when the native matrix control itself was identified.
+// "0 section + 0 links" without control evidence must remain fail-closed.
+{
+  const structure = { templateId: 'template-empty', conditions: [], functions: [] };
+  const bridgeLike = {
+    collectNativeMatrixViewLinksAllPages: async () => ({
+      controlName: null, visibleRows: 0, links: [], pageCount: 1, pagesVisited: [1], pagingUsed: false,
+    }),
+    rawMatrixSectionLinks: () => [],
+    matrixSectionSignature: () => '0:unknown',
+    mainCard: { id: 'matrix-empty' },
+    getCard: async () => { throw new Error('CardGet must not run without identities'); },
+  };
+  let failedClosed = false;
+  try {
+    await E.TessaBridge.prototype.loadSnapshot.call(bridgeLike, structure);
+  } catch (error) {
+    failedClosed = /MatrixRowID|нативном представлении/i.test(String(error?.message || error));
+  }
+  assert(failedClosed, 'zero rows without native control evidence must fail closed');
+}
+
 console.log('TESSA Matrix Studio empty-matrix runtime/view/snapshot contract: OK');
