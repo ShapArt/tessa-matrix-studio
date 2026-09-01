@@ -94,4 +94,24 @@ assert(workbook.rows.length === 1, `expected one data row, got ${workbook.rows.l
 assert(workbook.rows[0].values[0] === 'ООО Тест ✅', `Unicode/inlineStr value drifted: ${JSON.stringify(workbook.rows[0].values)}`);
 assert(workbook.roundtrip.enabled === true, `roundtrip metadata was lost: ${JSON.stringify(workbook.roundtrip)}`);
 
-console.log('TESSA Matrix Studio office OOXML relationship interop regression: OK');
+const sheetNamespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+function workbookWithSheets(sheets) {
+  return toArrayBuffer(buildStoredZip([
+    ['xl/workbook.xml', `<workbook xmlns="${sheetNamespace}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map(([name], i)=>`<sheet name="${name}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')}</sheets></workbook>`],
+    ['xl/_rels/workbook.xml.rels', `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')}</Relationships>`],
+    ...sheets.map(([,xml],i)=>[`xl/worksheets/sheet${i+1}.xml`,xml]),
+  ]));
+}
+const cover = `<worksheet xmlns="${sheetNamespace}"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Сводка</t></is></c></row></sheetData></worksheet>`;
+const renamed = await E.readXlsxArrayBuffer(workbookWithSheets([['Обложка',cover],['Моя матрица',sheetXml]]));
+assert(renamed.sheetName === 'Моя матрица' && renamed.roundtrip.enabled, 'renamed matrix must be selected by metadata');
+for (const [sheets, expected] of [
+  [[['01_ACTIVE',cover],['05_GOLD',cover],['07_RESULTS',cover]], /UAT-чеклист.*Скачать Excel/],
+  [[['Матрица',sheetXml],['Копия',sheetXml]], /несколько листов/],
+]) {
+  let rejected = false;
+  try { await E.readXlsxArrayBuffer(workbookWithSheets(sheets)); }
+  catch (error) { rejected = expected.test(error.message); }
+  assert(rejected, `workbook must be rejected with ${expected}`);
+}
+console.log('TESSA Matrix Studio office OOXML relationship interop + workbook recognition regression: OK');

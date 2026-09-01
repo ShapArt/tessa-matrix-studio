@@ -6,13 +6,13 @@
 
 Выгрузка матрицы в Excel → массовая правка → проверка изменений → безопасное применение в TESSA.
 
-[![Version](https://img.shields.io/badge/version-1.9.40-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.9.41-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-userscript-24292F?style=flat-square&logo=tampermonkey)](https://www.tampermonkey.net/)
 
 ### [УСТАНОВИТЬ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js) · [СКАЧАТЬ РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [ОТКРЫТЬ КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [СООБЩИТЬ ОБ ОШИБКЕ](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.9.40 · Автор: Шаповалов Артём**
+**v1.9.41 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -57,7 +57,7 @@ Studio выполняет read-only проверку перед Preview и по�
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.9.40** в Tampermonkey.
+2. Подтвердите установку версии **1.9.41** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -119,7 +119,7 @@ Studio выполняет read-only проверку перед Preview и по�
 Перед подтверждением проверьте:
 
 - **Название:** `TESSA Matrix Studio — Черкизово`
-- **Версия:** `1.9.40`
+- **Версия:** `1.9.41`
 - **Автор:** `Шаповалов Артём`
 - **Разрешения:** `@grant none`
 - **Область запуска:** только домены TESSA Черкизово
@@ -232,10 +232,15 @@ Studio хранит скрытую identity/baseline-информацию для
 ### Значения в ячейках
 
 - Для логических полей используйте **Да / Нет**.
+- Количество листов и другие числовые диапазоны: `4..15`, `4-15` или `4 - 15`. Пустые ячейки и новые строки выгрузки заранее имеют текстовый формат.
 - Если поле допускает несколько значений — каждое значение вводится с новой строки внутри одной ячейки (`Alt+Enter`).
 - Для справочников используйте официальное название значения TESSA.
 - Не редактируйте скрытые ID и технические столбцы вручную.
 - Не вставляйте строку «со сдвигом», если не понимаете, какую существующую строку она заменяет; перед применением всегда смотрите diff.
+
+Если при изменении существующей строки отдельное поле не распознано, Studio сохраняет его текущее значение в TESSA, показывает причину и оставляет остальные корректные изменения в Apply. Это относится только к точно сопоставленной существующей строке. Новые строки, замены, удаления и ошибки служебных ID проверяются целиком. Совпадение подписей справочника не означает дублирование: сравниваются ID записей и типизированные значения.
+
+Если Excel уже превратил диапазон в дату, выберите для этой ячейки формат **Текстовый** и введите исходный диапазон заново: смена формата сама по себе потерянный ввод не восстанавливает. `TESSA_UAT_*_FULL_RUNBOOK.xlsx` — отдельный чеклист тестирования; в Studio загружайте рабочую выгрузку матрицы.
 
 ## 3. Проверить изменения
 
@@ -400,7 +405,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.9.40**
+Текущая версия: **1.9.41**
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)

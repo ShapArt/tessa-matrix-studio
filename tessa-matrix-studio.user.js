@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.40
+// @version      1.9.41
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -42,7 +42,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.40',
+    version: '1.9.41',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -515,6 +515,7 @@
     if (kind === 'Int') {
       const compact = raw.replace(/[\s\u00a0]/g,'').replace(',', '.');
       if (!/^[+-]?\d+$/.test(compact)) return `В столбце «${label}» не удалось распознать целое число «${raw}».`;
+      if (!Number.isSafeInteger(Number(compact)) || Number(compact) < -2147483648 || Number(compact) > 2147483647) return `В столбце «${label}» число «${raw}» выходит за пределы Int32.`;
     }
     if (kind === 'Decimal') {
       const compact = raw.replace(/[\s\u00a0]/g,'').replace(',', '.');
@@ -1419,7 +1420,12 @@
       if (!raw) continue;
       parsedSheets.set(descriptor.name, parseSheetXml(decoder.decode(raw), shared, styles));
     }
-    const matrixDescriptor = sheetDescriptors.find(item => canonicalValue(item.name) === canonicalValue('Матрица')) || sheetDescriptors[0];
+    const roundtripSheets = sheetDescriptors.filter(item => ROUNDTRIP.AcceptedFormats.includes(readMetadataPairs(parsedSheets.get(item.name)?.rows || [], 40)[ROUNDTRIP.FormatKey]));
+    if (roundtripSheets.length > 1) throw new Error('В книге несколько листов матрицы TESSA. Оставьте один рабочий лист и повторите проверку.');
+    if (!roundtripSheets.length && ['01_ACTIVE', '05_GOLD', '07_RESULTS'].every(name => parsedSheets.has(name))) {
+      throw new Error('Выбран UAT-чеклист, а не матрица TESSA. Откройте его отдельно для отметок тестирования. В Studio загрузите рабочий Excel, полученный кнопкой «Скачать Excel».');
+    }
+    const matrixDescriptor = roundtripSheets[0] || sheetDescriptors.find(item => canonicalValue(item.name) === canonicalValue('Матрица')) || sheetDescriptors[0];
     const parsed = parsedSheets.get(matrixDescriptor.name);
     if (!parsed) throw new Error(`Не найден лист ${matrixDescriptor.path} в XLSX.`);
     const preliminaryMetadata = readMetadataPairs(parsed.rows, 40);
@@ -2164,9 +2170,11 @@
     grid.rows.forEach((values, rowIndex) => {
       const rowNumber = dataStartRow + rowIndex;
       const bodyStyle = rowIndex % 2 ? 8 : 5;
-      sheetRows.push(`<row r="${rowNumber}" ht="32" customHeight="1">${values.map((value, colIndex) => xlsxStringCell(rowNumber, colIndex, value, bodyStyle)).join('')}</row>`);
+      sheetRows.push(`<row r="${rowNumber}" ht="32" customHeight="1">${values.map((value, colIndex) => value === null || value === undefined || value === ''
+        ? `<c r="${indexToCol(colIndex)}${rowNumber}" s="${bodyStyle}"/>`
+        : xlsxStringCell(rowNumber, colIndex, value, bodyStyle)).join('')}</row>`);
     });
-    const cols = grid.columns.map((column, index) => `<col min="${index + 1}" max="${index + 1}" width="${column.width}" customWidth="1"${column.hidden ? ' hidden="1"' : ''}/>`).join('');
+    const cols = grid.columns.map((column, index) => `<col min="${index + 1}" max="${index + 1}" width="${column.width}" style="5" customWidth="1"${column.hidden ? ' hidden="1"' : ''}/>`).join('');
 
     // Служебный лист хранит только данные, необходимые для обратного сопоставления.
     // Статус и поисковую строку не дублируем в каждой из десятков тысяч строк:
@@ -2205,6 +2213,10 @@
       } else if (canonicalValue(column.operandTypeId) === canonicalValue(OPERAND.Boolean)) booleanRefs.push(ref);
     });
     const validations = [];
+    for (const [index, column] of grid.columns.entries()) {
+      if (column.kind !== 'criterion' || ![OPERAND.Int, OPERAND.Decimal].includes(column.operandTypeId)) continue;
+      validations.push(`<dataValidation type="custom" allowBlank="1" showInputMessage="1" showErrorMessage="0" promptTitle="Число или диапазон" prompt="Введите число или диапазон 4..15. Ячейка должна оставаться в текстовом формате." sqref="${indexToCol(index)}${dataStartRow}:${indexToCol(index)}${validationLastRow}"><formula1>TRUE</formula1></dataValidation>`);
+    }
     for (const [rangeName, refs] of validationGroups) validations.push(`<dataValidation type="list" allowBlank="1" showInputMessage="0" showErrorMessage="0" sqref="${refs.join(' ')}"><formula1>${rangeName}</formula1></dataValidation>`);
     if (booleanRefs.length) validations.push(`<dataValidation type="list" allowBlank="1" showErrorMessage="1" sqref="${booleanRefs.join(' ')}"><formula1>"Да,Нет"</formula1></dataValidation>`);
 
@@ -4220,23 +4232,32 @@
     throw new Error(`Не удалось распознать дату «${value}».`);
   }
 
-  function splitRangeText(value) {
+  function splitRangeText(value, kind = null) {
     const text = stripFormulaMarker(value);
+    if (kind === 'Int' || kind === 'Decimal') {
+      const numeric = text.replace(/\s/g, '').match(/^([+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+))(?:-|\.\.|до)([+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+))$/i);
+      if (numeric) return [numeric[1], numeric[2]];
+    }
     const match = text.match(/^(.+?)\s+(?:-|–|—|\.\.|до)\s+(.+)$/i);
     return match ? [match[1].trim(), match[2].trim()] : [text, null];
   }
 
   function parseRange(value, kind) {
-    const [fromText, toText] = splitRangeText(value);
+    const [fromText, toText] = splitRangeText(value, kind);
     const parse = text => {
+      const issue = typedValueIssue(kind, text);
+      if (!text || issue) throw new Error(issue || 'Пустая граница диапазона.');
       if (kind === 'Date') return parseDateValue(text, false);
       if (kind === 'DateTime') return parseDateValue(text, true);
       const normalized = String(text).replace(/\s/g, '').replace(',', '.');
-      const number = kind === 'Int' ? Number.parseInt(normalized, 10) : Number.parseFloat(normalized);
+      const number = Number(normalized);
       if (!Number.isFinite(number)) throw new Error(`Не удалось распознать число «${text}».`);
       return number;
     };
-    return { kind, value: parse(fromText), to: toText ? parse(toText) : null };
+    const from = parse(fromText);
+    const to = toText ? parse(toText) : null;
+    if (to !== null && from > to) throw new Error(`Начало диапазона «${fromText}» больше конца «${toText}».`);
+    return { kind, value: from, to };
   }
 
   // ---------------------------------------------------------------------------
@@ -4425,7 +4446,7 @@
       }
       if (['Boolean','Int','Decimal','Date','DateTime'].includes(kind)) {
         if (item.value !== undefined && item.value !== null) return typedRangeSemantic(kind, item.value, item.to);
-        const [fromText, toText] = splitRangeText(item.display || '');
+        const [fromText, toText] = splitRangeText(item.display || '', kind);
         return typedRangeSemantic(kind, fromText, toText);
       }
       return `value:${canonicalValue(item.display)}`;
@@ -4483,17 +4504,15 @@
       const compare = {};
       const columns = new Map();
       const issues = [];
+      const fieldIssues = [];
       const resolutions = [];
       for (const [id, column] of columnMap.columns.entries()) {
+        const issueStart = issues.length;
         const cellOperandKind = operandKind(column);
         const cellMeta = row.cellMeta?.[column.index];
-        const autoDateIssue = column.kind === 'criterion'
-          ? excelAutoDateIssue(cellOperandKind, row.values[column.index], cellMeta, column.excelHeader)
-          : null;
+        const autoDateIssue = excelAutoDateIssue(cellOperandKind, row.values[column.index], cellMeta, column.excelHeader);
         if (autoDateIssue) issues.push(`Excel ${row.excelRow}: ${autoDateIssue}`);
-        const coercionIssue = column.kind === 'criterion'
-          ? excelCoercionIssue(cellOperandKind, row.values[column.index], cellMeta, column.excelHeader)
-          : null;
+        const coercionIssue = excelCoercionIssue(cellOperandKind, row.values[column.index], cellMeta, column.excelHeader);
         if (coercionIssue) issues.push(`Excel ${row.excelRow}: ${coercionIssue}`);
         const visibleValues = splitCell(row.values[column.index]);
         const explicitValues = column.idIndex === null ? [] : splitCell(row.values[column.idIndex]);
@@ -4519,11 +4538,15 @@
           } else {
             const kind = cellOperandKind;
             if (['Boolean','Int','Decimal','Date','DateTime'].includes(kind)) {
-              const [fromText, toText] = splitRangeText(result.display || '');
+              const [fromText, toText] = kind === 'Boolean' ? [result.display || '', null] : splitRangeText(result.display || '', kind);
               const fromIssue = typedValueIssue(kind, fromText, column.excelHeader);
               const toIssue = toText ? typedValueIssue(kind, toText, column.excelHeader) : null;
               if (fromIssue) issues.push(`Excel ${row.excelRow}: ${fromIssue}`);
               if (toIssue) issues.push(`Excel ${row.excelRow}: ${toIssue}`);
+              if (!fromIssue && !toIssue && kind !== 'Boolean') {
+                try { parseRange(result.display, kind); }
+                catch (error) { issues.push(`Excel ${row.excelRow}: «${column.excelHeader}»: ${error.message}`); }
+              }
               compareValues.push(typedRangeSemantic(kind, fromText, toText));
             } else compareValues.push(`value:${canonicalValue(result.display)}`);
           }
@@ -4532,6 +4555,7 @@
         ids[column.key] = resolvedIds;
         compare[column.key] = compareValues.filter(Boolean);
         columns.set(id, column);
+        if (issues.length > issueStart) fieldIssues.push({ id, key: column.key, label: column.excelHeader, reasons: issues.slice(issueStart) });
       }
       const system = {
         action: normalizeAction(columnMap.system.action === undefined ? '' : row.values[columnMap.system.action]),
@@ -4540,7 +4564,7 @@
         baseFingerprint: normalizeSpace(columnMap.system.baseFingerprint === undefined ? '' : row.values[columnMap.system.baseFingerprint]),
       };
       const hasData = Object.values(flat).some(values => Array.isArray(values) && values.length);
-      return { excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, issues, resolutions, fingerprint: fingerprintFlat(flat), compareFingerprint: fingerprintFlat(compare) };
+      return { excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, issues, fieldIssues, resolutions, fingerprint: fingerprintFlat(flat), compareFingerprint: fingerprintFlat(compare) };
     });
   }
 
@@ -4973,16 +4997,42 @@
     return { actions, issues, warnings, usedCurrent };
   }
 
-  function detectPlanDuplicateConflicts(actions, snapshot) {
-    const finalRows = new Map((snapshot?.rows || []).map(row => [canonicalValue(row.versionId || row.rowCardId), { label: `TESSA ${row.index + 1}`, flat: row.flat }]));
+  function duplicateRowKey(current, desired, structure) {
+    const columns = [
+      ...(structure?.conditions || []).map(c => ({ ...c, kind: 'criterion', id: c.criterionRowId, key: definitionKey('criterion', c.criterionRowId) })),
+      ...(structure?.functions || []).map(f => ({ ...f, kind: 'function', key: definitionKey('function', f.id) })),
+    ];
+    const flat = { ...(current?.flat || {}), ...(desired?.flat || {}) };
+    const normalized = {};
+    for (const column of columns) {
+      const edited = desired?.columns?.has(column.id);
+      const typed = (column.kind === 'function' ? current?.roles : current?.values)?.[column.id];
+      if (edited && desired.compare?.[column.key]) normalized[column.key] = sortedCanon(desired.compare[column.key]);
+      else if (!edited && typed) normalized[column.key] = sortedCanon(currentCompareValues(current, column));
+      else {
+        const kind = operandKind(column);
+        normalized[column.key] = sortedCanon((flat[column.key] || []).map(value => {
+          if (!['Boolean', 'Int', 'Decimal', 'Date', 'DateTime'].includes(kind)) return `value:${canonicalValue(value)}`;
+          const [from, to] = splitRangeText(value, kind);
+          return typedRangeSemantic(kind, from, to);
+        }));
+      }
+    }
+    if (!columns.length) for (const key of Object.keys(flat).sort()) normalized[key] = sortedCanon(flat[key]);
+    // Keep the complete key: a 32-bit fingerprint is not proof of equality.
+    return JSON.stringify(stableObject(normalized));
+  }
+
+  function detectPlanDuplicateConflicts(actions, snapshot, structure = null) {
+    const finalRows = new Map((snapshot?.rows || []).map(row => [canonicalValue(row.versionId || row.rowCardId), { label: `TESSA ${row.index + 1}`, current: row }]));
     for (const action of actions || []) {
       if (action.type === 'delete' && action.currentRow) finalRows.delete(canonicalValue(action.currentRow.versionId || action.currentRow.rowCardId));
-      else if (action.type === 'update' && action.currentRow) finalRows.set(canonicalValue(action.currentRow.versionId || action.currentRow.rowCardId), { label: `Excel ${action.excelRow.excelRow}`, flat: action.excelRow.flat, changed: true });
-      else if (action.type === 'add') finalRows.set(`add:${action.excelRow.excelRow}`, { label: `Excel ${action.excelRow.excelRow}`, flat: action.excelRow.flat, changed: true });
+      else if (action.type === 'update' && action.currentRow) finalRows.set(canonicalValue(action.currentRow.versionId || action.currentRow.rowCardId), { label: `Excel ${action.excelRow.excelRow}`, current: action.currentRow, desired: action.excelRow, changed: true });
+      else if (action.type === 'add') finalRows.set(`add:${action.excelRow.excelRow}`, { label: `Excel ${action.excelRow.excelRow}`, desired: action.excelRow, changed: true });
     }
     const groups = new Map();
     for (const row of finalRows.values()) {
-      const fp = fingerprintFlat(row.flat || {});
+      const fp = duplicateRowKey(row.current, row.desired, structure);
       if (!groups.has(fp)) groups.set(fp, []);
       groups.get(fp).push(row);
     }
@@ -5019,13 +5069,35 @@
       ? buildRoundtripPlan(workbook, structure, snapshot, columnMap, desired)
       : buildLegacyPlan(workbook, structure, snapshot, columnMap, desired);
 
+    // An unambiguous UPDATE can preserve a bad cell without discarding unrelated
+    // edits. ADD/REPLACE/DELETE and identity/baseline errors stay atomic.
+    const skippedFields = [];
+    const recoveredRows = new Set();
+    const structuralIssueRows = new Set([...(built.issues || []), ...(columnMap.mappingIssues || [])].flatMap(issueExcelRows));
+    built.actions = (built.actions || []).map(action => {
+      const fields = action.excelRow?.fieldIssues || [];
+      if (!fields.length || action.type !== 'update' || columnMap.mode !== 'roundtrip'
+        || action.match?.matchedBy !== 'identity' || structuralIssueRows.has(action.excelRow.excelRow)) return action;
+      const rejected = new Set(fields.map(field => field.key));
+      const changes = action.changes.filter(change => !rejected.has(change.key));
+      if (!changes.length) return action;
+      const excelRow = reviewedExcelRow(action, rejected);
+      for (const field of fields) excelRow.columns.delete(field.id);
+      excelRow.issues = [];
+      excelRow.fieldIssues = [];
+      const omitted = fields.map(field => ({ excelRow: excelRow.excelRow, key: field.key, label: field.label, reason: field.reasons.join(' '), source: 'field-validation' }));
+      skippedFields.push(...omitted);
+      recoveredRows.add(excelRow.excelRow);
+      return { ...action, changes, excelRow, skippedFields: omitted };
+    });
+
     // Ошибки конкретной строки не должны ломать весь пакет. Они переводятся в SKIP,
     // а корректные строки остаются исполняемыми. Глобальные ошибки формата/матрицы
     // по-прежнему считаются фатальными, потому что безопасно интерпретировать файл нельзя.
     const rawIssues = [
       ...(built.issues || []),
       ...(columnMap.mappingIssues || []),
-      ...desired.flatMap(row => row.issues || []),
+      ...desired.flatMap(row => recoveredRows.has(row.excelRow) ? [] : (row.issues || [])),
     ];
     const rowIssueMap = new Map();
     const fatalIssues = [];
@@ -5072,7 +5144,7 @@
 
     // Дубликаты после применения тоже локальны: пропускаем только изменяемые Excel-строки,
     // которые образуют конфликт, а не весь файл.
-    const duplicateIssues = detectPlanDuplicateConflicts(actions, snapshot);
+    const duplicateIssues = detectPlanDuplicateConflicts(actions, snapshot, structure);
     if (duplicateIssues.length) {
       const duplicateRows = new Set();
       for (const issue of duplicateIssues) issueExcelRows(issue).forEach(rowNumber => duplicateRows.add(rowNumber));
@@ -5116,6 +5188,7 @@
       issues: fatalIssues,
       fatalIssues,
       skippedRows,
+      skippedFields,
       warnings,
       counts: countActions(actions, skippedRows),
     };
@@ -5177,17 +5250,23 @@
       : result?.cancelled
         ? `Применение остановлено: применено ${applied}.`
         : `Применение завершено частично: применено ${applied} из ${requested}.`;
-    const sourceText = sourceSkipped ? ` Ещё ${sourceSkipped} строк не входили в Apply и остались без изменений.` : '';
+    const sourceText = (sourceSkipped ? ` Ещё ${sourceSkipped} строк не входили в Apply и остались без изменений.` : '')
+      + (result?.skippedFields?.length ? ` Не применено отдельных полей: ${result.skippedFields.length}.` : '');
     const refreshText = result?.viewRefresh?.ok
       ? ' Отображение TESSA обновлено автоматически.'
       : (result?.viewRefresh && !result.viewRefresh.skipped ? ' Запись завершена; отображение можно обновить кнопкой ниже.' : '');
-    if (summary) summary.innerHTML = `<div class="tms-review-note"><b>${title}</b>${sourceText}${refreshText} Старый Preview погашен: для следующего Apply нужна свежая проверка.</div>`;
+    if (summary) summary.innerHTML = `<div class="tms-review-note"><b>${title}</b>${sourceText}${refreshText} Старый Preview погашен: для следующего Apply нужна свежая проверка.</div>${skippedFieldsHtml(result?.skippedFields)}`;
     if (table) table.innerHTML = '';
     if (refreshButton) {
       const needsManualRefresh = Boolean(result?.viewRefresh && !result.viewRefresh.ok && !result.viewRefresh.skipped);
       refreshButton.hidden = !needsManualRefresh;
       refreshButton.disabled = !needsManualRefresh;
     }
+  }
+
+  function skippedFieldsHtml(fields = []) {
+    if (!fields?.length) return '';
+    return `<details open class="tms-skipped-box"><summary><b>Не применяются отдельные поля: ${fields.length}</b></summary><div>Значения этих полей в TESSA сохраняются. Исправьте ячейки в Excel и выполните новую проверку.</div>${fields.slice(0, 20).map(field => `<div class="tms-skip-line">Excel ${escapeHtml(field.excelRow)} · ${escapeHtml(field.label)}: ${escapeHtml(field.reason)}</div>`).join('')}${fields.length > 20 ? '<div>Остальные поля указаны в строках Preview и отчёте.</div>' : ''}</details>`;
   }
 
   /**
@@ -5337,7 +5416,7 @@
     // Частичная отмена меняет итоговую строку, поэтому заново проверяем дубли.
     // Иначе пользователь мог бы убрать одно поле и случайно собрать комбинацию,
     // уже существующую в другой строке TESSA.
-    const duplicateIssues = detectPlanDuplicateConflicts(actions.filter(action => action.type !== 'noop'), plan.snapshot);
+    const duplicateIssues = detectPlanDuplicateConflicts(actions.filter(action => action.type !== 'noop'), plan.snapshot, plan.structure);
     const safety = plan.safety
       ? { ...plan.safety, blockedReasons: [...(plan.safety.blockedReasons || [])] }
       : { blocked: false, blockedReasons: [] };
@@ -5363,6 +5442,7 @@
       counts: plan.counts,
       warnings: plan.warnings,
       issues: plan.issues,
+      skippedFields: plan.skippedFields || [],
       safety: plan.safety,
       actions: (plan.actions || []).map(action => ({
         type: action.type,
@@ -5711,6 +5791,7 @@
   // ---------------------------------------------------------------------------
 
   async function analyzeSelectedFile(file) {
+    resetFilePreview();
     if (!file) throw new Error('Выберите файл .xlsx.');
     APP.abortRequested = false;
     setProgress(5, '1/6 · Читаю Excel', file.name);
@@ -5786,10 +5867,23 @@
     const visible = previewPlan.actions.filter(action => action.type !== 'noop').length;
     const skipped = previewPlan.counts?.skip || 0;
     const detail = visible
-      ? `Корректных изменений: ${visible}${skipped ? ` · пропустить: ${skipped}` : ''}`
+      ? `Корректных изменений: ${visible}${skipped ? ` · пропустить строк: ${skipped}` : ''}${previewPlan.skippedFields?.length ? ` · не применяются поля: ${previewPlan.skippedFields.length}` : ''}`
       : (skipped ? `Корректных изменений нет · пропустить: ${skipped}` : 'Изменений нет');
     setProgress(100, 'Проверка завершена', detail);
     return previewPlan;
+  }
+
+  function resetFilePreview() {
+    APP.plan = null;
+    APP.workbook = null;
+    APP.review = createPlanReviewState();
+    APP.previewView = createPreviewViewState();
+    for (const id of ['#tms-summary', '#tms-plan']) {
+      const element = document.querySelector(id);
+      if (element) element.innerHTML = '';
+    }
+    const apply = document.querySelector('#tms-apply');
+    if (apply) apply.disabled = true;
   }
 
   async function hydrateMissingIdsForAction(action, structure, snapshot, bridge) {
@@ -6293,7 +6387,7 @@
         ? `\nОтображение TESSA обновлено автоматически.`
         : (result?.viewRefresh && !result.viewRefresh.skipped ? `\nЗапись завершена, но отображение TESSA не удалось обновить автоматически.` : '');
       return `Готово. Применено: ${applied} из ${requested}.
-Все подготовленные изменения применены.${sourceNote}${refreshNote}
+Все подготовленные изменения применены.${sourceNote}${result.skippedFields?.length ? `\nНе применено отдельных полей: ${result.skippedFields.length}. Причины указаны в отчёте.` : ''}${refreshNote}
 Перед следующим Apply нужна свежая проверка или свежая выгрузка Excel.`;
     }
     const mutationSkipped = preflightSkipped + storeSkipped;
@@ -6330,7 +6424,7 @@
       if (!okLow) return null;
     }
     const c = plan.counts;
-    const ok = window.confirm(`Применить корректные изменения к TESSA?\n\nИзменить: ${c.update}\nДобавить: ${c.add}\nУдалить: ${c.delete}\nПропустить: ${c.skip || 0}\n\nОшибочные строки не будут применены.`);
+    const ok = window.confirm(`Применить корректные изменения к TESSA?\n\nИзменить: ${c.update}\nДобавить: ${c.add}\nУдалить: ${c.delete}\nПропустить: ${c.skip || 0}${plan.skippedFields?.length ? `\nОставить без изменения отдельных полей: ${plan.skippedFields.length}` : ''}\n\nОшибочные строки и указанные в Preview поля не будут применены.`);
     if (!ok) return null;
     APP.abortRequested = false;
     APP.lastMutationReceipts = null;
@@ -6346,6 +6440,7 @@
         finishedAt: nowIso(),
         rows: [],
         skipped: [...(plan.skippedRows || [])],
+        skippedFields: [...(plan.skippedFields || [])],
         success: false,
         partial: true,
         status: 'cancelled',
@@ -6386,6 +6481,7 @@
       finishedAt: null,
       rows: [],
       skipped: [...(plan.skippedRows || []), ...runtimeSkips],
+      skippedFields: [...(plan.skippedFields || [])],
       success: false,
       partial: false,
       status: 'running',
@@ -6555,6 +6651,7 @@
     const progressParts = [];
     if (result.preflightSkippedCount || result.storeSkippedCount) progressParts.push(`не применено: ${result.preflightSkippedCount + result.storeSkippedCount}`);
     if (result.sourceSkippedCount) progressParts.push(`не вошли в Apply: ${result.sourceSkippedCount}`);
+    if (result.skippedFields?.length) progressParts.push(`не применяются поля: ${result.skippedFields.length}`);
     if (result.notStartedCount) progressParts.push(`не начато: ${result.notStartedCount}`);
     if (result.viewRefresh?.ok) progressParts.push('отображение TESSA обновлено');
     else if (result.viewRefresh && !result.viewRefresh.skipped) progressParts.push('отображение можно обновить кнопкой ниже');
@@ -6761,6 +6858,7 @@
         <span class="tms-count tms-skip">пропустить <b>${c.skip || 0}</b></span>
       </div>
       ${hasReviewExclusions ? `<div class="tms-review-note"><b>Фильтр применения включён.</b> Отключённые здесь изменения не попадут в TESSA; исходный Excel не изменяется.</div>` : ''}
+      ${skippedFieldsHtml(reviewed.skippedFields)}
       ${reviewedSafety.blocked ? `<div class="tms-fatal"><b>Этот набор изменений нельзя безопасно применить</b><br>${(reviewedSafety.blockedReasons || []).map(escapeHtml).join('<br>')}</div>` : ''}
       ${applyState.batchBlocked ? `<div class="tms-fatal"><b>Пакет для Apply превышает лимит</b><br>Сейчас: ${applyState.count} · максимум: 2000. Ниже в Preview выберите тип/поиск, размер пакета и нажмите «Оставить в Apply».</div>` : ''}
       ${skipped.length ? `<details class="tms-skipped-box"><summary><b>Пропущено строк: ${skipped.length}</b> · ${applyState.blocked ? 'корректные строки проверены, но Apply сейчас заблокирован' : 'корректные изменения можно применить'}</summary><div>${skipped.slice(0, 20).map(item => `<div class="tms-skip-line">${item.excelRow ? `Excel ${item.excelRow}: ` : ''}${escapeHtml(item.reason)}</div>`).join('')}${skipped.length > 20 ? `<div class="tms-skip-more">Ещё ${skipped.length - 20}…</div>` : ''}</div></details>` : ''}
@@ -6841,7 +6939,7 @@
       if (action.type === 'update') {
         const excludedChanges = reviewExcludedChanges(APP.review, action);
         const rowsExcludedIndividually = (action.changes || []).filter(change => excludedChanges.has(change.key)).length;
-        body.innerHTML = `${rowReviewControl}
+        body.innerHTML = `${rowReviewControl}${skippedFieldsHtml(action.skippedFields)}
           ${!rowExcluded && rowsExcludedIndividually ? `<div class="tms-review-state">Не применяется полей: ${rowsExcludedIndividually}</div>` : ''}
           ${(action.changes || []).map(change => {
             const individuallyExcluded = excludedChanges.has(change.key);
@@ -7178,6 +7276,7 @@
       refreshRuntimeCapabilities(effectiveActions);
     });
     panel.querySelector('#tms-file').addEventListener('change', event => {
+      resetFilePreview();
       const file = event.target.files?.[0]; panel.querySelector('#tms-file-name').textContent = file?.name || 'Файл не выбран'; panel.querySelector('#tms-refresh-excel').disabled = !file && !APP.workbook?.roundtrip?.enabled;
     });
 
