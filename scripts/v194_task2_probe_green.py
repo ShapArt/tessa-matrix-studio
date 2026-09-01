@@ -98,19 +98,39 @@ function probeFieldValue(section, name, typedField = null) {
   } catch (_) { return null; }
 }
 
-function inspectMatrixCapabilitiesReadOnly(mainCard, typedField = null) {
+function probeLocalizeValueReadOnly(root, value) {
+  const textValue = normalizeSpace(value);
+  if (!textValue || !textValue.startsWith('$')) return textValue;
+  const candidates = [];
+  try {
+    const module = root?.tessa?.apiLoader?.(880540);
+    const manager = module?.LocalizationManager?.instance || module?.LocalizationManager;
+    if (manager?.localize) candidates.push([manager, manager.localize]);
+    if (module?.LocalizationManager?.localize) candidates.push([module.LocalizationManager, module.LocalizationManager.localize]);
+  } catch (_) { /* keep raw localization key */ }
+  if (root?.tessa?.localizationManager?.localize) candidates.push([root.tessa.localizationManager, root.tessa.localizationManager.localize]);
+  if (root?.tessa?.localize) candidates.push([root.tessa, root.tessa.localize]);
+  if (root?.LocalizationManager?.instance?.localize) candidates.push([root.LocalizationManager.instance, root.LocalizationManager.instance.localize]);
+  for (const [owner, fn] of candidates) {
+    try {
+      const localized = typeof fn === 'function' ? fn.call(owner, textValue) : null;
+      if (localized && localized !== textValue) return normalizeSpace(localized);
+    } catch (_) { /* try next read-only localizer */ }
+  }
+  return textValue;
+}
+
+function inspectMatrixCapabilitiesReadOnly(mainCard, typedField = null, localize = null) {
   let section = null;
   try { section = mainCard?.sections?.tryGet?.(S.Matrix) || null; } catch (_) { section = null; }
   const template = probeFieldValue(section, F.TemplateID, typedField);
   const stateName = probeFieldValue(section, 'StateName', typedField);
-  let stateCaption = normalizeSpace(stateName);
-  try { stateCaption = matrixStateCaption(stateName); } catch (_) { /* raw caption fallback */ }
-  const canonicalState = canonicalValue(stateCaption);
+  const matrixInfo = { StateName: stateName };
   return {
     identity: Boolean(mainCard?.id),
     template: Boolean(template),
     stateReadable: Boolean(stateName),
-    writableState: canonicalState === canonicalValue('Черновик') || canonicalState === canonicalValue('Draft'),
+    writableState: isWritableMatrixDraft(matrixInfo, localize),
     matrixId: mainCard?.id ? String(mainCard.id) : null,
   };
 }
@@ -155,6 +175,7 @@ function probeRuntimeEnvironment(options = {}) {
   const editor = workspace?.editor || null;
   const cardModel = editor?.cardModel || null;
   const mainCard = cardModel?.card || null;
+  const localize = value => probeLocalizeValueReadOnly(root, value);
 
   return {
     runtime: {
@@ -177,7 +198,7 @@ function probeRuntimeEnvironment(options = {}) {
       cardNewRequest: typeof cards?.CardNewRequest === 'function',
       affectVersion: probeAffectVersionSupport(cards?.CardStoreRequest),
     },
-    matrix: inspectMatrixCapabilitiesReadOnly(mainCard, core?.TypedField || null),
+    matrix: inspectMatrixCapabilitiesReadOnly(mainCard, core?.TypedField || null, localize),
     nativeView: inspectNativeViewCapabilitiesReadOnly(editor, core?.TypedField || null),
   };
 }
