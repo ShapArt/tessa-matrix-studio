@@ -95,23 +95,31 @@ Capability-check не должен выполнять `CardStore`, `DeleteRow`, 
 
 `ready`:
 
-- доступны обязательные runtime/card primitives;
-- MatrixID/TemplateID/State читаются;
-- доступны операции export/analyze/apply;
-- native view найден и имеет usable refresh/paging surface.
+- доступны обязательные runtime/card primitives для текущей операции;
+- MatrixID/TemplateID/State читаются там, где они нужны;
+- нативный view или другой уже доказанный read-path позволяет безопасно получить требуемую identity;
+- optional capabilities для текущего UX доступны.
 
 `limited`:
 
-- основная работа Studio безопасно возможна;
+- основная запрошенная операция безопасно возможна;
 - отсутствует необязательная capability, например local view refresh;
 - UI явно показывает, какая функция ограничена и какой есть fallback.
 
 `incompatible`:
 
-- отсутствует capability, без которой Studio не может безопасно идентифицировать/читать/писать матрицу;
-- соответствующие действия блокируются до любых TESSA mutation calls.
+- отсутствует capability, без которой конкретную операцию нельзя выполнить безопасно;
+- соответствующее действие блокируется до любых TESSA mutation calls.
 
-Важный принцип: capability failure блокирует только зависимые действия. Например, отсутствие local refresh не должно блокировать Apply, если весь write safety path доступен.
+Capability оценивается **по операции и по effective plan**, а не одним глобальным «всё или ничего» флагом.
+
+Примеры:
+
+- отсутствие `CardNew` блокирует ADD, но не обязано блокировать UPDATE-only Apply;
+- отсутствие Store primitive блокирует UPDATE/ADD, но не read-only export/reconciliation;
+- отсутствие DELETE request primitive блокирует DELETE, но не UPDATE/ADD;
+- отсутствие local view refresh не блокирует успешный Store;
+- отсутствие native view может быть `limited` только если существует уже доказанный альтернативный read-path с той же строгой identity. Если такой альтернативы нет и MatrixRowID/MatrixVersionID нельзя получить безопасно, export/analyze становятся `incompatible` — никаких guessed IDs.
 
 ### B. Capability UI
 
@@ -128,7 +136,7 @@ Capability-check не должен выполнять `CardStore`, `DeleteRow`, 
 Capability-check выполняется:
 
 1. при инициализации панели;
-2. повторно перед Analyze/Apply для критичных capabilities;
+2. повторно перед Analyze/Apply для критичных capabilities конкретной операции/effective plan;
 3. по явной кнопке `Повторить проверку`, если состояние limited/incompatible.
 
 Кэш capability session-only и инвалидируется при смене card/workspace identity.
@@ -169,11 +177,13 @@ ReconciliationResult
 
 ### D. Reconciliation identity source
 
-Для проверки нельзя использовать только display-фingerprint.
+Для проверки нельзя использовать только display-fingerprint.
+
+Во время Apply формируется минимальный **private session mutation receipt**. Он нужен для последующей read-only reconciliation, но не должен автоматически попадать в `APP.lastReport`, download-report или другой support JSON.
 
 #### UPDATE
 
-Во время Apply result сохраняется минимальная mutation receipt:
+Receipt сохраняет:
 
 - Excel row;
 - target RowCardID;
@@ -191,11 +201,13 @@ Reconciliation не должен «угадывать ADD по похожим з
 
 #### DELETE
 
-Проверяется отсутствие конкретной target identity/version из mutation receipt.
+DELETE в TESSA не обязан означать физическое исчезновение row-card из серверного хранилища/истории. Поэтому reconciliation проверяет **текущий состав матрицы**:
 
-Если target всё ещё существует — `divergent`.
+- target MatrixVersionID / active membership отсутствует среди текущих строк матрицы => `verified`;
+- target version всё ещё является текущим участником матрицы => `divergent`;
+- fresh snapshot неполный/identity неоднозначна => `unknown`.
 
-Если fresh read сам неполный/ambiguous — `unknown`, не `verified`.
+Нельзя считать DELETE неуспешным только потому, что historical CardGet по RowCardID всё ещё возвращает карточку.
 
 ### E. Semantic comparison
 
@@ -211,7 +223,7 @@ Reconciliation всегда создаёт fresh bridge/snapshot и не исп�
 
 Приоритет:
 
-1. targeted read затронутых RowCardID, если текущий bridge может надёжно получить строки по identity;
+1. targeted read затронутых RowCardID, если текущий bridge может надёжно получить строки по identity и доказать их current matrix membership;
 2. иначе один fresh matrix snapshot + O(1) indexes по RowCardID/VersionID.
 
 Запрещён O(N × M) поиск каждой mutation по полной матрице.
@@ -289,16 +301,19 @@ Reconciliation никогда не вызывает:
 - capability booleans/status/reason codes;
 - counts/timings;
 - operation/reconciliation statuses;
-- anonymized technical error codes/messages;
 - MatrixID/TemplateID только при explicit user download, как уже допускает issue scope.
+
+Для ошибок по умолчанию сохраняются стабильный `reasonCode`, категория и безопасный allowlisted summary. **Произвольный upstream `error.message` не сериализуется автоматически**, потому что серверная диагностика может содержать имена/значения рабочих данных.
 
 Не включать по умолчанию:
 
 - значения criteria;
+- expected semantic keys из private mutation receipts;
 - названия ролей/исполнителей;
 - контрагентов;
 - комментарии;
 - business text cells;
+- произвольный raw `error.message`;
 - полный snapshot;
 - полный workbook.
 
@@ -313,7 +328,7 @@ Reconciliation никогда не вызывает:
 Предлагаемые новые helpers:
 
 - `evaluateRuntimeCapabilities(env)`;
-- `capabilityOperationAvailability(capabilities)`;
+- `capabilityOperationAvailability(capabilities, operationContext)`;
 - `buildMutationReceipts(applyContext)`;
 - `indexSnapshotForReconciliation(snapshot)`;
 - `reconcileMutationReceipts(receipts, snapshot, structure)`;
@@ -380,40 +395,44 @@ Reason codes должны быть стабильными для тестов/д
 6. Old Apply-plan remains consumed after any started mutation.
 7. Reconciliation mismatch never triggers automatic mutation.
 8. Apply result is immutable historical receipt; reconciliation is a separate later observation.
-9. Default diagnostics contain no business row values.
-10. Current Roundtrip/XLSX security ceilings remain unchanged.
+9. Private mutation receipts не сериализуются в default support report.
+10. Default diagnostics contain no business row values и no arbitrary upstream error text.
+11. Current Roundtrip/XLSX security ceilings remain unchanged.
 
 ## TDD acceptance matrix
 
 ### Capability
 
-1. missing `apiLoader` => `incompatible`, export/analyze/apply unavailable;
+1. missing `apiLoader` => `incompatible`, зависящие от runtime export/analyze/apply unavailable;
 2. workspace/editor/card model missing => precise blocker;
-3. CardGet available but Store primitives missing => read/export may remain available, Apply unavailable;
-4. native view missing => `limited` if bridge can still safely read/write through existing alternative path;
-5. native view found but refresh missing => Apply allowed, `refreshView=false`;
-6. MatrixID/TemplateID unavailable => Analyze/Apply blocked fail-closed.
+3. CardGet available but Store primitives missing => read/export may remain available, Apply unavailable для mutation типов, которым нужен Store;
+4. missing CardNew => ADD unavailable, UPDATE-only Apply остаётся доступен при остальных capabilities;
+5. missing DeleteRow request primitive => DELETE unavailable, UPDATE/ADD unaffected;
+6. native view missing => `limited` только при доказанном альтернативном identity read-path, иначе соответствующие export/analyze блокируются;
+7. native view found but refresh missing => Apply allowed, `refreshView=false`;
+8. MatrixID/TemplateID unavailable => Analyze/Apply blocked fail-closed.
 
 ### Reconciliation
 
-7. UPDATE fresh state semantically equals receipt => verified;
-8. same stable reference ID but renamed display => verified;
-9. UPDATE changed after Apply => divergent;
-10. ADD created identity present and state equal => verified;
-11. ADD identity cannot be proven => unknown, never guessed;
-12. DELETE target absent => verified;
-13. DELETE target still present => divergent;
-14. one divergent among 100 verified => overall divergent with exact counts;
-15. writer-lock succeeds on retry 3 => verified/incomplete according to fresh result, mutation calls remain zero;
-16. writer-lock exhausted => incomplete + retryable;
-17. permission/runtime error => no blind retry;
-18. reconciliation never changes `APP.plan` back to executable state.
+9. UPDATE fresh state semantically equals receipt => verified;
+10. same stable reference ID but renamed display => verified;
+11. UPDATE changed after Apply => divergent;
+12. ADD created identity present and state equal => verified;
+13. ADD identity cannot be proven => unknown, never guessed;
+14. DELETE target version absent from current matrix membership => verified even if historical row-card still exists;
+15. DELETE target version still current => divergent;
+16. one divergent among 100 verified => overall divergent with exact counts;
+17. writer-lock succeeds on retry 3 => verified/incomplete according to fresh result, mutation calls remain zero;
+18. writer-lock exhausted => incomplete + retryable;
+19. permission/runtime error => no blind retry;
+20. reconciliation never changes `APP.plan` back to executable state.
 
 ### Privacy/performance
 
-19. default support report contains no supplied business cell sentinel strings;
-20. 500 receipts over a large snapshot remain within broad linear-performance ceiling;
-21. full existing `npm test` remains green.
+21. default support report contains no supplied business cell sentinel strings;
+22. default support report contains no private semantic-key sentinel and no arbitrary upstream error sentinel;
+23. 500 receipts over a large snapshot remain within broad linear-performance ceiling;
+24. full existing `npm test` remains green.
 
 ## Release / rollout
 
@@ -447,11 +466,13 @@ Suggested delivery sequence:
 v1.9.40 is ready for live UAT when:
 
 - Studio can explain before mutation which runtime capabilities are ready/limited/incompatible;
+- capability gating зависит от фактической операции/effective plan, а не блокирует всё из-за одной необязательной primitive;
 - missing optional view refresh does not unnecessarily block safe Apply;
 - missing critical identity/write primitives fail closed before mutation;
 - successful Apply can be independently reconciled against fresh TESSA state;
 - UPDATE/ADD/DELETE verification is identity-driven and typed-semantic;
+- DELETE проверяется по current matrix membership, а не по физическому существованию historical row-card;
 - mismatch never triggers mutation;
 - reconciliation cannot revive a consumed plan;
-- default diagnostics remain free of business row values;
+- default diagnostics remain free of business row values, private semantic receipts и arbitrary upstream error text;
 - full existing safety/load/security suite and new tests are green.
