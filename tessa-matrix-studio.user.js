@@ -5773,10 +5773,8 @@
       const sourceNote = sourceSkipped ? `
 Ещё ${sourceSkipped} строк не вошли в Apply и остались без изменений.` : '';
       const refreshNote = result?.viewRefresh?.ok
-        ? '
-Отображение TESSA обновлено автоматически.'
-        : (result?.viewRefresh && !result.viewRefresh.skipped ? '
-Запись завершена, но отображение TESSA не удалось обновить автоматически.' : '');
+        ? `\nОтображение TESSA обновлено автоматически.`
+        : (result?.viewRefresh && !result.viewRefresh.skipped ? `\nЗапись завершена, но отображение TESSA не удалось обновить автоматически.` : '');
       return `Готово. Применено: ${applied} из ${requested}.
 Все подготовленные изменения применены.${sourceNote}${refreshNote}`;
     }
