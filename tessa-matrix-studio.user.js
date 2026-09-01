@@ -53,6 +53,7 @@
     capabilities: null,
     capabilityAvailability: null,
     capabilityCheckedCardId: null,
+    lastMutationReceipts: null,
     busy: false,
     abortRequested: false,
     logs: [],
@@ -596,6 +597,49 @@
     const fromSemantic = typedScalarSemantic(kind, value);
     const toSemantic = to === null || to === undefined || normalizeSpace(to) === '' ? '' : typedScalarSemantic(kind, to);
     return toSemantic ? `${fromSemantic}..${toSemantic}` : fromSemantic;
+  }
+
+
+  function reconciliationCriterionToken(item) {
+    const id = item?.id;
+    if (id !== null && id !== undefined && id !== '') return `ref:${canonicalValue(id)}`;
+    const kind = normalizeSpace(item?.kind || 'String') || 'String';
+    const value = item?.value ?? item?.display ?? '';
+    const to = item?.to === null || item?.to === undefined ? null : item.to;
+    return typedRangeSemantic(kind, value, to);
+  }
+
+  function reconciliationSemanticKey(row, structure) {
+    const parts = [];
+    const conditions = [...(structure?.conditions || [])]
+      .sort((a, b) => canonicalValue(a?.criterionRowId || '').localeCompare(canonicalValue(b?.criterionRowId || '')));
+    for (const condition of conditions) {
+      const criterionId = condition?.criterionRowId;
+      const tokens = (row?.values?.[criterionId] || [])
+        .map(reconciliationCriterionToken)
+        .sort();
+      parts.push(`c:${canonicalValue(criterionId || '')}=[${tokens.join(',')}]`);
+    }
+    const functions = [...(structure?.functions || [])]
+      .sort((a, b) => canonicalValue(a?.id || '').localeCompare(canonicalValue(b?.id || '')));
+    for (const fn of functions) {
+      const tokens = (row?.roles?.[fn?.id] || [])
+        .map(item => `role:${canonicalValue(item?.id || '')}:${canonicalValue(item?.roleTypeId || '')}`)
+        .sort();
+      parts.push(`f:${canonicalValue(fn?.id || '')}=[${tokens.join(',')}]`);
+    }
+    return hashText(parts.join('|'));
+  }
+
+  function createMutationReceipt({ type, action, rowCardId, versionId, expectedRow, structure }) {
+    const rowNumber = Number(action?.excelRow?.excelRow);
+    return {
+      type,
+      excelRow: Number.isFinite(rowNumber) ? rowNumber : null,
+      rowCardId: rowCardId ? String(rowCardId) : null,
+      versionId: versionId ? String(versionId) : null,
+      expectedSemanticKey: type === 'delete' ? null : reconciliationSemanticKey(expectedRow, structure),
+    };
   }
 
   function looksTechnicalValue(value) {
@@ -6102,6 +6146,7 @@
     const ok = window.confirm(`Применить корректные изменения к TESSA?\n\nИзменить: ${c.update}\nДобавить: ${c.add}\nУдалить: ${c.delete}\nПропустить: ${c.skip || 0}\n\nОшибочные строки не будут применены.`);
     if (!ok) return null;
     APP.abortRequested = false;
+    APP.lastMutationReceipts = null;
     let preflight;
     try {
       preflight = await preflightPlan(plan);
@@ -6146,6 +6191,7 @@
     };
     setProgress(44, 'Применяю изменения', totalToStore ? `0 из ${totalToStore}` : 'Нет строк для записи');
     const successfulMutationRows = new Set();
+    const receipts = [];
     const result = {
       planId: plan.id,
       startedAt: nowIso(),
@@ -6183,7 +6229,22 @@
       const action = prepared.action;
       try {
         log(`Обновляю строку Excel ${action.excelRow.excelRow}`);
+        const expectedRow = typeof bridge.readMatrixRowFromCard === 'function'
+          ? bridge.readMatrixRowFromCard(prepared.card, {
+            index: prepared.current.index,
+            rowCardId: prepared.current.rowCardId,
+            versionId: prepared.current.versionId,
+            rowName: prepared.current.rowName,
+            source: 'apply-expected-update',
+          }, structure)
+          : null;
         await bridge.storeRowCard(prepared.card);
+        if (expectedRow) receipts.push(createMutationReceipt({
+          type: 'update', action,
+          rowCardId: prepared.current.rowCardId,
+          versionId: prepared.current.versionId,
+          expectedRow, structure,
+        }));
         successfulMutationRows.add(Number(action.excelRow.excelRow));
         result.rows.push({ type: 'update', excelRow: action.excelRow.excelRow, versionId: prepared.current.versionId, status: 'ok' });
       } catch (error) {
@@ -6200,6 +6261,15 @@
       const action = created.action;
       try {
         log(`Добавляю строку Excel ${action.excelRow.excelRow}`);
+        const expectedRow = typeof bridge.readMatrixRowFromCard === 'function'
+          ? bridge.readMatrixRowFromCard(created.card, {
+            index: -1,
+            rowCardId: created.cardId,
+            versionId: created.versionId,
+            rowName: `Excel ${action.excelRow.excelRow}`,
+            source: 'apply-expected-add',
+          }, structure)
+          : null;
         // Re-check immediately before Store: another session may have created the
         // same matrix row after preflight completed.
         await bridge.validateDuplicate(created.card, created.versionId);
@@ -6207,6 +6277,12 @@
         const storedCardId = String(storeResponse?.cardId || created.cardId);
         const verification = await bridge.tryGetCard(storedCardId);
         if (verification.error || !verification.card) throw new Error(`Новая карточка строки ${storedCardId} не открывается после сохранения.`);
+        if (expectedRow) receipts.push(createMutationReceipt({
+          type: 'add', action,
+          rowCardId: storedCardId,
+          versionId: created.versionId,
+          expectedRow, structure,
+        }));
         successfulMutationRows.add(Number(action.excelRow.excelRow));
         result.rows.push({ type: 'add', excelRow: action.excelRow.excelRow, rowCardId: storedCardId, versionId: created.versionId, newMethod: created.newMethod, verifiedByCardGet: true, status: 'ok' });
       } catch (error) {
@@ -6243,6 +6319,12 @@
         }
         log(`Удаляю строку TESSA ${action.currentRow.index + 1}`);
         await bridge.deleteMatrixRow(action.currentRow.versionId);
+        receipts.push(createMutationReceipt({
+          type: 'delete', action,
+          rowCardId: prepared.current.rowCardId,
+          versionId: prepared.current.versionId,
+          expectedRow: null, structure,
+        }));
         result.rows.push({ type: 'delete', versionId: action.currentRow.versionId, status: 'ok' });
       } catch (error) {
         const skipped = runtimeSkip(action, error, 'store-delete');
@@ -6267,6 +6349,13 @@
     }
     result.finishedAt = nowIso();
     finalizeApplyResult(result, { cancelled });
+    APP.lastMutationReceipts = result.startedCount > 0 ? {
+      planId: plan.id,
+      matrixId: plan.matrixId,
+      templateId: structure.templateId,
+      receipts,
+      createdAt: nowIso(),
+    } : null;
     const resultLevel = result.partial ? 'warn' : 'info';
     log(`Готово. Статус: ${result.status}; применено: ${result.appliedCount}; пропущено: ${result.skippedCount}; не начато: ${result.notStartedCount}.`, resultLevel);
     rememberReport(result, `TESSA_Matrix_Apply_${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
@@ -6923,7 +7012,7 @@
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, mergeWorkbookIntoCurrentSnapshot, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
-    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, isWriterLockError, refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,
+    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, isWriterLockError, refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
