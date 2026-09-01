@@ -19,3 +19,4 @@ jobs:
           package-manager-cache: false
       - name: Run expected RED reconciliation contracts
         run: node tests/reconciliation.mjs && node tests/reconciliation-writer-lock.mjs && node tests/reconciliation-performance.mjs
+      # fixture retry: explicit null identities must stay null
