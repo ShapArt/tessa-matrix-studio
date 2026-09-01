@@ -3780,7 +3780,7 @@
         }
       }
 
-      if (!links.length && sectionCount === 0) {
+      if (!links.length && sectionCount === 0 && native.controlName) {
         // A brand-new matrix can legitimately have no MatrixRowID yet. This is safe
         // only when the authoritative card section agrees that membership is empty.
         log(`Источник строк TESSA: нативное представление «${native.controlName || 'матрица'}» (0 строк).`);
