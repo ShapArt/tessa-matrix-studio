@@ -33,3 +33,4 @@ jobs:
           git diff --cached --check
           git commit -m "feat: reconcile applied mutations read-only"
           git push origin HEAD:feat/v1.9.40-self-check-reconciliation
+      # retry 2 after explicit-null fixture fix
