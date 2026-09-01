@@ -2,238 +2,178 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Добавить в TESSA Matrix Studio read-only проверку совместимости текущего runtime TESSA и явную post-Apply сверку фактического состояния затронутых строк без повторной записи, auto-rollback или восстановления погашенного Preview.
+**Goal:** Добавить в TESSA Matrix Studio read-only self-check совместимости текущей web-сборки TESSA и явную post-Apply сверку фактического состояния затронутых строк без повторной записи, rollback или восстановления погашенного Preview.
 
-**Architecture:** Сохраняем single-userscript архитектуру. Capability engine и reconciliation rules реализуются как чистые функции, TessaBridge только безопасно обнаруживает runtime primitives и выполняет fresh read, а UI отображает capability/reconciliation state. Mutation receipts хранятся только в памяти вкладки и не попадают в обычный Apply-report; reconciliation использует стабильную identity и typed semantic key из `values`/`roles`, а не display-only `flat`.
+**Architecture:** Остаёмся в одном dependency-free userscript. Capability model и reconciliation engine — чистые функции; TessaBridge только обнаруживает runtime primitives и делает fresh read. Успешные mutation receipts хранятся только в памяти вкладки, а reconciliation сравнивает стабильные RowCardID/MatrixVersionID и typed ID-first semantic state из `values`/`roles`, а не display-only `flat`.
 
-**Tech Stack:** JavaScript userscript (`@grant none`, без runtime dependencies), Node.js regression tests, GitHub Actions/CodeQL.
+**Tech Stack:** JavaScript userscript (`@grant none`), Node.js regressions, GitHub Actions, CodeQL.
 
 **Spec:** `docs/superpowers/specs/2026-09-01-production-self-check-reconciliation-design.md`
 
 ## Global Constraints
 
-- Начинать runtime-реализацию только после закрытия controlled live-gate PR #49 и интеграции/явного supersede v1.9.39.
-- Capability self-check строго read-only: никакого `CardNew`, `CardStore`, `DeleteRow`, `ValidateDuplicate` или иной mutation.
-- Reconciliation строго read-only и никогда не вызывает Store/Delete/ADD/rollback/repair.
-- Никакого обхода штатных прав TESSA.
-- Никакого `editor.refreshCard()` для self-check или reconciliation.
-- Identity ambiguity остаётся fail-closed: `unknown`, а не guessed match.
-- Apply-result — immutable historical receipt; reconciliation-result — отдельное более позднее наблюдение.
-- Любая начавшаяся mutation по-прежнему permanently consumes текущий Preview.
+- Runtime-реализация начинается только после controlled live-gate PR #49 и интеграции/явного supersede v1.9.39.
+- Self-check и reconciliation строго read-only: никаких `CardNew`, `CardStore`, `DeleteRow`, `ValidateDuplicate`, rollback/repair.
+- Никакого `editor.refreshCard()` для self-check/reconciliation.
+- Никакого обхода прав TESSA.
 - Capability gating plan-specific: отсутствие `CardNew` блокирует ADD, но не UPDATE-only Apply; отсутствие local view refresh не блокирует Store.
-- В текущей реализации snapshot зависит от нативного matrix view с `MatrixRowID/MatrixVersionID`; отсутствие самого view блокирует snapshot-dependent export/analyze/apply/reconcile, пока не появится доказанный альтернативный read path.
-- DELETE reconciliation подтверждает отсутствие target `RowCardID/MatrixVersionID` из текущего membership snapshot, а не физическое удаление исторической row-card из хранилища.
-- Default support diagnostics строятся whitelist-ом и не содержат arbitrary `error.message`, criteria/role/business values, workbook, snapshot или private mutation receipts.
-- Roundtrip V6, XLSX security limits, DELETE/batch guards и существующая race protection не меняются.
-
----
+- Текущий snapshot path требует нативный matrix view с `MatrixRowID/MatrixVersionID`; отсутствие самого view блокирует snapshot-dependent export/analyze/apply/reconcile.
+- Apply-result остаётся immutable historical receipt. Reconciliation-result — отдельное более позднее наблюдение.
+- Любая начавшаяся mutation permanently consumes текущий Preview; reconciliation не делает его применимым снова.
+- UPDATE/ADD identity ambiguity => `unknown`, never guessed semantic nearest-match.
+- DELETE verified только если target RowCardID и target MatrixVersionID отсутствуют в текущем membership snapshot; физическое наличие исторической row-card в storage не проверяется.
+- Default support diagnostics строятся whitelist-ом и не содержат arbitrary `error.message`, business values, workbook/snapshot или private mutation receipts.
+- Roundtrip V6, XLSX security ceilings, DELETE/batch guards, preflight и store-time race guards не ослабляются.
 
 ## File Map
 
-Изменения остаются в существующей структуре репозитория:
-
-- `tessa-matrix-studio.user.js` — capability model/probe, private receipt state, reconciliation pure helpers, TessaBridge fresh-read adapter и UI wiring.
-- `tests/runtime-capabilities.mjs` — чистая capability-модель и operation-specific gating.
-- `tests/runtime-capability-probe.mjs` — безопасное обнаружение runtime primitives без mutation calls.
-- `tests/capability-ui-contract.mjs` — UI status / disabled-state contract.
-- `tests/mutation-receipts.mjs` — session-only receipts только для реально успешных mutations.
-- `tests/reconciliation.mjs` — UPDATE/ADD/DELETE identity + typed semantic verification.
-- `tests/reconciliation-writer-lock.mjs` — bounded retry только transient read/writer-lock.
-- `tests/reconciliation-ui-contract.mjs` — consumed Preview остаётся consumed; явная кнопка `Проверить результат`.
+- `tessa-matrix-studio.user.js` — capability model/probe, APP state, mutation receipts, reconciliation engine, bridge read adapter, UI.
+- `tests/runtime-capabilities.mjs` — capability severity + plan-specific operation gating.
+- `tests/runtime-capability-probe.mjs` — runtime discovery без server calls.
+- `tests/capability-ui-contract.mjs` — status/gating UI.
+- `tests/mutation-receipts.mjs` — private successful-write receipts.
+- `tests/reconciliation.mjs` — UPDATE/ADD/DELETE semantic verification.
+- `tests/reconciliation-writer-lock.mjs` — bounded retry только transient writer-lock.
+- `tests/reconciliation-performance.mjs` — 20k snapshot / 500 receipts, linear lookup.
+- `tests/reconciliation-ui-contract.mjs` — consumed Preview + explicit check.
 - `tests/support-report-sanitization.mjs` — privacy whitelist.
-- `tests/reconciliation-performance.mjs` — 500 mutations / high-cardinality linear lookup.
-- `package.json` — включение regressions в полный `npm test`.
-- `README.md`, `docs/PRODUCTION-RUNBOOK.md`, `docs/UAT-COMPACT-ALL-CASES.md`, `CHANGELOG.md`, `.github/ISSUE_TEMPLATE/bug_report.yml` — пользовательский/эксплуатационный контракт и release metadata.
-
-Не выносить runtime-код в новые импортируемые JS-модули: production userscript сейчас dependency-free и тесты уже используют test-mode exports из единого файла.
+- `package.json`, `README.md`, `docs/PRODUCTION-RUNBOOK.md`, `docs/UAT-COMPACT-ALL-CASES.md`, `CHANGELOG.md`, `.github/ISSUE_TEMPLATE/bug_report.yml` — regression/release/docs contracts.
 
 ---
 
-### Task 1: Pure Runtime Capability Model + Plan-Specific Availability
+### Task 1: Pure Capability Model and Plan-Specific Availability
 
 **Files:**
-- Modify: `tessa-matrix-studio.user.js` рядом с state/safety pure helpers.
+- Modify: `tessa-matrix-studio.user.js` near existing safety pure helpers.
 - Create: `tests/runtime-capabilities.mjs`.
 - Modify: `package.json`.
 
 **Interfaces:**
-- Produces: `evaluateRuntimeCapabilities(probe)` → `RuntimeCapabilities`.
-- Produces: `capabilityOperationAvailability(capabilities, actions = [])` → operation availability object.
-- Consumes later: Task 2 runtime probe, Task 3 UI gating.
+- `evaluateRuntimeCapabilities(probe)` → `{ overall, blockers, warnings, ...probe }`.
+- `capabilityOperationAvailability(capabilities, actions=[])` → `{export, analyze, apply, refreshView, reconcile}`.
+- `humanCapabilityBlocker(codes)` → Russian user text; stable reason codes remain separate.
 
-`RuntimeCapabilities`:
+Capability probe shape:
 
 ```js
 {
-  overall: 'ready' | 'limited' | 'incompatible',
   runtime: { extensionRequire, apiLoader, workspace, editor, cardModel },
   cardService: { get, request, store, newOrCreate },
   constructors: { cardGetRequest, cardRequest, cardStoreRequest, cardNewRequest, affectVersion },
-  matrix: { identity, template, stateReadable, writableState },
+  matrix: { identity, template, stateReadable, writableState, matrixId },
   nativeView: { found, paging, refresh },
-  blockers: [{ code, scope }],
-  warnings: [{ code, scope }],
 }
 ```
 
-Availability shape:
+- [ ] **Step 1: Write RED regression**
+
+Create the same VM harness used by existing tests, then assert:
 
 ```js
-{
-  export: { enabled, blockers },
-  analyze: { enabled, blockers },
-  apply: { enabled, blockers },
-  refreshView: { enabled, blockers },
-  reconcile: { enabled, blockers },
-}
-```
-
-- [ ] **Step 1: Write failing capability regression**
-
-Create `tests/runtime-capabilities.mjs` using the existing VM harness pattern:
-
-```js
-import fs from 'node:fs';
-import vm from 'node:vm';
-
-const code = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
-const assert = (condition, message) => { if (!condition) throw new Error(message); };
-
-globalThis.window = globalThis;
-globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
-globalThis.location = { origin: 'https://tessa.cherkizovsky.net' };
-globalThis.document = { body: { innerText: '' }, querySelector: () => null, querySelectorAll: () => [], createElement: () => ({ style: {} }) };
-vm.runInThisContext(code, { filename: 'tessa-matrix-studio.user.js' });
-
-const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
-assert(typeof E.evaluateRuntimeCapabilities === 'function', 'evaluateRuntimeCapabilities is missing');
-assert(typeof E.capabilityOperationAvailability === 'function', 'capabilityOperationAvailability is missing');
-
 const readyProbe = {
   runtime: { extensionRequire: true, apiLoader: true, workspace: true, editor: true, cardModel: true },
   cardService: { get: true, request: true, store: true, newOrCreate: true },
   constructors: { cardGetRequest: true, cardRequest: true, cardStoreRequest: true, cardNewRequest: true, affectVersion: true },
-  matrix: { identity: true, template: true, stateReadable: true, writableState: true },
+  matrix: { identity: true, template: true, stateReadable: true, writableState: true, matrixId: 'matrix-1' },
   nativeView: { found: true, paging: true, refresh: true },
 };
 
 const ready = E.evaluateRuntimeCapabilities(readyProbe);
 assert(ready.overall === 'ready', JSON.stringify(ready));
-assert(E.capabilityOperationAvailability(ready, [{ type: 'update' }]).apply.enabled === true, 'ready UPDATE must be applicable');
+assert(E.capabilityOperationAvailability(ready, [{ type: 'update' }]).apply.enabled === true, 'ready UPDATE must apply');
 
-const noCreate = E.evaluateRuntimeCapabilities({
-  ...readyProbe,
-  cardService: { ...readyProbe.cardService, newOrCreate: false },
-});
-assert(E.capabilityOperationAvailability(noCreate, [{ type: 'update' }]).apply.enabled === true, 'missing CardNew must not block UPDATE-only Apply');
-assert(E.capabilityOperationAvailability(noCreate, [{ type: 'add' }]).apply.enabled === false, 'missing CardNew must block ADD Apply');
+const noCreate = E.evaluateRuntimeCapabilities({ ...readyProbe, cardService: { ...readyProbe.cardService, newOrCreate: false } });
+assert(noCreate.overall === 'limited', JSON.stringify(noCreate));
+assert(E.capabilityOperationAvailability(noCreate, [{ type: 'update' }]).apply.enabled === true, 'CardNew absence must not block UPDATE-only Apply');
+assert(E.capabilityOperationAvailability(noCreate, [{ type: 'add' }]).apply.enabled === false, 'CardNew absence must block ADD');
 
-const noRefresh = E.evaluateRuntimeCapabilities({
-  ...readyProbe,
-  nativeView: { ...readyProbe.nativeView, refresh: false },
-});
+const noRefresh = E.evaluateRuntimeCapabilities({ ...readyProbe, nativeView: { found: true, paging: true, refresh: false } });
 assert(noRefresh.overall === 'limited', JSON.stringify(noRefresh));
-assert(E.capabilityOperationAvailability(noRefresh, [{ type: 'update' }]).apply.enabled === true, 'view refresh is optional for Store');
-assert(E.capabilityOperationAvailability(noRefresh, []).refreshView.enabled === false, 'manual view refresh must be unavailable');
+assert(E.capabilityOperationAvailability(noRefresh, [{ type: 'update' }]).apply.enabled === true, 'refresh is optional for Store');
+assert(E.capabilityOperationAvailability(noRefresh, []).refreshView.enabled === false, 'refreshView must be disabled');
 
-const noView = E.evaluateRuntimeCapabilities({
-  ...readyProbe,
-  nativeView: { found: false, paging: false, refresh: false },
-});
-const noViewAvailability = E.capabilityOperationAvailability(noView, [{ type: 'update' }]);
-assert(noViewAvailability.analyze.enabled === false, 'current snapshot path requires native matrix view');
-assert(noViewAvailability.reconcile.enabled === false, 'reconciliation requires authoritative fresh snapshot');
-
-console.log('TESSA Matrix Studio runtime capability model: OK');
+const noView = E.evaluateRuntimeCapabilities({ ...readyProbe, nativeView: { found: false, paging: false, refresh: false } });
+assert(noView.overall === 'incompatible', JSON.stringify(noView));
+assert(E.capabilityOperationAvailability(noView, []).analyze.enabled === false, 'snapshot-dependent analyze must fail closed');
 ```
 
-- [ ] **Step 2: Run test to prove RED**
-
-Run:
+- [ ] **Step 2: Run RED**
 
 ```bash
 node tests/runtime-capabilities.mjs
 ```
 
-Expected: FAIL with `evaluateRuntimeCapabilities is missing`.
+Expected: FAIL because the helpers do not exist.
 
-- [ ] **Step 3: Implement minimal pure capability helpers**
+- [ ] **Step 3: Implement severity model**
 
-Add helpers that only inspect booleans passed in and return stable reason codes. Use explicit plan-type requirements:
+Use critical read-path failures as blockers and missing optional/write capabilities as warnings:
 
 ```js
 function evaluateRuntimeCapabilities(probe = {}) {
-  const p = probe || {};
   const blockers = [];
   const warnings = [];
-  const addBlocker = (code, scope) => blockers.push({ code, scope });
-  const addWarning = (code, scope) => warnings.push({ code, scope });
+  const block = (code, scope) => blockers.push({ code, scope });
+  const warn = (code, scope) => warnings.push({ code, scope });
 
-  if (!p.runtime?.extensionRequire) addBlocker('runtime-extension-require-missing', 'snapshot');
-  if (!p.runtime?.apiLoader) addBlocker('runtime-api-loader-missing', 'workspace');
-  if (!p.runtime?.workspace) addBlocker('workspace-missing', 'card');
-  if (!p.runtime?.editor) addBlocker('editor-missing', 'card');
-  if (!p.runtime?.cardModel) addBlocker('card-model-missing', 'card');
-  if (!p.cardService?.get) addBlocker('card-get-missing', 'read');
-  if (!p.cardService?.request) addBlocker('card-request-missing', 'request');
-  if (!p.matrix?.identity || !p.matrix?.template || !p.matrix?.stateReadable) addBlocker('matrix-identity-unavailable', 'matrix');
-  if (!p.nativeView?.found) addBlocker('native-view-missing', 'snapshot');
-  else if (!p.nativeView?.refresh) addWarning('native-view-refresh-unavailable', 'refreshView');
+  if (!probe.runtime?.extensionRequire) block('runtime-extension-require-missing', 'snapshot');
+  if (!probe.runtime?.apiLoader) block('runtime-api-loader-missing', 'workspace');
+  if (!probe.runtime?.workspace) block('workspace-missing', 'card');
+  if (!probe.runtime?.editor) block('editor-missing', 'card');
+  if (!probe.runtime?.cardModel) block('card-model-missing', 'card');
+  if (!probe.cardService?.get || !probe.constructors?.cardGetRequest) block('card-get-missing', 'read');
+  if (!probe.cardService?.request || !probe.constructors?.cardRequest) block('card-request-missing', 'read');
+  if (!probe.matrix?.identity || !probe.matrix?.template || !probe.matrix?.stateReadable) block('matrix-identity-unavailable', 'matrix');
+  if (!probe.nativeView?.found) block('native-view-missing', 'snapshot');
 
-  const overall = blockers.length ? 'incompatible' : warnings.length ? 'limited' : 'ready';
-  return { ...p, blockers, warnings, overall };
+  if (!probe.cardService?.store || !probe.constructors?.cardStoreRequest || !probe.constructors?.affectVersion) warn('update-store-unavailable', 'apply-update');
+  if (!probe.cardService?.newOrCreate || !probe.constructors?.cardNewRequest) warn('add-create-unavailable', 'apply-add');
+  if (probe.nativeView?.found && !probe.nativeView?.refresh) warn('native-view-refresh-unavailable', 'refreshView');
+
+  return { ...probe, blockers, warnings, overall: blockers.length ? 'incompatible' : warnings.length ? 'limited' : 'ready' };
 }
+```
 
-function capabilityOperationAvailability(capabilities, actions = []) {
-  const types = new Set((actions || []).map(action => action?.type).filter(Boolean));
-  const baseRead = [
-    capabilities?.runtime?.extensionRequire,
-    capabilities?.runtime?.apiLoader,
-    capabilities?.runtime?.workspace,
-    capabilities?.runtime?.editor,
-    capabilities?.runtime?.cardModel,
-    capabilities?.cardService?.get,
-    capabilities?.cardService?.request,
-    capabilities?.constructors?.cardGetRequest,
-    capabilities?.constructors?.cardRequest,
-    capabilities?.matrix?.identity,
-    capabilities?.matrix?.template,
-    capabilities?.matrix?.stateReadable,
-    capabilities?.nativeView?.found,
-  ].every(Boolean);
+- [ ] **Step 4: Implement exact operation gating**
 
+```js
+function capabilityOperationAvailability(cap, actions = []) {
+  const types = new Set((actions || []).map(x => x?.type).filter(Boolean));
+  const readBlocked = (cap?.blockers || []).some(x => ['snapshot', 'workspace', 'card', 'read', 'matrix'].includes(x.scope));
   const applyBlockers = [];
-  if (!baseRead) applyBlockers.push('snapshot-read-unavailable');
-  if (!capabilities?.matrix?.writableState) applyBlockers.push('matrix-not-writable');
-  if (types.has('update') && (!capabilities?.cardService?.store || !capabilities?.constructors?.cardStoreRequest || !capabilities?.constructors?.affectVersion)) applyBlockers.push('update-store-unavailable');
-  if (types.has('add') && (!capabilities?.cardService?.newOrCreate || !capabilities?.constructors?.cardNewRequest || !capabilities?.cardService?.store)) applyBlockers.push('add-store-unavailable');
-  if (types.has('delete') && (!capabilities?.cardService?.request || !capabilities?.constructors?.cardRequest)) applyBlockers.push('delete-request-unavailable');
-
+  if (readBlocked) applyBlockers.push('snapshot-read-unavailable');
+  if (!cap?.matrix?.writableState) applyBlockers.push('matrix-not-writable');
+  if (types.has('update') && (!cap?.cardService?.store || !cap?.constructors?.cardStoreRequest || !cap?.constructors?.affectVersion)) applyBlockers.push('update-store-unavailable');
+  if (types.has('add') && (!cap?.cardService?.store || !cap?.cardService?.newOrCreate || !cap?.constructors?.cardStoreRequest || !cap?.constructors?.cardNewRequest || !cap?.constructors?.affectVersion)) applyBlockers.push('add-store-unavailable');
+  if (types.has('delete') && (!cap?.cardService?.request || !cap?.constructors?.cardRequest)) applyBlockers.push('delete-request-unavailable');
+  const read = { enabled: !readBlocked, blockers: readBlocked ? ['snapshot-read-unavailable'] : [] };
   return {
-    export: { enabled: baseRead, blockers: baseRead ? [] : ['snapshot-read-unavailable'] },
-    analyze: { enabled: baseRead, blockers: baseRead ? [] : ['snapshot-read-unavailable'] },
+    export: { ...read },
+    analyze: { ...read },
     apply: { enabled: applyBlockers.length === 0, blockers: applyBlockers },
-    refreshView: { enabled: Boolean(capabilities?.nativeView?.found && capabilities?.nativeView?.refresh), blockers: capabilities?.nativeView?.refresh ? [] : ['native-view-refresh-unavailable'] },
-    reconcile: { enabled: baseRead, blockers: baseRead ? [] : ['snapshot-read-unavailable'] },
+    refreshView: { enabled: Boolean(cap?.nativeView?.found && cap?.nativeView?.refresh), blockers: cap?.nativeView?.refresh ? [] : ['native-view-refresh-unavailable'] },
+    reconcile: { ...read },
   };
 }
 ```
 
-Preserve detailed capability booleans even when `overall=incompatible`; UI needs to show partial availability.
+Define user messages explicitly:
 
-- [ ] **Step 4: Export helpers in test mode and run focused test**
-
-Run:
-
-```bash
-node tests/runtime-capabilities.mjs
+```js
+const CAPABILITY_MESSAGES = Object.freeze({
+  'snapshot-read-unavailable': 'Текущая сборка TESSA не позволяет безопасно прочитать строки матрицы.',
+  'matrix-not-writable': 'Матрица сейчас не находится в состоянии, допускающем изменение.',
+  'update-store-unavailable': 'В этой сборке TESSA недоступно безопасное изменение существующих строк.',
+  'add-store-unavailable': 'В этой сборке TESSA недоступно безопасное добавление новых строк.',
+  'delete-request-unavailable': 'В этой сборке TESSA недоступно штатное удаление строки матрицы.',
+  'native-view-refresh-unavailable': 'Автоматическое обновление отображения недоступно; запись при этом может работать.',
+});
+function humanCapabilityBlocker(codes = []) {
+  return [...new Set(codes)].map(code => CAPABILITY_MESSAGES[code] || `Недоступна возможность TESSA: ${code}`).join(' ');
+}
 ```
 
-Expected: PASS.
-
-- [ ] **Step 5: Add test to `npm test` and run smoke/safety subset**
-
-Run:
+- [ ] **Step 5: Export helpers, add test to `npm test`, run focused suite**
 
 ```bash
 node tests/runtime-capabilities.mjs && node tests/smoke.mjs && node tests/acceptance.mjs
@@ -250,47 +190,48 @@ git commit -m "feat: model TESSA runtime capabilities"
 
 ---
 
-### Task 2: Read-Only Runtime Probe + TessaBridge Capability Adapter
+### Task 2: Safe Runtime Probe + Capability UI
 
 **Files:**
-- Modify: `tessa-matrix-studio.user.js` around `captureExtensionRequire()` and `class TessaBridge` (v1.9.39 currently around lines 2580–2900).
+- Modify: `tessa-matrix-studio.user.js` around `captureExtensionRequire()`, `TessaBridge`, APP state and panel UI.
 - Create: `tests/runtime-capability-probe.mjs`.
+- Create: `tests/capability-ui-contract.mjs`.
 - Modify: `package.json`.
 
 **Interfaces:**
-- Produces: `probeRuntimeEnvironment(options = {})` → pure-serializable probe consumed by `evaluateRuntimeCapabilities()`.
-- Produces: `TessaBridge.runtimeCapabilities()` for an already-created bridge.
-- Must not invoke server mutation methods.
+- `probeRuntimeEnvironment({root, extensionRequireFactory}={})` → Task 1 probe shape; no server calls.
+- `inspectNativeViewCapabilitiesReadOnly(editor, typedField)` → `{found,paging,refresh}`.
+- `inspectMatrixCapabilitiesReadOnly(mainCard, typedField)` → `{identity,template,stateReadable,writableState,matrixId}`.
+- `capabilityStatusModel(cap, availability)` → UI model.
+- APP fields: `capabilities`, `capabilityAvailability`, `capabilityCheckedCardId`.
 
-- [ ] **Step 1: Write RED probe regression**
+- [ ] **Step 1: Write RED no-mutation probe test**
 
-The test injects fake runtime bindings and records every method call:
+Inject a fake `CardService` whose methods append to `calls`. Call only `probeRuntimeEnvironment()` and assert `calls.length === 0`.
 
 ```js
 const calls = [];
-const fakeRoot = {
-  tessa: {
-    apiLoader: id => id === 546914 ? { WorkspaceStorage: { instance: { currentCardWorkspace: { editor: { cardModel: { card: { id: '11111111-1111-1111-1111-111111111111', sections: {} }, controls: new Map() } } } } } } : null,
-  },
+const fakeService = {
+  get() { calls.push('get'); }, request() { calls.push('request'); }, store() { calls.push('store'); }, new() { calls.push('new'); },
 };
-const fakeRequire = id => {
-  if (id === 9855) return { CardGetRequest: class {}, CardRequest: class {}, CardStoreRequest: class { set affectVersion(value) { this._affectVersion = value; } }, CardNewRequest: class {} };
-  if (id === 9893) return { CardService: { instance: {
-    get() { calls.push('get'); },
-    request() { calls.push('request'); },
-    store() { calls.push('store'); },
-    new() { calls.push('new'); },
-  } } };
-  return {};
+const fakeCards = {
+  CardGetRequest: class {}, CardRequest: class {}, CardNewRequest: class {},
+  CardStoreRequest: class { get affectVersion() { return false; } set affectVersion(value) { this._affectVersion = value; } },
 };
-
+const fakeRequire = id => id === 9855 ? fakeCards : id === 9893 ? { CardService: { instance: fakeService } } : {};
+const fakeCard = {
+  id: '11111111-1111-1111-1111-111111111111',
+  sections: { tryGet: name => name === 'MtxRouteMatrix' ? { fields: { tryGetString: key => key === 'TemplateID' ? '22222222-2222-2222-2222-222222222222' : key === 'StateName' ? 'Черновик' : null } } : null },
+};
+const fakeControl = { table: { rows: [{ data: new Map([['MatrixRowID', '33333333-3333-3333-3333-333333333333'], ['MatrixVersionID', '44444444-4444-4444-4444-444444444444']]) }] }, refresh() {}, setPageAndRefresh() {} };
+const fakeRoot = { tessa: { apiLoader: () => ({ WorkspaceStorage: { instance: { currentCardWorkspace: { editor: { cardModel: { card: fakeCard, controls: new Map([['TestMatrixView', fakeControl]]) } } } } } }) } };
 const probe = E.probeRuntimeEnvironment({ root: fakeRoot, extensionRequireFactory: () => fakeRequire });
-assert(probe.cardService.get === true, JSON.stringify(probe));
 assert(probe.cardService.newOrCreate === true, JSON.stringify(probe));
-assert(calls.length === 0, `capability probe must not call server methods: ${calls}`);
+assert(probe.nativeView.found === true, JSON.stringify(probe));
+assert(calls.length === 0, `probe called server methods: ${calls}`);
 ```
 
-Also test missing `apiLoader` and throwing extension-require factory return booleans/reason codes instead of throwing out of the probe.
+Also assert missing/throwing `apiLoader` and extension require produce booleans instead of an uncaught exception.
 
 - [ ] **Step 2: Run RED**
 
@@ -298,128 +239,120 @@ Also test missing `apiLoader` and throwing extension-require factory return bool
 node tests/runtime-capability-probe.mjs
 ```
 
-Expected: FAIL with `probeRuntimeEnvironment is missing`.
+Expected: FAIL.
 
-- [ ] **Step 3: Implement safe runtime inspection**
-
-Use dependency injection for testability; default to real `window`/`captureExtensionRequire` in production:
+- [ ] **Step 3: Implement all read-only probe helpers (no undefined dependencies)**
 
 ```js
+function probeDataValue(data, key, typedField = null) {
+  if (!data) return null;
+  try { if (typeof data.get === 'function') { const value = data.get(key); if (value !== undefined && value !== null) return value; } } catch (_) {}
+  try { if (typeof data.tryGet === 'function') { const value = data.tryGet(key); return typedField?.get ? typedField.get(value) : value; } } catch (_) {}
+  return data[key] ?? null;
+}
+
+function probeControlEntries(editor) {
+  const controls = editor?.cardModel?.controls;
+  if (!controls) return [];
+  try { if (typeof controls.entries === 'function') return Array.from(controls.entries()); } catch (_) {}
+  if (Array.isArray(controls)) return controls.map((value, index) => [String(index), value]);
+  return Object.entries(controls);
+}
+
+function probeControlRows(control) {
+  for (const candidate of [control, control?.control, control?.model, control?.viewModel]) {
+    try { if (candidate?.table?.rows) return Array.from(candidate.table.rows); } catch (_) {}
+  }
+  return [];
+}
+
+function inspectNativeViewCapabilitiesReadOnly(editor, typedField = null) {
+  for (const [, original] of probeControlEntries(editor)) {
+    const rows = probeControlRows(original);
+    const valid = rows.some(row => {
+      const data = row?.data || row?.selectedObject;
+      return probeDataValue(data, 'MatrixRowID', typedField) && probeDataValue(data, 'MatrixVersionID', typedField);
+    });
+    if (!valid) continue;
+    const target = [original, original?.control, original?.model, original?.viewModel].find(Boolean);
+    const component = target?.viewComponent || target?.component || target;
+    return {
+      found: true,
+      paging: typeof target?.setPageAndRefresh === 'function' || Number.isFinite(Number(component?.currentPage ?? component?._currentPage)),
+      refresh: typeof target?.refresh === 'function' || typeof target?.viewComponent?.refresh === 'function' || typeof target?.setPageAndRefresh === 'function',
+    };
+  }
+  return { found: false, paging: false, refresh: false };
+}
+
+function probeFieldValue(section, name, typedField = null) {
+  const fields = section?.fields;
+  if (!fields) return null;
+  for (const method of ['tryGetString', 'tryGetGuid', 'tryGetNumber', 'tryGetBoolean', 'tryGetDateTime']) {
+    try { const value = fields[method]?.(name); if (value !== undefined && value !== null) return value; } catch (_) {}
+  }
+  try { const value = fields.tryGet?.(name); return typedField?.get ? typedField.get(value) : value; } catch (_) { return null; }
+}
+
+function inspectMatrixCapabilitiesReadOnly(mainCard, typedField = null) {
+  const section = mainCard?.sections?.tryGet?.(S.Matrix) || null;
+  const template = probeFieldValue(section, F.TemplateID, typedField);
+  const stateName = probeFieldValue(section, 'StateName', typedField);
+  const stateCaption = matrixStateCaption(stateName);
+  return {
+    identity: Boolean(mainCard?.id),
+    template: Boolean(template),
+    stateReadable: Boolean(stateName),
+    writableState: canonicalValue(stateCaption) === canonicalValue('Черновик'),
+    matrixId: mainCard?.id ? String(mainCard.id) : null,
+  };
+}
+
 function probeRuntimeEnvironment(options = {}) {
   const root = options.root || window;
   const extensionRequireFactory = options.extensionRequireFactory || captureExtensionRequire;
-  let extRequire = null;
-  let cards = null;
-  let cardService = null;
-  let extensionRequireError = false;
-
+  let extRequire = null, cards = null, core = null, cardService = null;
   try {
     extRequire = extensionRequireFactory();
     cards = extRequire?.(9855) || null;
+    core = extRequire?.(9814) || null;
     cardService = extRequire?.(9893)?.CardService?.instance || null;
-  } catch (_) {
-    extensionRequireError = true;
-  }
-
+  } catch (_) {}
   const apiLoader = typeof root?.tessa?.apiLoader === 'function' ? root.tessa.apiLoader : null;
   let workspace = null;
-  try { workspace = apiLoader?.(546914)?.WorkspaceStorage?.instance?.currentCardWorkspace || null; } catch (_) { workspace = null; }
+  try { workspace = apiLoader?.(546914)?.WorkspaceStorage?.instance?.currentCardWorkspace || null; } catch (_) {}
   const editor = workspace?.editor || null;
   const cardModel = editor?.cardModel || null;
   const mainCard = cardModel?.card || null;
-  const controls = cardModel?.controls || null;
-  const nativeViewFound = Boolean(controls && findNativeMatrixControlFromBindings(editor));
-
   const storeProto = cards?.CardStoreRequest?.prototype || null;
   const affectVersion = Boolean(storeProto && ('affectVersion' in storeProto || Object.getOwnPropertyDescriptor(storeProto, 'affectVersion')));
-
   return {
-    runtime: { extensionRequire: Boolean(extRequire) && !extensionRequireError, apiLoader: Boolean(apiLoader), workspace: Boolean(workspace), editor: Boolean(editor), cardModel: Boolean(cardModel) },
+    runtime: { extensionRequire: Boolean(extRequire), apiLoader: Boolean(apiLoader), workspace: Boolean(workspace), editor: Boolean(editor), cardModel: Boolean(cardModel) },
     cardService: { get: typeof cardService?.get === 'function', request: typeof cardService?.request === 'function', store: typeof cardService?.store === 'function', newOrCreate: typeof cardService?.new === 'function' || typeof cardService?.create === 'function' },
     constructors: { cardGetRequest: typeof cards?.CardGetRequest === 'function', cardRequest: typeof cards?.CardRequest === 'function', cardStoreRequest: typeof cards?.CardStoreRequest === 'function', cardNewRequest: typeof cards?.CardNewRequest === 'function', affectVersion },
-    matrix: inspectMatrixIdentityReadOnly(mainCard),
-    nativeView: inspectNativeViewCapabilitiesReadOnly(editor),
+    matrix: inspectMatrixCapabilitiesReadOnly(mainCard, core?.TypedField || null),
+    nativeView: inspectNativeViewCapabilitiesReadOnly(editor, core?.TypedField || null),
   };
 }
 ```
 
-Do not instantiate `CardNewRequest` and do not call `cardService.*` inside the probe. If `affectVersion` cannot be proven from the constructor/prototype, mark it false and fail closed for UPDATE/ADD Apply.
+If real bundled `CardStoreRequest.prototype` cannot prove `affectVersion` although the existing runtime setter works, make the probe proof `typeof new cards.CardStoreRequest() === 'object' && 'affectVersion' in instance`; construction is local-only and must be covered by the no-server-call test.
 
-If sharing existing control traversal is awkward, extract only the read-only discovery portion of `findNativeMatrixControl()` into a helper that receives `editor` and uses no bridge state.
+- [ ] **Step 4: Write RED UI contract**
 
-- [ ] **Step 4: Add `TessaBridge.runtimeCapabilities()`**
-
-For an already-constructed bridge, return the same probe shape using its known bindings; do not call the server:
+`tests/capability-ui-contract.mjs` asserts `#tms-capability-status`, `#tms-capability-details`, `Повторить проверку`, and exported `capabilityStatusModel()`.
 
 ```js
-runtimeCapabilities() {
-  return evaluateRuntimeCapabilities(probeRuntimeEnvironment({
-    root: window,
-    extensionRequireFactory: () => this.extRequire,
-  }));
-}
-```
-
-- [ ] **Step 5: Run focused regressions**
-
-```bash
-node tests/runtime-capability-probe.mjs && node tests/runtime-capabilities.mjs && node tests/post-apply-view-refresh.mjs
-```
-
-Expected: PASS.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add tessa-matrix-studio.user.js tests/runtime-capability-probe.mjs package.json
-git commit -m "feat: probe TESSA runtime without mutations"
-```
-
----
-
-### Task 3: Capability Status UI + Operation Gating
-
-**Files:**
-- Modify: `tessa-matrix-studio.user.js` APP state, panel markup/styles and Analyze/Apply/download handlers (v1.9.39 currently around lines 42 and 6360+).
-- Create: `tests/capability-ui-contract.mjs`.
-- Modify: `package.json`.
-
-**Interfaces:**
-- Produces APP fields: `capabilities`, `capabilityAvailability`, `capabilityCheckedCardId`.
-- Produces: `refreshRuntimeCapabilities(actions = [])`.
-- Consumes Task 1–2 helpers.
-
-- [ ] **Step 1: Write RED UI contract**
-
-Assert userscript contains:
-
-```js
-assert(/id="tms-capability-status"/.test(code), 'capability status UI missing');
-assert(/id="tms-capability-details"/.test(code), 'capability detail UI missing');
-assert(/Повторить проверку/.test(code), 'manual capability recheck missing');
-assert(/refreshRuntimeCapabilities/.test(code), 'runtime capability refresh wiring missing');
-```
-
-Then use exported pure `capabilityStatusModel(capabilities, availability)` and assert:
-
-```js
-const model = E.capabilityStatusModel({ overall: 'limited', warnings: [{ code: 'native-view-refresh-unavailable' }] }, {
-  apply: { enabled: true, blockers: [] },
-  refreshView: { enabled: false, blockers: ['native-view-refresh-unavailable'] },
+const model = E.capabilityStatusModel({ overall: 'limited', blockers: [], warnings: [{ code: 'native-view-refresh-unavailable' }] }, {
+  apply: { enabled: true, blockers: [] }, refreshView: { enabled: false, blockers: ['native-view-refresh-unavailable'] }, export: { enabled: true }, analyze: { enabled: true }, reconcile: { enabled: true },
 });
 assert(model.label === 'Среда: ограничена', JSON.stringify(model));
-assert(model.applyEnabled === true, 'limited optional refresh must not block Apply');
+assert(model.applyEnabled === true, JSON.stringify(model));
 ```
 
-- [ ] **Step 2: Run RED**
+- [ ] **Step 5: Implement APP/UI wiring**
 
-```bash
-node tests/capability-ui-contract.mjs
-```
-
-Expected: FAIL.
-
-- [ ] **Step 3: Add session-only APP state**
+Add APP fields:
 
 ```js
 capabilities: null,
@@ -429,51 +362,44 @@ lastMutationReceipts: null,
 lastReconciliation: null,
 ```
 
-`lastMutationReceipts` is added now but populated only in Task 4.
-
-- [ ] **Step 4: Implement UI model + refresh function**
+Define:
 
 ```js
-function capabilityStatusModel(capabilities, availability) {
-  const overall = capabilities?.overall || 'incompatible';
+function capabilityStatusModel(cap, availability) {
   return {
-    label: overall === 'ready' ? 'Среда: готова' : overall === 'limited' ? 'Среда: ограничена' : 'Среда: несовместима',
+    label: cap?.overall === 'ready' ? 'Среда: готова' : cap?.overall === 'limited' ? 'Среда: ограничена' : 'Среда: несовместима',
     applyEnabled: Boolean(availability?.apply?.enabled),
     exportEnabled: Boolean(availability?.export?.enabled),
     analyzeEnabled: Boolean(availability?.analyze?.enabled),
     reconcileEnabled: Boolean(availability?.reconcile?.enabled),
-    detailCodes: [...(capabilities?.blockers || []), ...(capabilities?.warnings || [])].map(item => item.code),
+    codes: [...(cap?.blockers || []), ...(cap?.warnings || [])].map(x => x.code),
   };
 }
 
 function refreshRuntimeCapabilities(actions = []) {
-  const probe = probeRuntimeEnvironment();
-  APP.capabilities = evaluateRuntimeCapabilities(probe);
+  APP.capabilities = evaluateRuntimeCapabilities(probeRuntimeEnvironment());
   APP.capabilityAvailability = capabilityOperationAvailability(APP.capabilities, actions);
-  APP.capabilityCheckedCardId = probe?.matrix?.matrixId || null;
-  renderCapabilityStatus();
+  APP.capabilityCheckedCardId = APP.capabilities?.matrix?.matrixId || null;
+  renderCapabilityStatus(capabilityStatusModel(APP.capabilities, APP.capabilityAvailability));
   return APP.capabilityAvailability;
+}
+
+function renderCapabilityStatus(model) {
+  const host = document.querySelector?.('#tms-capability-status');
+  const details = document.querySelector?.('#tms-capability-details');
+  if (host) host.textContent = model.label;
+  if (details) details.textContent = model.codes.map(code => CAPABILITY_MESSAGES[code] || code).join(' ');
 }
 ```
 
-Do not include stack traces or module IDs in the primary user-facing details.
+Panel markup adds a compact status/details and a button `id="tms-capability-recheck"` labelled `Повторить проверку`.
 
-- [ ] **Step 5: Gate handlers without replacing existing safety checks**
+Before download/analyze call `refreshRuntimeCapabilities([])` and block only if that operation is disabled. Before Apply build reviewed plan first and pass its executable action types to `refreshRuntimeCapabilities(actions)`; then keep all existing preflight/state/native-edit/delete/batch checks unchanged.
 
-Before download/analyze/apply, run capability refresh. For Apply pass the reviewed effective mutations:
-
-```js
-const reviewedPlan = buildReviewedPlan(APP.plan, APP.review);
-const availability = refreshRuntimeCapabilities((reviewedPlan.actions || []).filter(action => action.type !== 'noop' && action.type !== 'skip'));
-if (!availability.apply.enabled) throw new Error(humanCapabilityBlocker(availability.apply.blockers));
-```
-
-Keep `preflightPlan`, `assertWritableMatrixDraft`, `assertNativeEditMode`, batch/delete guards and all existing checks unchanged as second-line safety.
-
-- [ ] **Step 6: Run focused UI/safety tests**
+- [ ] **Step 6: Run focused tests**
 
 ```bash
-node tests/capability-ui-contract.mjs && node tests/review-ui-contract.mjs && node tests/apply-preview-batch-ux.mjs && node tests/acceptance.mjs
+node tests/runtime-capability-probe.mjs && node tests/capability-ui-contract.mjs && node tests/runtime-capabilities.mjs && node tests/review-ui-contract.mjs && node tests/acceptance.mjs
 ```
 
 Expected: PASS.
@@ -481,58 +407,33 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add tessa-matrix-studio.user.js tests/capability-ui-contract.mjs package.json
+git add tessa-matrix-studio.user.js tests/runtime-capability-probe.mjs tests/capability-ui-contract.mjs package.json
 git commit -m "feat: surface TESSA compatibility status"
 ```
 
 ---
 
-### Task 4: Private Mutation Receipts for Successful Writes
+### Task 3: Private Mutation Receipts + ID-First Semantic Key
 
 **Files:**
-- Modify: `tessa-matrix-studio.user.js` semantic helpers + `applyPlan()` mutation loops.
+- Modify: `tessa-matrix-studio.user.js` around semantic helpers and `applyPlan()` loops.
 - Create: `tests/mutation-receipts.mjs`.
 - Modify: `package.json`.
 
 **Interfaces:**
-- Produces: `reconciliationSemanticKey(row, structure)`.
-- Produces: `createMutationReceipt({ type, action, identity, expectedRow, structure })`.
-- Produces session-only `APP.lastMutationReceipts = { planId, matrixId, templateId, receipts, createdAt }`.
-- Receipts must never be copied into `rememberReport(result, ...)`.
+- `reconciliationSemanticKey(row, structure)` → stable hash from `values`/`roles`.
+- `createMutationReceipt({type, action, rowCardId, versionId, expectedRow, structure})`.
+- `APP.lastMutationReceipts = {planId,matrixId,templateId,receipts,createdAt}` session-only.
 
-Receipt shape:
-
-```js
-{
-  type: 'update' | 'add' | 'delete',
-  excelRow: number | null,
-  rowCardId: string | null,
-  versionId: string | null,
-  expectedSemanticKey: string | null,
-}
-```
-
-- [ ] **Step 1: Write RED semantic-key tests**
-
-Build normalized snapshot rows using existing `values`/`roles` shape:
+Receipt:
 
 ```js
-const structure = {
-  conditions: [{ criterionRowId: 'criterion-1', operandTypeId: E.OPERAND?.ReferenceGuid || 'reference-guid' }],
-  functions: [{ id: 'function-1' }],
-};
-const rowA = {
-  values: { 'criterion-1': [{ id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', display: 'Старое имя', kind: 'ReferenceGuid' }] },
-  roles: { 'function-1': [{ id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', roleTypeId: 1, display: 'Иванов И.И.' }] },
-};
-const rowB = {
-  values: { 'criterion-1': [{ id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', display: 'Новое имя', kind: 'ReferenceGuid' }] },
-  roles: { 'function-1': [{ id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', roleTypeId: 1, display: 'Иванов Иван' }] },
-};
-assert(E.reconciliationSemanticKey(rowA, structure) === E.reconciliationSemanticKey(rowB, structure), 'display-only rename with stable IDs must remain semantically equal');
+{ type: 'update'|'add'|'delete', excelRow: number|null, rowCardId: string|null, versionId: string|null, expectedSemanticKey: string|null }
 ```
 
-Also assert changed reference ID, changed Boolean/range value or changed role ID changes the key; multivalue order must not change the key.
+- [ ] **Step 1: Write RED semantic tests**
+
+Use two rows with the same ReferenceGuid/Role IDs but different display names; their semantic keys must match. Change only ID; keys must differ. Reverse multivalue item order; keys must match. Change Boolean/range; keys must differ.
 
 - [ ] **Step 2: Run RED**
 
@@ -540,68 +441,60 @@ Also assert changed reference ID, changed Boolean/range value or changed role ID
 node tests/mutation-receipts.mjs
 ```
 
-Expected: FAIL with missing helper.
+Expected: FAIL.
 
-- [ ] **Step 3: Implement typed ID-first semantic key**
-
-Use `row.values` and `row.roles`, never only `row.flat`:
+- [ ] **Step 3: Implement semantic serialization**
 
 ```js
-function semanticCriterionItem(item) {
+function reconciliationCriterionToken(item) {
   if (item?.id !== null && item?.id !== undefined && item?.id !== '') return `ref:${canonicalValue(item.id)}`;
   const kind = canonicalValue(item?.kind || 'string');
   if (kind === 'boolean') return `bool:${item?.value ? 1 : 0}`;
-  if (['int', 'decimal', 'date', 'datetime'].includes(kind)) {
-    return `${kind}:${typedScalarSemantic(item?.value, kind)}:${item?.to === null || item?.to === undefined ? '' : typedScalarSemantic(item.to, kind)}`;
+  if (kind === 'int' || kind === 'decimal' || kind === 'date' || kind === 'datetime') {
+    const value = normalizeSpace(item?.value ?? item?.display ?? '');
+    const to = item?.to === null || item?.to === undefined ? '' : normalizeSpace(item.to);
+    return `${kind}:${canonicalValue(value)}:${canonicalValue(to)}`;
   }
   return `text:${canonicalValue(item?.value ?? item?.display ?? '')}`;
 }
 
 function reconciliationSemanticKey(row, structure) {
   const parts = [];
-  for (const condition of [...(structure?.conditions || [])].sort((a, b) => canonicalValue(a.criterionRowId).localeCompare(canonicalValue(b.criterionRowId)))) {
-    const items = (row?.values?.[condition.criterionRowId] || []).map(semanticCriterionItem).sort();
-    parts.push(`c:${canonicalValue(condition.criterionRowId)}=[${items.join(',')}]`);
+  for (const condition of [...(structure?.conditions || [])].sort((a,b) => canonicalValue(a.criterionRowId).localeCompare(canonicalValue(b.criterionRowId)))) {
+    const tokens = (row?.values?.[condition.criterionRowId] || []).map(reconciliationCriterionToken).sort();
+    parts.push(`c:${canonicalValue(condition.criterionRowId)}=[${tokens.join(',')}]`);
   }
-  for (const fn of [...(structure?.functions || [])].sort((a, b) => canonicalValue(a.id).localeCompare(canonicalValue(b.id)))) {
-    const items = (row?.roles?.[fn.id] || []).map(item => `role:${canonicalValue(item.id)}:${Number(item.roleTypeId ?? '')}`).sort();
-    parts.push(`f:${canonicalValue(fn.id)}=[${items.join(',')}]`);
+  for (const fn of [...(structure?.functions || [])].sort((a,b) => canonicalValue(a.id).localeCompare(canonicalValue(b.id)))) {
+    const tokens = (row?.roles?.[fn.id] || []).map(item => `role:${canonicalValue(item.id)}:${canonicalValue(item.roleTypeId)}`).sort();
+    parts.push(`f:${canonicalValue(fn.id)}=[${tokens.join(',')}]`);
   }
   return hashText(parts.join('|'));
 }
 ```
 
-If existing `typedScalarSemantic()` takes operand IDs rather than kind strings, adapt the call to its exact signature instead of adding a second numeric/date parser.
+Before final implementation, replace numeric/date normalization above with the repository’s existing typed semantic helper if its signature can represent the same values; do not create two competing date/decimal parsers.
 
-- [ ] **Step 4: Build receipt from authoritative prepared local card**
-
-For UPDATE/ADD, compute the expected normalized row from the rebuilt card before Store using existing `readMatrixRowFromCard()`; this gives IDs/typed values while remaining independent of later server display renames.
-
-Example UPDATE integration:
+- [ ] **Step 4: Implement receipt factory**
 
 ```js
-const expectedRow = bridge.readMatrixRowFromCard(prepared.card, {
-  index: prepared.current.index,
-  rowCardId: prepared.current.rowCardId,
-  versionId: prepared.current.versionId,
-  rowName: prepared.current.rowName,
-  source: 'apply-expected-update',
-}, structure);
-await bridge.storeRowCard(prepared.card);
-receipts.push(createMutationReceipt({
-  type: 'update',
-  action,
-  identity: { rowCardId: prepared.current.rowCardId, versionId: prepared.current.versionId },
-  expectedRow,
-  structure,
-}));
+function createMutationReceipt({ type, action, rowCardId, versionId, expectedRow, structure }) {
+  return {
+    type,
+    excelRow: Number.isFinite(Number(action?.excelRow?.excelRow)) ? Number(action.excelRow.excelRow) : null,
+    rowCardId: rowCardId ? String(rowCardId) : null,
+    versionId: versionId ? String(versionId) : null,
+    expectedSemanticKey: type === 'delete' ? null : reconciliationSemanticKey(expectedRow, structure),
+  };
+}
 ```
 
-ADD uses `created.cardId/created.versionId`; DELETE stores both `prepared.current.rowCardId` and `prepared.current.versionId` and `expectedSemanticKey:null`.
+- [ ] **Step 5: Capture receipts only after successful mutations**
 
-- [ ] **Step 5: Store receipts only after successful mutation**
+Initialize `const receipts=[]` in `applyPlan()` after successful preflight.
 
-Initialize local `receipts=[]` before loops. Do not append on `status:'skipped'`. At Apply completion:
+For UPDATE and ADD, before Store derive `expectedRow` from the already rebuilt local card using existing `bridge.readMatrixRowFromCard(...)`; after successful Store append receipt. For DELETE append after successful `deleteMatrixRow()` using both `prepared.current.rowCardId` and `prepared.current.versionId`.
+
+At Apply completion:
 
 ```js
 APP.lastMutationReceipts = result.startedCount > 0 ? {
@@ -613,18 +506,14 @@ APP.lastMutationReceipts = result.startedCount > 0 ? {
 } : null;
 ```
 
-Do not add `expectedSemanticKey` or `receipts` to `result` passed to `rememberReport`.
+Do not add `receipts` or `expectedSemanticKey` to `result`, `result.rows` or `APP.lastReport`.
 
-- [ ] **Step 6: Test successful-only capture and existing result accounting**
+- [ ] **Step 6: Assert skipped writes produce no receipt and report stays clean**
 
-`tests/mutation-receipts.mjs` must assert:
-
-- successful UPDATE receipt exists;
-- successful ADD receipt contains both generated RowCardID and MatrixVersionID;
-- successful DELETE receipt contains both target IDs;
-- skipped Store has no receipt;
-- `APP.lastMutationReceipts` remains available after `invalidatePlanStateAfterApply()` consumes the Preview;
-- `JSON.stringify(APP.lastReport)` does not contain `expectedSemanticKey`.
+```js
+assert(APP.lastMutationReceipts.receipts.length === successfulStoreCount, JSON.stringify(APP.lastMutationReceipts));
+assert(!JSON.stringify(APP.lastReport).includes('expectedSemanticKey'), 'private semantic receipt leaked into Apply report');
+```
 
 Run:
 
@@ -643,7 +532,7 @@ git commit -m "feat: retain private mutation receipts"
 
 ---
 
-### Task 5: Pure Reconciliation Engine + Bounded Fresh-Read Retry
+### Task 4: Reconciliation Engine, Fresh Read Retry and Performance
 
 **Files:**
 - Modify: `tessa-matrix-studio.user.js`.
@@ -653,39 +542,23 @@ git commit -m "feat: retain private mutation receipts"
 - Modify: `package.json`.
 
 **Interfaces:**
-- Produces: `indexSnapshotForReconciliation(snapshot)`.
-- Produces: `reconcileMutationReceipts(receipts, snapshot, structure)`.
-- Produces: `runReconciliationRead(bridgeFactory, receiptContext, options = {})`.
-- Consumes Task 4 receipts and semantic key.
+- `indexSnapshotForReconciliation(snapshot)` → `{byCard,byVersion,rowCount}`.
+- `reconcileMutationReceipts(receipts,snapshot,structure)` → reconciliation result.
+- `runReconciliationRead(bridgeFactory,receiptContext,options={})` → fresh read + bounded retry.
 
 - [ ] **Step 1: Write RED reconciliation matrix**
 
-Create `tests/reconciliation.mjs` with at least these cases:
+Cover:
 
-```js
-const snapshot = {
-  matrixId: 'matrix-1',
-  templateId: 'template-1',
-  rows: [
-    { rowCardId: 'card-u', versionId: 'ver-u', values: {}, roles: {}, semantic: 'update-row' },
-    { rowCardId: 'card-a', versionId: 'ver-a', values: {}, roles: {}, semantic: 'add-row' },
-  ],
-};
-```
-
-Use real `values`/`roles` fixtures, then receipts whose `expectedSemanticKey` comes from `reconciliationSemanticKey()`.
-
-Assertions:
-
-- UPDATE matching `rowCardId` + semantic key → `verified`;
-- UPDATE same identity but changed semantic state → `divergent`;
-- UPDATE target absent → row status `missing`, overall `divergent`;
-- ADD exact created identity + semantic key → `verified`;
-- ADD receipt without provable RowCardID/VersionID → `unknown`, never match by similar values;
-- DELETE both RowCardID/VersionID absent from fresh membership snapshot → `verified`;
-- DELETE target VersionID absent but same RowCardID still current with another version → `divergent`;
-- one divergent among 100 verified → exact counts and overall `divergent`;
-- any `unknown` without divergence → overall `incomplete`.
+1. UPDATE exact RowCardID + semantic key → `verified`.
+2. UPDATE same identity, changed semantic → `divergent`.
+3. UPDATE identity absent → row `missing`, overall `divergent`.
+4. ADD exact created identity + semantic → `verified`.
+5. ADD receipt without provable identity → `unknown`, never semantic nearest-match.
+6. DELETE both target IDs absent from fresh membership → `verified`.
+7. DELETE VersionID absent but same RowCardID present with another version → `divergent`.
+8. one divergent among 100 verified → exact counts.
+9. unknown without divergence → overall `incomplete`.
 
 - [ ] **Step 2: Run RED**
 
@@ -695,7 +568,7 @@ node tests/reconciliation.mjs
 
 Expected: FAIL.
 
-- [ ] **Step 3: Implement O(1) snapshot indexes**
+- [ ] **Step 3: Implement indexes and strict rules**
 
 ```js
 function indexSnapshotForReconciliation(snapshot) {
@@ -709,41 +582,32 @@ function indexSnapshotForReconciliation(snapshot) {
   }
   return { byCard, byVersion, rowCount: (snapshot?.rows || []).length };
 }
-```
 
-- [ ] **Step 4: Implement strict reconciliation rules**
-
-```js
 function reconcileMutationReceipts(receipts, snapshot, structure) {
   const index = indexSnapshotForReconciliation(snapshot);
   const rows = [];
   for (const receipt of receipts || []) {
     const byCard = receipt.rowCardId ? index.byCard.get(canonicalValue(receipt.rowCardId)) : null;
     const byVersion = receipt.versionId ? index.byVersion.get(canonicalValue(receipt.versionId)) : null;
-
     if (receipt.type === 'delete') {
-      if (byCard || byVersion) rows.push({ type: 'delete', excelRow: receipt.excelRow ?? null, status: 'divergent', reasonCode: 'reconcile-delete-still-member' });
-      else rows.push({ type: 'delete', excelRow: receipt.excelRow ?? null, status: 'verified', reasonCode: 'reconcile-delete-absent' });
+      rows.push(byCard || byVersion
+        ? { type: 'delete', excelRow: receipt.excelRow, status: 'divergent', reasonCode: 'reconcile-delete-still-member' }
+        : { type: 'delete', excelRow: receipt.excelRow, status: 'verified', reasonCode: 'reconcile-delete-absent' });
       continue;
     }
-
     if (!receipt.rowCardId && !receipt.versionId) {
-      rows.push({ type: receipt.type, excelRow: receipt.excelRow ?? null, status: 'unknown', reasonCode: 'reconcile-identity-unknown' });
+      rows.push({ type: receipt.type, excelRow: receipt.excelRow, status: 'unknown', reasonCode: 'reconcile-identity-unknown' });
       continue;
     }
-
     const current = byCard || byVersion;
     if (!current) {
-      rows.push({ type: receipt.type, excelRow: receipt.excelRow ?? null, status: 'missing', reasonCode: 'reconcile-target-missing' });
+      rows.push({ type: receipt.type, excelRow: receipt.excelRow, status: 'missing', reasonCode: 'reconcile-target-missing' });
       continue;
     }
-
-    const actualKey = reconciliationSemanticKey(current, structure);
-    rows.push(actualKey === receipt.expectedSemanticKey
-      ? { type: receipt.type, excelRow: receipt.excelRow ?? null, status: 'verified', reasonCode: 'reconcile-match' }
-      : { type: receipt.type, excelRow: receipt.excelRow ?? null, status: 'divergent', reasonCode: 'reconcile-semantic-divergence' });
+    rows.push(reconciliationSemanticKey(current, structure) === receipt.expectedSemanticKey
+      ? { type: receipt.type, excelRow: receipt.excelRow, status: 'verified', reasonCode: 'reconcile-match' }
+      : { type: receipt.type, excelRow: receipt.excelRow, status: 'divergent', reasonCode: 'reconcile-semantic-divergence' });
   }
-
   const count = status => rows.filter(row => row.status === status).length;
   const divergentCount = count('divergent');
   const missingCount = count('missing');
@@ -760,94 +624,91 @@ function reconcileMutationReceipts(receipts, snapshot, structure) {
 }
 ```
 
-- [ ] **Step 5: Write writer-lock RED test**
+- [ ] **Step 4: Write RED writer-lock test**
 
-`tests/reconciliation-writer-lock.mjs` injects bridge factory whose `loadSnapshot()` fails twice with `MatrixRow.WriteHeartbit ObtainWriterLock` then succeeds. Assert exactly 3 attempts. A `permission denied` failure must make exactly 1 attempt and return/throw non-retryable result.
+Bridge factory succeeds, but `loadSnapshot()` throws `MatrixRow.WriteHeartbit ObtainWriterLock` twice and succeeds third time. Assert exactly 3 attempts. For `permission denied`, assert exactly 1 attempt and `retryable=false`.
 
-- [ ] **Step 6: Implement fresh read orchestration**
+- [ ] **Step 5: Implement fresh orchestration**
 
 ```js
 async function runReconciliationRead(bridgeFactory, receiptContext, options = {}) {
-  const attempts = Math.max(1, Math.min(5, Number(options.attempts) || 3));
+  const maxAttempts = Math.max(1, Math.min(5, Number(options.attempts) || 3));
   const baseDelayMs = Math.max(0, Number(options.baseDelayMs ?? 450));
+  const startedAt = nowIso();
   let lastError = null;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+  let usedAttempts = 0;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    usedAttempts = attempt;
     if (attempt > 1 && baseDelayMs) await sleep(baseDelayMs * (2 ** (attempt - 2)));
     try {
       const bridge = await bridgeFactory();
       const structure = await bridge.requestStructure(receiptContext.templateId);
       const snapshot = await bridge.loadSnapshot(structure);
       if (canonicalValue(snapshot.matrixId) !== canonicalValue(receiptContext.matrixId)) throw new Error('reconcile-matrix-changed');
-      return { ...reconcileMutationReceipts(receiptContext.receipts, snapshot, structure), attempts: attempt, retryable: false, startedAt: options.startedAt || nowIso(), finishedAt: nowIso() };
+      return { ...reconcileMutationReceipts(receiptContext.receipts, snapshot, structure), attempts: attempt, retryable: false, startedAt, finishedAt: nowIso() };
     } catch (error) {
       lastError = error;
-      if (!isWriterLockError(error) || attempt >= attempts) break;
+      if (!isWriterLockError(error) || attempt === maxAttempts) break;
     }
   }
+  const retryable = isWriterLockError(lastError);
   return {
-    status: 'incomplete', checkedCount: 0, verifiedCount: 0, divergentCount: 0, missingCount: 0, unknownCount: receiptContext?.receipts?.length || 0,
-    rows: [], attempts, retryable: isWriterLockError(lastError), reasonCode: isWriterLockError(lastError) ? 'reconcile-writer-lock' : 'reconcile-read-failed', startedAt: options.startedAt || nowIso(), finishedAt: nowIso(),
+    status: 'incomplete', checkedCount: 0, verifiedCount: 0, divergentCount: 0, missingCount: 0,
+    unknownCount: receiptContext?.receipts?.length || 0, rows: [], attempts: usedAttempts, retryable,
+    reasonCode: retryable ? 'reconcile-writer-lock' : 'reconcile-read-failed', startedAt, finishedAt: nowIso(),
   };
 }
 ```
 
-Do not put raw `lastError.message` into this result; log it only in the in-memory developer log if needed.
+Do not include `lastError.message` in the returned result.
 
-- [ ] **Step 7: Add 500-row performance regression**
+- [ ] **Step 6: Add performance regression**
 
-Generate a 20,000-row fresh snapshot + 500 receipts. Use deterministic IDs and assert all 500 verified. Broad CI ceiling: reconciliation pure helper under 2 seconds on GitHub runner; this is a hang/quadratic detector, not an SLA.
+Generate deterministic 20,000-row snapshot + 500 receipts; all must verify. Broad CI ceiling for pure reconciliation: `< 2000 ms`. Assert source of `reconcileMutationReceipts` contains `indexSnapshotForReconciliation` and does not call `(snapshot.rows || []).find` inside receipt processing.
 
-The test must fail if implementation calls `.find()` over all snapshot rows per receipt; inspect the helper source or instrument a custom iterable so lookup count remains O(snapshot + receipts).
-
-- [ ] **Step 8: Run reconciliation suite**
+- [ ] **Step 7: Run focused suite**
 
 ```bash
-node tests/reconciliation.mjs && node tests/reconciliation-writer-lock.mjs && node tests/reconciliation-performance.mjs
+node tests/reconciliation.mjs && node tests/reconciliation-writer-lock.mjs && node tests/reconciliation-performance.mjs && node tests/xlsx-load.mjs && node tests/dictionary-high-cardinality.mjs
 ```
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add tessa-matrix-studio.user.js tests/reconciliation.mjs tests/reconciliation-writer-lock.mjs tests/reconciliation-performance.mjs package.json
-git commit -m "feat: verify applied mutations read-only"
+git commit -m "feat: reconcile applied mutations read-only"
 ```
 
 ---
 
-### Task 6: Explicit Reconciliation UI in Consumed Apply State
+### Task 5: Explicit Reconciliation UI + Privacy-Safe Support Report
 
 **Files:**
-- Modify: `tessa-matrix-studio.user.js` `renderPlanConsumedNotice()`, panel markup/styles, apply handler and new reconciliation handler.
+- Modify: `tessa-matrix-studio.user.js` `renderPlanConsumedNotice()`, panel markup/styles/handlers and report helpers.
 - Create: `tests/reconciliation-ui-contract.mjs`.
+- Create: `tests/support-report-sanitization.mjs`.
 - Modify: `package.json`.
 
 **Interfaces:**
-- Consumes: `APP.lastMutationReceipts`, Task 5 `runReconciliationRead()`.
-- Produces: `APP.lastReconciliation` and `reconciliationSummary(result)`.
-- Does not change `APP.plan` from consumed/null back to executable.
+- `reconciliationSummary(result)` → short user text.
+- `renderReconciliationResult(result)` → DOM only.
+- `sanitizeSupportReport(input,{includeIds=false}={})` → explicit whitelist.
+- APP: `lastReconciliation`.
 
-- [ ] **Step 1: Write RED UI/state regression**
+- [ ] **Step 1: Write RED UI contract**
 
-Assert markup contains:
-
-```js
-assert(/id="tms-reconcile"/.test(code), 'Проверить результат button missing');
-assert(/Проверить результат/.test(code), 'reconciliation label missing');
-assert(/id="tms-reconciliation-result"/.test(code), 'reconciliation result host missing');
-```
-
-Export `reconciliationSummary()` and assert:
+Assert code contains `id="tms-reconcile"`, label `Проверить результат`, `id="tms-reconciliation-result"` and exported `reconciliationSummary`.
 
 ```js
 const summary = E.reconciliationSummary({ status: 'divergent', checkedCount: 11, verifiedCount: 10, divergentCount: 1, missingCount: 0, unknownCount: 0 });
 assert(/10/.test(summary) && /1/.test(summary), summary);
 ```
 
-Then simulate `invalidatePlanStateAfterApply(APP, completedResult)` and reconciliation state update; assert consumed plan remains unavailable after reconciliation.
+Simulate consumed Apply state, assign `APP.lastReconciliation`, and assert reconciliation never restores `APP.plan` or enables old Apply.
 
-- [ ] **Step 2: Run RED**
+- [ ] **Step 2: Run RED UI test**
 
 ```bash
 node tests/reconciliation-ui-contract.mjs
@@ -855,18 +716,34 @@ node tests/reconciliation-ui-contract.mjs
 
 Expected: FAIL.
 
-- [ ] **Step 3: Add button only when receipts exist**
+- [ ] **Step 3: Implement summary/render functions**
 
-Panel step 4 adds:
+```js
+function reconciliationSummary(result) {
+  if (!result) return 'Проверка результата не выполнялась.';
+  if (result.status === 'verified') return `Подтверждено: ${result.verifiedCount} из ${result.checkedCount}.`;
+  if (result.status === 'divergent') return `Подтверждено: ${result.verifiedCount}; расхождений: ${result.divergentCount + result.missingCount}.`;
+  return `Проверка неполная: подтверждено ${result.verifiedCount || 0}; неизвестно ${result.unknownCount || 0}.`;
+}
+
+function renderReconciliationResult(result) {
+  const host = document.querySelector?.('#tms-reconciliation-result');
+  if (host) host.textContent = reconciliationSummary(result);
+}
+```
+
+- [ ] **Step 4: Add explicit button/handler**
+
+Markup:
 
 ```html
 <button id="tms-reconcile" class="tms-ghost" hidden disabled>Проверить результат</button>
 <div id="tms-reconciliation-result" class="tms-step-caption"></div>
 ```
 
-`renderPlanConsumedNotice()` shows/enables it only when `APP.lastMutationReceipts?.receipts?.length > 0` and current capability availability allows reconciliation.
+`renderPlanConsumedNotice()` enables it only when `APP.lastMutationReceipts?.receipts?.length > 0` and reconciliation capability is available.
 
-- [ ] **Step 4: Implement explicit handler**
+Handler:
 
 ```js
 panel.querySelector('#tms-reconcile').addEventListener('click', async () => {
@@ -875,96 +752,38 @@ panel.querySelector('#tms-reconcile').addEventListener('click', async () => {
   try {
     const availability = refreshRuntimeCapabilities([]);
     if (!availability.reconcile.enabled) throw new Error(humanCapabilityBlocker(availability.reconcile.blockers));
-    setProgress(20, 'Проверяю результат', 'Читаю свежий snapshot TESSA · без записи');
+    setProgress(20, 'Проверяю результат', 'Свежий snapshot TESSA · без записи');
     APP.lastReconciliation = await runReconciliationRead(() => TessaBridge.create(), APP.lastMutationReceipts, { attempts: 3, baseDelayMs: 450 });
     renderReconciliationResult(APP.lastReconciliation);
     setProgress(100, 'Проверка результата завершена', reconciliationSummary(APP.lastReconciliation));
   } catch (error) {
-    APP.lastReconciliation = { status: 'incomplete', retryable: isWriterLockError(error), reasonCode: isWriterLockError(error) ? 'reconcile-writer-lock' : 'reconcile-read-failed' };
+    APP.lastReconciliation = { status: 'incomplete', checkedCount: 0, verifiedCount: 0, divergentCount: 0, missingCount: 0, unknownCount: APP.lastMutationReceipts.receipts.length, retryable: isWriterLockError(error), reasonCode: isWriterLockError(error) ? 'reconcile-writer-lock' : 'reconcile-read-failed' };
     renderReconciliationResult(APP.lastReconciliation);
-  } finally {
-    setBusy(false);
-  }
+  } finally { setBusy(false); }
 });
 ```
 
-Important: `TessaBridge.create()` currently checks unsaved local card changes. Keep that safety check for reconciliation; do not silently read through unsaved edits.
+Do not mutate `APP.lastReport` or historical Apply result from this handler. Keep v1.9.39 `#tms-refresh-view` independent.
 
-- [ ] **Step 5: Keep Apply result immutable in UI**
-
-Do not modify `APP.lastReport`, `result.status`, `result.success`, or Apply counters when reconciliation is divergent. Render two separate facts:
-
-```text
-Запись: завершена · 11/11
-Проверка результата: подтверждено 10 · расхождение 1
-```
-
-- [ ] **Step 6: Preserve manual refresh behavior from v1.9.39**
-
-`#tms-refresh-view` remains independent. Failed view refresh does not disable `#tms-reconcile`; successful reconciliation does not hide/pretend to refresh the native view.
-
-- [ ] **Step 7: Run focused regressions**
-
-```bash
-node tests/reconciliation-ui-contract.mjs && node tests/sticky-progress-ui.mjs && node tests/post-apply-view-refresh.mjs && node tests/apply-plan-consumed.mjs
-```
-
-Expected: PASS.
-
-- [ ] **Step 8: Commit**
-
-```bash
-git add tessa-matrix-studio.user.js tests/reconciliation-ui-contract.mjs package.json
-git commit -m "feat: add explicit post-Apply verification"
-```
-
----
-
-### Task 7: Privacy-Safe Support Diagnostics
-
-**Files:**
-- Modify: `tessa-matrix-studio.user.js` report helpers.
-- Create: `tests/support-report-sanitization.mjs`.
-- Modify: `package.json`.
-
-**Interfaces:**
-- Produces: `sanitizeSupportReport(input, options = {})`.
-- Default output is a whitelist; no recursive pass-through of unknown fields.
-
-- [ ] **Step 1: Write RED privacy regression**
-
-Fixture intentionally contains business-sensitive strings in every unsafe location:
+- [ ] **Step 5: Write RED privacy test**
 
 ```js
 const unsafe = {
-  version: '1.9.40',
-  matrixId: 'matrix-id',
-  templateId: 'template-id',
-  capabilities: { overall: 'limited', blockers: [{ code: 'native-view-refresh-unavailable', scope: 'refreshView' }] },
-  reconciliation: { status: 'divergent', checkedCount: 2, verifiedCount: 1, divergentCount: 1, rows: [{ excelRow: 15, reasonCode: 'reconcile-semantic-divergence', value: 'СЕКРЕТНЫЙ КОНТРАГЕНТ' }] },
-  receipts: [{ expectedSemanticKey: 'hash-with-private-source' }],
-  workbook: { rows: ['СЕКРЕТНЫЙ КОНТРАГЕНТ'] },
-  snapshot: { rows: ['Иванов Иван Иванович'] },
-  error: { message: 'Не найден ID роли Иванов Иван Иванович' },
-  logs: ['Компания Ромашка'],
+  version: '1.9.40', matrixId: 'matrix-id', templateId: 'template-id',
+  capabilities: { overall: 'limited', blockers: [{ code: 'native-view-refresh-unavailable', scope: 'refreshView' }], warnings: [] },
+  apply: { status: 'completed', requestedCount: 1, appliedCount: 1, failedCount: 0, notStartedCount: 0 },
+  reconciliation: { status: 'divergent', checkedCount: 1, verifiedCount: 0, divergentCount: 1, missingCount: 0, unknownCount: 0, rows: [{ reasonCode: 'reconcile-semantic-divergence', value: 'СЕКРЕТНЫЙ КОНТРАГЕНТ' }] },
+  receipts: [{ expectedSemanticKey: 'PRIVATE-HASH' }], workbook: { rows: ['СЕКРЕТНЫЙ'] }, snapshot: { rows: ['Иванов Иван'] }, error: { message: 'Иванов Иван' }, logs: ['Ромашка'],
 };
 const safe = E.sanitizeSupportReport(unsafe, { includeIds: false });
 const text = JSON.stringify(safe);
-for (const forbidden of ['СЕКРЕТНЫЙ', 'Иванов', 'Ромашка', 'expectedSemanticKey', 'workbook', 'snapshot', 'receipts', 'error']) assert(!text.includes(forbidden), text);
-assert(!text.includes('matrix-id') && !text.includes('template-id'), 'IDs require explicit includeIds');
+for (const forbidden of ['СЕКРЕТНЫЙ', 'Иванов', 'Ромашка', 'PRIVATE-HASH', 'receipts', 'workbook', 'snapshot', 'error']) assert(!text.includes(forbidden), text);
+assert(!text.includes('matrix-id') && !text.includes('template-id'), text);
 const withIds = E.sanitizeSupportReport(unsafe, { includeIds: true });
 assert(withIds.matrixId === 'matrix-id' && withIds.templateId === 'template-id', JSON.stringify(withIds));
 ```
 
-- [ ] **Step 2: Run RED**
-
-```bash
-node tests/support-report-sanitization.mjs
-```
-
-Expected: FAIL.
-
-- [ ] **Step 3: Implement strict whitelist**
+- [ ] **Step 6: Implement whitelist sanitizer**
 
 ```js
 function sanitizeSupportReport(input = {}, options = {}) {
@@ -975,16 +794,10 @@ function sanitizeSupportReport(input = {}, options = {}) {
     ...(options.includeIds ? { matrixId: input.matrixId || null, templateId: input.templateId || null } : {}),
     capabilities: {
       overall: input.capabilities?.overall || null,
-      blockers: (input.capabilities?.blockers || []).map(item => ({ code: item.code, scope: item.scope })),
-      warnings: (input.capabilities?.warnings || []).map(item => ({ code: item.code, scope: item.scope })),
+      blockers: (input.capabilities?.blockers || []).map(x => ({ code: x.code, scope: x.scope })),
+      warnings: (input.capabilities?.warnings || []).map(x => ({ code: x.code, scope: x.scope })),
     },
-    apply: input.apply ? {
-      status: input.apply.status || null,
-      requestedCount: Number(input.apply.requestedCount || 0),
-      appliedCount: Number(input.apply.appliedCount || 0),
-      failedCount: Number(input.apply.failedCount || 0),
-      notStartedCount: Number(input.apply.notStartedCount || 0),
-    } : null,
+    apply: input.apply ? { status: input.apply.status || null, requestedCount: Number(input.apply.requestedCount || 0), appliedCount: Number(input.apply.appliedCount || 0), failedCount: Number(input.apply.failedCount || 0), notStartedCount: Number(input.apply.notStartedCount || 0) } : null,
     reconciliation: {
       status: reconciliation.status || null,
       checkedCount: Number(reconciliation.checkedCount || 0),
@@ -998,82 +811,70 @@ function sanitizeSupportReport(input = {}, options = {}) {
 }
 ```
 
-Do not append arbitrary object fields and do not include `error.message`.
+Do not add a second diagnostic-download button unless an existing support flow actually consumes it; YAGNI. The helper must exist and be testable, while existing Apply JSON remains unchanged and opt-in.
 
-- [ ] **Step 4: Wire explicit diagnostic download**
-
-Existing `Скачать отчёт` keeps Apply report behavior unchanged. Add a separate explicit `Скачать диагностику` only if the current UI already has a natural support surface; otherwise expose sanitizer for issue-report flow without adding another button in v1.9.40. YAGNI rule: do not add a second button unless there is an actual caller in existing UI.
-
-If reusing existing report download, package a top-level object whose `support` member is sanitized and whose existing Apply report remains available exactly as before; never inject private receipts into it.
-
-- [ ] **Step 5: Run privacy + report regressions**
+- [ ] **Step 7: Run focused tests**
 
 ```bash
-node tests/support-report-sanitization.mjs && node tests/apply-report-opt-in.mjs && node tests/docs.mjs
+node tests/reconciliation-ui-contract.mjs && node tests/support-report-sanitization.mjs && node tests/sticky-progress-ui.mjs && node tests/post-apply-view-refresh.mjs && node tests/apply-plan-consumed.mjs && node tests/apply-report-opt-in.mjs
 ```
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add tessa-matrix-studio.user.js tests/support-report-sanitization.mjs package.json
-git commit -m "security: sanitize support diagnostics"
+git add tessa-matrix-studio.user.js tests/reconciliation-ui-contract.mjs tests/support-report-sanitization.mjs package.json
+git commit -m "feat: expose verified post-Apply state"
 ```
 
 ---
 
-### Task 8: Release Docs, Full Verification and Live v1.9.40 Gate
+### Task 6: Docs, Version 1.9.40, Full Verification and Live Gate
 
 **Files:**
-- Modify: `README.md`.
-- Modify: `docs/PRODUCTION-RUNBOOK.md`.
-- Modify: `docs/UAT-COMPACT-ALL-CASES.md`.
-- Modify: `CHANGELOG.md`.
-- Modify: `.github/ISSUE_TEMPLATE/bug_report.yml`.
-- Modify: `tessa-matrix-studio.user.js` version metadata / `APP.version`.
-- Modify: `package.json` version/test list.
+- Modify: `README.md`, `docs/PRODUCTION-RUNBOOK.md`, `docs/UAT-COMPACT-ALL-CASES.md`, `CHANGELOG.md`, `.github/ISSUE_TEMPLATE/bug_report.yml`, `tessa-matrix-studio.user.js`, `package.json`.
 
 **Interfaces:**
-- Documentation and release metadata must exactly match implemented behavior.
+- Release/docs must match exact runtime behavior and reason/status semantics.
 
-- [ ] **Step 1: Update end-user docs**
+- [ ] **Step 1: Update README user contract**
 
-README must explain only user-facing concepts:
+Document only:
 
 - `Среда: готова / ограничена / несовместима`;
-- optional limitations block only dependent operations;
-- after Apply, `Проверить результат` is read-only;
-- `Запись завершена` and `Проверка результата` are separate states;
-- mismatch never triggers automatic repair.
+- missing optional capability blocks only dependent operations;
+- `Проверить результат` is read-only;
+- `Запись` and `Проверка результата` are separate facts;
+- reconciliation mismatch never triggers automatic repair.
 
-Do not expose webpack module IDs or internal object names in the main README.
+Do not publish webpack module IDs/internal object names in main README.
 
 - [ ] **Step 2: Update Production Runbook**
 
-Document exact capability scopes, receipt lifetime, reconciliation status meanings, retry policy `3 attempts / 450ms / 900ms`, membership-based DELETE verification and privacy whitelist.
+Document capability scopes, private receipt lifetime, exact reconciliation states, writer-lock policy `3 attempts; 450ms then 900ms`, membership-based DELETE verification, O(N+M) indexing, and diagnostic whitelist.
 
 - [ ] **Step 3: Extend Compact UAT**
 
-Add manual cases:
+Add exact cases:
 
 ```text
 CAP-01 ready environment
-CAP-02 no local view refresh => limited, Apply still allowed
+CAP-02 no local view refresh => limited, Apply allowed
 CAP-03 no CardNew => ADD blocked, UPDATE-only Apply allowed
-REC-01 one safe UPDATE => verified
-REC-02 one safe ADD => verified by exact created identity
-REC-03 safe DELETE test copy => target absent from current membership
-REC-04 mutate same row after Apply before check => divergent, no auto-write
+REC-01 safe UPDATE => verified
+REC-02 safe ADD => verified by exact created identity
+REC-03 DELETE test copy => target IDs absent from current membership
+REC-04 external change after Apply => divergent, zero auto-write
 REC-05 transient writer-lock => bounded retry/manual retry
-PRIV-01 downloaded support diagnostic contains no business row values
+PRIV-01 sanitized support object contains no business values
 ```
 
-- [ ] **Step 4: Bump release metadata consistently to `1.9.40`**
+- [ ] **Step 4: Bump all release surfaces to `1.9.40`**
 
-Update userscript `@version`, `APP.version`, package version, README, changelog and issue template only after Tasks 1–7 are green.
+Only now update userscript `@version`, `APP.version`, package version, README, changelog and issue-template version placeholder.
 
-- [ ] **Step 5: Run docs/release contracts**
+- [ ] **Step 5: Run docs/release checks**
 
 ```bash
 node tests/docs.mjs && node tests/release-workflow.mjs && node tests/workflow-security.mjs
@@ -1081,42 +882,42 @@ node tests/docs.mjs && node tests/release-workflow.mjs && node tests/workflow-se
 
 Expected: PASS.
 
-- [ ] **Step 6: Run full suite**
+- [ ] **Step 6: Run full verification**
 
 ```bash
 npm test
 ```
 
-Expected: every existing and new regression PASS, including syntax, planner/preflight/race/delete/batch/XLSX security/load/high-cardinality and v1.9.40 capability/reconciliation tests.
+Expected: syntax + every existing/new regression PASS, including planner/preflight/races/delete/batch/XLSX security/5000 load/high-cardinality and all capability/reconciliation tests.
 
-- [ ] **Step 7: Review final diff against invariants**
+- [ ] **Step 7: Manual invariant diff review**
 
-Verify manually:
+Confirm:
 
-- no mutation call inside `probeRuntimeEnvironment`, reconciliation engine or reconciliation button handler except existing TessaBridge read methods;
-- no `editor.refreshCard()` added;
-- no private receipts in `APP.lastReport` / downloadable Apply JSON;
-- no display-only matching for reconciliation;
-- no `.find()` per receipt over full snapshot;
-- current Preview remains consumed after reconciliation;
-- v1.9.39 native-view refresh behavior is unchanged except capability status around it.
+- no server mutation call exists inside `probeRuntimeEnvironment`, `reconcileMutationReceipts`, `runReconciliationRead` or reconciliation UI handler;
+- no new `editor.refreshCard()`;
+- no private receipt in downloadable Apply JSON;
+- no display-only identity matching;
+- no per-receipt full-snapshot `.find()` loop;
+- reconciliation never restores old `APP.plan`;
+- v1.9.39 native-view refresh behavior remains intact.
 
-- [ ] **Step 8: Open draft PR against integrated v1.9.39/main and inspect CI**
+- [ ] **Step 8: Open draft PR against integrated v1.9.39/main; require exact-head Tests + CodeQL**
 
-PR body must include exact head SHA, full Tests/CodeQL evidence and state that runtime self-check/reconciliation are read-only.
+PR body states self-check/reconciliation are read-only and includes exact CI run/head SHA.
 
 - [ ] **Step 9: Controlled live v1.9.40 UAT**
 
 On a safe test matrix:
 
-1. confirm `Среда: готова` or explain a deliberate `limited` capability;
-2. apply exactly one safe UPDATE or ADD, no DELETE on first pass;
-3. confirm Apply completes normally and Preview is consumed;
-4. click **Проверить результат**;
-5. confirm `verified=1`, no Store/Delete network action is triggered by the check;
-6. download fresh Excel and reconcile the same row manually once;
-7. on a separate test copy, deliberately change the same row after Apply and before `Проверить результат`; expect `divergent=1` and zero automatic mutation;
-8. verify optional support diagnostic contains counts/reason codes but no business values.
+1. confirm environment status;
+2. Apply exactly one safe UPDATE or ADD, no DELETE on first pass;
+3. confirm Apply completes and old Preview is consumed;
+4. click `Проверить результат`;
+5. confirm `verified=1` and browser network log contains no new Store/Delete mutation caused by reconciliation;
+6. download fresh Excel and manually reconcile the same row once;
+7. on a separate test copy, change the same row after Apply but before check; expect `divergent=1`, no automatic repair;
+8. run the privacy fixture/explicit support output and confirm no business values.
 
 - [ ] **Step 10: Commit release/docs**
 
