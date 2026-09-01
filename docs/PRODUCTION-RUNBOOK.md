@@ -188,3 +188,12 @@ Studio использует внутренние объекты страницы
 - отсутствие неожиданных ADD/DELETE/REPLACE.
 
 Если выгрузки получены в разное время и матрицы после этого менялись, их нельзя считать единым актуальным snapshot для Apply — для записи всё равно нужна свежая выгрузка конкретной матрицы.
+
+## Post-Apply отображение и результат
+
+Начиная с v1.9.39 успешный Store отделён от обновления UI. После mutation Studio обновляет только нативное представление матрицы, не выполняя полный `editor.refreshCard()`. Для transient writer-lock (`ObtainWriterLock` / `WriteHeartbit`) выполняется ограниченный retry; если view всё равно не обновился, Store-result не меняется и пользователь может нажать **«Обновить отображение»** вручную.
+
+Source-skipped строки, исключённые planner/source validation до mutation-plan, показываются отдельно и не делают успешный Apply частичным. `partial` используется только для незавершённого mutation-plan: preflight/store skip, not-started, cancel или неполная verification. После любой начавшейся mutation старый Preview остаётся consumed; перед следующим Apply нужна свежая проверка/выгрузка.
+
+Progress/status панели закреплён сверху внутри её scroll-container, чтобы этап, процент и ETA не терялись при длинном Preview.
+

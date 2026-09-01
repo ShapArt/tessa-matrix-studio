@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.9.39 — 2026-09-01
+
+- live UAT подтвердил 11/11 успешных requested mutations при 12 строках, заранее исключённых planner/source validation; source-skipped строки больше не переводят полностью успешный mutation-plan в `partial`;
+- после Store/Delete Studio обновляет только нативное отображение матрицы через view refresh, не вызывает полный `editor.refreshCard()` и сохраняет текущую страницу представления;
+- transient `ObtainWriterLock / MatrixRow.WriteHeartbit` при обновлении отображения получает ограниченный retry/backoff; неуспешный view refresh не отменяет уже успешную запись и оставляет ручную кнопку **«Обновить отображение»**;
+- успешный Apply показывается inline вместо блокирующего browser `alert()`; source-skipped, mutation-skipped и not-started счётчики разведены по смыслу;
+- progress/status закреплён сверху внутри прокручиваемой панели Studio, поэтому процент, этап и ETA остаются видимыми при длинном Preview;
+- старый Apply-plan после начавшейся записи по-прежнему consumed; перед следующим Apply Studio напоминает выполнить свежую проверку или получить свежую выгрузку Excel;
+- добавлены RED→GREEN regressions `apply-source-skips-success.mjs`, `post-apply-view-refresh.mjs` и `sticky-progress-ui.mjs` на точную форму live UAT и новый UX.
+
 ## 1.9.38 — 2026-08-31
 
 - live UAT выявил шумный UX при глобальной несовместимости Excel: файл от другой карточки матрицы корректно блокировался, но Preview дополнительно показывал тысячи нерелевантных row-level `ПРОПУСТИТЬ`;
