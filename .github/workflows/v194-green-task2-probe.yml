@@ -33,3 +33,4 @@ jobs:
           git diff --cached --check
           git commit -m "feat: probe TESSA runtime capabilities read-only"
           git push origin HEAD:feat/v1.9.40-self-check-reconciliation
+      # retry 2: state helper receives matrixInfo + read-only localizer
