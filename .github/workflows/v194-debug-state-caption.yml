@@ -1,0 +1,19 @@
+name: v1.9.40 debug state caption
+
+on:
+  push:
+    branches: [feat/v1.9.40-self-check-reconciliation]
+    paths: [.github/workflows/v194-debug-state-caption.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Inspect helper definition and call sites
+        run: |
+          grep -n -C 12 "matrixStateCaption" tessa-matrix-studio.user.js || true
+          grep -n -C 8 "function assertWritableMatrixDraft" tessa-matrix-studio.user.js || true
