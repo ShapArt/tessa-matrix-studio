@@ -25,10 +25,13 @@ jobs:
           from pathlib import Path
           p = Path('tessa-matrix-studio.user.js')
           s = p.read_text(encoding='utf-8')
-          old = 'return `Готово. Применено: ${applied} из ${requested}.\\nВсе подготовленные изменения применены.${sourceNote}${refreshNote}`;'
-          new = 'return `Готово. Применено: ${applied} из ${requested}.\\nВсе подготовленные изменения применены.${sourceNote}${refreshNote}\\nПеред следующим Apply нужна свежая проверка или свежая выгрузка Excel.`;'
+          old = '''      return `Готово. Применено: ${applied} из ${requested}.
+          Все подготовленные изменения применены.${sourceNote}${refreshNote}`;'''.replace('          Все', 'Все')
+          new = '''      return `Готово. Применено: ${applied} из ${requested}.
+          Все подготовленные изменения применены.${sourceNote}${refreshNote}
+          Перед следующим Apply нужна свежая проверка или свежая выгрузка Excel.`;'''.replace('          Все', 'Все').replace('          Перед', 'Перед')
           if old not in s:
-              raise SystemExit('completed-result marker not found')
+              raise SystemExit('multiline completed-result marker not found')
           s = s.replace(old, new, 1)
           p.write_text(s, encoding='utf-8')
           PY
