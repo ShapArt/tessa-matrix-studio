@@ -50,6 +50,9 @@
     snapshot: null,
     structure: null,
     bridge: null,
+    capabilities: null,
+    capabilityAvailability: null,
+    capabilityCheckedCardId: null,
     busy: false,
     abortRequested: false,
     logs: [],
@@ -6639,6 +6642,77 @@
   }
 
 
+  function capabilityStatusModel(capabilities, availability) {
+    const overall = ['ready', 'limited', 'incompatible'].includes(capabilities?.overall)
+      ? capabilities.overall
+      : 'incompatible';
+    const labels = {
+      ready: 'Среда: готова',
+      limited: 'Среда: ограничена',
+      incompatible: 'Среда: несовместима',
+    };
+    const codes = [...new Set([
+      ...(capabilities?.blockers || []).map(item => item?.code || item),
+      ...(capabilities?.warnings || []).map(item => item?.code || item),
+    ].filter(Boolean))];
+    const detail = codes.length
+      ? humanCapabilityBlocker(codes)
+      : 'Обязательные возможности текущей сборки TESSA доступны.';
+    return {
+      label: labels[overall],
+      tone: overall,
+      detail,
+      codes,
+      exportEnabled: Boolean(availability?.export?.enabled),
+      analyzeEnabled: Boolean(availability?.analyze?.enabled),
+      applyEnabled: Boolean(availability?.apply?.enabled),
+      refreshViewEnabled: Boolean(availability?.refreshView?.enabled),
+      reconcileEnabled: Boolean(availability?.reconcile?.enabled),
+    };
+  }
+
+  function renderCapabilityStatus(capabilities = APP.capabilities, availability = APP.capabilityAvailability) {
+    const host = document.querySelector('#tms-capability-status');
+    const details = document.querySelector('#tms-capability-details');
+    if (!host || !details) return null;
+    const model = capabilityStatusModel(capabilities, availability);
+    host.textContent = model.label;
+    host.dataset.tone = model.tone;
+    details.textContent = model.detail;
+    details.dataset.tone = model.tone;
+    return model;
+  }
+
+  function refreshRuntimeCapabilities(actions = []) {
+    let probe;
+    try {
+      probe = probeRuntimeEnvironment();
+    } catch (_) {
+      probe = {
+        runtime: { extensionRequire: false, apiLoader: Boolean(window.tessa?.apiLoader), workspace: false, editor: false, cardModel: false },
+        cardService: { get: false, request: false, store: false, newOrCreate: false },
+        constructors: { cardGetRequest: false, cardRequest: false, cardStoreRequest: false, cardNewRequest: false, affectVersion: false },
+        matrix: { identity: false, template: false, stateReadable: false, writableState: false, matrixId: null },
+        nativeView: { found: false, paging: false, refresh: false },
+      };
+    }
+    const capabilities = evaluateRuntimeCapabilities(probe);
+    const availability = capabilityOperationAvailability(capabilities, actions);
+    APP.capabilities = capabilities;
+    APP.capabilityAvailability = availability;
+    APP.capabilityCheckedCardId = probe?.matrix?.matrixId || null;
+    renderCapabilityStatus(capabilities, availability);
+    return { probe, capabilities, availability };
+  }
+
+  function requireRuntimeOperation(operation, actions = []) {
+    const checked = refreshRuntimeCapabilities(actions);
+    const state = checked.availability?.[operation];
+    if (state?.enabled) return checked;
+    const reason = humanCapabilityBlocker(state?.blockers || checked.capabilities?.blockers || []);
+    throw new Error(reason || 'Текущая web-сборка TESSA не предоставляет обязательные возможности для этой операции.');
+  }
+
   function mountUi() {
     if (document.querySelector('#tms-launch')) return;
     const style = document.createElement('style');
@@ -6648,7 +6722,7 @@
       #tms-launch:hover{box-shadow:0 16px 36px #0004}
       #tms-panel{position:fixed;right:22px;bottom:88px;width:min(500px,calc(100vw - 30px));max-height:min(780px,calc(100vh - 110px));z-index:2147483646;background:var(--tms-bg);color:var(--tms-ink);border:1px solid var(--tms-line);border-radius:20px;box-shadow:0 24px 70px #0004;font:13px/1.45 Arial,sans-serif;display:none;overflow:hidden}
       #tms-panel.tms-open{display:flex;flex-direction:column;animation:tms-panel-in .22s ease-out}.tms-head{display:flex;align-items:center;gap:12px;padding:14px 16px;background:#fff;border-bottom:1px solid var(--tms-line);cursor:move;user-select:none}.tms-brand{width:34px;height:34px;border-radius:11px;background:var(--tms-red);color:#fff;display:grid;place-items:center;font-weight:900;font-size:17px}.tms-title{flex:1;min-width:0}.tms-title strong{display:block;font-size:14px}.tms-title small{display:block;color:var(--tms-muted);font-size:11px;margin-top:1px}.tms-close,.tms-help{border:0;background:transparent;color:#555;font-size:20px;cursor:pointer;border-radius:8px;padding:4px 7px}.tms-help{font-size:15px;font-weight:700}.tms-close:hover,.tms-help:hover{background:#f4f4f4}
-      .tms-body{padding:14px 16px 16px;overflow:auto;background:linear-gradient(180deg,#fff 0,#fff 55%,#fffafa 100%)}.tms-status{position:sticky;top:0;z-index:30;padding:11px 12px;border-radius:13px;background:#f7f7f7;color:#555;margin-bottom:12px;border:1px solid #ededed;box-shadow:0 8px 18px #00000010;transition:.2s}.tms-status-line{display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:700;color:#353535}.tms-progress-percent{font-variant-numeric:tabular-nums;color:var(--tms-red);font-size:11px}.tms-progress-track{height:7px;border-radius:999px;background:#e9e9e9;overflow:hidden;margin:8px 0 5px;position:relative}.tms-progress-fill{height:100%;width:0;background:linear-gradient(90deg,var(--tms-red),#ff5b60);border-radius:inherit;transition:width .28s ease;position:relative;overflow:hidden}.tms-busy .tms-progress-fill::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,#ffffff80,transparent);transform:translateX(-100%);animation:tms-shimmer 1.15s linear infinite}.tms-progress-detail{min-height:16px;font-size:11px;color:#777}.tms-step{display:grid;gap:8px;margin-bottom:10px;padding:11px 12px;border:1px solid #ececec;border-radius:14px;background:#fff;box-shadow:0 2px 8px #00000008}.tms-step-apply{border-color:#f2c5c7;background:linear-gradient(135deg,#fff 0,#fff6f6 100%)}.tms-step-label{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#777;font-weight:800}.tms-step-caption{font-size:11px;color:#777;margin-top:-2px}.tms-row{display:flex;gap:8px;flex-wrap:wrap}.tms-controls button,.tms-file-label{border:1px solid #d9d9d9;background:#fff;color:#292929;border-radius:11px;padding:9px 12px;cursor:pointer;font-weight:600;transition:.15s}.tms-controls button:hover,.tms-file-label:hover{border-color:#b9b9b9;background:#fafafa}.tms-controls button.tms-primary{background:var(--tms-red);border-color:var(--tms-red);color:#fff}.tms-controls button.tms-primary:hover{background:var(--tms-red-dark);border-color:var(--tms-red-dark)}.tms-controls button:disabled,.tms-file-label.tms-disabled{opacity:.42;cursor:not-allowed}.tms-controls button.tms-ghost{color:#666}.tms-controls button.tms-danger{color:var(--tms-red-dark)}#tms-file{display:none}.tms-file-name{font-size:12px;color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;padding:1px 2px}
+      .tms-body{padding:14px 16px 16px;overflow:auto;background:linear-gradient(180deg,#fff 0,#fff 55%,#fffafa 100%)}.tms-status{position:sticky;top:0;z-index:30;padding:11px 12px;border-radius:13px;background:#f7f7f7;color:#555;margin-bottom:12px;border:1px solid #ededed;box-shadow:0 8px 18px #00000010;transition:.2s}.tms-status-line{display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:700;color:#353535}.tms-progress-percent{font-variant-numeric:tabular-nums;color:var(--tms-red);font-size:11px}.tms-progress-track{height:7px;border-radius:999px;background:#e9e9e9;overflow:hidden;margin:8px 0 5px;position:relative}.tms-progress-fill{height:100%;width:0;background:linear-gradient(90deg,var(--tms-red),#ff5b60);border-radius:inherit;transition:width .28s ease;position:relative;overflow:hidden}.tms-busy .tms-progress-fill::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,#ffffff80,transparent);transform:translateX(-100%);animation:tms-shimmer 1.15s linear infinite}.tms-progress-detail{min-height:16px;font-size:11px;color:#777}.tms-capability-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:7px;padding-top:7px;border-top:1px solid #e7e7e7}.tms-capability-status{font-size:11px;font-weight:800;color:#2d6a3f}.tms-capability-status[data-tone=limited]{color:#86630b}.tms-capability-status[data-tone=incompatible]{color:var(--tms-red-dark)}.tms-capability-recheck{border:0!important;background:transparent!important;padding:2px 4px!important;font-size:10px!important;color:#666!important;text-decoration:underline}.tms-capability-details{font-size:10px;color:#777;margin-top:3px;line-height:1.35}.tms-step{display:grid;gap:8px;margin-bottom:10px;padding:11px 12px;border:1px solid #ececec;border-radius:14px;background:#fff;box-shadow:0 2px 8px #00000008}.tms-step-apply{border-color:#f2c5c7;background:linear-gradient(135deg,#fff 0,#fff6f6 100%)}.tms-step-label{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#777;font-weight:800}.tms-step-caption{font-size:11px;color:#777;margin-top:-2px}.tms-row{display:flex;gap:8px;flex-wrap:wrap}.tms-controls button,.tms-file-label{border:1px solid #d9d9d9;background:#fff;color:#292929;border-radius:11px;padding:9px 12px;cursor:pointer;font-weight:600;transition:.15s}.tms-controls button:hover,.tms-file-label:hover{border-color:#b9b9b9;background:#fafafa}.tms-controls button.tms-primary{background:var(--tms-red);border-color:var(--tms-red);color:#fff}.tms-controls button.tms-primary:hover{background:var(--tms-red-dark);border-color:var(--tms-red-dark)}.tms-controls button:disabled,.tms-file-label.tms-disabled{opacity:.42;cursor:not-allowed}.tms-controls button.tms-ghost{color:#666}.tms-controls button.tms-danger{color:var(--tms-red-dark)}#tms-file{display:none}.tms-file-name{font-size:12px;color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;padding:1px 2px}
       .tms-counters{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:10px 0}.tms-count{padding:8px 5px;border-radius:11px;text-align:center;font-size:10px;border:1px solid transparent}.tms-count b{display:block;font-size:16px;margin-top:1px}.tms-update{background:#fff7e6;border-color:#f4dfae}.tms-add{background:#edf9f1;border-color:#ccebd7}.tms-delete{background:#fff1f1;border-color:#f2cccc}.tms-noop{background:#f5f5f5;border-color:#e9e9e9}.tms-skip{background:#f6f1ff;border-color:#e1d4f7;color:#62438b}.tms-warning,.tms-skipped-box{margin-top:8px;padding:9px 11px;border-radius:11px;background:#fffaf0;color:#624f21;border:1px solid #f0e1b5}.tms-warning summary,.tms-skipped-box summary{cursor:pointer}.tms-skipped-box{background:#f7f3ff;color:#533b77;border-color:#e2d7f5}.tms-skip-line{padding:6px 0;border-top:1px dashed #e6ddf2}.tms-skip-more{padding-top:7px;font-weight:700}.tms-fatal{margin-top:8px;padding:11px 12px;border-radius:11px;background:#fff0f0;color:#8f1418;border:1px solid #f3b9bb}.tms-action{margin:7px 0;border:1px solid var(--tms-line);border-radius:11px;padding:8px 10px;background:#fff}.tms-action-update{border-left:4px solid #d99a00}.tms-action-add{border-left:4px solid #238b4a}.tms-action-delete{border-left:4px solid #c62828}.tms-action summary{cursor:pointer}.tms-action-body{padding:8px 2px 1px}.tms-review-row-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0 8px}.tms-review-btn{border:1px solid #d6d6d6;background:#fff;color:#555;border-radius:9px;padding:5px 8px;font:600 11px/1.2 Arial,sans-serif;cursor:pointer}.tms-review-btn:hover{border-color:#aaa;background:#f8f8f8}.tms-review-btn[aria-pressed="true"]{border-color:#b9b9b9;background:#f0f0f0;color:#444}.tms-diff{padding:7px 0;border-top:1px dashed #e5e5e5;transition:.15s opacity,.15s background}.tms-diff-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.tms-diff-excluded{opacity:.58;background:#f7f7f7;margin:0 -6px;padding:7px 6px}.tms-diff-excluded .tms-before,.tms-diff-excluded .tms-after{text-decoration:line-through}.tms-review-row-excluded{background:#f7f7f7;border-left-color:#aaa}.tms-review-state{font-size:10px;color:#777;font-weight:700}.tms-review-note{margin-top:8px;padding:9px 11px;border-radius:11px;background:#f4f7fb;color:#485466;border:1px solid #dbe3ee}.tms-before{color:#8a3232}.tms-after{color:#17683a}.tms-preview-toolbar{display:grid;gap:7px;margin:9px 0 10px;padding:9px;border:1px solid #e8e8e8;border-radius:12px;background:#fafafa}.tms-preview-filters{display:flex;gap:5px;flex-wrap:wrap}.tms-preview-package{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:7px 8px;border:1px solid #e6e6e6;border-radius:9px;background:#fff}.tms-preview-package strong{font-size:10px;color:#555;margin-right:auto}.tms-preview-package select,.tms-preview-package button{border:1px solid #d8d8d8;background:#fff;border-radius:8px;padding:5px 7px;font:600 10px/1.2 Arial,sans-serif}.tms-preview-package button{cursor:pointer}.tms-preview-package button:hover{border-color:#aaa;background:#fafafa}.tms-preview-package button:disabled{opacity:.4;cursor:not-allowed}.tms-preview-package span{flex-basis:100%;font-size:9px;color:#777}.tms-preview-filter,.tms-preview-pager button{border:1px solid #d8d8d8;background:#fff;border-radius:8px;padding:5px 8px;font:600 10px/1.2 Arial,sans-serif;cursor:pointer}.tms-preview-filter.tms-active{border-color:var(--tms-red);color:var(--tms-red-dark);background:#fff4f4}.tms-preview-query{width:100%;box-sizing:border-box;border:1px solid #d8d8d8;border-radius:9px;padding:7px 9px;font:12px Arial,sans-serif}.tms-preview-pager{display:flex;align-items:center;justify-content:space-between;gap:8px;color:#666;font-size:10px}.tms-preview-pager button:disabled{opacity:.35;cursor:not-allowed}.tms-action-skip{border-left:4px solid #7352a1}.tms-empty{padding:15px;text-align:center;color:#777}.tms-help-card{display:none;margin-bottom:12px;padding:13px;border-radius:14px;border:1px solid #f0c9cb;background:linear-gradient(135deg,#fff,#fff6f6);animation:tms-pop .18s ease-out}.tms-help-card.tms-show{display:block}.tms-help-card h3{font-size:14px;margin:0 0 8px}.tms-help-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.tms-help-item{padding:8px 9px;border:1px solid #eee;border-radius:10px;background:#fff;font-size:11px}.tms-help-item b{display:block;margin-bottom:2px}.tms-help-note{margin-top:8px;padding:8px 9px;border-radius:10px;background:#fff0f1;font-size:11px}.tms-help-close{margin-top:9px;width:100%;border:1px solid #ddd;background:#fff;border-radius:10px;padding:7px;cursor:pointer;font-weight:700}@keyframes tms-panel-in{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}@keyframes tms-pop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}@keyframes tms-shimmer{to{transform:translateX(100%)}}#tms-apply{width:100%;padding:11px 14px;font-size:13px;box-shadow:0 8px 18px #e31e2420}
       @media(max-width:650px){#tms-panel{right:8px;bottom:74px;width:calc(100vw - 16px)}#tms-launch{right:10px;bottom:10px}.tms-counters{grid-template-columns:repeat(2,1fr)}}
     `;
@@ -6680,7 +6754,7 @@
           <div class="tms-help-note"><b>Важно:</b> сначала нажмите «Проверить изменения» и убедитесь, что список операций соответствует тому, что вы сделали в Excel.</div>
           <button id="tms-help-close" class="tms-help-close">Понятно</button>
         </div>
-        <div id="tms-status" class="tms-status"><div class="tms-status-line"><span id="tms-progress-label">Готово</span><span id="tms-progress-percent" class="tms-progress-percent">0%</span></div><div class="tms-progress-track"><div id="tms-progress-fill" class="tms-progress-fill"></div></div><div id="tms-progress-detail" class="tms-progress-detail">Скачайте Excel, внесите изменения и загрузите файл обратно.</div></div>
+        <div id="tms-status" class="tms-status"><div class="tms-status-line"><span id="tms-progress-label">Готово</span><span id="tms-progress-percent" class="tms-progress-percent">0%</span></div><div class="tms-progress-track"><div id="tms-progress-fill" class="tms-progress-fill"></div></div><div id="tms-progress-detail" class="tms-progress-detail">Скачайте Excel, внесите изменения и загрузите файл обратно.</div><div class="tms-capability-row"><span id="tms-capability-status" class="tms-capability-status" data-tone="limited">Среда: проверяю…</span><button id="tms-capability-recheck" class="tms-capability-recheck" type="button">Повторить проверку</button></div><div id="tms-capability-details" class="tms-capability-details">Проверяю совместимость текущей сборки TESSA.</div></div>
         <div class="tms-controls">
           <div class="tms-step"><div class="tms-step-label">1 · Подготовить Excel</div><div class="tms-row"><button id="tms-download-current" class="tms-primary">Скачать Excel</button><button id="tms-download-fresh">Скачать со свежими справочниками</button></div><div class="tms-step-caption">Скачайте рабочий Excel или обновите справочники перед редактированием.</div></div>
           <div class="tms-step"><div class="tms-step-label">2 · Выбрать изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"><button id="tms-refresh-excel" class="tms-ghost" disabled>Актуализировать выбранный Excel</button></div><div class="tms-step-caption">Добавит новые поля из текущего шаблона TESSA и постарается сохранить ваши изменения.</div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
@@ -6751,19 +6825,24 @@
     panel.querySelector('.tms-help').addEventListener('click', () => helpCard?.classList.toggle('tms-show'));
     panel.querySelector('#tms-help-close').addEventListener('click', () => helpCard?.classList.remove('tms-show'));
     panel.querySelector('#tms-stop').addEventListener('click', requestApplyAbort);
+    panel.querySelector('#tms-capability-recheck').addEventListener('click', () => {
+      if (APP.busy) return;
+      const effectiveActions = APP.plan ? buildReviewedPlan(APP.plan, APP.review).actions : [];
+      refreshRuntimeCapabilities(effectiveActions);
+    });
     panel.querySelector('#tms-file').addEventListener('change', event => {
       const file = event.target.files?.[0]; panel.querySelector('#tms-file-name').textContent = file?.name || 'Файл не выбран'; panel.querySelector('#tms-refresh-excel').disabled = !file && !APP.workbook?.roundtrip?.enabled;
     });
 
     panel.querySelector('#tms-download-current').addEventListener('click', async () => {
       if (APP.busy) return; setBusy(true);
-      try { await exportCurrentMatrixXlsx(); alert('Excel скачан. Можно редактировать лист «Матрица».'); }
+      try { requireRuntimeOperation('export'); await exportCurrentMatrixXlsx(); alert('Excel скачан. Можно редактировать лист «Матрица».'); }
       catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); alert(`Не удалось скачать Excel: ${message}`); }
       finally { setBusy(false); }
     });
     panel.querySelector('#tms-download-fresh').addEventListener('click', async () => {
       if (APP.busy) return; setBusy(true);
-      try { await exportCurrentMatrixXlsx({ forceDictionaryRefresh: true }); alert('Новый Excel со свежими справочниками скачан.'); }
+      try { requireRuntimeOperation('export'); await exportCurrentMatrixXlsx({ forceDictionaryRefresh: true }); alert('Новый Excel со свежими справочниками скачан.'); }
       catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); alert(`Не удалось обновить справочники: ${message}`); }
       finally { setBusy(false); }
     });
@@ -6775,7 +6854,7 @@
     });
     panel.querySelector('#tms-analyze').addEventListener('click', async () => {
       if (APP.busy) return; setBusy(true);
-      try { await analyzeSelectedFile(panel.querySelector('#tms-file').files?.[0]); }
+      try { requireRuntimeOperation('analyze'); await analyzeSelectedFile(panel.querySelector('#tms-file').files?.[0]); }
       catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); alert(message); }
       finally { setBusy(false); }
     });
@@ -6807,6 +6886,7 @@
       setBusy(true);
       try {
         const reviewedPlan = buildReviewedPlan(APP.plan, APP.review);
+        requireRuntimeOperation('apply', reviewedPlan.actions);
         const result = await applyPlan(reviewedPlan);
         if (result) {
           invalidatePlanStateAfterApply(APP, result);
@@ -6819,6 +6899,7 @@
         alert(`${message}\n\nЕсли понадобится разбор ошибки, нажмите «Скачать отчёт» в Studio.`);
       } finally { setBusy(false); }
     });
+    refreshRuntimeCapabilities([]);
   }
 
 
@@ -6837,7 +6918,7 @@
 
   window.__TESSA_MATRIX_SYNC_EXPORTS__ = {
     probeRuntimeEnvironment, inspectNativeViewCapabilitiesReadOnly, inspectMatrixCapabilitiesReadOnly,
-    evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker,
+    evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
