@@ -19,7 +19,7 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Apply empty-matrix support hardening
+      - name: Apply strict empty-matrix support hardening
         run: python scripts/v194_empty_matrix_fix.py
       - name: Verify focused empty-matrix contracts
         run: node --check tessa-matrix-studio.user.js && node tests/empty-matrix-runtime.mjs && node tests/runtime-capability-probe.mjs && node tests/capability-ui-contract.mjs && node tests/post-apply-view-refresh.mjs && node tests/reconciliation.mjs && node tests/reconciliation-identity-ambiguity.mjs && node tests/reconciliation-invariants.mjs
@@ -31,5 +31,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add tessa-matrix-studio.user.js
           git diff --cached --check
-          git commit -m "fix: support first ADD on empty matrices"
+          git commit -m "fix: require native evidence for empty matrices"
           git push origin HEAD:feat/v1.9.40-self-check-reconciliation
