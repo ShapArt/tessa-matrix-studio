@@ -5776,7 +5776,8 @@
         ? `\nОтображение TESSA обновлено автоматически.`
         : (result?.viewRefresh && !result.viewRefresh.skipped ? `\nЗапись завершена, но отображение TESSA не удалось обновить автоматически.` : '');
       return `Готово. Применено: ${applied} из ${requested}.
-Все подготовленные изменения применены.${sourceNote}${refreshNote}`;
+Все подготовленные изменения применены.${sourceNote}${refreshNote}
+Перед следующим Apply нужна свежая проверка или свежая выгрузка Excel.`;
     }
     const mutationSkipped = preflightSkipped + storeSkipped;
     return `Применение завершено частично.
