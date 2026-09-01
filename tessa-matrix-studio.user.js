@@ -5405,29 +5405,49 @@
   function indexSnapshotForReconciliation(snapshot) {
     const byCard = new Map();
     const byVersion = new Map();
+    const ambiguousCards = new Set();
+    const ambiguousVersions = new Set();
     for (const row of snapshot?.rows || []) {
       const card = canonicalValue(row?.rowCardId || '');
       const version = canonicalValue(row?.versionId || '');
-      if (card) byCard.set(card, row);
-      if (version) byVersion.set(version, row);
+      if (card) {
+        if (byCard.has(card)) ambiguousCards.add(card);
+        else byCard.set(card, row);
+      }
+      if (version) {
+        if (byVersion.has(version)) ambiguousVersions.add(version);
+        else byVersion.set(version, row);
+      }
     }
-    return { byCard, byVersion, rowCount: (snapshot?.rows || []).length };
+    return { byCard, byVersion, ambiguousCards, ambiguousVersions, rowCount: (snapshot?.rows || []).length };
   }
 
   function reconcileMutationReceipts(receipts, snapshot, structure) {
     const index = indexSnapshotForReconciliation(snapshot);
     const rows = [];
     for (const receipt of receipts || []) {
-      const byCard = receipt?.rowCardId ? index.byCard.get(canonicalValue(receipt.rowCardId)) : null;
-      const byVersion = receipt?.versionId ? index.byVersion.get(canonicalValue(receipt.versionId)) : null;
+      const cardKey = receipt?.rowCardId ? canonicalValue(receipt.rowCardId) : '';
+      const versionKey = receipt?.versionId ? canonicalValue(receipt.versionId) : '';
+      const byCard = cardKey ? index.byCard.get(cardKey) : null;
+      const byVersion = versionKey ? index.byVersion.get(versionKey) : null;
+      const cardAmbiguous = Boolean(cardKey && index.ambiguousCards.has(cardKey));
+      const versionAmbiguous = Boolean(versionKey && index.ambiguousVersions.has(versionKey));
       if (receipt?.type === 'delete') {
-        rows.push(byCard || byVersion
+        rows.push(byCard || byVersion || cardAmbiguous || versionAmbiguous
           ? { type: 'delete', excelRow: receipt.excelRow ?? null, status: 'divergent', reasonCode: 'reconcile-delete-still-member' }
           : { type: 'delete', excelRow: receipt.excelRow ?? null, status: 'verified', reasonCode: 'reconcile-delete-absent' });
         continue;
       }
-      if (!receipt?.rowCardId && !receipt?.versionId) {
+      if (!cardKey && !versionKey) {
         rows.push({ type: receipt?.type || null, excelRow: receipt?.excelRow ?? null, status: 'unknown', reasonCode: 'reconcile-identity-unknown' });
+        continue;
+      }
+      if (cardAmbiguous || versionAmbiguous) {
+        rows.push({ type: receipt?.type || null, excelRow: receipt?.excelRow ?? null, status: 'unknown', reasonCode: 'reconcile-identity-ambiguous' });
+        continue;
+      }
+      if (byCard && byVersion && byCard !== byVersion) {
+        rows.push({ type: receipt?.type || null, excelRow: receipt?.excelRow ?? null, status: 'unknown', reasonCode: 'reconcile-identity-conflict' });
         continue;
       }
       const current = byCard || byVersion;
@@ -5468,8 +5488,26 @@
         const bridge = await bridgeFactory();
         const structure = await bridge.requestStructure(receiptContext.templateId);
         const snapshot = await bridge.loadSnapshot(structure);
-        if (canonicalValue(snapshot?.matrixId || '') !== canonicalValue(receiptContext?.matrixId || '')) {
-          throw new Error('reconcile-matrix-changed');
+        const expectedMatrixId = canonicalValue(receiptContext?.matrixId || '');
+        const actualMatrixId = canonicalValue(snapshot?.matrixId || '');
+        const expectedTemplateId = canonicalValue(receiptContext?.templateId || '');
+        const actualTemplateId = canonicalValue(snapshot?.templateId || structure?.templateId || '');
+        if (!expectedMatrixId || actualMatrixId !== expectedMatrixId
+          || !expectedTemplateId || actualTemplateId !== expectedTemplateId) {
+          return {
+            status: 'incomplete',
+            checkedCount: 0,
+            verifiedCount: 0,
+            divergentCount: 0,
+            missingCount: 0,
+            unknownCount: receiptContext?.receipts?.length || 0,
+            rows: [],
+            attempts: attempt,
+            retryable: false,
+            reasonCode: 'reconcile-context-mismatch',
+            startedAt,
+            finishedAt: nowIso(),
+          };
         }
         return {
           ...reconcileMutationReceipts(receiptContext?.receipts || [], snapshot, structure),
