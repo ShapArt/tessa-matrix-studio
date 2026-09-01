@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.9.40 — 2026-09-01
+
+- добавлен read-only self-check текущей web-среды TESSA со статусами **«Среда: готова / ограничена / несовместима»**; недоступная необязательная возможность блокирует только зависящую от неё операцию, поэтому, например, отсутствие локального view-refresh не отключает безопасный Apply, а отсутствие создания строк блокирует ADD, но не UPDATE-only пакет;
+- runtime probe определяет доступные локальные API, открытую карточку, состояние матрицы и нативное представление без вызовов серверных `CardService.get/request/store/new/create`; локализованный Draft/Черновик распознаётся тем же production-инвариантом, что и обычный Apply;
+- после успешных UPDATE/ADD/DELETE Studio хранит только в памяти вкладки private mutation receipts: stable row/version identity и ID-first semantic hash ожидаемого typed-state; business/display-значения и receipt hash не добавляются в Apply JSON;
+- добавлена явная кнопка **«Проверить результат»**: она заново читает структуру и свежий snapshot TESSA, строго сверяет UPDATE/ADD по identity+semantic state, а DELETE — по отсутствию target identity в текущем membership; semantic nearest-match, повторный Store, rollback и автоматический repair запрещены;
+- reconciliation возвращает `verified / divergent / incomplete`, writer-lock получает не более 3 попыток с задержками 450/900 мс, остальные ошибки не ретраятся вслепую и не протаскивают сырой technical message в пользовательский результат;
+- fresh reconciliation индексирует snapshot один раз и работает O(N+M): regression 20 000 строк + 500 receipts выполняется примерно за десятки миллисекунд на GitHub runner;
+- добавлен privacy-safe support sanitizer по явному whitelist: версия, capability codes/scopes, счётчики Apply/reconciliation и reason codes; workbook/snapshot/receipts/logs/error/business values по умолчанию не могут попасть в такой объект, MatrixID/TemplateID добавляются только явно;
+- README, production runbook, compact UAT, issue-template и все release/version surfaces синхронизированы с `1.9.40`; merge/release остаются закрыты до exact-head Tests + CodeQL и controlled live UAT.
+
 ## 1.9.39 — 2026-09-01
 
 - live UAT подтвердил 11/11 успешных requested mutations при 12 строках, заранее исключённых planner/source validation; source-skipped строки больше не переводят полностью успешный mutation-plan в `partial`;

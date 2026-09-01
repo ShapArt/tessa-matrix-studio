@@ -1,6 +1,6 @@
 # Compact ALL-cases UAT
 
-Актуально для **TESSA Matrix Studio v1.9.39**.
+Актуально для **TESSA Matrix Studio v1.9.40**.
 
 Этот UAT заменяет старую стратегию с тысячами однотипных искусственных строк. Нагрузка остаётся в автоматических regression-тестах, а ручной UAT проверяет отдельные пользовательские поведения: один сценарий = один понятный кейс.
 
@@ -110,19 +110,36 @@
 - `Актуализировать выбранный Excel`.
 - `Скачать со свежими справочниками`.
 
+## v1.9.40: capability / reconciliation / privacy
+
+| ID | Сценарий | Ожидаемый результат |
+|---|---|---|
+| CAP-01 | Полная поддерживаемая среда | `Среда: готова`; Export / Analyze / нужный Apply доступны |
+| CAP-02 | Нет локального refresh представления | `Среда: ограничена`; Apply остаётся доступен, refresh блокируется отдельно |
+| CAP-03 | Нет возможности создавать строки | ADD blocked; UPDATE-only Apply остаётся доступен |
+| REC-01 | Один безопасный UPDATE → Проверить результат | exact target identity + semantic state → `verified` |
+| REC-02 | Один безопасный ADD → Проверить результат | созданная exact identity + semantic state → `verified` |
+| REC-03 | DELETE на отдельной test-copy | сохранённые target IDs отсутствуют в current membership → `verified` |
+| REC-04 | После Apply изменить ту же строку внешне до проверки | `divergent`; reconciliation делает **0 Store/Delete** и ничего не чинит автоматически |
+| REC-05 | Fresh read дважды получает transient writer-lock | максимум 3 попытки: сразу / +450 мс / +900 мс; затем user-visible incomplete/manual retry |
+| PRIV-01 | Privacy fixture support sanitizer | нет business values, workbook/snapshot, raw error/logs, receipts/hash; ID только при явном включении |
+
 ## Минимальный live GOLD-проход
 
-1. Убедиться, что Studio показывает `v1.9.39`.
+1. Убедиться, что Studio показывает `v1.9.40` и статус среды соответствует ожидаемому; для обычной полной среды — **`Среда: готова`**.
 2. Открыть UAT workbook на MatrixID `f5ec6fe5-55ce-49a7-9fdd-f24a6e7c11cb`.
 3. Нажать **Проверить изменения**.
 4. Убедиться, что нет global blocker и ACTIVE rows 15–38 классифицированы согласно каталогу.
 5. Проверить filters/search/selective review.
 6. Через **Пакет для Apply** оставить ровно **1 безопасную ADD или UPDATE**, без DELETE.
-7. Apply должен завершиться `completed`, `success=true`; source-skipped строки отображаются отдельно и не отравляют результат.
-8. Нативное отображение матрицы должно обновиться автоматически без full-card refresh; если writer-lock временный, Studio делает ограниченный retry.
-9. После Store JSON не скачивается автоматически; старый Apply-plan недоступен; progress остаётся видимым при scroll.
-10. Скачать fresh export и подтвердить, что изменилась только intended row.
-11. На отдельной копии проверить wrong MatrixID: должен быть один global blocker, без row-noise.
+7. Apply должен завершиться `completed`, `success=true`; source-skipped строки отображаются отдельно и не отравляют результат; старый Preview consumed.
+8. Нажать **Проверить результат**. Ожидание первого прохода: `verified=1`. В Network/логах браузера не должно появиться нового Store/Delete из-за reconciliation.
+9. Нативное отображение матрицы может обновляться отдельно без full-card refresh; transient writer-lock обрабатывается bounded retry и не меняет уже завершённый Store-result.
+10. После Store JSON не скачивается автоматически; progress остаётся видимым при scroll.
+11. Скачать fresh export и вручную подтвердить, что изменилась только intended row.
+12. На отдельной test-copy после безопасного Apply изменить ту же строку другим штатным способом и затем нажать **Проверить результат**: ожидание `divergent=1`, **0 автоматических исправлений / повторных Store**.
+13. Прогнать PRIV-01 и убедиться, что support sanitizer не содержит business values.
+14. На отдельной копии проверить wrong MatrixID: должен быть один global blocker, без row-noise.
 
 ## Release gate
 
