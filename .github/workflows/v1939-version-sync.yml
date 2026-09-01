@@ -1,0 +1,43 @@
+name: v1.9.39 version sync
+
+on:
+  push:
+    branches:
+      - feat/v1.9.39-post-apply-ux
+    paths:
+      - .github/workflows/v1939-version-sync.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/v1.9.39-post-apply-ux
+          fetch-depth: 0
+      - name: Sync source version
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tessa-matrix-studio.user.js')
+          s = p.read_text(encoding='utf-8')
+          if '// @version      1.9.38' not in s or "version: '1.9.38'" not in s:
+              raise SystemExit('expected v1.9.38 source markers not found')
+          s = s.replace('// @version      1.9.38', '// @version      1.9.39', 1)
+          s = s.replace("version: '1.9.38'", "version: '1.9.39'", 1)
+          p.write_text(s, encoding='utf-8')
+          PY
+          node --check tessa-matrix-studio.user.js
+      - name: Commit and self-remove
+        run: |
+          rm -f .github/workflows/v1939-version-sync.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --exit-code && exit 0
+          git commit -m "release: sync userscript version 1.9.39"
+          git push origin HEAD:feat/v1.9.39-post-apply-ux
