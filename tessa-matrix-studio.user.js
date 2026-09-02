@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.46
+// @version      1.9.47
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.46',
+    version: '1.9.47',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -3024,6 +3024,16 @@
   // Planner и UI работают через этот слой и не зависят от деталей API напрямую.
   // ---------------------------------------------------------------------------
 
+  // A failed duplicate check is distinguishable from an uncertain Store result.
+  // Only this local error type may assert that the row's write was not attempted.
+  class DuplicateValidationError extends Error {
+    constructor(message, code = 'duplicate-check-failed') {
+      super(message);
+      this.name = 'DuplicateValidationError';
+      this.code = code;
+    }
+  }
+
   class TessaBridge {
     constructor() {
       this.extRequire = captureExtensionRequire();
@@ -4126,12 +4136,22 @@
       req.info.versionId = this.TypedField.createGuid(versionId);
       req.info.matrixId = this.TypedField.createGuid(this.mainCard.id);
       req.info.templateID = this.TypedField.createGuid(this.templateId());
-      const response = await this.cardService.request(req);
-      const error = this.validationError(response, 'Ошибка проверки дубликатов');
-      if (error) throw error;
-      const info = response.tryGetInfo?.() || response.info;
-      const ok = this.StorageHelper.tryGet(info, 'ok');
-      if (ok === false) throw new Error('TESSA обнаружила дублирующую строку матрицы.');
+      try {
+        const response = await this.cardService.request(req);
+        const error = this.validationError(response, 'Ошибка проверки дубликатов');
+        if (error) throw error;
+        const info = response.tryGetInfo?.() || response.info;
+        const ok = this.StorageHelper.tryGet(info, 'ok');
+        if (ok === false) throw new DuplicateValidationError('TESSA обнаружила дублирующую строку матрицы.', 'duplicate-found');
+        // A successful request is not itself a successful business check.
+        // Missing/malformed ok must fail closed, as it does in the native editor.
+        if (ok !== true) throw new DuplicateValidationError('TESSA не подтвердила проверку дубликатов. Сохранение строки не запускалось.', 'duplicate-response-invalid');
+      } catch (error) {
+        if (error instanceof DuplicateValidationError) throw error;
+        const message = String(error?.message || error || 'Ошибка проверки дубликатов');
+        throw new DuplicateValidationError(message, /LeftOperandExtractor is null/.test(message)
+          ? 'duplicate-interval-extractor' : 'duplicate-check-failed');
+      }
     }
 
     async storeRowCard(card) {
@@ -5289,7 +5309,7 @@
     const refreshText = result?.viewRefresh?.ok
       ? ' Отображение TESSA обновлено автоматически.'
       : (result?.viewRefresh && !result.viewRefresh.skipped ? ' Запись завершена; отображение можно обновить кнопкой ниже.' : '');
-    if (summary) summary.innerHTML = `<div class="tms-review-note"><b>${title}</b>${sourceText}${refreshText} Старый Preview погашен: для следующего Apply нужна свежая проверка.</div>${skippedFieldsHtml(result?.skippedFields)}`;
+    if (summary) summary.innerHTML = `<div class="tms-review-note"><b>${title}</b>${sourceText}${refreshText} Для следующего применения выполните новую проверку.</div>${rowFailuresHtml(result?.skipped, true)}${skippedFieldsHtml(result?.skippedFields)}`;
     if (table) table.innerHTML = '';
     if (refreshButton) {
       const needsManualRefresh = Boolean(result?.viewRefresh && !result.viewRefresh.ok && !result.viewRefresh.skipped);
@@ -5301,6 +5321,22 @@
   function skippedFieldsHtml(fields = []) {
     if (!fields?.length) return '';
     return `<details open class="tms-skipped-box"><summary><b>Не применяются отдельные поля: ${fields.length}</b></summary><div>Значения этих полей в TESSA сохраняются. Исправьте ячейки в Excel и выполните новую проверку.</div>${fields.slice(0, 20).map(field => `<div class="tms-skip-line">Excel ${escapeHtml(field.excelRow)} · ${escapeHtml(field.label)}: ${escapeHtml(field.reason)}</div>`).join('')}${fields.length > 20 ? '<div>Остальные поля указаны в строках Preview и отчёте.</div>' : ''}</details>`;
+  }
+
+  function rowFailuresHtml(skips = [], reportAvailable = false) {
+    // Input errors already have a separate section. Runtime failures must remain
+    // visible even when they occurred during Preview or that Preview is consumed.
+    const failures = (skips || []).filter(item => /^(preflight|store)-/.test(item.source || ''));
+    if (!failures.length) return '';
+    const lines = failures.slice(0, 20).map(item => {
+      const stage = item.source.startsWith('preflight-') ? 'До применения' : 'При применении';
+      const reason = item.code === 'duplicate-interval-extractor'
+        ? 'TESSA не смогла сравнить интервалы при проверке дубликатов; сохранение не запускалось.'
+        : String(item.reason || 'Причина не указана').slice(0, 1000);
+      return `<div class="tms-skip-line"><b>${item.excelRow ? `Excel ${escapeHtml(item.excelRow)}` : 'Строка'} · ${stage}</b><br>${escapeHtml(reason)}</div>`;
+    });
+    const hint = reportAvailable ? 'Подробности: «Дополнительно → Скачать отчёт».' : 'Подробности каждой строки — в фильтре «Пропустить».';
+    return `<details open class="tms-skipped-box"><summary><b>Не удалось выполнить: ${failures.length}</b></summary>${lines.join('')}<div>${hint}${failures.length > 20 ? ` Показано 20 из ${failures.length}.` : ''}</div></details>`;
   }
 
   /**
@@ -5990,7 +6026,15 @@
 
   function runtimeSkip(action, error, phase = 'preflight') {
     const rowNumber = action?.excelRow?.excelRow || null;
-    return makeSkippedRow(rowNumber, friendlyErrorMessage(error), phase, action?.type || null);
+    const skipped = makeSkippedRow(rowNumber, friendlyErrorMessage(error), phase, action?.type || null);
+    if (error instanceof DuplicateValidationError) {
+      // Fixed diagnostic fields only; retain the original reason in the opt-in
+      // Apply report. Do not infer this from arbitrary Store/network error text.
+      skipped.check = 'duplicate';
+      skipped.code = error.code;
+      skipped.writeAttempted = false;
+    }
+    return skipped;
   }
 
   function applyPreflightPreview(plan, preflight) {
@@ -6907,6 +6951,7 @@
         <span class="tms-count tms-skip">пропустить <b>${c.skip || 0}</b></span>
       </div>
       ${hasReviewExclusions ? `<div class="tms-review-note"><b>Фильтр применения включён.</b> Отключённые здесь изменения не попадут в TESSA; исходный Excel не изменяется.</div>` : ''}
+      ${rowFailuresHtml(skipped)}
       ${skippedFieldsHtml(reviewed.skippedFields)}
       ${reviewedSafety.blocked ? `<div class="tms-fatal"><b>Этот набор изменений нельзя безопасно применить</b><br>${(reviewedSafety.blockedReasons || []).map(escapeHtml).join('<br>')}</div>` : ''}
       ${applyState.batchBlocked ? `<div class="tms-fatal"><b>Слишком много изменений за один раз</b><br>Сейчас: ${applyState.count} · максимум: 2000. Раскройте «Выбрать часть изменений» и уменьшите число операций.</div>` : ''}

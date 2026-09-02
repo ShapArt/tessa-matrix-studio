@@ -99,3 +99,34 @@ try {
 }
 
 console.log('TESSA Matrix Studio ADD store-time race regression: OK');
+
+// Exercise the real response contract inside Apply, not just a throwing stub.
+// A malformed response and the live interval-handler failure both stop the
+// second check before Store, while leaving diagnostic evidence in the report.
+const validator = Object.create(E.TessaBridge.prototype);
+Object.assign(validator, {
+  cards: { CardRequest: class { constructor() { this.info = {}; } } },
+  core: { TypedField: { createGuid: x => x }, StorageHelper: { tryGet: (info, key) => info?.[key] } },
+  mainCard: { id: snapshot.matrixId }, templateId: () => structure.templateId,
+});
+for (const cause of ['invalid-response', 'interval-error']) {
+  let checks = 0;
+  storeCalls = 0;
+  validator.cardService = { request: async () => {
+    checks++;
+    if (checks === 1) return { validationResult: { isSuccessful: true }, info: { ok: true } };
+    return cause === 'invalid-response'
+      ? { validationResult: { isSuccessful: true }, info: {} }
+      : { validationResult: { isSuccessful: false, build: () => 'LeftOperandExtractor is null' } };
+  } };
+  bridge.validateDuplicate = (_, versionId) => validator.validateDuplicate({ getStorage: () => ({}) }, versionId);
+  E.TessaBridge.create = async () => bridge;
+  try {
+    const result = await E.applyPlan(E.buildPlan(edited, structure, snapshot));
+    assert(checks === 2 && storeCalls === 0, `${cause}: rejected validation reached Store`);
+    const failure = result.skipped.find(item => item.source === 'store-add');
+    assert(failure?.check === 'duplicate' && failure.writeAttempted === false, `${cause}: missing failure stage`);
+    assert(result.appliedCount === 0 && result.failedCount === 1, `${cause}: incorrect accounting`);
+  } finally { E.TessaBridge.create = originalCreate; }
+}
+console.log('TESSA Matrix Studio ADD invalid-response / interval-error guards: OK');

@@ -89,3 +89,9 @@ UI-фильтр и поиск меняют видимый список. Искл
 В 1.9.45 `setControlDisabled` обновляет семантическое состояние кнопок, которое `setBusy(false)` восстановит после завершения операции. Он нужен, когда доступность меняется во время блокировки: `rememberReport`, `renderPlanConsumedNotice` и успешное ручное обновление. Пока `APP.busy` установлен, кнопка остаётся заблокирована. Это сохраняет защиту от повторного действия и не оставляет готовый отчёт недоступным из-за старого значения `disabled`. Регрессия: `tests/apply-report-opt-in.mjs`; исходные ограничения пустого picker/пагинации: `tests/runtime-monitor-integration.mjs`.
 
 В 1.9.46 `#tms-download-report` перенесена в `.tms-tools`. Обработчик и `rememberReport` прежние; открытие раздела не запускает скачивание.
+
+## Отказы проверки дубликатов (1.9.47)
+
+`TessaBridge.validateDuplicate` принимает только `ok === true`. `DuplicateValidationError` отмечает подтверждённый отказ этого этапа; `runtimeSkip` переносит в отчёт фиксированные диагностические поля. `rowFailuresHtml` выводит операционные отказы независимо от длинного списка ошибок Excel и вызывается из Preview и `renderPlanConsumedNotice`. Сетевую ошибку Store нельзя помечать как «запись не запускалась».
+
+Регрессии: `tests/duplicate-validation-contract.mjs`, `tests/apply-add-race.mjs`. Контракт запроса, известный серверный дефект и воспроизведение: [диагностика](DUPLICATE-CHECK-DIAGNOSTICS.md).
