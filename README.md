@@ -6,21 +6,23 @@
 
 Выгрузка матрицы в Excel → массовая правка → проверка изменений → безопасное применение в TESSA.
 
-[![Version](https://img.shields.io/badge/version-1.9.42-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.9.43-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-userscript-24292F?style=flat-square&logo=tampermonkey)](https://www.tampermonkey.net/)
 
 ### [УСТАНОВИТЬ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js) · [СКАЧАТЬ РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [ОТКРЫТЬ КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [СООБЩИТЬ ОБ ОШИБКЕ](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.9.42 · Автор: Шаповалов Артём**
+**v1.9.43 · Автор: Шаповалов Артём**
 
 </div>
 
-В 1.9.42 подключение к открытой матрице обновляется автоматически. Если карточка ещё загружается, Studio показывает короткий статус и ждёт готовности; подробные причины раскрываются отдельно.
+В 1.9.43 убраны всплывающие подсказки Excel: ввод описан на листе «Инструкция», выпадающие списки сохранены. Панель использует шрифт темы TESSA, основные кнопки выделены красным, короткие анимации учитывают настройку уменьшения движения.
+
+Подключение к открытой матрице обновляется автоматически. Если карточка ещё загружается, Studio показывает короткий статус и ждёт готовности; подробные причины раскрываются отдельно.
 
 Для нескольких значений в одной ячейке откройте **«Дополнительно → Собрать значения для ячейки»** после скачивания или выбора рабочего Excel. Выберите поле, найдите и отметьте варианты, нажмите «Скопировать». В Excel войдите в ячейку через **F2**, затем вставьте **Ctrl+V**. При ручном вводе разделяйте значения **Alt+Enter**. Обычный выпадающий список выбирает один вариант и заменяет прежний.
 
-Перед релизом пройдите [UAT 1.9.42](docs/UAT-v1.9.42-STUDIO-UX.md): автоподключение, смена карточки, множественный выбор, Preview и проверка результата записи.
+Перед релизом пройдите [смешанный UAT 1.9.43](docs/UAT-v1.9.43-MIXED-INPUT.md): правильные и ошибочные значения в одном файле, все рабочие поля, новые и пустые строки, защита от формул и проверка результата записи.
 
 
 
@@ -34,7 +36,7 @@
 | Задача | Документ |
 |---|---|
 | Установить и начать работу | [Быстрый старт](#быстрый-старт) |
-| Проверить новую сборку и каждый тип ввода | [UAT 1.9.42](docs/UAT-v1.9.42-STUDIO-UX.md) |
+| Проверить новую сборку и каждый тип ввода | [UAT 1.9.43](docs/UAT-v1.9.43-MIXED-INPUT.md) |
 | Понять устройство и найти функцию | [Карта кода](docs/CODE-MAP.md), [архитектура](docs/ARCHITECTURE.md) |
 | Разобраться с ошибкой или выпуском | [Runbook](docs/PRODUCTION-RUNBOOK.md) |
 | Посмотреть изменения по версиям | [Changelog](CHANGELOG.md) |
@@ -51,7 +53,7 @@ TESSA Matrix Studio добавляет в карточку матрицы отд
 
 <div align="center">
   <img src="docs/assets/studio-panel.webp" alt="Реальная панель TESSA Matrix Studio" width="520">
-  <br><sub>Скриншот предыдущей версии. В 1.9.42 вспомогательные кнопки находятся в «Дополнительно».</sub>
+  <br><sub>Скриншот предыдущей версии. В 1.9.43 вспомогательные кнопки находятся в «Дополнительно».</sub>
 </div>
 
 ### Четыре шага
@@ -81,7 +83,7 @@ Studio автоматически подключается к открытой �
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.9.42** в Tampermonkey.
+2. Подтвердите установку версии **1.9.43** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -143,7 +145,7 @@ Studio автоматически подключается к открытой �
 Перед подтверждением проверьте:
 
 - **Название:** `TESSA Matrix Studio — Черкизово`
-- **Версия:** `1.9.42`
+- **Версия:** `1.9.43`
 - **Автор:** `Шаповалов Артём`
 - **Разрешения:** `@grant none`
 - **Область запуска:** только домены TESSA Черкизово
@@ -429,7 +431,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.9.42**
+Текущая версия: **1.9.43**
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)

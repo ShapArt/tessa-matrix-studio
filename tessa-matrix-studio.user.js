@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.42
+// @version      1.9.43
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.42',
+    version: '1.9.43',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -2142,7 +2142,7 @@
     ]);
     row(17, 24, [[0, 'Как заполнять значения', 11]]);
     row(18, 68, [
-      [0, 'ПОИСК ПО СПРАВОЧНИКАМ\nМожно вводить уникальную часть названия прямо в ячейке. Если найден ровно один вариант, Studio сопоставит его с точной записью TESSA. Для логических признаков используйте «Да» / «Нет».', 12],
+      [0, 'ПОИСК ПО СПРАВОЧНИКАМ\nМожно вводить уникальную часть названия прямо в ячейке. Если найден ровно один вариант, Studio сопоставит его с точной записью TESSA. Признаки: «Да» / «Нет». Число или диапазон: 0, 15, 4..15. Сохраняйте текстовый формат ячеек.', 12],
       [4, 'НЕСКОЛЬКО ЗНАЧЕНИЙ\nВ Studio откройте «Дополнительно → Собрать значения для ячейки»: выберите поле, отметьте варианты, скопируйте и вставьте в Excel через F2 → Ctrl+V. Вручную разделяйте значения Alt+Enter. Обычный список заменяет значение.', 12],
     ]);
     row(23, 24, [[0, 'Дополнительные действия — когда нужны эти кнопки', 11]]);
@@ -2151,7 +2151,7 @@
       [4, '«ОБНОВИТЬ СПРАВОЧНИКИ И СКАЧАТЬ»\nСоздаёт новую выгрузку и принудительно перечитывает справочники/роли из TESSA. Полезно, если нужное значение недавно добавили или переименовали.', 12],
     ]);
     row(29, 24, [[0, 'Безопасность', 11]]);
-    row(30, 76, [[0, 'Перед применением Studio перечитывает матрицу, проверяет права и режим редактирования, сверяет fingerprint изменяемых строк, валидирует справочники, исполнителей и дубли. Ошибка одной строки не должна приводить к случайному изменению остальных. Если строку нельзя сопоставить однозначно, она пропускается и показывается пользователю.', 13]]);
+    row(30, 76, [[0, 'В существующей строке ошибочное поле сохраняет значение TESSA, а корректные изменения можно применить. Новая строка с ошибкой пропускается целиком. Формулы не исполняются. Чужая матрица, повреждённая структура или небезопасное удаление блокируют запись. Все пропуски видны при проверке.', 13]]);
     row(34, 32, [[0, 'Главное правило: сначала «Проверить изменения», затем внимательно посмотреть ИЗМЕНИТЬ / ДОБАВИТЬ / ЗАМЕНИТЬ / УДАЛИТЬ и только после этого применять.', 14]]);
 
     const merges = ['A1:H2','A3:H3','A5:H5','A6:B9','C6:D9','E6:F9','G6:H9','A11:H11','A12:B15','C12:D15','E12:F15','G12:H15','A17:H17','A18:D21','E18:H21','A23:H23','A24:D27','E24:H27','A29:H29','A30:H32','A34:H35'];
@@ -2231,10 +2231,12 @@
     const validations = [];
     for (const [index, column] of grid.columns.entries()) {
       if (column.kind !== 'criterion' || ![OPERAND.Int, OPERAND.Decimal].includes(column.operandTypeId)) continue;
-      validations.push(`<dataValidation type="custom" allowBlank="1" showInputMessage="1" showErrorMessage="0" promptTitle="Число или диапазон" prompt="Введите число или диапазон 4..15. Ячейка должна оставаться в текстовом формате." sqref="${indexToCol(index)}${dataStartRow}:${indexToCol(index)}${validationLastRow}"><formula1>TRUE</formula1></dataValidation>`);
+      validations.push(`<dataValidation type="custom" allowBlank="1" showInputMessage="0" showErrorMessage="0" sqref="${indexToCol(index)}${dataStartRow}:${indexToCol(index)}${validationLastRow}"><formula1>TRUE</formula1></dataValidation>`);
     }
-    for (const [rangeName, refs] of validationGroups) validations.push(`<dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="0" promptTitle="Одно или несколько значений" prompt="Список выбирает один вариант. Несколько: Alt+Enter в ячейке или «Собрать значения для ячейки» в Studio, затем F2 и вставка." sqref="${refs.join(' ')}"><formula1>${rangeName}</formula1></dataValidation>`);
-    if (booleanRefs.length) validations.push(`<dataValidation type="list" allowBlank="1" showErrorMessage="1" sqref="${booleanRefs.join(' ')}"><formula1>"Да,Нет"</formula1></dataValidation>`);
+    // Keep the dropdowns; editing guidance belongs on Инструкция, not in a
+    // persistent Excel input-message popup covering the neighbouring cells.
+    for (const [rangeName, refs] of validationGroups) validations.push(`<dataValidation type="list" allowBlank="1" showInputMessage="0" showErrorMessage="0" sqref="${refs.join(' ')}"><formula1>${rangeName}</formula1></dataValidation>`);
+    if (booleanRefs.length) validations.push(`<dataValidation type="list" allowBlank="1" showInputMessage="0" showErrorMessage="1" sqref="${booleanRefs.join(' ')}"><formula1>"Да,Нет"</formula1></dataValidation>`);
 
     const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastCol}${lastDataRow}"/><sheetViews><sheetView workbookViewId="0"><pane xSplit="1" ySplit="${grid.headerRow}" topLeftCell="B${dataStartRow}" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>${cols}</cols><sheetData>${sheetRows.join('')}</sheetData><autoFilter ref="A${grid.headerRow}:${lastCol}${lastDataRow}"/><dataValidations count="${validations.length}">${validations.join('')}</dataValidations></worksheet>`;
 
@@ -4544,10 +4546,23 @@
           || operand === canonicalValue(OPERAND.ReferenceInt)
           || Boolean(column.refSection);
         visibleValues.forEach((visible, index) => {
+          // A formula or an Excel-coerced value is already rejected. Do not
+          // search large dictionaries for its cached result or invent extra
+          // validation errors; recovery will preserve the entire old field.
+          if (autoDateIssue || coercionIssue) {
+            resolvedDisplays.push(visible);
+            resolvedIds.push('');
+            compareValues.push(`invalid:${canonicalValue(visible)}`);
+            return;
+          }
           const result = resolveEmbeddedDictionaryValue(workbook, column, visible, explicitValues[index] || '');
           resolvedDisplays.push(result.display);
           resolvedIds.push(result.explicit);
-          if (result.issue) issues.push(`Excel ${row.excelRow}: ${result.issue}`);
+          if (result.issue) {
+            issues.push(`Excel ${row.excelRow}: ${result.issue}`);
+            compareValues.push(`invalid:${canonicalValue(visible)}`);
+            return;
+          }
           if (result.resolution === 'unique-fragment') resolutions.push(`Excel ${row.excelRow}: «${visible}» → «${result.display}» в «${column.excelHeader}»`);
           if (column.kind === 'function' && result.explicit) {
             const [roleId, roleTypeId = ''] = String(result.explicit).split('|').map(value => value.trim());
@@ -6981,7 +6996,7 @@
             const button = rowExcluded ? '' : `<button type="button" class="tms-review-btn tms-review-change-btn" data-review-action="${escapeHtml(actionKey)}" data-review-change="${escapeHtml(change.key)}" aria-pressed="${individuallyExcluded ? 'true' : 'false'}">${individuallyExcluded ? 'Вернуть' : 'Исключить'}</button>`;
             return `<div class="tms-diff${excluded ? ' tms-diff-excluded' : ''}">
               <div class="tms-diff-head"><b>${escapeHtml(change.label || change.key)}</b>${button}</div>
-              <div class="tms-diff-values"><div class="tms-before"><small>Было</small>${escapeHtml((change.before || []).join('\n') || 'Не заполнено')}</div><div class="tms-after"><small>Будет</small>${escapeHtml((change.after || []).join('\n') || 'Не заполнено')}</div></div>
+              <div class="tms-diff-values"><div class="tms-before"><small>Было</small>${previewValuesHtml(change.before, plan.columnMap, change.key)}</div><div class="tms-after"><small>Будет</small>${previewValuesHtml(change.after, plan.columnMap, change.key)}</div></div>
               ${excluded ? '<div class="tms-review-state">Это изменение не будет применено</div>' : ''}
             </div>`;
           }).join('')}`;
@@ -7077,9 +7092,18 @@
     }
   }
 
+  // Presentation only: preserve order, repeated labels and IDs in the plan.
+  // A Boolean is rendered as Да/Нет only when the template declares that type.
+  function previewValuesHtml(values, columnMap, key) {
+    if (!values?.length) return 'Не заполнено';
+    const column = columnMap?.columns?.get?.(String(key).slice(String(key).indexOf(':') + 1));
+    const isBoolean = column?.key === key && operandKind(column) === 'Boolean';
+    return values.map(value => `<span class="tms-value">${escapeHtml(isBoolean ? booleanDisplay(value) : value)}</span>`).join('');
+  }
+
   function flatToHtml(flat, columnMap = null) {
     const labels = new Map([...(columnMap?.columns?.values?.() || [])].map(column => [column.key, column.excelHeader || column.name]));
-    return Object.entries(flat).filter(([, value]) => value?.length).map(([key, value]) => `<div><b>${escapeHtml(labels.get(key) || key)}</b>: ${escapeHtml(value.join(' | '))}</div>`).join('') || 'Пустая строка';
+    return Object.entries(flat).filter(([, value]) => value?.length).map(([key, value]) => `<div><b>${escapeHtml(labels.get(key) || key)}</b>: ${previewValuesHtml(value, columnMap, key)}</div>`).join('') || 'Пустая строка';
   }
 
   function escapeHtml(value) {
@@ -7390,29 +7414,29 @@
     if (document.querySelector('#tms-launch')) return;
     const style = document.createElement('style');
     style.textContent = `
-      #tms-panel,#tms-launch{--tms-red:#c91c24;--tms-red-dark:#a9151c;--tms-ink:#24272c;--tms-muted:#616771;--tms-line:#dce0e5;--tms-bg:#fff;--tms-soft:#f5f6f8;--tms-success:#21603b;--tms-warning:#805b12;--tms-radius:8px;font:13px/1.45 Arial,sans-serif;color:var(--tms-ink)}
+      #tms-panel,#tms-launch{--tms-red:#c91c24;--tms-red-dark:#a9151c;--tms-ink:#24272c;--tms-muted:#616771;--tms-line:#dce0e5;--tms-bg:#fff;--tms-soft:#f5f6f8;--tms-success:#21603b;--tms-warning:#805b12;--tms-radius:8px;font:14px/1.5 var(--font-default,"Gotham Pro Server","Segoe UI",sans-serif);color:var(--tms-ink)}
       #tms-panel *,#tms-launch{box-sizing:border-box}
       #tms-panel [hidden]{display:none!important}
       #tms-launch{position:fixed;right:20px;bottom:20px;z-index:2147483645;width:52px;height:52px;padding:0;border:1px solid #dce0e5;border-radius:50%;background:#fff;box-shadow:0 4px 16px #0002;cursor:grab;display:grid;place-items:center;touch-action:none;user-select:none;overflow:hidden}
       #tms-launch:active{cursor:grabbing}
       #tms-launch svg{width:52px;height:52px;display:block;pointer-events:none}
       #tms-panel{position:fixed;right:20px;bottom:84px;width:min(620px,calc(100vw - 32px));max-height:calc(100vh - 108px);z-index:2147483646;background:var(--tms-bg);border:1px solid var(--tms-line);border-radius:12px;box-shadow:0 8px 32px #0003;display:none;overflow:hidden}
-      #tms-panel.tms-open{display:flex;flex-direction:column}
+      #tms-panel.tms-open{display:flex;flex-direction:column;animation:tms-enter .18s ease-out}
       #tms-panel .tms-head{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--tms-line);background:var(--tms-bg)}
       #tms-panel .tms-brand{width:32px;height:32px;flex:none}
       #tms-panel .tms-brand svg{width:100%;height:100%}
       #tms-panel .tms-title{flex:1;min-width:0}
       #tms-panel .tms-title strong{display:block;font-size:14px}
       #tms-panel .tms-title small{display:block;color:var(--tms-muted);font-size:12px}
-      #tms-panel button,#tms-panel .tms-file-label{font:600 12px/1.4 Arial,sans-serif;min-height:32px;border:1px solid var(--tms-line);border-radius:var(--tms-radius);padding:6px 10px;background:var(--tms-bg);color:var(--tms-ink);cursor:pointer;text-align:center;white-space:normal;margin:0;box-shadow:none;text-transform:none;letter-spacing:normal}
-      #tms-panel button:hover,#tms-panel .tms-file-label:hover{background:var(--tms-soft);border-color:#9fa7b1}
+      #tms-panel button,#tms-panel .tms-file-label{font-family:inherit;font-size:13px;font-weight:600;line-height:1.4;min-height:36px;border:1px solid var(--tms-line);border-radius:var(--tms-radius);padding:6px 10px;background:var(--tms-bg);color:var(--tms-ink);cursor:pointer;text-align:center;white-space:normal;margin:0;box-shadow:none;text-transform:none;letter-spacing:normal}
+      #tms-panel button:hover:enabled,#tms-panel .tms-file-label:hover{background:var(--tms-soft);border-color:#9fa7b1}
       #tms-panel button:disabled,#tms-panel .tms-disabled{opacity:.45;cursor:not-allowed}
-      #tms-panel button.tms-primary{background:var(--tms-red);border-color:var(--tms-red);color:#fff}
-      #tms-panel button.tms-primary:hover{background:var(--tms-red-dark)}
+      #tms-panel button.tms-primary{background:var(--tms-red);border-color:var(--tms-red);color:#fff;box-shadow:0 2px 6px #a9151c1a}
+      #tms-panel button.tms-primary:hover:enabled{background:var(--tms-red-dark);border-color:var(--tms-red-dark);box-shadow:0 4px 12px #a9151c26}
       #tms-panel .tms-danger{color:var(--tms-red-dark)}
       #tms-panel .tms-close,#tms-panel .tms-help{width:32px;padding:2px;border-color:transparent;font-size:18px}
       #tms-panel .tms-ghost{background:var(--tms-bg)}
-      #tms-panel input,#tms-panel select,#tms-panel textarea{font:13px/1.45 Arial,sans-serif;color:var(--tms-ink);border:1px solid var(--tms-line);border-radius:var(--tms-radius);background:var(--tms-bg);padding:7px 9px;min-height:32px;margin:0;max-width:100%}
+      #tms-panel input,#tms-panel select,#tms-panel textarea{font-family:inherit;font-size:13px;line-height:1.5;color:var(--tms-ink);border:1px solid var(--tms-line);border-radius:var(--tms-radius);background:var(--tms-bg);padding:7px 9px;min-height:32px;margin:0;max-width:100%}
       #tms-panel input[type=checkbox]{min-height:16px;width:16px;height:16px;margin:2px 0 0;accent-color:var(--tms-red);flex:none}
       #tms-panel :focus-visible,#tms-launch:focus-visible{outline:2px solid #234e86;outline-offset:2px}
       #tms-panel textarea{resize:vertical}
@@ -7441,7 +7465,7 @@
       #tms-panel .tms-file-name{font-size:12px;color:var(--tms-muted);overflow-wrap:anywhere}
       #tms-panel #tms-file{position:absolute;opacity:0;width:1px;height:1px;min-height:0;padding:0}
       #tms-panel .tms-file-label:has(+ input:focus-visible){outline:2px solid #234e86;outline-offset:2px}
-      #tms-panel #tms-apply{width:100%;min-height:36px}
+      #tms-panel #tms-apply{width:100%;min-height:42px;font-size:14px}
       #tms-panel .tms-counters{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:12px 0}
       #tms-panel .tms-count{padding:8px 4px;border:1px solid var(--tms-line);border-radius:var(--tms-radius);font-size:11px;text-align:center;background:var(--tms-soft)}
       #tms-panel .tms-count b{display:block;font-size:18px;font-variant-numeric:tabular-nums;margin-top:4px}
@@ -7467,6 +7491,8 @@
       #tms-panel .tms-diff-values>div{padding:8px;border-radius:4px;background:var(--tms-soft);overflow-wrap:anywhere;white-space:pre-line}
       #tms-panel .tms-diff-values small{display:block;color:var(--tms-muted);font-size:11px;margin-bottom:4px}
       #tms-panel .tms-after{color:var(--tms-success)}
+      #tms-panel .tms-value{display:block;white-space:pre-wrap;overflow-wrap:anywhere}
+      #tms-panel .tms-value+.tms-value{margin-top:5px;padding-top:5px;border-top:1px solid var(--tms-line)}
       #tms-panel .tms-diff-excluded .tms-diff-values{text-decoration:line-through;color:var(--tms-muted)}
       #tms-panel .tms-preview-toolbar{display:grid;gap:8px;margin:12px 0}
       #tms-panel .tms-preview-filters{display:flex;gap:4px;flex-wrap:wrap}
@@ -7507,7 +7533,14 @@
       #tms-panel .tms-counters{grid-template-columns:repeat(3,minmax(0,1fr))}}
       @media(max-width:400px){#tms-panel .tms-diff-values{grid-template-columns:1fr}
       #tms-panel .tms-help-grid{grid-template-columns:1fr}}
-      @media(prefers-reduced-motion:reduce){#tms-panel *{transition:none!important}}
+      /* Animate only explicit interaction: opening, pressing and hover. No
+         repeating decorative motion or expensive per-row animation on render. */
+      #tms-panel button,#tms-panel .tms-file-label,#tms-launch{transition:background-color .14s ease,border-color .14s ease,box-shadow .14s ease,transform .14s ease}
+      #tms-panel button:active:enabled,#tms-panel .tms-file-label:active{transform:translateY(1px)}
+      #tms-panel .tms-help-card.tms-show{animation:tms-reveal .16s ease-out}
+      @keyframes tms-enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+      @keyframes tms-reveal{from{opacity:0}to{opacity:1}}
+      @media(prefers-reduced-motion:reduce){#tms-panel,#tms-panel *,#tms-launch{animation:none!important;transition:none!important;transform:none!important}}
     `;
     document.head.appendChild(style);
 

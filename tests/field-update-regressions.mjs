@@ -7,7 +7,7 @@ globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 globalThis.location = { origin: 'https://tessa.example.test' };
 globalThis.document = { body: { innerText: '' }, querySelector: () => null, querySelectorAll: () => [] };
 const source = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
-vm.runInThisContext(source.replace('  bootstrap();', '  window.__fieldTestUi = { APP, resetFilePreview, renderPlanConsumedNotice }; bootstrap();'));
+vm.runInThisContext(source.replace('  bootstrap();', '  window.__fieldTestUi = { APP, resetFilePreview, renderPlanConsumedNotice, previewValuesHtml, unzipArrayBuffer }; bootstrap();'));
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 const O = E.constants.OPERAND;
 const failures = [];
@@ -53,6 +53,8 @@ catalog.catalogs.kinds = { id: 'kinds', label: 'Вид', sourceView: 'Kinds', en
   { id: 'kind-2', display: 'ОРД', selector: 'ОРД — Регламент' },
 ] };
 catalog.columnCatalogIds['criterion:kind'] = 'kinds';
+catalog.catalogs.roles = {id:'roles',label:'Исполнители',sourceView:'Roles',entries:[{id:'person',roleTypeId:'1',display:'Подписант',selector:'Подписант'}]};
+catalog.columnCatalogIds['function:sign'] = 'roles';
 const bytes = await E.createRoundtripXlsxBytes(structure, snapshot, { matrixId: 'matrix', TemplateID: 'template' }, catalog);
 const baseline = await E.readXlsxArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
 const edit = () => ({ ...baseline, rows: baseline.rows.map(r => ({ ...r, values: [...r.values], cellMeta: r.cellMeta.map(m => m && { ...m }) })) });
@@ -125,10 +127,13 @@ await check('a whole multivalue cell is preserved when one reference is unknown'
 await check('a rejected role formula does not discard valid criteria edits', () => {
   const book = edit();
   book.rows[0].cellMeta[ix('Подписание')].hasFormula = true;
+  book.rows[0].values[ix('Подписание')] = 'FORMULA_CACHE_NOT_A_ROLE';
   book.rows[0].values[ix('Количество листов (между)')] = '4-15';
   const plan = E.buildPlan(book, structure, snapshot);
   assert.equal(plan.counts.update, 1);
   assert.equal(plan.actions[0].excelRow.columns.has('sign'), false);
+  assert.match(plan.skippedFields[0].reason, /Excel-формула/);
+  assert.doesNotMatch(plan.skippedFields[0].reason, /не найдено в справочнике/);
   assert.deepEqual(plan.actions[0].excelRow.ids['function:sign'], ['person|1']);
 });
 
@@ -256,6 +261,63 @@ await check('new file clears old Apply; skipped fields stay visible after Apply'
     assert.doesNotMatch(elements.get('#tms-summary').innerHTML,/<img/);
     assert.match(E.applyResultMessage(result),/Не применено отдельных полей: 1/);
   } finally { document.querySelector = query; }
+});
+
+
+await check('Excel dropdowns remain available without persistent input popups', async () => {
+  const entries = await window.__fieldTestUi.unzipArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  const xml = new TextDecoder().decode(entries.get('xl/worksheets/sheet1.xml'));
+  const rules = xml.match(/<dataValidation\b[^>]*>/g) || [];
+  assert.ok(rules.length > 1);
+  assert.ok(rules.some(rule => /type="list"/.test(rule)));
+  for (const rule of rules) {
+    assert.match(rule, /showInputMessage="0"/);
+    assert.doesNotMatch(rule, /\bprompt(?:Title)?=/);
+  }
+  const instruction = new TextDecoder().decode(entries.get('xl/worksheets/sheet2.xml'));
+  assert.match(instruction, /Alt\+Enter/);
+  assert.match(instruction, /4\.\.15/);
+});
+
+await check('preview formats declared Booleans and escapes every list item', () => {
+  const columns = new Map([['flag', {key:'criterion:flag',operandTypeId:O.Boolean}]]);
+  const render = window.__fieldTestUi.previewValuesHtml;
+  assert.equal(render([false,'true'], {columns}, 'criterion:flag'), '<span class="tms-value">Нет</span><span class="tms-value">Да</span>');
+  assert.equal(render(['false'], {columns}, 'criterion:text'), '<span class="tms-value">false</span>');
+  assert.equal(render([], {columns}, 'criterion:flag'), 'Не заполнено');
+  assert.equal((render(['Акт','Акт'], {columns}, 'criterion:kind').match(/class="tms-value"/g)||[]).length, 2);
+  assert.doesNotMatch(render(['<img src=x onerror=bad>'], {columns}, 'function:sign'), /<img/);
+});
+
+await check('one mixed workbook keeps valid UPDATE and ADD operations despite invalid and blank rows', () => {
+  const book = edit();
+  book.rows[0].values[ix('Количество листов (между)')] = '7..19';
+  book.rows[0].values[ix('Приложения (между)')] = '15..4';
+  book.rows[1].values[ix('Признак')] = 'Да';
+  const add = (rowNumber, range, payload) => {
+    const row = { ...baseline.rows[0], excelRow: rowNumber, values: [...baseline.rows[0].values], cellMeta: baseline.rows[0].cellMeta.map(m=>m&&{...m}) };
+    for (const name of ['__TESSA_ROW_CARD_ID','__TESSA_VERSION_ID','__TESSA_BASE_FINGERPRINT']) row.values[ix(name)] = '';
+    row.values[ix('Количество листов (между)')] = range;
+    if (payload !== undefined) row.values[ix('Подписание')] = payload;
+    book.rows.push(row);
+    return row;
+  };
+  add(100, '701..709');
+  const payloads = ['НЕИЗВЕСТНАЯ_РОЛЬ_UAT', 'https://example.invalid/test', 'javascript:alert(1)', '<script>alert(1)</script>', '<img src=x onerror=alert(1)>', "'); DROP TABLE demo; --", '=HYPERLINK("https://example.invalid","link")', '@SUM(1,2)', '+cmd|test', 'Подписант\nНЕИЗВЕСТНАЯ_РОЛЬ_UAT'];
+  payloads.forEach((value, i) => add(101+i, `${801+i}..${901+i}`, value));
+  const formula = add(120, '1001..1009', '2');
+  formula.cellMeta[ix('Подписание')].hasFormula = true;
+  book.rows.push({excelRow:130,values:Array(book.headers.length).fill(''),cellMeta:[]});
+  const plan = E.buildPlan(book, structure, snapshot);
+  assert.equal(plan.counts.update, 2);
+  assert.equal(plan.counts.add, 1);
+  assert.equal(plan.counts.delete, 0, 'blank new rows cannot schedule a deletion');
+  assert.equal(plan.counts.skip, payloads.length+1);
+  assert.equal(plan.skippedFields.length, 1);
+  const reviewed = E.buildReviewedPlan(plan);
+  assert.equal(reviewed.safety.blocked, false, JSON.stringify(reviewed.safety));
+  assert.equal(reviewed.actions.filter(a=>['add','update'].includes(a.type)).length, 3);
+  assert.equal(plan.actions.find(a=>a.type==='update' && a.currentRow.rowCardId==='card-1').excelRow.columns.has('appendix'), false);
 });
 
 if (failures.length) throw new Error(`${failures.length} regressions: ${failures.join('; ')}`);
