@@ -23,7 +23,7 @@ assert(typeof E.createPlanReviewState === 'function', 'createPlanReviewState is 
 assert(typeof E.buildReviewedPlan === 'function', 'buildReviewedPlan is missing');
 assert(code.includes('data-review-package="keep"'), 'bulk keep control is missing from Preview UI');
 assert(code.includes('data-review-package="reset"'), 'bulk reset control is missing from Preview UI');
-assert(code.includes('Оставить в Apply'), 'bulk package action label is missing');
+assert(code.includes('Выбрать часть изменений'), 'bulk package action label is missing');
 
 const action = (type, row) => ({
   type,

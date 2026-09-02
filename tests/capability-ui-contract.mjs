@@ -8,7 +8,7 @@ const assert = (condition, message) => { if (!condition) throw new Error(message
 assert(/id="tms-capability-status"/.test(code), 'capability status host is missing');
 assert(/id="tms-capability-details"/.test(code), 'capability details host is missing');
 assert(/id="tms-capability-recheck"/.test(code), 'capability recheck button is missing');
-assert(/Повторить проверку/.test(code), 'capability recheck action must be human-readable');
+assert(/Проверить подключение/.test(code), 'capability recheck action must be human-readable');
 assert(/\.tms-capability-row\{/.test(code), 'compact capability row CSS is missing');
 
 // Session state must remember what was checked and invalidate naturally by card identity.
@@ -41,7 +41,7 @@ const limited = E.capabilityStatusModel(
     reconcile: { enabled: true, blockers: [] },
   },
 );
-assert(limited.label === 'Среда: ограничена', JSON.stringify(limited));
+assert(limited.label === 'Есть ограничения', JSON.stringify(limited));
 assert(limited.tone === 'limited', JSON.stringify(limited));
 assert(limited.applyEnabled === true, JSON.stringify(limited));
 assert(limited.exportEnabled === true && limited.analyzeEnabled === true, JSON.stringify(limited));
@@ -58,7 +58,7 @@ const incompatible = E.capabilityStatusModel(
     reconcile: { enabled: false, blockers: ['native-view-missing'] },
   },
 );
-assert(incompatible.label === 'Среда: несовместима', JSON.stringify(incompatible));
+assert(incompatible.label === 'Подключение недоступно', JSON.stringify(incompatible));
 assert(incompatible.tone === 'incompatible', JSON.stringify(incompatible));
 assert(incompatible.applyEnabled === false, JSON.stringify(incompatible));
 assert(/нативное представление|представление матрицы/i.test(incompatible.detail), JSON.stringify(incompatible));

@@ -131,3 +131,23 @@ assert(throwingLoaderProbe.runtime.workspace === false, JSON.stringify(throwingL
 assert(calls.length === 0, `failure-path probe invoked CardService methods: ${calls.join(', ')}`);
 
 console.log('TESSA Matrix Studio read-only runtime capability probe: OK');
+
+// The UI can mount before a card exists. Subsequent local checks must discover
+// both the card and its later-mounted native view without any service call.
+let currentWorkspace = null, scheduled;
+const delayedRoot = { tessa: { apiLoader: id => id === 546914 ? { WorkspaceStorage: { instance: { get currentCardWorkspace() { return currentWorkspace; } } } } : {} } };
+const states = [];
+const monitor = E.createRuntimeMonitor({ active: () => true, schedule: fn => { scheduled = fn; return 1; }, cancel() {}, check() {
+  const p = E.probeRuntimeEnvironment({ root: delayedRoot, extensionRequireFactory: () => fakeRequire });
+  const c = E.evaluateRuntimeCapabilities(p);
+  states.push(E.capabilityStatusModel(c, E.capabilityOperationAvailability(c, [])).label);
+} });
+monitor.start();
+currentWorkspace = { editor: { cardModel: { card: makeCard('Черновик'), controls: new Map() } } };
+scheduled();
+currentWorkspace.editor.cardModel.controls.set('TestMatrixView', fakeControl);
+scheduled();
+assert(JSON.stringify(states) === JSON.stringify(['Откройте матрицу','Матрица загружается','Матрица готова']), JSON.stringify(states));
+monitor.stop();
+assert(calls.length === 0, 'automatic readiness checks must not call CardService');
+console.log('TESSA delayed card/view mounting recovers automatically: OK');

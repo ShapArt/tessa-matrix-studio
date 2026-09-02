@@ -10,8 +10,8 @@ assert(code.includes('const reviewed = buildReviewedPlan(plan, APP.review);'), '
 assert(code.includes('data-review-change'), 'per-change review control is missing');
 assert(code.includes('data-review-row'), 'whole-row review control is missing');
 assert(code.includes('Не применять'), 'per-change exclude action label is missing');
-assert(code.includes('Не применять всю строку'), 'whole-row exclude action label is missing');
-assert(code.includes('Вернуть все изменения строки'), 'whole-row restore label is missing');
+assert(code.includes('Исключить строку'), 'whole-row exclude action label is missing');
+assert(code.includes('Вернуть строку'), 'whole-row restore label is missing');
 assert(code.includes('buildReviewedPlan(APP.plan, APP.review)'), 'Apply must use the reviewed effective plan');
 assert(code.includes('tms-diff-excluded'), 'excluded change visual state is missing');
 

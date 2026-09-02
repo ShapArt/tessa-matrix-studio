@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.41
+// @version      1.9.42
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -29,6 +29,8 @@
    * 5. Safety/apply: preflight, проверка дублей, частичное применение и повторная верификация.
    * 6. UI: компактный пользовательский сценарий «скачать → изменить → проверить → применить».
    *
+   * Навигация по функциям, тестам и границам записи: docs/CODE-MAP.md.
+   *
    * Критический принцип: служебные идентификаторы из Excel используются только для
    * точного сопоставления. Любая аномалия идентичности приводит к пропуску строки,
    * а не к догадке, автоматическому ADD или массовому DELETE.
@@ -42,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.41',
+    version: '1.9.42',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -53,6 +55,10 @@
     capabilities: null,
     capabilityAvailability: null,
     capabilityCheckedCardId: null,
+    capabilityCheckedTemplateId: null,
+    runtimeMonitor: null,
+    picker: null,
+    busyControlStates: new WeakMap(),
     lastMutationReceipts: null,
     lastReconciliation: null,
     busy: false,
@@ -120,6 +126,7 @@
   // зато превращают точный поиск по ID/названию из O(N) на каждую ячейку в O(1).
   const DICTIONARY_LOOKUP_CACHE = new WeakMap();
   const NORMALIZED_DICTIONARY_CATALOGS = new WeakSet();
+  let extensionRuntimeCache = null;
 
   const OPERAND = Object.freeze({
     String: '5730135A-882A-47A7-8C9C-9EA53E5869DA',
@@ -2136,12 +2143,12 @@
     row(17, 24, [[0, 'Как заполнять значения', 11]]);
     row(18, 68, [
       [0, 'ПОИСК ПО СПРАВОЧНИКАМ\nМожно вводить уникальную часть названия прямо в ячейке. Если найден ровно один вариант, Studio сопоставит его с точной записью TESSA. Для логических признаков используйте «Да» / «Нет».', 12],
-      [4, 'НЕСКОЛЬКО ЗНАЧЕНИЙ\nКаждое значение размещайте с новой строки внутри одной ячейки (Alt+Enter). Не склеивайте несколько значений через запятые, если поле допускает множественный выбор.', 12],
+      [4, 'НЕСКОЛЬКО ЗНАЧЕНИЙ\nВ Studio откройте «Дополнительно → Собрать значения для ячейки»: выберите поле, отметьте варианты, скопируйте и вставьте в Excel через F2 → Ctrl+V. Вручную разделяйте значения Alt+Enter. Обычный список заменяет значение.', 12],
     ]);
     row(23, 24, [[0, 'Дополнительные действия — когда нужны эти кнопки', 11]]);
     row(24, 70, [
-      [0, '«АКТУАЛИЗИРОВАТЬ ВЫБРАННЫЙ EXCEL»\nИспользуйте, если в шаблоне TESSA появились новые критерии/функции. Studio добавит новые поля и сохранит ваши пользовательские изменения, насколько это безопасно.', 12],
-      [4, '«СКАЧАТЬ СО СВЕЖИМИ СПРАВОЧНИКАМИ»\nСоздаёт новую выгрузку и принудительно перечитывает справочники/роли из TESSA. Полезно, если нужное значение недавно добавили или переименовали.', 12],
+      [0, '«ОБНОВИТЬ ПОЛЯ EXCEL»\nИспользуйте, если в шаблоне TESSA появились новые критерии/функции. Studio добавит новые поля и сохранит ваши пользовательские изменения, насколько это безопасно.', 12],
+      [4, '«ОБНОВИТЬ СПРАВОЧНИКИ И СКАЧАТЬ»\nСоздаёт новую выгрузку и принудительно перечитывает справочники/роли из TESSA. Полезно, если нужное значение недавно добавили или переименовали.', 12],
     ]);
     row(29, 24, [[0, 'Безопасность', 11]]);
     row(30, 76, [[0, 'Перед применением Studio перечитывает матрицу, проверяет права и режим редактирования, сверяет fingerprint изменяемых строк, валидирует справочники, исполнителей и дубли. Ошибка одной строки не должна приводить к случайному изменению остальных. Если строку нельзя сопоставить однозначно, она пропускается и показывается пользователю.', 13]]);
@@ -2170,7 +2177,16 @@
     grid.rows.forEach((values, rowIndex) => {
       const rowNumber = dataStartRow + rowIndex;
       const bodyStyle = rowIndex % 2 ? 8 : 5;
-      sheetRows.push(`<row r="${rowNumber}" ht="32" customHeight="1">${values.map((value, colIndex) => value === null || value === undefined || value === ''
+      // Approximate wrapping using visible column widths. Hidden ID payloads must
+      // not inflate row height; Excel's 409-point ceiling keeps huge cells usable.
+      const lines = values.reduce((max, value, index) => {
+        if (grid.columns[index]?.hidden) return max;
+        const width = Math.max(8, Number(grid.columns[index]?.width || 28) - 3);
+        const wrapped = String(value ?? '').split(/\r?\n/).reduce((n, line) => n + Math.max(1, Math.ceil(line.length / width)), 0);
+        return Math.max(max, wrapped);
+      }, 1);
+      const height = Math.min(409, Math.max(32, lines * 15 + 10));
+      sheetRows.push(`<row r="${rowNumber}" ht="${height}" customHeight="1">${values.map((value, colIndex) => value === null || value === undefined || value === ''
         ? `<c r="${indexToCol(colIndex)}${rowNumber}" s="${bodyStyle}"/>`
         : xlsxStringCell(rowNumber, colIndex, value, bodyStyle)).join('')}</row>`);
     });
@@ -2217,7 +2233,7 @@
       if (column.kind !== 'criterion' || ![OPERAND.Int, OPERAND.Decimal].includes(column.operandTypeId)) continue;
       validations.push(`<dataValidation type="custom" allowBlank="1" showInputMessage="1" showErrorMessage="0" promptTitle="Число или диапазон" prompt="Введите число или диапазон 4..15. Ячейка должна оставаться в текстовом формате." sqref="${indexToCol(index)}${dataStartRow}:${indexToCol(index)}${validationLastRow}"><formula1>TRUE</formula1></dataValidation>`);
     }
-    for (const [rangeName, refs] of validationGroups) validations.push(`<dataValidation type="list" allowBlank="1" showInputMessage="0" showErrorMessage="0" sqref="${refs.join(' ')}"><formula1>${rangeName}</formula1></dataValidation>`);
+    for (const [rangeName, refs] of validationGroups) validations.push(`<dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="0" promptTitle="Одно или несколько значений" prompt="Список выбирает один вариант. Несколько: Alt+Enter в ячейке или «Собрать значения для ячейки» в Studio, затем F2 и вставка." sqref="${refs.join(' ')}"><formula1>${rangeName}</formula1></dataValidation>`);
     if (booleanRefs.length) validations.push(`<dataValidation type="list" allowBlank="1" showErrorMessage="1" sqref="${booleanRefs.join(' ')}"><formula1>"Да,Нет"</formula1></dataValidation>`);
 
     const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastCol}${lastDataRow}"/><sheetViews><sheetView workbookViewId="0"><pane xSplit="1" ySplit="${grid.headerRow}" topLeftCell="B${dataStartRow}" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>${cols}</cols><sheetData>${sheetRows.join('')}</sheetData><autoFilter ref="A${grid.headerRow}:${lastCol}${lastDataRow}"/><dataValidations count="${validations.length}">${validations.join('')}</dataValidations></worksheet>`;
@@ -2912,6 +2928,7 @@
     return {
       identity: Boolean(mainCard?.id),
       template: Boolean(template),
+      templateId: template ? String(template) : null,
       stateReadable: Boolean(stateName),
       writableState: isWritableMatrixDraft(matrixInfo, localize),
       matrixId: mainCard?.id ? String(mainCard.id) : null,
@@ -2989,10 +3006,12 @@
   function captureExtensionRequire() {
     const chunks = window.webpackChunktessa_web_extensions;
     if (!Array.isArray(chunks)) throw new Error('Не найден runtime расширений TESSA. Откройте карточку матрицы и повторите.');
+    if (extensionRuntimeCache?.chunks === chunks) return extensionRuntimeCache.require;
     let req = null;
     const id = `tms_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     chunks.push([[id], {}, runtime => { req = runtime; }]);
     if (!req) throw new Error('Не удалось подключиться к runtime TESSA.');
+    extensionRuntimeCache = { chunks, require: req };
     return req;
   }
 
@@ -5874,16 +5893,21 @@
   }
 
   function resetFilePreview() {
+    clearTimeout(APP.previewSearchTimer);
     APP.plan = null;
     APP.workbook = null;
     APP.review = createPlanReviewState();
     APP.previewView = createPreviewViewState();
+    APP.capabilityActions = [];
+    APP.reviewedApplyEnabled = false;
     for (const id of ['#tms-summary', '#tms-plan']) {
       const element = document.querySelector(id);
       if (element) element.innerHTML = '';
     }
     const apply = document.querySelector('#tms-apply');
     if (apply) apply.disabled = true;
+    const applySection = document.querySelector('#tms-apply-section');
+    if (applySection) applySection.hidden = true;
   }
 
   async function hydrateMissingIdsForAction(action, structure, snapshot, bridge) {
@@ -6012,6 +6036,11 @@
     const fresh = options.fresh || await awaitPreflightAbortable(bridge.loadSnapshot(structure));
     preflightProgress(18, 'Сверяю актуальное состояние', `${fresh.rows.length} строк в TESSA`);
     if (fresh.matrixId !== plan.matrixId) throw new Error('Открыта другая матрица. Нажмите «Проверить изменения» ещё раз.');
+    // Template changes can happen between Preview and Apply without changing the
+    // card ID. Never rebuild an old plan against a different set of field IDs.
+    if (plan.templateId && canonicalValue(plan.templateId) !== canonicalValue(fresh.templateId || structure.templateId)) {
+      throw new Error('Шаблон матрицы изменился. Нажмите «Проверить изменения» ещё раз.');
+    }
     const freshByVersion = new Map(fresh.rows.map(row => [canonicalValue(row.versionId), row]));
     const freshByCard = new Map(fresh.rows.map(row => [canonicalValue(row.rowCardId), row]));
     const runtimeSkips = [];
@@ -6837,11 +6866,16 @@
   }
 
   function renderPlan(plan) {
+    clearTimeout(APP.previewSearchTimer);
     const summary = document.querySelector('#tms-summary');
     const table = document.querySelector('#tms-plan');
     if (!summary || !table) return;
+    const applySection = document.querySelector('#tms-apply-section');
+    if (applySection) applySection.hidden = false;
     const reviewed = buildReviewedPlan(plan, APP.review);
+    APP.capabilityActions = reviewed.actions;
     const applyState = applyAvailability(plan, APP.review);
+    APP.reviewedApplyEnabled = applyState.canApply;
     const c = reviewed.counts;
     const skipped = reviewed.skippedRows || [];
     const warnings = (reviewed.warnings || []).slice(0, 8);
@@ -6860,7 +6894,7 @@
       ${hasReviewExclusions ? `<div class="tms-review-note"><b>Фильтр применения включён.</b> Отключённые здесь изменения не попадут в TESSA; исходный Excel не изменяется.</div>` : ''}
       ${skippedFieldsHtml(reviewed.skippedFields)}
       ${reviewedSafety.blocked ? `<div class="tms-fatal"><b>Этот набор изменений нельзя безопасно применить</b><br>${(reviewedSafety.blockedReasons || []).map(escapeHtml).join('<br>')}</div>` : ''}
-      ${applyState.batchBlocked ? `<div class="tms-fatal"><b>Пакет для Apply превышает лимит</b><br>Сейчас: ${applyState.count} · максимум: 2000. Ниже в Preview выберите тип/поиск, размер пакета и нажмите «Оставить в Apply».</div>` : ''}
+      ${applyState.batchBlocked ? `<div class="tms-fatal"><b>Слишком много изменений за один раз</b><br>Сейчас: ${applyState.count} · максимум: 2000. Раскройте «Выбрать часть изменений» и уменьшите число операций.</div>` : ''}
       ${skipped.length ? `<details class="tms-skipped-box"><summary><b>Пропущено строк: ${skipped.length}</b> · ${applyState.blocked ? 'корректные строки проверены, но Apply сейчас заблокирован' : 'корректные изменения можно применить'}</summary><div>${skipped.slice(0, 20).map(item => `<div class="tms-skip-line">${item.excelRow ? `Excel ${item.excelRow}: ` : ''}${escapeHtml(item.reason)}</div>`).join('')}${skipped.length > 20 ? `<div class="tms-skip-more">Ещё ${skipped.length - 20}…</div>` : ''}</div></details>` : ''}
       ${warnings.length ? `<details class="tms-warning"><summary>Нужно проверить</summary><div>${warnings.map(item => `<div>${escapeHtml(item)}</div>`).join('')}</div></details>` : ''}
     `;
@@ -6882,13 +6916,13 @@
       <div class="tms-preview-filters">
         ${filterButton('all', 'Все')}${filterButton('update', 'Изменить')}${filterButton('add', 'Добавить')}${filterButton('delete', 'Удалить')}${filterButton('skip', 'Пропустить')}
       </div>
-      <input id="tms-preview-query" class="tms-preview-query" type="search" placeholder="Найти строку или значение" value="${escapeHtml(selection.query)}">
-      <div class="tms-preview-package">
-        <strong>Пакет для Apply</strong>
-        <select id="tms-review-package-limit" aria-label="Размер пакета Apply">
+      <input id="tms-preview-query" aria-label="Поиск изменений" class="tms-preview-query" type="search" placeholder="Найти строку или значение" value="${escapeHtml(selection.query)}">
+      <details class="tms-package-details" ${hasReviewExclusions || applyState.batchBlocked ? 'open' : ''}><summary>Выбрать часть изменений${hasReviewExclusions ? ' · выбор изменён' : ''}</summary><div class="tms-preview-package">
+        <strong>Применить первые</strong>
+        <select id="tms-review-package-limit" aria-label="Число операций для применения">
           <option value="1">1</option><option value="10">10</option><option value="100">100</option><option value="500">500</option><option value="2000">2000</option>
         </select>
-        <button type="button" data-review-package="keep" ${selection.filter === 'skip' ? 'disabled' : ''}>Оставить в Apply</button>
+        <button type="button" data-review-package="keep" ${selection.filter === 'skip' ? 'disabled' : ''}>Выбрать</button>
         <button type="button" data-review-package="reset">Вернуть всё</button>
         <span>${selection.filter === 'skip'
           ? 'Пропущенные строки не применяются'
@@ -6897,8 +6931,8 @@
             : selection.filter === 'all'
               ? 'Из всех операций'
               : `Только: ${selection.filter === 'update' ? 'изменить' : selection.filter === 'add' ? 'добавить' : 'удалить'}`}</span>
-      </div>
-      <div class="tms-preview-pager">
+      </div></details>
+      <div class="tms-preview-pager" ${selection.pageCount <= 1 ? 'hidden' : ''}>
         <button type="button" data-preview-page="${Math.max(1, selection.page - 1)}" ${selection.page <= 1 ? 'disabled' : ''}>←</button>
         <span>Показано ${selection.start}–${selection.end} из ${selection.total} · стр. ${selection.page}/${selection.pageCount}</span>
         <button type="button" data-preview-page="${Math.min(selection.pageCount, selection.page + 1)}" ${selection.page >= selection.pageCount ? 'disabled' : ''}>→</button>
@@ -6920,16 +6954,16 @@
       item.dataset.reviewActionKey = actionKey;
       if (openActionKeys.has(actionKey)) item.open = true;
       const isReplacement = action.type === 'update' && isOverwriteMatch(action.match);
-      const label = isReplacement ? 'ЗАМЕНИТЬ' : action.type === 'update' ? 'ИЗМЕНИТЬ' : action.type === 'add' ? 'ДОБАВИТЬ' : 'УДАЛИТЬ';
+      const label = isReplacement ? 'Заменить' : action.type === 'update' ? 'Изменить' : action.type === 'add' ? 'Добавить' : 'Удалить';
       const rowText = isReplacement ? `Excel ${action.excelRow.excelRow} → TESSA ${action.currentRow.index + 1}` : action.excelRow ? `Excel ${action.excelRow.excelRow}` : `TESSA ${action.currentRow.index + 1}`;
       const rowExcluded = Boolean(APP.review?.excludedRows?.has?.(actionKey));
       const supportsWholeActionReview = action.type === 'update' || action.type === 'add' || action.type === 'delete';
       if (rowExcluded) item.classList.add('tms-review-row-excluded');
-      item.innerHTML = `<summary><b>${label}</b> — ${rowText}${action.match?.lowConfidence ? ' ⚠' : ''}${rowExcluded ? ' · <span class="tms-review-state">не будет применено</span>' : ''}</summary>`;
+      item.innerHTML = `<summary><b>${label}</b> — ${rowText}${action.match?.lowConfidence ? ' · проверьте соответствие' : ''}${rowExcluded ? ' · <span class="tms-review-state">не будет применено</span>' : ''}</summary>`;
       const body = document.createElement('div');
       body.className = 'tms-action-body';
       const rowButtonLabel = action.type === 'update'
-        ? (rowExcluded ? 'Вернуть все изменения строки' : 'Не применять всю строку')
+        ? (rowExcluded ? 'Вернуть строку' : 'Исключить строку')
         : (rowExcluded ? 'Вернуть операцию' : 'Не применять');
       const rowReviewControl = supportsWholeActionReview ? `
         <div class="tms-review-row-actions">
@@ -6944,11 +6978,10 @@
           ${(action.changes || []).map(change => {
             const individuallyExcluded = excludedChanges.has(change.key);
             const excluded = rowExcluded || individuallyExcluded;
-            const button = rowExcluded ? '' : `<button type="button" class="tms-review-btn tms-review-change-btn" data-review-action="${escapeHtml(actionKey)}" data-review-change="${escapeHtml(change.key)}" aria-pressed="${individuallyExcluded ? 'true' : 'false'}">${individuallyExcluded ? 'Вернуть' : 'Не применять'}</button>`;
+            const button = rowExcluded ? '' : `<button type="button" class="tms-review-btn tms-review-change-btn" data-review-action="${escapeHtml(actionKey)}" data-review-change="${escapeHtml(change.key)}" aria-pressed="${individuallyExcluded ? 'true' : 'false'}">${individuallyExcluded ? 'Вернуть' : 'Исключить'}</button>`;
             return `<div class="tms-diff${excluded ? ' tms-diff-excluded' : ''}">
               <div class="tms-diff-head"><b>${escapeHtml(change.label || change.key)}</b>${button}</div>
-              <span class="tms-before">было: ${escapeHtml((change.before || []).join(' | ') || '∅')}</span><br>
-              <span class="tms-after">стало: ${escapeHtml((change.after || []).join(' | ') || '∅')}</span>
+              <div class="tms-diff-values"><div class="tms-before"><small>Было</small>${escapeHtml((change.before || []).join('\n') || 'Не заполнено')}</div><div class="tms-after"><small>Будет</small>${escapeHtml((change.after || []).join('\n') || 'Не заполнено')}</div></div>
               ${excluded ? '<div class="tms-review-state">Это изменение не будет применено</div>' : ''}
             </div>`;
           }).join('')}`;
@@ -7015,11 +7048,17 @@
     table.oninput = event => {
       if (event.target?.id !== 'tms-preview-query' || APP.busy) return;
       APP.previewView = createPreviewViewState({ ...APP.previewView, query: event.target.value, page: 1 });
-      renderPlan(APP.plan);
-      requestAnimationFrame(() => {
-        const queryInput = document.querySelector('#tms-preview-query');
-        if (queryInput) { queryInput.focus(); queryInput.setSelectionRange(queryInput.value.length, queryInput.value.length); }
-      });
+      clearTimeout(APP.previewSearchTimer);
+      const sourcePlan = APP.plan;
+      APP.previewSearchTimer = setTimeout(() => {
+        if (APP.busy || APP.plan !== sourcePlan) return;
+        const restoreFocus = document.activeElement?.id === 'tms-preview-query';
+        renderPlan(APP.plan);
+        if (restoreFocus) requestAnimationFrame(() => {
+          const queryInput = document.querySelector('#tms-preview-query');
+          if (queryInput) { queryInput.focus(); queryInput.setSelectionRange(queryInput.value.length, queryInput.value.length); }
+        });
+      }, 150);
     };
 
     const apply = document.querySelector('#tms-apply');
@@ -7058,15 +7097,28 @@
     if (labelEl) labelEl.textContent = APP.progress.label;
     if (percentEl) percentEl.textContent = `${bounded}%`;
     if (detailEl) detailEl.textContent = APP.progress.detail;
+    // Keep idle state compact; progress appears only once an operation starts.
+    const line = document.querySelector('#tms-status .tms-status-line');
+    const track = document.querySelector('#tms-status .tms-progress-track');
+    if (line) line.hidden = !APP.busy && bounded === 0;
+    if (track) track.hidden = !APP.busy || bounded === 100;
   }
 
   function setBusy(value) {
     APP.busy = value;
     const panel = document.querySelector('#tms-panel');
     panel?.classList.toggle('tms-busy', value);
-    document.querySelectorAll('#tms-panel button, #tms-panel input').forEach(el => {
-      if (el.id === 'tms-stop') el.disabled = !value;
-      else el.disabled = value;
+    document.querySelectorAll('#tms-panel button, #tms-panel input, #tms-panel select, #tms-panel textarea').forEach(el => {
+      if (el.id === 'tms-stop') { el.disabled = !value; el.hidden = !value; }
+      else if (value) {
+        // Preserve semantic disabled states (empty picker, first/last page,
+        // unavailable operation) instead of enabling every control afterwards.
+        if (!APP.busyControlStates.has(el)) APP.busyControlStates.set(el, Boolean(el.disabled));
+        el.disabled = true;
+      } else if (APP.busyControlStates.has(el)) {
+        el.disabled = APP.busyControlStates.get(el);
+        APP.busyControlStates.delete(el);
+      }
     });
     if (value) setProgress(Math.max(3, APP.progress?.percent || 0), APP.progress?.label === 'Готово' ? 'Подготавливаю операцию' : APP.progress?.label, APP.progress?.detail || '');
     if (!value) {
@@ -7084,6 +7136,7 @@
       }
     }
     updateReconciliationControlState();
+    if (!value && APP.runtimeMonitor) APP.runtimeMonitor.tick();
   }
 
 
@@ -7091,22 +7144,27 @@
     const overall = ['ready', 'limited', 'incompatible'].includes(capabilities?.overall)
       ? capabilities.overall
       : 'incompatible';
-    const labels = {
-      ready: 'Среда: готова',
-      limited: 'Среда: ограничена',
-      incompatible: 'Среда: несовместима',
-    };
     const codes = [...new Set([
       ...(capabilities?.blockers || []).map(item => item?.code || item),
       ...(capabilities?.warnings || []).map(item => item?.code || item),
     ].filter(Boolean))];
-    const detail = codes.length
-      ? humanCapabilityBlocker(codes)
-      : 'Обязательные возможности текущей сборки TESSA доступны.';
+    let label;
+    let tone = overall;
+    let detail = codes.length ? humanCapabilityBlocker(codes.slice(0, 1)) : 'Можно работать с Excel.';
+    if (capabilities?.runtime && !capabilities.runtime.workspace) {
+      label = 'Откройте матрицу'; tone = 'waiting'; detail = 'Studio подключится автоматически.';
+    } else if (capabilities?.runtime && (!capabilities.runtime.editor || !capabilities.runtime.cardModel || (capabilities.matrix?.template && !capabilities.nativeView?.found))) {
+      label = 'Матрица загружается'; tone = 'waiting'; detail = 'Проверяем подключение автоматически.';
+    } else if (capabilities?.matrix?.identity && !capabilities.matrix.template) {
+      label = 'Откройте матрицу'; tone = 'waiting'; detail = 'В текущей карточке матрица не найдена.';
+    } else if (overall === 'ready') label = 'Матрица готова';
+    else if (overall === 'limited') label = capabilities?.matrix?.writableState === false ? 'Только чтение' : 'Есть ограничения';
+    else label = 'Подключение недоступно';
     return {
-      label: labels[overall],
-      tone: overall,
+      label,
+      tone,
       detail,
+      diagnostics: humanCapabilityBlocker(codes),
       codes,
       exportEnabled: Boolean(availability?.export?.enabled),
       analyzeEnabled: Boolean(availability?.analyze?.enabled),
@@ -7125,10 +7183,29 @@
     host.dataset.tone = model.tone;
     details.textContent = model.detail;
     details.dataset.tone = model.tone;
+    const diagnostics = document.querySelector('#tms-capability-diagnostics');
+    if (diagnostics) { diagnostics.textContent = model.diagnostics; diagnostics.parentElement.hidden = !model.codes.length; }
     return model;
   }
 
-  function refreshRuntimeCapabilities(actions = []) {
+  // Read-only local probes only. No polling of CardService, and no work while
+  // Studio is closed, the tab is hidden, or a user operation is in progress.
+  function createRuntimeMonitor({ check, active, schedule = setTimeout, cancel = clearTimeout, intervalMs = 1000 }) {
+    let timer = null;
+    let stopped = true;
+    const tick = () => { if (!stopped && active()) check(); };
+    const loop = () => {
+      if (stopped) return;
+      try { tick(); } finally { if (!stopped) timer = schedule(loop, intervalMs); }
+    };
+    return {
+      start() { if (!stopped) return; stopped = false; loop(); },
+      tick,
+      stop() { stopped = true; if (timer !== null) cancel(timer); timer = null; },
+    };
+  }
+
+  function refreshRuntimeCapabilities(actions = APP.capabilityActions || []) {
     let probe;
     try {
       probe = probeRuntimeEnvironment();
@@ -7143,10 +7220,39 @@
     }
     const capabilities = evaluateRuntimeCapabilities(probe);
     const availability = capabilityOperationAvailability(capabilities, actions);
+    const previousCardId = APP.capabilityCheckedCardId;
+    const nextCardId = probe?.matrix?.matrixId || null;
+    const nextTemplateId = probe?.matrix?.templateId || null;
+    if (!APP.busy && previousCardId && (previousCardId !== nextCardId || APP.capabilityCheckedTemplateId !== nextTemplateId)) {
+      resetFilePreview();
+      APP.structure = null; APP.snapshot = null; APP.bridge = null; APP.dictionaryCatalog = null;
+      APP.lastMutationReceipts = null; APP.lastReconciliation = null;
+      renderReconciliationResult(null);
+      closeValuePicker();
+      updateReconciliationControlState();
+    }
     APP.capabilities = capabilities;
     APP.capabilityAvailability = availability;
-    APP.capabilityCheckedCardId = probe?.matrix?.matrixId || null;
-    renderCapabilityStatus(capabilities, availability);
+    // A check during a running operation must not acknowledge a context switch:
+    // the first idle check still needs to discard the previous card's UI state.
+    if (!APP.busy) {
+      APP.capabilityCheckedCardId = nextCardId;
+      APP.capabilityCheckedTemplateId = nextTemplateId;
+    }
+    const stamp = JSON.stringify([capabilities.overall, capabilities.blockers, capabilities.warnings, probe.matrix, probe.runtime]);
+    if (APP.capabilityRenderStamp !== stamp) {
+      APP.capabilityRenderStamp = stamp;
+      renderCapabilityStatus(capabilities, availability);
+    }
+    if (!APP.busy) {
+      for (const [selector, enabled] of [['#tms-download-current', availability.export.enabled], ['#tms-download-fresh', availability.export.enabled], ['#tms-analyze', availability.analyze.enabled]]) {
+        const button = document.querySelector(selector);
+        if (button) button.disabled = !enabled || (selector === '#tms-analyze' && !document.querySelector('#tms-file')?.files?.length);
+      }
+      const apply = document.querySelector('#tms-apply');
+      if (apply) apply.disabled = !availability.apply.enabled || !APP.plan || !APP.reviewedApplyEnabled;
+      updateReconciliationControlState();
+    }
     return { probe, capabilities, availability };
   }
 
@@ -7158,18 +7264,250 @@
     throw new Error(reason || 'Текущая web-сборка TESSA не предоставляет обязательные возможности для этой операции.');
   }
 
+  // Build available fields from workbook schema IDs, never from one matrix name.
+  function pickerColumns(source) {
+    const catalog = source?.dictionaryCatalog;
+    return (source?.schemaTokens || []).flatMap((token, index) => {
+      const schema = parseSchemaToken(token);
+      if (schema?.type !== 'definition') return [];
+      const key = definitionKey(schema.kind, schema.id);
+      const dictionary = catalog?.catalogs?.[catalog?.columnCatalogIds?.[key]];
+      if (!dictionary?.entries?.length || dictionaryLookup(dictionary).isBoolean) return [];
+      return [{ key, label: source.headers[index], catalog: dictionary }];
+    });
+  }
+
+  function pickerEntryKey(item) { return `${canonicalValue(item.id)}|${canonicalValue(item.roleTypeId || '')}`; }
+
+  // Reuse the dictionary search index; bound rendered results, keep total count.
+  function searchPickerEntries(catalog, query = '', limit = 80) {
+    const terms = searchCanonical(query).split(/\s+/).filter(Boolean);
+    const items = []; let total = 0;
+    for (const row of dictionaryLookup(catalog)?.searchRows || []) {
+      if (!terms.every(term => row.haystack.includes(term))) continue;
+      total++;
+      if (items.length < Math.max(1, Math.min(200, limit))) items.push(row.item);
+    }
+    return { items, total };
+  }
+
+  // Clipboard payload is plain text for Excel edit mode. Do not silently split
+  // a selector containing delimiters or allow a pasted formula prefix.
+  function pickerSelectionText(items) {
+    const unique = [...new Map(items.map(item => [pickerEntryKey(item), item])).values()];
+    const values = unique.map(item => String(item.selector || item.display || '').trim());
+    if (values.some(value => /[\n\r;\t]/.test(value))) throw new Error('В названии есть разделитель. Укажите точный ID в служебном столбце Excel.');
+    if (values.some(value => /^[=+@-]/.test(value))) throw new Error('Название похоже на формулу Excel. Используйте точный ID.');
+    const result = values.join('\n');
+    if (result.length > 32767) throw new Error('В ячейке Excel может быть не больше 32767 символов. Уменьшите выбор.');
+    return result;
+  }
+
+  function closeValuePicker() {
+    if (APP.picker?.searchTimer) clearTimeout(APP.picker.searchTimer);
+    APP.picker = null;
+    const host = document.querySelector('#tms-value-picker');
+    if (host) { host.hidden = true; host.innerHTML = ''; }
+  }
+
+  function renderPickerResults() {
+    const state = APP.picker;
+    const host = document.querySelector('#tms-value-picker');
+    if (!state || !host) return;
+    const column = state.columns[state.columnIndex];
+    const found = searchPickerEntries(column.catalog, host.querySelector('#tms-picker-query').value);
+    state.visibleItems = found.items;
+    host.querySelector('#tms-picker-results').innerHTML = found.items.map((item, i) => `<label class="tms-picker-option"><input type="checkbox" data-picker-index="${i}" ${state.selected.has(pickerEntryKey(item)) ? 'checked' : ''}><span>${escapeHtml(item.selector || item.display)}</span></label>`).join('') || '<p class="tms-muted">Ничего не найдено. Измените поиск.</p>';
+    host.querySelector('#tms-picker-count').textContent = `Найдено: ${found.total} · показано: ${found.items.length} · выбрано: ${state.selected.size}`;
+    host.querySelector('#tms-picker-selected').innerHTML = [...state.selected.values()].map((item, i) => `<button type="button" data-picker-remove="${i}" aria-label="Убрать ${escapeHtml(item.selector || item.display)}">${escapeHtml(item.selector || item.display)} ×</button>`).join('');
+    const output = host.querySelector('#tms-picker-output');
+    const copy = host.querySelector('#tms-picker-copy');
+    try { output.value = pickerSelectionText([...state.selected.values()]); copy.disabled = !output.value; host.querySelector('#tms-picker-message').textContent = ''; }
+    catch (error) { output.value = ''; copy.disabled = true; host.querySelector('#tms-picker-message').textContent = error.message; }
+  }
+
+  // Only read a local workbook or the already downloaded dictionary. This picker
+  // never writes to Excel or TESSA; the user reviews the resulting workbook.
+  async function openValuePicker() {
+    const file = document.querySelector('#tms-file')?.files?.[0];
+    let source;
+    if (file) source = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
+    else if (APP.structure && APP.snapshot && APP.dictionaryCatalog) {
+      const grid = buildRoundtripGrid(APP.structure, APP.snapshot, {}, APP.dictionaryCatalog);
+      source = { headers: grid.columns.map(c => c.header), schemaTokens: grid.columns.map(c => c.schema), dictionaryCatalog: grid.dictionaryCatalog };
+    }
+    if (!source) throw new Error('Сначала скачайте Excel или выберите рабочую книгу со справочниками.');
+    const columns = pickerColumns(source);
+    if (!columns.length) throw new Error('В книге нет справочников для выбора. Скачайте Excel со справочниками.');
+    closeValuePicker();
+    APP.picker = { columns, columnIndex: 0, selected: new Map(), visibleItems: [], searchTimer: null };
+    const host = document.querySelector('#tms-value-picker');
+    host.hidden = false;
+    host.innerHTML = `<div class="tms-picker-head"><b>Несколько значений в ячейке</b><button type="button" id="tms-picker-close" aria-label="Закрыть выбор значений">×</button></div>
+      <label for="tms-picker-column">Поле Excel</label><select id="tms-picker-column">${columns.map((c, i) => `<option value="${i}">${escapeHtml(c.label)}</option>`).join('')}</select>
+      <input id="tms-picker-query" type="search" aria-label="Поиск по справочнику" placeholder="Найти значение" maxlength="200">
+      <div id="tms-picker-count" class="tms-muted" aria-live="polite"></div><div id="tms-picker-results" class="tms-picker-results"></div>
+      <div id="tms-picker-selected" class="tms-picker-selected"></div><label for="tms-picker-output">Готовое содержимое ячейки</label><textarea id="tms-picker-output" readonly rows="3"></textarea>
+      <p class="tms-muted">Скопируйте набор. В Excel нажмите F2 в нужной ячейке и вставьте: все значения останутся внутри неё.</p>
+      <div class="tms-row"><button type="button" id="tms-picker-copy" class="tms-primary" disabled>Скопировать</button><button type="button" id="tms-picker-clear">Очистить выбор</button></div><div id="tms-picker-message" role="status"></div>`;
+    host.onchange = event => {
+      const state = APP.picker; if (!state || APP.busy) return;
+      if (event.target.id === 'tms-picker-column') {
+        state.columnIndex = Number(event.target.value); state.selected.clear(); host.querySelector('#tms-picker-query').value = '';
+      } else if (event.target.dataset.pickerIndex !== undefined) {
+        const item = state.visibleItems[Number(event.target.dataset.pickerIndex)]; if (!item) return;
+        if (event.target.checked) state.selected.set(pickerEntryKey(item), item); else state.selected.delete(pickerEntryKey(item));
+      } else return;
+      renderPickerResults();
+    };
+    host.oninput = event => {
+      if (event.target.id !== 'tms-picker-query' || !APP.picker) return;
+      clearTimeout(APP.picker.searchTimer);
+      APP.picker.searchTimer = setTimeout(renderPickerResults, 120);
+    };
+    host.onclick = async event => {
+      const button = event.target.closest('button'); const state = APP.picker;
+      if (!button || !state || APP.busy) return;
+      if (button.id === 'tms-picker-close') { closeValuePicker(); document.querySelector('#tms-open-picker')?.focus(); return; }
+      if (button.id === 'tms-picker-clear') { state.selected.clear(); renderPickerResults(); }
+      if (button.dataset.pickerRemove !== undefined) {
+        const item = [...state.selected.values()][Number(button.dataset.pickerRemove)];
+        if (item) state.selected.delete(pickerEntryKey(item)); renderPickerResults();
+      }
+      if (button.id === 'tms-picker-copy') {
+        const output = host.querySelector('#tms-picker-output');
+        const message = host.querySelector('#tms-picker-message');
+        output.focus(); output.select();
+        try { await navigator.clipboard.writeText(output.value); if (APP.picker === state) message.textContent = 'Скопировано. Вставьте в Excel через F2 → Ctrl+V.'; }
+        catch (_) { if (APP.picker === state) message.textContent = 'Текст выделен. Нажмите Ctrl+C, затем F2 → Ctrl+V в Excel.'; }
+      }
+    };
+    renderPickerResults();
+    host.querySelector('#tms-picker-query').focus();
+  }
+
   function mountUi() {
     if (document.querySelector('#tms-launch')) return;
     const style = document.createElement('style');
     style.textContent = `
-      :root{--tms-red:#e31e24;--tms-red-dark:#b5121b;--tms-ink:#292929;--tms-muted:#727272;--tms-line:#e7e7e7;--tms-bg:#fff;--tms-soft:#fff4f4}
-      #tms-launch{position:fixed;right:22px;bottom:22px;z-index:2147483645;width:58px;height:58px;padding:0;border:0;border-radius:50%;background:#fff;color:#fff;box-shadow:0 12px 30px #0003;cursor:grab;display:grid;place-items:center;transition:.18s box-shadow;touch-action:none;user-select:none;overflow:hidden}#tms-launch:active{cursor:grabbing}#tms-launch svg{width:58px;height:58px;display:block;pointer-events:none}
-      #tms-launch:hover{box-shadow:0 16px 36px #0004}
-      #tms-panel{position:fixed;right:22px;bottom:88px;width:min(500px,calc(100vw - 30px));max-height:min(780px,calc(100vh - 110px));z-index:2147483646;background:var(--tms-bg);color:var(--tms-ink);border:1px solid var(--tms-line);border-radius:20px;box-shadow:0 24px 70px #0004;font:13px/1.45 Arial,sans-serif;display:none;overflow:hidden}
-      #tms-panel.tms-open{display:flex;flex-direction:column;animation:tms-panel-in .22s ease-out}.tms-head{display:flex;align-items:center;gap:12px;padding:14px 16px;background:#fff;border-bottom:1px solid var(--tms-line);cursor:move;user-select:none}.tms-brand{width:34px;height:34px;border-radius:11px;background:var(--tms-red);color:#fff;display:grid;place-items:center;font-weight:900;font-size:17px}.tms-title{flex:1;min-width:0}.tms-title strong{display:block;font-size:14px}.tms-title small{display:block;color:var(--tms-muted);font-size:11px;margin-top:1px}.tms-close,.tms-help{border:0;background:transparent;color:#555;font-size:20px;cursor:pointer;border-radius:8px;padding:4px 7px}.tms-help{font-size:15px;font-weight:700}.tms-close:hover,.tms-help:hover{background:#f4f4f4}
-      .tms-body{padding:14px 16px 16px;overflow:auto;background:linear-gradient(180deg,#fff 0,#fff 55%,#fffafa 100%)}.tms-status{position:sticky;top:0;z-index:30;padding:11px 12px;border-radius:13px;background:#f7f7f7;color:#555;margin-bottom:12px;border:1px solid #ededed;box-shadow:0 8px 18px #00000010;transition:.2s}.tms-status-line{display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:700;color:#353535}.tms-progress-percent{font-variant-numeric:tabular-nums;color:var(--tms-red);font-size:11px}.tms-progress-track{height:7px;border-radius:999px;background:#e9e9e9;overflow:hidden;margin:8px 0 5px;position:relative}.tms-progress-fill{height:100%;width:0;background:linear-gradient(90deg,var(--tms-red),#ff5b60);border-radius:inherit;transition:width .28s ease;position:relative;overflow:hidden}.tms-busy .tms-progress-fill::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,#ffffff80,transparent);transform:translateX(-100%);animation:tms-shimmer 1.15s linear infinite}.tms-progress-detail{min-height:16px;font-size:11px;color:#777}.tms-capability-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:7px;padding-top:7px;border-top:1px solid #e7e7e7}.tms-capability-status{font-size:11px;font-weight:800;color:#2d6a3f}.tms-capability-status[data-tone=limited]{color:#86630b}.tms-capability-status[data-tone=incompatible]{color:var(--tms-red-dark)}.tms-capability-recheck{border:0!important;background:transparent!important;padding:2px 4px!important;font-size:10px!important;color:#666!important;text-decoration:underline}.tms-capability-details{font-size:10px;color:#777;margin-top:3px;line-height:1.35}.tms-reconciliation-result{margin-top:2px;min-height:16px}.tms-reconciliation-result[data-status=verified]{color:#2d6a3f}.tms-reconciliation-result[data-status=divergent]{color:var(--tms-red-dark);font-weight:700}.tms-reconciliation-result[data-status=incomplete]{color:#86630b}.tms-step{display:grid;gap:8px;margin-bottom:10px;padding:11px 12px;border:1px solid #ececec;border-radius:14px;background:#fff;box-shadow:0 2px 8px #00000008}.tms-step-apply{border-color:#f2c5c7;background:linear-gradient(135deg,#fff 0,#fff6f6 100%)}.tms-step-label{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#777;font-weight:800}.tms-step-caption{font-size:11px;color:#777;margin-top:-2px}.tms-row{display:flex;gap:8px;flex-wrap:wrap}.tms-controls button,.tms-file-label{border:1px solid #d9d9d9;background:#fff;color:#292929;border-radius:11px;padding:9px 12px;cursor:pointer;font-weight:600;transition:.15s}.tms-controls button:hover,.tms-file-label:hover{border-color:#b9b9b9;background:#fafafa}.tms-controls button.tms-primary{background:var(--tms-red);border-color:var(--tms-red);color:#fff}.tms-controls button.tms-primary:hover{background:var(--tms-red-dark);border-color:var(--tms-red-dark)}.tms-controls button:disabled,.tms-file-label.tms-disabled{opacity:.42;cursor:not-allowed}.tms-controls button.tms-ghost{color:#666}.tms-controls button.tms-danger{color:var(--tms-red-dark)}#tms-file{display:none}.tms-file-name{font-size:12px;color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;padding:1px 2px}
-      .tms-counters{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:10px 0}.tms-count{padding:8px 5px;border-radius:11px;text-align:center;font-size:10px;border:1px solid transparent}.tms-count b{display:block;font-size:16px;margin-top:1px}.tms-update{background:#fff7e6;border-color:#f4dfae}.tms-add{background:#edf9f1;border-color:#ccebd7}.tms-delete{background:#fff1f1;border-color:#f2cccc}.tms-noop{background:#f5f5f5;border-color:#e9e9e9}.tms-skip{background:#f6f1ff;border-color:#e1d4f7;color:#62438b}.tms-warning,.tms-skipped-box{margin-top:8px;padding:9px 11px;border-radius:11px;background:#fffaf0;color:#624f21;border:1px solid #f0e1b5}.tms-warning summary,.tms-skipped-box summary{cursor:pointer}.tms-skipped-box{background:#f7f3ff;color:#533b77;border-color:#e2d7f5}.tms-skip-line{padding:6px 0;border-top:1px dashed #e6ddf2}.tms-skip-more{padding-top:7px;font-weight:700}.tms-fatal{margin-top:8px;padding:11px 12px;border-radius:11px;background:#fff0f0;color:#8f1418;border:1px solid #f3b9bb}.tms-action{margin:7px 0;border:1px solid var(--tms-line);border-radius:11px;padding:8px 10px;background:#fff}.tms-action-update{border-left:4px solid #d99a00}.tms-action-add{border-left:4px solid #238b4a}.tms-action-delete{border-left:4px solid #c62828}.tms-action summary{cursor:pointer}.tms-action-body{padding:8px 2px 1px}.tms-review-row-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0 8px}.tms-review-btn{border:1px solid #d6d6d6;background:#fff;color:#555;border-radius:9px;padding:5px 8px;font:600 11px/1.2 Arial,sans-serif;cursor:pointer}.tms-review-btn:hover{border-color:#aaa;background:#f8f8f8}.tms-review-btn[aria-pressed="true"]{border-color:#b9b9b9;background:#f0f0f0;color:#444}.tms-diff{padding:7px 0;border-top:1px dashed #e5e5e5;transition:.15s opacity,.15s background}.tms-diff-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.tms-diff-excluded{opacity:.58;background:#f7f7f7;margin:0 -6px;padding:7px 6px}.tms-diff-excluded .tms-before,.tms-diff-excluded .tms-after{text-decoration:line-through}.tms-review-row-excluded{background:#f7f7f7;border-left-color:#aaa}.tms-review-state{font-size:10px;color:#777;font-weight:700}.tms-review-note{margin-top:8px;padding:9px 11px;border-radius:11px;background:#f4f7fb;color:#485466;border:1px solid #dbe3ee}.tms-before{color:#8a3232}.tms-after{color:#17683a}.tms-preview-toolbar{display:grid;gap:7px;margin:9px 0 10px;padding:9px;border:1px solid #e8e8e8;border-radius:12px;background:#fafafa}.tms-preview-filters{display:flex;gap:5px;flex-wrap:wrap}.tms-preview-package{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:7px 8px;border:1px solid #e6e6e6;border-radius:9px;background:#fff}.tms-preview-package strong{font-size:10px;color:#555;margin-right:auto}.tms-preview-package select,.tms-preview-package button{border:1px solid #d8d8d8;background:#fff;border-radius:8px;padding:5px 7px;font:600 10px/1.2 Arial,sans-serif}.tms-preview-package button{cursor:pointer}.tms-preview-package button:hover{border-color:#aaa;background:#fafafa}.tms-preview-package button:disabled{opacity:.4;cursor:not-allowed}.tms-preview-package span{flex-basis:100%;font-size:9px;color:#777}.tms-preview-filter,.tms-preview-pager button{border:1px solid #d8d8d8;background:#fff;border-radius:8px;padding:5px 8px;font:600 10px/1.2 Arial,sans-serif;cursor:pointer}.tms-preview-filter.tms-active{border-color:var(--tms-red);color:var(--tms-red-dark);background:#fff4f4}.tms-preview-query{width:100%;box-sizing:border-box;border:1px solid #d8d8d8;border-radius:9px;padding:7px 9px;font:12px Arial,sans-serif}.tms-preview-pager{display:flex;align-items:center;justify-content:space-between;gap:8px;color:#666;font-size:10px}.tms-preview-pager button:disabled{opacity:.35;cursor:not-allowed}.tms-action-skip{border-left:4px solid #7352a1}.tms-empty{padding:15px;text-align:center;color:#777}.tms-help-card{display:none;margin-bottom:12px;padding:13px;border-radius:14px;border:1px solid #f0c9cb;background:linear-gradient(135deg,#fff,#fff6f6);animation:tms-pop .18s ease-out}.tms-help-card.tms-show{display:block}.tms-help-card h3{font-size:14px;margin:0 0 8px}.tms-help-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.tms-help-item{padding:8px 9px;border:1px solid #eee;border-radius:10px;background:#fff;font-size:11px}.tms-help-item b{display:block;margin-bottom:2px}.tms-help-note{margin-top:8px;padding:8px 9px;border-radius:10px;background:#fff0f1;font-size:11px}.tms-help-close{margin-top:9px;width:100%;border:1px solid #ddd;background:#fff;border-radius:10px;padding:7px;cursor:pointer;font-weight:700}@keyframes tms-panel-in{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}@keyframes tms-pop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}@keyframes tms-shimmer{to{transform:translateX(100%)}}#tms-apply{width:100%;padding:11px 14px;font-size:13px;box-shadow:0 8px 18px #e31e2420}
-      @media(max-width:650px){#tms-panel{right:8px;bottom:74px;width:calc(100vw - 16px)}#tms-launch{right:10px;bottom:10px}.tms-counters{grid-template-columns:repeat(2,1fr)}}
+      #tms-panel,#tms-launch{--tms-red:#c91c24;--tms-red-dark:#a9151c;--tms-ink:#24272c;--tms-muted:#616771;--tms-line:#dce0e5;--tms-bg:#fff;--tms-soft:#f5f6f8;--tms-success:#21603b;--tms-warning:#805b12;--tms-radius:8px;font:13px/1.45 Arial,sans-serif;color:var(--tms-ink)}
+      #tms-panel *,#tms-launch{box-sizing:border-box}
+      #tms-panel [hidden]{display:none!important}
+      #tms-launch{position:fixed;right:20px;bottom:20px;z-index:2147483645;width:52px;height:52px;padding:0;border:1px solid #dce0e5;border-radius:50%;background:#fff;box-shadow:0 4px 16px #0002;cursor:grab;display:grid;place-items:center;touch-action:none;user-select:none;overflow:hidden}
+      #tms-launch:active{cursor:grabbing}
+      #tms-launch svg{width:52px;height:52px;display:block;pointer-events:none}
+      #tms-panel{position:fixed;right:20px;bottom:84px;width:min(620px,calc(100vw - 32px));max-height:calc(100vh - 108px);z-index:2147483646;background:var(--tms-bg);border:1px solid var(--tms-line);border-radius:12px;box-shadow:0 8px 32px #0003;display:none;overflow:hidden}
+      #tms-panel.tms-open{display:flex;flex-direction:column}
+      #tms-panel .tms-head{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--tms-line);background:var(--tms-bg)}
+      #tms-panel .tms-brand{width:32px;height:32px;flex:none}
+      #tms-panel .tms-brand svg{width:100%;height:100%}
+      #tms-panel .tms-title{flex:1;min-width:0}
+      #tms-panel .tms-title strong{display:block;font-size:14px}
+      #tms-panel .tms-title small{display:block;color:var(--tms-muted);font-size:12px}
+      #tms-panel button,#tms-panel .tms-file-label{font:600 12px/1.4 Arial,sans-serif;min-height:32px;border:1px solid var(--tms-line);border-radius:var(--tms-radius);padding:6px 10px;background:var(--tms-bg);color:var(--tms-ink);cursor:pointer;text-align:center;white-space:normal;margin:0;box-shadow:none;text-transform:none;letter-spacing:normal}
+      #tms-panel button:hover,#tms-panel .tms-file-label:hover{background:var(--tms-soft);border-color:#9fa7b1}
+      #tms-panel button:disabled,#tms-panel .tms-disabled{opacity:.45;cursor:not-allowed}
+      #tms-panel button.tms-primary{background:var(--tms-red);border-color:var(--tms-red);color:#fff}
+      #tms-panel button.tms-primary:hover{background:var(--tms-red-dark)}
+      #tms-panel .tms-danger{color:var(--tms-red-dark)}
+      #tms-panel .tms-close,#tms-panel .tms-help{width:32px;padding:2px;border-color:transparent;font-size:18px}
+      #tms-panel .tms-ghost{background:var(--tms-bg)}
+      #tms-panel input,#tms-panel select,#tms-panel textarea{font:13px/1.45 Arial,sans-serif;color:var(--tms-ink);border:1px solid var(--tms-line);border-radius:var(--tms-radius);background:var(--tms-bg);padding:7px 9px;min-height:32px;margin:0;max-width:100%}
+      #tms-panel input[type=checkbox]{min-height:16px;width:16px;height:16px;margin:2px 0 0;accent-color:var(--tms-red);flex:none}
+      #tms-panel :focus-visible,#tms-launch:focus-visible{outline:2px solid #234e86;outline-offset:2px}
+      #tms-panel textarea{resize:vertical}
+      #tms-panel summary{cursor:pointer}
+      #tms-panel p{margin:0}
+      #tms-panel b{font-weight:600}
+      #tms-panel .tms-body{padding:0 16px 16px;overflow:auto;background:var(--tms-bg)}
+      #tms-panel .tms-status{position:sticky;top:0;z-index:30;background:var(--tms-bg);padding:12px 0;margin-bottom:4px;border-bottom:1px solid var(--tms-line)}
+      #tms-panel .tms-status-line{display:flex;align-items:center;justify-content:space-between;gap:16px;font-weight:600}
+      #tms-panel .tms-progress-percent{font-size:12px;font-variant-numeric:tabular-nums;color:var(--tms-muted)}
+      #tms-panel .tms-progress-track{height:4px;background:var(--tms-soft);border-radius:4px;overflow:hidden;margin:8px 0}
+      #tms-panel .tms-progress-fill{height:100%;width:0;background:var(--tms-red);transition:width .2s ease}
+      #tms-panel .tms-progress-detail{font-size:12px;color:var(--tms-muted)}
+      #tms-panel .tms-capability-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}
+      #tms-panel .tms-capability-status{font-size:12px;font-weight:600;color:var(--tms-success)}
+      #tms-panel .tms-capability-status[data-tone=waiting]{color:var(--tms-muted)}
+      #tms-panel .tms-capability-status[data-tone=limited]{color:var(--tms-warning)}
+      #tms-panel .tms-capability-status[data-tone=incompatible]{color:var(--tms-red-dark)}
+      #tms-panel .tms-capability-recheck{min-height:28px;padding:3px 8px}
+      #tms-panel .tms-capability-details,#tms-panel .tms-capability-technical{font-size:12px;color:var(--tms-muted);margin-top:4px}
+      #tms-panel .tms-capability-technical div{padding:8px 0;overflow-wrap:anywhere}
+      #tms-panel .tms-step{display:grid;gap:8px;padding:12px 0;border-bottom:1px solid var(--tms-line)}
+      #tms-panel .tms-step-label{font-size:13px;font-weight:600;color:var(--tms-ink)}
+      #tms-panel .tms-step-caption,#tms-panel .tms-muted{font-size:12px;color:var(--tms-muted)}
+      #tms-panel .tms-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+      #tms-panel .tms-file-name{font-size:12px;color:var(--tms-muted);overflow-wrap:anywhere}
+      #tms-panel #tms-file{position:absolute;opacity:0;width:1px;height:1px;min-height:0;padding:0}
+      #tms-panel .tms-file-label:has(+ input:focus-visible){outline:2px solid #234e86;outline-offset:2px}
+      #tms-panel #tms-apply{width:100%;min-height:36px}
+      #tms-panel .tms-counters{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:12px 0}
+      #tms-panel .tms-count{padding:8px 4px;border:1px solid var(--tms-line);border-radius:var(--tms-radius);font-size:11px;text-align:center;background:var(--tms-soft)}
+      #tms-panel .tms-count b{display:block;font-size:18px;font-variant-numeric:tabular-nums;margin-top:4px}
+      #tms-panel .tms-delete b{color:var(--tms-red-dark)}
+      #tms-panel .tms-add b{color:var(--tms-success)}
+      #tms-panel .tms-warning,#tms-panel .tms-skipped-box,#tms-panel .tms-review-note,#tms-panel .tms-fatal{margin-top:8px;padding:10px 12px;border:1px solid var(--tms-line);border-radius:var(--tms-radius);background:var(--tms-soft);font-size:12px;overflow-wrap:anywhere}
+      #tms-panel .tms-warning,#tms-panel .tms-skipped-box{border-left:3px solid var(--tms-warning)}
+      #tms-panel .tms-fatal{border-left:3px solid var(--tms-red);color:var(--tms-red-dark)}
+      #tms-panel .tms-skip-line{padding:8px 0;border-top:1px solid var(--tms-line)}
+      #tms-panel .tms-skip-more{padding-top:8px}
+      #tms-panel .tms-action{margin:8px 0;border:1px solid var(--tms-line);border-radius:var(--tms-radius);background:var(--tms-bg)}
+      #tms-panel .tms-action summary{padding:10px 12px}
+      #tms-panel .tms-action-body{padding:0 12px 12px}
+      #tms-panel .tms-review-row-actions{display:flex;gap:8px;flex-wrap:wrap;padding:4px 0 8px}
+      #tms-panel .tms-review-state{font-size:12px;color:var(--tms-muted)}
+      #tms-panel .tms-review-btn[aria-pressed=true]{background:#e9edf1}
+      #tms-panel .tms-review-row-excluded{background:var(--tms-soft)}
+      #tms-panel .tms-diff{padding:10px 0;border-top:1px solid var(--tms-line)}
+      #tms-panel .tms-diff-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px}
+      #tms-panel .tms-diff-head b{flex:1;overflow-wrap:anywhere}
+      #tms-panel .tms-diff-head button{flex:none}
+      #tms-panel .tms-diff-values{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+      #tms-panel .tms-diff-values>div{padding:8px;border-radius:4px;background:var(--tms-soft);overflow-wrap:anywhere;white-space:pre-line}
+      #tms-panel .tms-diff-values small{display:block;color:var(--tms-muted);font-size:11px;margin-bottom:4px}
+      #tms-panel .tms-after{color:var(--tms-success)}
+      #tms-panel .tms-diff-excluded .tms-diff-values{text-decoration:line-through;color:var(--tms-muted)}
+      #tms-panel .tms-preview-toolbar{display:grid;gap:8px;margin:12px 0}
+      #tms-panel .tms-preview-filters{display:flex;gap:4px;flex-wrap:wrap}
+      #tms-panel .tms-preview-filter.tms-active{border-color:var(--tms-red);color:var(--tms-red-dark)}
+      #tms-panel .tms-preview-query{width:100%}
+      #tms-panel .tms-preview-package{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px;background:var(--tms-soft);border-radius:var(--tms-radius)}
+      #tms-panel .tms-preview-package strong{font-size:12px}
+      #tms-panel .tms-preview-package span{flex-basis:100%;font-size:12px;color:var(--tms-muted)}
+      #tms-panel .tms-preview-pager{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--tms-muted);font-size:12px}
+      #tms-panel .tms-empty{padding:16px;color:var(--tms-muted);text-align:center}
+      #tms-panel .tms-tools{padding:12px 0;border-bottom:1px solid var(--tms-line)}
+      #tms-panel .tms-tool-list{display:grid;gap:12px;padding-top:12px}
+      #tms-panel .tms-tool-list p{margin:4px 0 0;color:var(--tms-muted);font-size:12px}
+      #tms-panel .tms-package-details>summary{font-size:12px;color:var(--tms-muted)}
+      #tms-panel .tms-operation-status:has(.tms-status-line:not([hidden])){margin-top:10px}
+      #tms-panel .tms-capability-technical button{margin-top:8px}
+      #tms-panel .tms-help-card{display:none;margin:12px 0;padding:12px;border:1px solid var(--tms-line);border-radius:var(--tms-radius);background:var(--tms-soft)}
+      #tms-panel .tms-help-card.tms-show{display:block}
+      #tms-panel .tms-help-card h3{font-size:14px;margin:0 0 12px}
+      #tms-panel .tms-help-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+      #tms-panel .tms-help-item b{display:block;margin-bottom:4px}
+      #tms-panel .tms-help-note{margin:12px 0}
+      #tms-panel .tms-help-close{width:100%}
+      #tms-panel .tms-picker{display:grid;gap:8px;margin:12px 0;padding:12px;border:1px solid var(--tms-line);border-radius:var(--tms-radius)}
+      #tms-panel .tms-picker-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+      #tms-panel .tms-picker-results{max-height:240px;overflow:auto;border:1px solid var(--tms-line);border-radius:4px}
+      #tms-panel .tms-picker-option{display:flex;gap:8px;align-items:flex-start;padding:8px;cursor:pointer;border-bottom:1px solid var(--tms-line);overflow-wrap:anywhere}
+      #tms-panel .tms-picker-option:last-child{border-bottom:0}
+      #tms-panel .tms-picker-option:hover{background:var(--tms-soft)}
+      #tms-panel .tms-picker-selected{display:flex;flex-wrap:wrap;gap:4px;max-height:140px;overflow:auto}
+      #tms-panel .tms-picker-selected button{font-weight:400}
+      #tms-panel .tms-reconciliation-result[data-status=verified]{color:var(--tms-success)}
+      #tms-panel .tms-reconciliation-result[data-status=divergent]{color:var(--tms-red-dark)}
+      #tms-panel .tms-reconciliation-result[data-status=incomplete]{color:var(--tms-warning)}
+      @media(max-width:650px){#tms-panel{right:8px;bottom:76px;width:calc(100vw - 16px);max-height:calc(100vh - 92px)}
+      #tms-launch{right:12px;bottom:12px}
+      #tms-panel .tms-body{padding:0 12px 12px}
+      #tms-panel .tms-counters{grid-template-columns:repeat(3,minmax(0,1fr))}}
+      @media(max-width:400px){#tms-panel .tms-diff-values{grid-template-columns:1fr}
+      #tms-panel .tms-help-grid{grid-template-columns:1fr}}
+      @media(prefers-reduced-motion:reduce){#tms-panel *{transition:none!important}}
     `;
     document.head.appendChild(style);
 
@@ -7177,6 +7515,7 @@
     launch.id = 'tms-launch';
     launch.innerHTML = cherkizovoLogoSvg();
     launch.title = 'TESSA Matrix Studio';
+    launch.setAttribute('aria-label', 'Открыть TESSA Matrix Studio');
     document.body.appendChild(launch);
 
     const panel = document.createElement('section');
@@ -7185,7 +7524,7 @@
       <div class="tms-head" id="tms-drag-handle">
         <div class="tms-brand">${cherkizovoLogoSvg()}</div>
         <div class="tms-title"><strong>TESSA Matrix Studio</strong><small>Excel-редактор матриц · v${APP.version}</small></div>
-        <button class="tms-help" title="Как пользоваться">?</button><button class="tms-close" title="Закрыть">×</button>
+        <button class="tms-help" aria-label="Как пользоваться" title="Как пользоваться">?</button><button class="tms-close" aria-label="Закрыть Studio" title="Закрыть">×</button>
       </div>
       <div class="tms-body">
         <div id="tms-help-card" class="tms-help-card">
@@ -7199,18 +7538,28 @@
           <div class="tms-help-note"><b>Важно:</b> сначала нажмите «Проверить изменения» и убедитесь, что список операций соответствует тому, что вы сделали в Excel.</div>
           <button id="tms-help-close" class="tms-help-close">Понятно</button>
         </div>
-        <div id="tms-status" class="tms-status"><div class="tms-status-line"><span id="tms-progress-label">Готово</span><span id="tms-progress-percent" class="tms-progress-percent">0%</span></div><div class="tms-progress-track"><div id="tms-progress-fill" class="tms-progress-fill"></div></div><div id="tms-progress-detail" class="tms-progress-detail">Скачайте Excel, внесите изменения и загрузите файл обратно.</div><div class="tms-capability-row"><span id="tms-capability-status" class="tms-capability-status" data-tone="limited">Среда: проверяю…</span><button id="tms-capability-recheck" class="tms-capability-recheck" type="button">Повторить проверку</button></div><div id="tms-capability-details" class="tms-capability-details">Проверяю совместимость текущей сборки TESSA.</div></div>
-        <div class="tms-controls">
-          <div class="tms-step"><div class="tms-step-label">1 · Подготовить Excel</div><div class="tms-row"><button id="tms-download-current" class="tms-primary">Скачать Excel</button><button id="tms-download-fresh">Скачать со свежими справочниками</button></div><div class="tms-step-caption">Скачайте рабочий Excel или обновите справочники перед редактированием.</div></div>
-          <div class="tms-step"><div class="tms-step-label">2 · Выбрать изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"><button id="tms-refresh-excel" class="tms-ghost" disabled>Актуализировать выбранный Excel</button></div><div class="tms-step-caption">Добавит новые поля из текущего шаблона TESSA и постарается сохранить ваши изменения.</div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
-          <div class="tms-step"><div class="tms-step-label">3 · Проверить</div><div class="tms-row"><button id="tms-analyze" class="tms-primary">Проверить изменения</button><button id="tms-stop" class="tms-danger" disabled>Отмена</button></div></div>
-          <div class="tms-step tms-step-apply"><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><button id="tms-reconcile" class="tms-ghost" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><button id="tms-download-report" class="tms-ghost" hidden disabled>Скачать отчёт</button><button id="tms-refresh-view" class="tms-ghost" hidden disabled>Обновить отображение</button><div id="tms-apply-note" class="tms-step-caption"></div></div>
+        <div id="tms-status" class="tms-status">
+          <div class="tms-capability-row"><span id="tms-capability-status" class="tms-capability-status" data-tone="limited">Подключаемся к матрице</span></div>
+          <div id="tms-capability-details" class="tms-capability-details">Подключение обновляется автоматически.</div>
+          <details class="tms-capability-technical" hidden><summary>Подключение</summary><div id="tms-capability-diagnostics"></div><button id="tms-capability-recheck" type="button">Проверить подключение</button></details>
+          <div class="tms-operation-status" aria-live="polite" aria-atomic="true"><div class="tms-status-line" hidden><span id="tms-progress-label">Готово</span><span id="tms-progress-percent" class="tms-progress-percent">0%</span></div><div class="tms-progress-track" hidden><div id="tms-progress-fill" class="tms-progress-fill"></div></div><div id="tms-progress-detail" class="tms-progress-detail"></div></div>
         </div>
-        <div id="tms-summary"></div><div id="tms-plan"></div>
+        <div class="tms-controls">
+          <div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button></div></div>
+          <div class="tms-step"><div class="tms-step-label">2 · Изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
+          <details class="tms-tools"><summary>Дополнительно</summary><div class="tms-tool-list">
+            <div><button type="button" id="tms-open-picker">Собрать значения для ячейки</button><p>Отметьте несколько вариантов и скопируйте в Excel.</p></div>
+            <div><button id="tms-download-fresh">Обновить справочники и скачать</button><p>Если в TESSA появились новые значения.</p></div>
+            <div><button id="tms-refresh-excel" disabled>Обновить поля Excel</button><p>Добавить поля изменённого шаблона в выбранный файл. Правки, которые удалось перенести, останутся в новой книге.</p></div>
+          </div></details>
+          <div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
+          <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-download-report" hidden disabled>Скачать отчёт</button><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
+        </div>
+        <section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section><div id="tms-summary"></div><div id="tms-plan"></div>
       </div>`;
     document.body.appendChild(panel);
 
-    const togglePanel = () => panel.classList.toggle('tms-open');
+    const togglePanel = () => { panel.classList.toggle('tms-open'); APP.runtimeMonitor?.tick(); };
     const clampLauncher = (left, top) => {
       const rect = launch.getBoundingClientRect();
       const maxLeft = Math.max(6, window.innerWidth - rect.width - 6);
@@ -7277,31 +7626,42 @@
     });
     panel.querySelector('#tms-file').addEventListener('change', event => {
       resetFilePreview();
+      closeValuePicker();
       const file = event.target.files?.[0]; panel.querySelector('#tms-file-name').textContent = file?.name || 'Файл не выбран'; panel.querySelector('#tms-refresh-excel').disabled = !file && !APP.workbook?.roundtrip?.enabled;
+      setProgress(0, 'Готово', '');
+      APP.runtimeMonitor?.tick();
+    });
+
+    panel.querySelector('#tms-open-picker').addEventListener('click', async () => {
+      if (APP.busy) return;
+      setBusy(true);
+      try { await openValuePicker(); }
+      catch (error) { setProgress(100, 'Выбор значений недоступен', friendlyErrorMessage(error)); }
+      finally { setBusy(false); if (APP.picker) renderPickerResults(); }
     });
 
     panel.querySelector('#tms-download-current').addEventListener('click', async () => {
       if (APP.busy) return; setBusy(true);
-      try { requireRuntimeOperation('export'); await exportCurrentMatrixXlsx(); alert('Excel скачан. Можно редактировать лист «Матрица».'); }
-      catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); alert(`Не удалось скачать Excel: ${message}`); }
+      try { requireRuntimeOperation('export'); await exportCurrentMatrixXlsx();  }
+      catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); setProgress(100, 'Не удалось скачать Excel', message); }
       finally { setBusy(false); }
     });
     panel.querySelector('#tms-download-fresh').addEventListener('click', async () => {
       if (APP.busy) return; setBusy(true);
-      try { requireRuntimeOperation('export'); await exportCurrentMatrixXlsx({ forceDictionaryRefresh: true }); alert('Новый Excel со свежими справочниками скачан.'); }
-      catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); alert(`Не удалось обновить справочники: ${message}`); }
+      try { requireRuntimeOperation('export'); await exportCurrentMatrixXlsx({ forceDictionaryRefresh: true });  }
+      catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); setProgress(100, 'Не удалось обновить справочники', message); }
       finally { setBusy(false); }
     });
     panel.querySelector('#tms-refresh-excel').addEventListener('click', async () => {
       if (APP.busy) return; setBusy(true);
-      try { const selectedFile = panel.querySelector('#tms-file').files?.[0]; if (selectedFile) await refreshSelectedWorkbook(selectedFile); else await refreshLoadedWorkbookXlsx(); alert('Выбранный Excel актуализирован. Правки сохранены.'); }
-      catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); alert(`Не удалось актуализировать Excel: ${message}`); }
+      try { const selectedFile = panel.querySelector('#tms-file').files?.[0]; if (selectedFile) await refreshSelectedWorkbook(selectedFile); else await refreshLoadedWorkbookXlsx(); setProgress(100, 'Поля Excel обновлены', 'Проверьте новую книгу перед применением.'); }
+      catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); setProgress(100, 'Не удалось обновить поля Excel', message); }
       finally { setBusy(false); }
     });
     panel.querySelector('#tms-analyze').addEventListener('click', async () => {
       if (APP.busy) return; setBusy(true);
       try { requireRuntimeOperation('analyze'); await analyzeSelectedFile(panel.querySelector('#tms-file').files?.[0]); }
-      catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); alert(message); }
+      catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); setProgress(100, 'Проверка не завершена', message); }
       finally { setBusy(false); }
     });
     panel.querySelector('#tms-download-report').addEventListener('click', () => { downloadLastReport(); });
@@ -7310,7 +7670,7 @@
       setBusy(true);
       try {
         requireRuntimeOperation('reconcile');
-        setProgress(20, 'Проверяю результат', 'Свежий snapshot TESSA · без записи');
+        setProgress(20, 'Проверяю результат', 'Сверяем сохранённые значения');
         APP.lastReconciliation = await runReconciliationRead(
           () => TessaBridge.create(),
           APP.lastMutationReceipts,
@@ -7352,14 +7712,14 @@
         const message = friendlyErrorMessage(error);
         log(message, 'error', error);
         setProgress(100, 'Не удалось обновить отображение', 'Запись в TESSA не отменяется; можно повторить позже.');
-        alert(`Не удалось обновить отображение TESSA: ${message}`);
+        setProgress(100, 'Не удалось обновить отображение', message);
       } finally { setBusy(false); }
     });
     panel.querySelector('#tms-apply').addEventListener('click', async () => {
       if (APP.busy) return;
       const availability = applyAvailability(APP.plan, APP.review);
       if (!availability.canApply) {
-        setProgress(100, 'Apply недоступен', availability.reason || 'Нет операций для применения.');
+        setProgress(100, 'Применение недоступно', availability.reason || 'Нет операций для применения.');
         return;
       }
       setBusy(true);
@@ -7377,10 +7737,18 @@
       catch (error) {
         const message = friendlyErrorMessage(error); log(message, 'error', error);
         rememberReport({ app: { name: APP.name, version: APP.version }, planId: APP.plan?.id, failedAt: nowIso(), error: message, technicalError: error?.message || String(error), matrixId: APP.plan?.matrixId || null, logs: APP.logs.slice(-120) }, `TESSA_Matrix_ErrorReport_${Date.now()}.json`);
-        alert(`${message}\n\nЕсли понадобится разбор ошибки, нажмите «Скачать отчёт» в Studio.`);
+        setProgress(100, 'Применение не завершено', `${message} Подробности — в отчёте.`);
       } finally { setBusy(false); }
     });
     refreshRuntimeCapabilities([]);
+    APP.runtimeMonitor = createRuntimeMonitor({
+      active: () => panel.classList.contains('tms-open') && document.visibilityState !== 'hidden' && !APP.busy,
+      check: () => refreshRuntimeCapabilities(),
+    });
+    APP.runtimeMonitor.start();
+    window.addEventListener('pagehide', () => APP.runtimeMonitor?.stop());
+    window.addEventListener('pageshow', () => APP.runtimeMonitor?.start());
+    document.addEventListener('visibilitychange', () => APP.runtimeMonitor?.tick());
   }
 
 
@@ -7398,6 +7766,7 @@
   }
 
   window.__TESSA_MATRIX_SYNC_EXPORTS__ = {
+    createRuntimeMonitor, pickerColumns, pickerEntryKey, searchPickerEntries, pickerSelectionText,
     probeRuntimeEnvironment, inspectNativeViewCapabilitiesReadOnly, inspectMatrixCapabilitiesReadOnly,
     evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport,
