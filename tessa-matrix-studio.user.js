@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.44
+// @version      1.9.45
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.44',
+    version: '1.9.45',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -5294,7 +5294,7 @@
     if (refreshButton) {
       const needsManualRefresh = Boolean(result?.viewRefresh && !result.viewRefresh.ok && !result.viewRefresh.skipped);
       refreshButton.hidden = !needsManualRefresh;
-      refreshButton.disabled = !needsManualRefresh;
+      setControlDisabled(refreshButton, !needsManualRefresh);
     }
   }
 
@@ -6717,7 +6717,7 @@
     const button = document.querySelector?.('#tms-download-report');
     if (button) {
       button.hidden = false;
-      button.disabled = false;
+      setControlDisabled(button, false);
       button.title = name || 'Скачать последний диагностический отчёт';
     }
     return APP.lastReport;
@@ -7126,6 +7126,16 @@
     const track = document.querySelector('#tms-status .tms-progress-track');
     if (line) line.hidden = !APP.busy && bounded === 0;
     if (track) track.hidden = !APP.busy || bounded === 100;
+  }
+
+  // An operation can create a report or change whether a manual refresh is
+  // needed while controls are locked. Update the state to restore at idle,
+  // keeping the control disabled until the operation's finally block runs.
+  // Otherwise setBusy(false) resurrects the obsolete pre-operation state.
+  function setControlDisabled(control, disabled) {
+    if (!control) return;
+    if (APP.busy) APP.busyControlStates.set(control, Boolean(disabled));
+    control.disabled = Boolean(APP.busy || disabled);
   }
 
   function setBusy(value) {
@@ -7742,7 +7752,7 @@
         const outcome = await refreshNativeMatrixViewAfterApply(bridge, { attempts: 3, baseDelayMs: 450 });
         if (!outcome.ok) throw new Error(outcome.error || 'Не удалось обновить отображение TESSA.');
         const button = panel.querySelector('#tms-refresh-view');
-        if (button) { button.hidden = true; button.disabled = true; }
+        if (button) { button.hidden = true; setControlDisabled(button, true); }
         setProgress(100, 'Отображение обновлено', outcome.controlName || 'Матрица TESSA обновлена');
       } catch (error) {
         const message = friendlyErrorMessage(error);

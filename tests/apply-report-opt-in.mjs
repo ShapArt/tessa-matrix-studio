@@ -5,6 +5,18 @@ const code = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.me
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
 let anchorClicks = 0;
+const downloads = [];
+const blobs = new Map();
+const elements = new Map([
+  ['#tms-download-report', { id: 'tms-download-report', disabled: true, hidden: true }],
+  ['#tms-refresh-view', { id: 'tms-refresh-view', disabled: true, hidden: true }],
+  ['#tms-reconciliation-result', { dataset: {} }],
+]);
+const reportButton = elements.get('#tms-download-report');
+globalThis.URL = {
+  createObjectURL(blob) { const url = `blob:report-${blobs.size}`; blobs.set(url, blob); return url; },
+  revokeObjectURL() {},
+};
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 globalThis.location = { origin: 'https://tessa.cherkizovsky.net' };
@@ -12,15 +24,22 @@ globalThis.alert = () => {};
 globalThis.confirm = () => true;
 globalThis.document = {
   body: { innerText: 'Завершить редактирование и разблокировать' },
-  querySelector: () => null,
-  querySelectorAll: () => [],
+  querySelector: selector => elements.get(selector) || null,
+  querySelectorAll: () => [...elements.values()].filter(el => el.id),
   createElement: tag => tag === 'a'
-    ? ({ click() { anchorClicks += 1; }, style: {}, set href(_) {}, set download(_) {} })
+    ? ({ click() { anchorClicks += 1; downloads.push({ url: this.href, name: this.download }); }, style: {} })
     : ({ click() {}, style: {}, set href(_) {}, set download(_) {} }),
 };
-vm.runInThisContext(code, { filename: 'tessa-matrix-studio.user.js' });
+const marker = '  bootstrap();';
+assert(code.split(marker).length === 2, 'test hook must target bootstrap exactly once');
+vm.runInThisContext(code.replace(marker,
+  '  window.__reportTest = { APP, setBusy, renderPlanConsumedNotice }; bootstrap();'),
+{ filename: 'tessa-matrix-studio.user.js' });
 
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
+const { APP, setBusy, renderPlanConsumedNotice } = globalThis.__reportTest;
+reportButton.click = () => { if (!reportButton.disabled) E.downloadLastReport(); };
+assert(E.downloadLastReport() === false, 'no report must not create an empty download');
 const O = E.constants.OPERAND;
 const structure = {
   templateId: 'report-opt-in-template',
@@ -60,13 +79,62 @@ const bridge = {
 const originalCreate = E.TessaBridge.create;
 E.TessaBridge.create = async () => bridge;
 let result;
-try { result = await E.applyPlan(plan); }
-finally { E.TessaBridge.create = originalCreate; }
+setBusy(true);
+try {
+  result = await E.applyPlan(plan);
+  E.invalidatePlanStateAfterApply(APP, result);
+  renderPlanConsumedNotice(result);
+} finally { E.TessaBridge.create = originalCreate; setBusy(false); }
 
 assert(result?.status === 'completed', `expected completed Apply, got ${JSON.stringify(result)}`);
 assert(anchorClicks === 0, `successful Apply must not auto-download JSON; got ${anchorClicks} automatic download(s)`);
 assert(code.includes('id="tms-download-report"'), 'manual report download control is missing');
 assert(!/downloadJson\(result,\s*`TESSA_Matrix_Apply_/.test(code), 'Apply result still auto-downloads JSON');
 assert(!/downloadJson\(\{ app: \{ name: APP\.name/.test(code), 'caught Apply error still auto-downloads ErrorReport JSON');
+
+// Exercise the actual busy -> rememberReport -> finally sequence. Previously,
+// finally restored the initial disabled=true and stranded an existing report.
+assert(!reportButton.hidden && !reportButton.disabled, 'completed Apply left its report button disabled');
+reportButton.click();
+assert(anchorClicks === 1, 'one explicit click must download the completed Apply report');
+const downloaded = JSON.parse(await blobs.get(downloads[0].url).text());
+assert(downloaded.status === result.status && downloaded.appliedCount === result.appliedCount, 'download lost the Apply result');
+assert(downloads[0].name.startsWith('TESSA_Matrix_Apply_'), 'download lost its Apply filename');
+
+for (const status of ['partial', 'cancelled', 'error']) {
+  APP.lastReport = null;
+  reportButton.hidden = true; reportButton.disabled = true;
+  const value = { status, appliedCount: status === 'error' ? 0 : 11, requestedCount: 12, rows: [{ excelRow: 35, status: 'skipped', reason: 'test-reason' }] };
+  const name = `TESSA_Matrix_${status}.json`;
+  setBusy(true);
+  E.rememberReport(value, name);
+  assert(reportButton.disabled, 'report must remain disabled until the running operation finishes');
+  const before = anchorClicks;
+  setBusy(false);
+  assert(!reportButton.hidden && !reportButton.disabled, `${status} report is inaccessible`);
+  assert(anchorClicks === before, `${status} report downloaded without a click`);
+  for (const reconciliation of [{ status: 'verified', checkedCount: 11, verifiedCount: 11 }, { status: 'incomplete', unknownCount: 11 }]) {
+    setBusy(true);
+    E.renderReconciliationResult(reconciliation);
+    setBusy(false);
+    assert(!reportButton.disabled, 'reconciliation stranded the Apply report');
+    assert(APP.lastReport.value === value && APP.lastReport.name === name, 'reconciliation replaced the original report');
+  }
+  reportButton.click();
+  assert(anchorClicks === before + 1, `${status} report did not download exactly once`);
+  const last = downloads.at(-1);
+  assert(last.name === name && JSON.stringify(JSON.parse(await blobs.get(last.url).text())) === JSON.stringify(value), 'downloaded report content/name changed');
+}
+
+const refreshButton = elements.get('#tms-refresh-view');
+setBusy(true);
+renderPlanConsumedNotice({ status: 'partial', appliedCount: 11, requestedCount: 12, viewRefresh: { ok: false, skipped: false } });
+setBusy(false);
+assert(!refreshButton.hidden && !refreshButton.disabled, 'failed auto-refresh stranded the manual refresh button');
+setBusy(true);
+renderPlanConsumedNotice({ status: 'completed', appliedCount: 1, success: true, viewRefresh: { ok: true } });
+setBusy(false);
+assert(refreshButton.hidden && refreshButton.disabled, 'successful refresh resurrected an unnecessary button');
+assert(!JSON.stringify(APP.lastReport).includes('expectedSemanticKey'), 'private receipt leaked into a report');
 
 console.log('TESSA Matrix Studio diagnostic reports are opt-in, not automatic downloads: OK');
