@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.50
+// @version      1.9.51
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.50',
+    version: '1.9.51',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -66,6 +66,7 @@
     logs: [],
     lastReport: null,
     lastIntervalDiagnostics: null,
+    lastStudioDiagnostics: null,
     dictionaryCatalog: null,
     progress: { percent: 0, label: 'Готово', detail: '' },
   };
@@ -3294,7 +3295,7 @@
       return { component, currentPage, pageLimit, calculatedRowCount, pageCount: Math.max(1, pageCount) };
     }
 
-    async collectNativeMatrixViewLinksAllPages() {
+    async collectNativeMatrixViewLinksAllPages(options = {}) {
       const nativeControl = this.findNativeMatrixControl();
       if (!nativeControl) return this.findNativeMatrixViewLinks();
       const { target, controlName } = nativeControl;
@@ -3353,6 +3354,7 @@
         // Всегда начинаем с первой страницы: пользователь мог находиться на любой странице.
         for (let page = 1; page <= maxPages; page += 1) {
           if (APP.abortRequested) throw new Error('Операция остановлена пользователем.');
+          await options.assertContext?.();
 
           const before = this.nativePagingInfo(target);
           if (page !== before.currentPage || page === 1) {
@@ -3364,6 +3366,7 @@
           let lastSignature = null;
           let stableTicks = 0;
           for (let wait = 0; wait < 120; wait += 1) {
+            await options.assertContext?.();
             const state = this.nativePagingInfo(target);
             const rows = this.rowsOfControl(target);
             const signature = rows.map(row => {
@@ -3396,6 +3399,7 @@
         log(`Не удалось полностью обойти страницы представления «${controlName}»: ${error.message || error}.`, 'warn');
       } finally {
         try {
+          await options.assertContext?.();
           const current = this.nativePagingInfo(target).currentPage;
           if (current !== originalPage) await target.setPageAndRefresh(originalPage);
         } catch (_) { /* restore is best effort */ }
@@ -3635,7 +3639,7 @@
           log(`Словари: использую локальный кэш (${merged.stats.entries} значений, возраст ${Math.max(1, Math.round(ageMs / 60000))} мин.).`);
           return merged;
         }
-      } else {
+      } else if (!options.transient) {
         await deleteDictionaryCache(cacheKey);
       }
 
@@ -3703,20 +3707,20 @@
       structure.functions.forEach(fn => { catalog.columnCatalogIds[definitionKey('function', fn.id)] = roleResult.roleCatalogId; });
 
       const normalized = normalizeDictionaryCatalog(catalog);
-      normalized.stats.cache = { hit: false, key: cacheKey, savedAt: Date.now(), ageMs: 0 };
-      const cached = await writeDictionaryCache(cacheKey, normalized);
+      normalized.stats.cache = { hit: false, key: cacheKey, savedAt: options.transient ? null : Date.now(), ageMs: 0, ...(options.transient ? { transient: true } : {}) };
+      const cached = options.transient || await writeDictionaryCache(cacheKey, normalized);
       if (!cached) normalized.stats.errors.push('Локальный кэш словарей недоступен; следующая выгрузка снова запросит данные TESSA.');
       return normalized;
     }
 
-    async queryViewSample(viewAlias, maxRows = 100) {
+    async queryViewSample(viewAlias, maxRows = 100, options = {}) {
       const api = this.viewApi();
       if (!api || !viewAlias) return { alias: viewAlias, error: 'View API unavailable' };
       const view = api.service.getByName(viewAlias);
       if (!view?.metadata) return { alias: viewAlias, error: 'View not found' };
       const request = new api.serviceModule.TessaViewRequest(view.metadata);
       request.calculateRowCounting = true;
-      request.canUseCache = true;
+      request.canUseCache = !options.forceRefresh;
       try {
         const result = await view.getData(request);
         const columns = Array.from(result?.columns || []);
@@ -3733,6 +3737,7 @@
           info: safePlain(result?.info, { maxDepth: 7, maxKeys: 500, maxArray: 2000 }),
         };
       } catch (error) {
+        if (options.throwOnError) throw error;
         return { alias: viewAlias, error: error.message || String(error) };
       }
     }
@@ -5327,6 +5332,7 @@
     state.snapshot = null;
     state.bridge = null;
     state.lastIntervalDiagnostics = null;
+    state.lastStudioDiagnostics = null;
     state.review = createPlanReviewState();
     state.previewView = createPreviewViewState();
     return true;
@@ -5997,6 +6003,8 @@
     APP.capabilityActions = [];
     APP.reviewedApplyEnabled = false;
     APP.lastIntervalDiagnostics = null;
+    APP.lastStudioDiagnostics = null;
+    renderStudioDiagnostics();
     updateIntervalDiagnosticControlState();
     for (const id of ['#tms-summary', '#tms-plan']) {
       const element = document.querySelector(id);
@@ -6982,6 +6990,311 @@
     }
   }
 
+  // Diagnostics runs on a separate bridge and never returns an Apply plan.
+  // Explicit allowlists protect the test path if ordinary bridge code changes.
+  // Capture only selected business data, never page HTML, browser storage,
+  // HTTP headers, credentials or arbitrary application objects.
+  async function collectStudioDiagnostics({ connect, probe, file = null, workbook = null, previous = {}, assertContext, onProgress = () => {}, limits = {} }) {
+    if (typeof assertContext !== 'function') throw new Error('Не задан контроль контекста диагностики.');
+    const bounds = { calls: 2000, candidates: 20, bytes: 48 * 1024 * 1024, itemBytes: 8 * 1024 * 1024, requestMs: 20000, ...limits };
+    const report = {
+      format: 'TESSA_STUDIO_DIAGNOSTICS_V1', studioVersion: APP.version, startedAt: nowIso(),
+      scope: 'read-only', writesAttempted: 0, blockedWrites: 0, containsBusinessData: true,
+      checks: [], captures: [], omitted: [], calls: [],
+      notTested: ['Сохранение и удаление строк', 'Серверные транзакции и обработчики Store', 'Параллельная запись другого пользователя', 'Действия в штатном редакторе'],
+    };
+    const entries = [];
+    const pending = new Set();
+    let capturedBytes = 0, stopped = false, callCount = 0;
+    const message = error => String(error?.message || error).slice(0, 20000);
+    const capture = (name, value, raw = false) => {
+      try {
+        const bytes = value instanceof Uint8Array ? value : new TextEncoder().encode(JSON.stringify(value, (key, item) => {
+          if (key === 'expectedSemanticKey') return undefined;
+          return raw ? item : jsonReplacer(key, item);
+        }, 2));
+        if (!bytes || bytes.length > bounds.itemBytes || capturedBytes + bytes.length > bounds.bytes) throw new Error('Лимит размера пакета');
+        entries.push([name, bytes]); capturedBytes += bytes.length;
+        report.captures.push({ name, bytes: bytes.length });
+      } catch (error) { report.omitted.push({ name, reason: message(error) }); }
+    };
+    const guard = async () => {
+      if (stopped) throw new Error('Проверки остановлены.');
+      try { await assertContext(); } catch (error) { stopped = true; report.interrupted = message(error); throw error; }
+    };
+    const run = async (id, title, work, dependency = true) => {
+      const check = { id, title, status: 'running', startedAt: nowIso() };
+      report.checks.push(check); onProgress(report);
+      if (!dependency || stopped) {
+        check.status = 'not-run'; check.detail = stopped ? 'Прогон остановлен.' : 'Нет необходимых данных.';
+      } else {
+        try {
+          await guard();
+          const result = await work();
+          await guard();
+          Object.assign(check, { status: 'pass', ...result });
+        } catch (error) {
+          check.status = 'fail'; check.detail = message(error); check.code = error.code || 'check-failed';
+        }
+      }
+      check.finishedAt = nowIso(); onProgress(report);
+      return check.status === 'pass';
+    };
+    const performRpc = async (kind, request, invoke) => {
+      await guard();
+      if (++callCount > bounds.calls) { stopped = true; report.interrupted = 'Достигнут лимит запросов диагностики.'; throw new Error(report.interrupted); }
+      const call = { index: callCount, kind, startedAt: nowIso() };
+      report.calls.push(call);
+      const prefix = `requests/${String(call.index).padStart(4, '0')}`;
+      capture(`${prefix}-request.json`, request?.getStorage?.() || request, true);
+      let timer;
+      try {
+        const response = await Promise.race([
+          Promise.resolve().then(invoke),
+          new Promise((_, reject) => { timer = setTimeout(() => {
+            stopped = true; report.interrupted = 'Сервер не ответил вовремя. Следующие запросы остановлены.';
+            reject(new Error(report.interrupted));
+          }, bounds.requestMs); }),
+        ]);
+        call.status = 'returned';
+        // CardGet/CardNew mock fallback is explicit; never serialize services.
+        capture(`${prefix}-response.json`, response?.getStorage?.() || {
+          info: response?.tryGetInfo?.() || response?.info,
+          card: response?.card?.getStorage?.(),
+          validation: { successful: response?.validationResult?.isSuccessful },
+          ...(kind === 'view' ? { result: response } : {}),
+        }, true);
+        await guard();
+        return response;
+      } catch (error) { stopped = true; report.interrupted ||= message(error); call.status = 'failed'; call.error = message(error); throw error; }
+      finally { clearTimeout(timer); call.finishedAt = nowIso(); }
+    };
+    const rpc = (...args) => {
+      const task = performRpc(...args); pending.add(task);
+      task.then(() => pending.delete(task), () => pending.delete(task));
+      return task;
+    };
+    const forbidden = () => { report.blockedWrites++; throw new Error('Запись запрещена в разделе проверок.'); };
+    let bridge, structure, snapshot, catalog, generated, selected = file ? null : workbook, plan;
+    const connected = await run('connection', 'Подключение к матрице', async () => {
+      bridge = await connect();
+      report.matrixId = String(bridge.mainCard.id); report.templateId = String(bridge.templateId() || '');
+      if (!report.templateId) throw new Error('Не найдена матрица с шаблоном.');
+      const real = bridge, reader = Object.create(real);
+      reader.cardService = {
+        get: req => rpc('CardGet', req, () => real.cardService.get(req)),
+        request: req => {
+          if (![REQUEST.Structure, REQUEST.ValidateDuplicate].some(id => canonicalValue(id) === canonicalValue(req.requestType))) return forbidden();
+          return rpc('CardRequest', req, () => real.cardService.request(req));
+        },
+        store: forbidden, delete: forbidden,
+      };
+      for (const name of ['new', 'create']) if (typeof real.cardService[name] === 'function') {
+        reader.cardService[name] = req => rpc('CardNew', req, () => real.cardService[name](req));
+      }
+      reader.storeRowCard = forbidden; reader.deleteMatrixRow = forbidden;
+      reader.queryViewSample = (alias, maxRows) => rpc('view', { alias, maxRows },
+        () => real.queryViewSample.call(reader, alias, maxRows, { forceRefresh: true, throwOnError: true }));
+      reader.collectNativeMatrixViewLinksAllPages = async () => {
+        await guard();
+        const native = await real.collectNativeMatrixViewLinksAllPages.call(reader, { assertContext: guard });
+        await guard(); capture('native-matrix-view.json', native);
+        return native;
+      };
+      bridge = reader;
+      return { detail: 'Матрица определена. Запись для этого прогона запрещена.' };
+    });
+    await run('capabilities', 'Возможности текущей TESSA', async () => {
+      const value = evaluateRuntimeCapabilities(await probe()); capture('capabilities.json', value);
+      return { status: value.overall === 'ready' ? 'pass' : value.overall === 'limited' ? 'not-run' : 'fail', detail: humanCapabilityBlocker([...value.blockers, ...value.warnings].map(x => x.code || x)) || 'Доступные API проверены.' };
+    });
+    await run('input-rules', 'Правила ввода: числа, интервалы, Да/Нет', async () => {
+      const cases = [
+        ['Нулевое число', () => parseRange('0', 'Int').value === 0],
+        ['Интервал', () => { const v = parseRange('2..17', 'Int'); return v.value === 2 && v.to === 17; }],
+        ['Отрицательный интервал', () => { const v = parseRange('-15..-4', 'Int'); return v.value === -15 && v.to === -4; }],
+        ['Дробный интервал', () => { const v = parseRange('1,5..4,25', 'Decimal'); return v.value === 1.5 && v.to === 4.25; }],
+        ['Да', () => parseBoolean('Да') === true], ['Нет', () => parseBoolean('Нет') === false],
+        ['Обратный интервал', () => { try { parseRange('15..4', 'Int'); return false; } catch (_) { return true; } }],
+        ['Дробь в целом числе', () => { try { parseRange('4.5', 'Int'); return false; } catch (_) { return true; } }],
+        ['Переполнение целого числа', () => { try { parseRange('2147483648', 'Int'); return false; } catch (_) { return true; } }],
+        ['Текст вместо числа', () => { try { parseRange('4oops', 'Int'); return false; } catch (_) { return true; } }],
+        ['Неизвестное Да/Нет', () => { try { parseBoolean('НЕИЗВЕСТНО'); return false; } catch (_) { return true; } }],
+        ['Формулы во всех типах ячеек', () => ['String', 'Int', 'Decimal', 'Boolean', 'Date', 'DateTime', 'Guid'].every(kind => Boolean(excelCoercionIssue(kind, '1', { hasFormula: true })))],
+        ['Число, превращённое Excel в дату', () => Boolean(excelAutoDateIssue('Int', '46000', { rawType: 'n', numberFormatKind: 'date' }))],
+        ['Текст, превращённый Excel в число', () => Boolean(excelCoercionIssue('String', '123', { rawType: 'n' }))],
+      ].map(([title, test]) => ({ title, passed: test() }));
+      capture('input-rules.json', cases);
+      if (cases.some(c => !c.passed)) throw new Error('Не прошла встроенная проверка правил ввода.');
+      return { detail: `${cases.length} проверок пройдено. Остальные типы проверяются на данных матрицы.` };
+    });
+    if (file) await run('file-read', 'Чтение выбранного Excel', async () => {
+      if (file.size > XLSX_ARCHIVE_LIMITS.MaxInputBytes) throw new Error('Выбранный Excel превышает лимит размера.');
+      const buffer = await file.arrayBuffer(); capture('selected.xlsx', new Uint8Array(buffer));
+      selected = await readXlsxArrayBuffer(buffer, file.name);
+      return { detail: `${selected.rows.length} строк; ${selected.headers.filter(Boolean).length} столбцов.` };
+    });
+    const schemaOk = await run('schema', 'Свежая структура матрицы', async () => {
+      structure = await bridge.requestStructure(report.templateId); capture('structure.json', structure);
+      return { detail: `${structure.conditions.length} критериев; ${structure.functions.length} функций.` };
+    }, connected);
+    // Configuration cards are evidence only: never replace the editor's card or
+    // infer permission to change the template from permission to read it.
+    for (const [name, id, title] of [['matrix', report.matrixId, 'Настройки матрицы'], ['template', report.templateId, 'Настройки шаблона']]) {
+      await run(`${name}-settings`, title, async () => {
+        const card = await bridge.getCard(id);
+        if (!card?.getStorage) throw new Error('TESSA не вернула хранилище карточки.');
+        capture(`${name}-card.json`, card.getStorage(), true);
+        return { detail: 'Карточка прочитана; настройки не менялись.' };
+      }, connected);
+    }
+    const snapshotOk = await run('snapshot', 'Чтение всех строк матрицы', async () => {
+      snapshot = await bridge.loadSnapshot(structure);
+      capture('snapshot.json', snapshot);
+      const rowIds = new Set(), versionIds = new Set();
+      for (const row of snapshot.rows) {
+        if (!row.rowCardId || !row.versionId || rowIds.has(canonicalValue(row.rowCardId)) || versionIds.has(canonicalValue(row.versionId))) throw new Error('Пустые или повторяющиеся идентификаторы строк.');
+        rowIds.add(canonicalValue(row.rowCardId)); versionIds.add(canonicalValue(row.versionId));
+      }
+      return { detail: `${snapshot.rows.length} строк прочитано. Идентификаторы уникальны.` };
+    }, schemaOk);
+    await run('dictionaries', 'Чтение справочников', async () => {
+      catalog = await bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true, transient: true });
+      capture('dictionaries.json', catalog);
+      return { status: catalog.stats.errors?.length ? 'fail' : 'pass', detail: catalog.stats.errors?.join('\n') || `${catalog.stats.entries} значений в ${catalog.stats.catalogs} справочниках.` };
+    }, snapshotOk);
+    const roundtripOk = await run('roundtrip', 'Выгрузка и обратное чтение всех полей', async () => {
+      const bytes = await createRoundtripXlsxBytes(structure, snapshot, bridge.matrixInfo(), catalog);
+      capture('matrix-current.xlsx', bytes);
+      generated = await readXlsxArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+      const roundtrip = buildPlan(generated, structure, snapshot);
+      capture('roundtrip.json', { counts: roundtrip.counts, safety: roundtrip.safety, skippedRows: roundtrip.skippedRows, skippedFields: roundtrip.skippedFields });
+      if (roundtrip.safety?.blocked || roundtrip.counts.skip || roundtrip.skippedFields?.length || roundtrip.actions.some(a => a.type !== 'noop') || roundtrip.actions.length !== snapshot.rows.length) throw new Error('Выгрузка и обратное чтение дали расхождения. Подробности в пакете.');
+      return { detail: `${snapshot.rows.length} строк × ${structure.conditions.length + structure.functions.length} полей: расхождений нет.` };
+    }, snapshotOk);
+    await run('selected-plan', 'Изменения и ошибки выбранного Excel', async () => {
+      capture('selected-workbook.json', selected);
+      plan = buildPlan(selected, structure, snapshot); capture('selected-plan.json', plan);
+      return { status: plan.safety?.blocked || plan.counts.skip || plan.skippedFields?.length ? 'fail' : 'pass', detail: `Изменить: ${plan.counts.update}; добавить: ${plan.counts.add}; удалить: ${plan.counts.delete}; пропустить: ${plan.counts.skip}; ошибочных полей: ${plan.skippedFields?.length || 0}.` };
+    }, Boolean(snapshotOk && selected));
+
+    const columns = roundtripOk ? buildColumnMap(generated, structure).columns : null;
+    const desiredFromRow = row => {
+      const ids = {};
+      for (const column of columns.values()) {
+        const items = column.kind === 'function' ? row.roles[column.id] : row.values[column.id];
+        ids[column.key] = (items || []).map(value => column.kind === 'function' ? `${value.id}|${value.roleTypeId}` : value.id == null ? '' : String(value.id));
+      }
+      return { excelRow: 0, columns, flat: clonePlain(row.flat), ids };
+    };
+    const control = snapshotOk ? snapshot.rows.find(row => Object.values(row.values || {}).some(items => items.some(v => v.to != null))) || snapshot.rows[0] : null;
+    await run('saved-validation', 'Сервер: сохранённая строка', async () => {
+      await bridge.validateDuplicate(control.card, control.versionId); return { detail: 'Сервер разрешил проверку существующей версии.' };
+    }, Boolean(control));
+    await run('rebuilt-validation', 'Сервер: та же строка после перестройки', async () => {
+      const card = control.card.clone(); bridge.rebuildRowCard(card, control.versionId, desiredFromRow(control), structure, snapshot);
+      const after = bridge.readMatrixRowFromCard(card, control, structure);
+      if (reconciliationSemanticKey(after, structure) !== reconciliationSemanticKey(control, structure)) throw new Error('Перестройка изменила значения контрольной строки. Запрос не отправлен.');
+      await bridge.validateDuplicate(card, control.versionId); return { detail: 'Значения совпадают; сервер разрешил проверку.' };
+    }, Boolean(control && columns));
+    await run('duplicate-control', 'Сервер: точная копия должна определиться как дубль', async () => {
+      const created = await bridge.createRowCard(structure.templateId);
+      bridge.rebuildRowCard(created.card, created.versionId, desiredFromRow(control), structure, snapshot);
+      try { await bridge.validateDuplicate(created.card, created.versionId); }
+      catch (error) { if (error.code === 'duplicate-found') return { detail: 'Сервер обнаружил дубль. Копия не сохранялась.' }; throw error; }
+      throw new Error('Сервер разрешил точную копию. Нужно проверить правило поиска дубликатов. Копия не сохранялась.');
+    }, Boolean(control && columns));
+    const candidates = plan && !plan.safety?.blocked ? plan.actions.filter(a => ['add', 'update'].includes(a.type)) : [];
+    report.candidateCoverage = { total: candidates.length, checked: 0, limit: bounds.candidates };
+    for (const action of candidates.slice(0, bounds.candidates)) {
+      await run(`candidate-${action.excelRow.excelRow}`, `Сервер: Excel ${action.excelRow.excelRow} · ${action.type === 'add' ? 'добавить' : 'изменить'}`, async () => {
+        await hydrateMissingIdsForAction(action, structure, snapshot, bridge);
+        const created = action.type === 'add' ? await bridge.createRowCard(structure.templateId)
+          : { card: await bridge.getCard(action.currentRow.rowCardId), versionId: action.currentRow.versionId };
+        bridge.rebuildRowCard(created.card, created.versionId, action.excelRow, structure, snapshot);
+        report.candidateCoverage.checked++;
+        await bridge.validateDuplicate(created.card, created.versionId);
+        return { detail: 'Проверка дубликатов пройдена. Сохранение не выполнялось.' };
+      });
+    }
+    if (candidates.length > bounds.candidates) report.checks.push({ id: 'candidate-limit', title: 'Остальные изменения', status: 'not-run', detail: `За один прогон проверяется до ${bounds.candidates} операций; всего ${candidates.length}.` });
+    while (pending.size) await Promise.allSettled([...pending]);
+    capture('previous-state.json', previous);
+    report.finishedAt = nowIso();
+    report.status = report.checks.some(c => c.status === 'fail') ? 'failed'
+      : report.interrupted || report.omitted.length || report.checks.some(c => c.status === 'not-run') ? 'incomplete' : 'passed';
+    return { report, entries };
+  }
+
+  async function makeStudioDiagnosticPackage(result) {
+    // Late packaging is local only. Re-downloading never re-runs server checks.
+    const readme = 'TESSA Matrix Studio — проверки без записи\n\nНачните с report.json: checks содержит результат каждого этапа, omitted — данные, не вошедшие в пакет.\nrequests/ содержит бизнес-запросы и ответы. selected.xlsx — исходный выбранный файл; matrix-current.xlsx — свежая выгрузка, если их удалось собрать.\nЗапись, удаление, транзакции и чужая параллельная запись не тестировались. Успешная проверка дубликатов не разрешает Apply без обычного свежего Preview.\nПакет содержит рабочие значения. Передавайте его только тем, кому можно видеть эту матрицу. Cookies, пароли и HTTP-заголовки не собираются.\n';
+    return makeZip([['README.txt', readme], ['report.json', JSON.stringify(result.report, null, 2)], ...result.entries]);
+  }
+
+  function renderStudioDiagnostics(report = APP.lastStudioDiagnostics?.report) {
+    const host = document.querySelector?.('#tms-tests-result');
+    if (!host) return;
+    if (!report) { host.textContent = 'Проверки ещё не запускались.'; return; }
+    const labels = { pass: 'Пройдено', fail: 'Ошибка', 'not-run': 'Не проверено', running: 'Выполняется' };
+    const counts = status => report.checks.filter(c => c.status === status).length;
+    host.innerHTML = `<p>Пройдено: ${counts('pass')} · ошибок: ${counts('fail')} · не проверено: ${counts('not-run')}</p>`
+      + report.checks.map(c => `<details class="tms-test-check"${c.status === 'fail' ? ' open' : ''}><summary>${escapeHtml(labels[c.status])} · ${escapeHtml(c.title)}</summary><p>${escapeHtml(String(c.detail || 'Ожидание результата.').slice(0, 2500))}</p></details>`).join('')
+      + (report.omitted?.length ? `<p>В пакет не вошли данные: ${report.omitted.length}. Причины — в отчёте.</p>` : '')
+      + '<p>Запись и удаление не проверялись.</p>';
+  }
+
+  async function runStudioDiagnostics(download = false) {
+    if (APP.busy) return;
+    const file = document.querySelector('#tms-file')?.files?.[0] || null;
+    const originalPlan = APP.plan, originalWorkbook = APP.workbook;
+    const previous = { plan: APP.plan, applyReport: APP.lastReport?.value, reconciliation: APP.lastReconciliation, intervalDiagnostics: APP.lastIntervalDiagnostics?.value };
+    let context = null;
+    // Cancellation may retain a partial package. A different matrix/file may not.
+    const assertIdentity = () => {
+      if (APP.plan !== originalPlan || APP.workbook !== originalWorkbook || (document.querySelector('#tms-file')?.files?.[0] || null) !== file) throw new Error('Файл или Preview изменились.');
+      if (context) {
+        const active = probeRuntimeEnvironment();
+        if (canonicalValue(active.matrix?.matrixId) !== canonicalValue(context.id) || canonicalValue(active.matrix?.templateId) !== canonicalValue(context.templateId)) throw new Error('Матрица или шаблон изменились.');
+      }
+    };
+    APP.abortRequested = false; setBusy(true);
+    try {
+      const assertContext = async () => {
+        if (APP.abortRequested) throw new Error('Проверки остановлены пользователем.');
+        assertIdentity();
+      };
+      let result = download ? APP.lastStudioDiagnostics : null;
+      if (result && (result.source?.plan !== originalPlan || result.source?.workbook !== originalWorkbook || result.source?.file !== file)) result = null;
+      if (result?.report.matrixId) {
+        context = { id: result.report.matrixId, templateId: result.report.templateId };
+        await assertContext();
+      }
+      if (!result) {
+        result = await collectStudioDiagnostics({
+          connect: async () => { const bridge = await TessaBridge.create(); context = { id: bridge.mainCard.id, templateId: bridge.templateId() }; return bridge; },
+          probe: probeRuntimeEnvironment, file, workbook: originalWorkbook, previous, assertContext,
+          onProgress: report => { renderStudioDiagnostics(report); setProgress(Math.min(94, 5 + report.checks.length * 4), 'Проверки без записи', report.checks.at(-1)?.title || 'Подготовка'); },
+        });
+      }
+      assertIdentity();
+      // References stay in memory only; package serialization uses report/entries.
+      result.source = { plan: originalPlan, workbook: originalWorkbook, file };
+      APP.lastStudioDiagnostics = result;
+      renderStudioDiagnostics(result.report);
+      if (download) {
+        const bytes = await makeStudioDiagnosticPackage(result);
+        assertIdentity();
+        downloadBlob(new Blob([bytes], { type: 'application/zip' }), `TESSA_Diagnostics_${result.report.startedAt.replace(/[:.]/g, '-')}.zip`);
+      }
+      setProgress(100, result.report.status === 'failed' ? 'В проверках найдены ошибки' : result.report.status === 'incomplete' ? 'Проверки выполнены не полностью' : 'Проверки без записи пройдены', download ? 'Пакет диагностики скачан.' : 'Результаты — в «Дополнительно → Проверки и диагностика».');
+    } catch (error) {
+      APP.lastStudioDiagnostics = null; renderStudioDiagnostics();
+      setProgress(100, 'Не удалось завершить диагностику', friendlyErrorMessage(error));
+    }
+    finally { setBusy(false); }
+  }
+
   function reconciliationSummary(result) {
     if (!result) return 'Проверка результата не выполнялась.';
     if (result.status === 'verified') {
@@ -7743,6 +8056,11 @@
       #tms-panel .tms-step-label{font-size:13px;font-weight:600;color:var(--tms-ink)}
       #tms-panel .tms-step-caption,#tms-panel .tms-muted{font-size:12px;color:var(--tms-muted)}
       #tms-panel .tms-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+      #tms-panel #tms-test-tools>p,#tms-panel #tms-test-tools>.tms-row{margin-top:8px}
+      #tms-panel #tms-tests-result{margin-top:8px;font-size:12px;overflow-wrap:anywhere}
+      #tms-panel #tms-tests-result>p{padding:6px 0;color:var(--tms-muted)}
+      #tms-panel .tms-test-check{padding:8px 0;border-top:1px solid var(--tms-line)}
+      #tms-panel .tms-test-check>p{padding-top:6px;white-space:pre-wrap;color:var(--tms-muted)}
       #tms-panel .tms-file-name{font-size:12px;color:var(--tms-muted);overflow-wrap:anywhere}
       #tms-panel #tms-file{position:absolute;opacity:0;width:1px;height:1px;min-height:0;padding:0}
       #tms-panel .tms-file-label:has(+ input:focus-visible){outline:2px solid #234e86;outline-offset:2px}
@@ -7865,7 +8183,11 @@
             <div><button id="tms-download-fresh">Обновить справочники и скачать</button><p>Если в TESSA появились новые значения.</p></div>
             <div><button id="tms-refresh-excel" disabled>Обновить поля Excel</button><p>Добавить поля изменённого шаблона в выбранный файл. Правки, которые удалось перенести, останутся в новой книге.</p></div>
             <button id="tms-download-report" hidden disabled>Скачать отчёт</button>
-            <div id="tms-interval-tool" hidden><button id="tms-interval-diagnostics" disabled>Диагностика интервалов</button><p>Проверка без записи. Файл содержит запросы, ответы TESSA и значения проверяемых строк.</p></div>
+            <details id="tms-test-tools"><summary>Проверки и диагностика</summary>
+              <p>Проверка матрицы и Excel без сохранения строк. Пакет содержит рабочие значения, запросы и ответы TESSA.</p>
+              <div class="tms-row"><button id="tms-run-tests" type="button">Запустить проверки</button><button id="tms-download-diagnostics" type="button">Скачать пакет диагностики</button></div>
+              <div id="tms-tests-result" role="status" aria-live="polite">Проверки ещё не запускались.</div>
+            </details>
           </div></details>
           <div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
           <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
@@ -7980,7 +8302,8 @@
       finally { setBusy(false); }
     });
     panel.querySelector('#tms-download-report').addEventListener('click', () => { downloadLastReport(); });
-    panel.querySelector('#tms-interval-diagnostics').addEventListener('click', runIntervalDiagnostics);
+    panel.querySelector('#tms-run-tests').addEventListener('click', () => runStudioDiagnostics());
+    panel.querySelector('#tms-download-diagnostics').addEventListener('click', () => runStudioDiagnostics(true));
     panel.querySelector('#tms-reconcile').addEventListener('click', async () => {
       if (APP.busy || !APP.lastMutationReceipts?.receipts?.length) return;
       setBusy(true);
@@ -8082,7 +8405,7 @@
   }
 
   window.__TESSA_MATRIX_SYNC_EXPORTS__ = {
-    collectIntervalDiagnostics,
+    collectIntervalDiagnostics, collectStudioDiagnostics, makeStudioDiagnosticPackage,
     createRuntimeMonitor, pickerColumns, pickerEntryKey, searchPickerEntries, pickerSelectionText,
     probeRuntimeEnvironment, inspectNativeViewCapabilitiesReadOnly, inspectMatrixCapabilitiesReadOnly,
     evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,
