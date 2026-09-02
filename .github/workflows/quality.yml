@@ -29,7 +29,7 @@ jobs:
   codeql:
     name: CodeQL
     runs-on: ubuntu-latest
-    # SARIF upload needs security-events: write; keep that capability out of the test job.
+    # SARIF upload and the post-analysis alert gate need code-scanning access.
     permissions:
       contents: read
       security-events: write
@@ -38,4 +38,82 @@ jobs:
       - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           languages: javascript-typescript
+          config-file: ./.github/codeql/codeql-config.yml
       - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+
+      # codeql-action/analyze waits for SARIF processing, but its exit code only says
+      # that analysis/upload succeeded. GitHub Advanced Security can still create a
+      # separate failing "Code scanning results / CodeQL" check afterwards. Make that
+      # policy part of this workflow too, so Release cannot observe a false green run.
+      - name: Enforce CodeQL High/Critical gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          api_get() {
+            local endpoint="$1"
+            shift
+            curl --fail --silent --show-error \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              --get "https://api.github.com/repos/${GITHUB_REPOSITORY}/code-scanning/${endpoint}" \
+              "$@"
+          }
+
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            scope=(--data-urlencode "pr=${PR_NUMBER}")
+            scope_label="PR #${PR_NUMBER}"
+          else
+            scope=(--data-urlencode "ref=${GITHUB_REF}")
+            scope_label="${GITHUB_REF}"
+          fi
+
+          # Fail closed if GitHub has not exposed the analysis for the exact checkout
+          # yet. analyze normally waits for processing; the bounded retry only covers
+          # eventual consistency between the analysis and alert APIs.
+          analysis_sha=""
+          for attempt in 1 2 3 4 5; do
+            analysis_sha="$(
+              api_get analyses \
+                --data-urlencode "tool_name=CodeQL" \
+                "${scope[@]}" \
+                --data-urlencode "per_page=1" \
+              | jq -r '.[0].commit_sha // empty'
+            )"
+            if [[ "${analysis_sha}" == "${GITHUB_SHA}" ]]; then
+              break
+            fi
+            if [[ "${attempt}" == "5" ]]; then
+              echo "::error::Latest CodeQL analysis for ${scope_label} is ${analysis_sha:-missing}, expected ${GITHUB_SHA}."
+              exit 1
+            fi
+            sleep 2
+          done
+
+          blocking=0
+          for severity in critical high; do
+            alerts="$(
+              api_get alerts \
+                --data-urlencode "tool_name=CodeQL" \
+                --data-urlencode "state=open" \
+                --data-urlencode "severity=${severity}" \
+                "${scope[@]}" \
+                --data-urlencode "per_page=100"
+            )"
+            count="$(jq 'length' <<<"${alerts}")"
+            blocking=$((blocking + count))
+            if (( count > 0 )); then
+              jq -r '.[] | "::error file=\(.most_recent_instance.location.path),line=\(.most_recent_instance.location.start_line)::CodeQL \(.rule.security_severity_level // "security") — \(.rule.description) (#\(.number))"' <<<"${alerts}"
+            fi
+          done
+
+          if (( blocking > 0 )); then
+            echo "::error::Blocking open CodeQL High/Critical alerts: ${blocking}."
+            exit 1
+          fi
+
+          echo "No open High/Critical CodeQL alerts for ${scope_label} at ${GITHUB_SHA}."
