@@ -27,6 +27,7 @@ class FakeCardStoreRequest {
 
 let capturedRequest = null;
 const fakeBridge = {
+  prepareRowCardForServer: E.TessaBridge.prototype.prepareRowCardForServer,
   cards: { CardStoreRequest: FakeCardStoreRequest },
   TypedField: { createGuid: value => value },
   mainCard: { id: 'matrix-race-test' },
@@ -39,7 +40,7 @@ const fakeBridge = {
   validationError: () => null,
 };
 
-const card = { id: 'row-card', version: 7 };
+const card = { id: 'row-card', version: 7, getStorage: () => ({ Sections: {} }) };
 await E.TessaBridge.prototype.storeRowCard.call(fakeBridge, card);
 
 assert(capturedRequest, 'CardStoreRequest was not sent');

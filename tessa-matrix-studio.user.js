@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.49
+// @version      1.9.50
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.49',
+    version: '1.9.50',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -4130,14 +4130,53 @@
       }
     }
 
+    prepareRowCardForServer(card) {
+      // Native restoreActualValues removes these editor-only sections after
+      // moving their values into the actual Values/Roles tables. Studio already
+      // builds actual rows, but CardNew/CardGet still supply empty virtual
+      // sections (Rows:[] / Rows:null). Never send those editing buffers to the
+      // server, and use the same card preparation for validation and Store.
+      const sections = card.getStorage()?.Sections;
+      const names = [
+        'MtxRouteMatrixVirtual',
+        'MtxRouteMatrixRowVersionRolesGroupsVirtual',
+        'MtxRouteMatrixRowVersionValuesGroupsVirtual',
+        'MtxRouteMatrixRowVersionRolesGroupsValuesVirtual',
+        'MtxRouteMatrixRowVersionValuesGroupsValuesVirtual',
+      ].filter(name => sections && Object.prototype.hasOwnProperty.call(sections, name));
+      if (!names.length) return card;
+      for (const name of names) {
+        const section = sections[name];
+        const rows = section?.Rows;
+        const fields = section?.Fields;
+        if (!section || typeof section !== 'object' || Array.isArray(section)
+          || (rows != null && (!Array.isArray(rows) || rows.length))
+          || (fields != null && (typeof fields !== 'object' || Array.isArray(fields)
+            || Object.values(fields).some(value => value != null)))) {
+          throw new Error('В карточке строки есть непустые временные данные редактора. Закройте штатное редактирование строки и повторите проверку.');
+        }
+      }
+      // Only a detached SDK clone may be stripped. Keep the source card,
+      // identity, row states, permissions and typed values intact for receipts
+      // and further local checks; do not implement an ad-hoc storage-to-card cast.
+      const copy = card.clone?.();
+      if (!copy || copy === card || copy.sections === card.sections
+        || typeof copy.sections?.remove !== 'function' || copy.getStorage() === card.getStorage()
+        || copy.getStorage()?.Sections === sections) {
+        throw new Error('Не удалось подготовить отдельную копию карточки строки. Запись не запускалась.');
+      }
+      for (const name of names) copy.sections.remove(name);
+      return copy;
+    }
+
     async validateDuplicate(card, versionId) {
       const req = new this.cards.CardRequest();
       req.requestType = REQUEST.ValidateDuplicate;
-      req.info.card = card.getStorage();
       req.info.versionId = this.TypedField.createGuid(versionId);
       req.info.matrixId = this.TypedField.createGuid(this.mainCard.id);
       req.info.templateID = this.TypedField.createGuid(this.templateId());
       try {
+        req.info.card = this.prepareRowCardForServer(card).getStorage();
         const response = await this.cardService.request(req);
         const error = this.validationError(response, 'Ошибка проверки дубликатов');
         if (error) throw error;
@@ -4160,7 +4199,7 @@
       // Force TESSA to perform an atomic card-version check during Store.
       // This closes the post-preflight lost-update window for UPDATE/ADD.
       req.affectVersion = true;
-      req.card = card;
+      req.card = this.prepareRowCardForServer(card);
       req.info.MatrixID = this.TypedField.createGuid(this.mainCard.id);
       const response = await this.cardService.store(req);
       const error = this.validationError(response, 'Не удалось сохранить строку матрицы');
