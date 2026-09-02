@@ -1,0 +1,6 @@
+# tests/studio-diagnostics.mjs deliberately contains HTML attack strings and
+# assertions that exercise the production escapeHtml() path. CodeQL's
+# js/bad-tag-filter query can misclassify the assertion regexp as a sanitizer.
+# Keep production code fully scanned and exclude only this test fixture.
+paths-ignore:
+  - tests/studio-diagnostics.mjs
