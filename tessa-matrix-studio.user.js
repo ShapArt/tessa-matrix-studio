@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.45
+// @version      1.9.46
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.45',
+    version: '1.9.46',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -7597,9 +7597,10 @@
           <details class="tms-tools"><summary>Дополнительно</summary><div class="tms-tool-list">
             <div><button id="tms-download-fresh">Обновить справочники и скачать</button><p>Если в TESSA появились новые значения.</p></div>
             <div><button id="tms-refresh-excel" disabled>Обновить поля Excel</button><p>Добавить поля изменённого шаблона в выбранный файл. Правки, которые удалось перенести, останутся в новой книге.</p></div>
+            <button id="tms-download-report" hidden disabled>Скачать отчёт</button>
           </div></details>
           <div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
-          <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-download-report" hidden disabled>Скачать отчёт</button><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
+          <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
         </div>
         <div id="tms-summary"></div><div id="tms-plan"></div>
       </div>`;
