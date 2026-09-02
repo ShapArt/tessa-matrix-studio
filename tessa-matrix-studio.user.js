@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.48
+// @version      1.9.49
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.48',
+    version: '1.9.49',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -65,6 +65,7 @@
     abortRequested: false,
     logs: [],
     lastReport: null,
+    lastIntervalDiagnostics: null,
     dictionaryCatalog: null,
     progress: { percent: 0, label: 'Готово', detail: '' },
   };
@@ -5286,6 +5287,7 @@
     state.plan = null;
     state.snapshot = null;
     state.bridge = null;
+    state.lastIntervalDiagnostics = null;
     state.review = createPlanReviewState();
     state.previewView = createPreviewViewState();
     return true;
@@ -5955,6 +5957,8 @@
     APP.previewView = createPreviewViewState();
     APP.capabilityActions = [];
     APP.reviewedApplyEnabled = false;
+    APP.lastIntervalDiagnostics = null;
+    updateIntervalDiagnosticControlState();
     for (const id of ['#tms-summary', '#tms-plan']) {
       const element = document.querySelector(id);
       if (element) element.innerHTML = '';
@@ -6751,8 +6755,8 @@
     return result;
   }
 
-  function downloadJson(value, name) {
-    const blob = new Blob([JSON.stringify(value, jsonReplacer, 2)], { type: 'application/json;charset=utf-8' });
+  function downloadJson(value, name, replacer = jsonReplacer) {
+    const blob = new Blob([JSON.stringify(value, replacer, 2)], { type: 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = name; a.click();
@@ -6775,6 +6779,168 @@
     if (!APP.lastReport?.value) return false;
     downloadJson(APP.lastReport.value, APP.lastReport.name || `TESSA_Matrix_Report_${Date.now()}.json`);
     return true;
+  }
+
+  function updateIntervalDiagnosticControlState() {
+    const available = Boolean(APP.plan && APP.workbook && APP.snapshot
+      && APP.plan.skippedRows?.some(row => row.code === 'duplicate-interval-extractor'));
+    const container = document.querySelector?.('#tms-interval-tool');
+    if (container) container.hidden = !available;
+    const button = document.querySelector?.('#tms-interval-diagnostics');
+    if (button) {
+      setControlDisabled(button, !available);
+      button.textContent = APP.lastIntervalDiagnostics ? 'Скачать диагностику' : 'Диагностика интервалов';
+    }
+  }
+
+  // Explicit, bounded diagnosis of the unresolved interval error. This collector
+  // does not use preflightPlan/applyPlan and never returns an executable plan.
+  // CardNew prepares an in-memory card; the only business request is the same
+  // duplicate check. Store/Delete and automatic retries are deliberately absent.
+  async function collectIntervalDiagnostics({ bridge, workbook, structure, snapshot, failedRows, assertContext }) {
+    if (typeof assertContext !== 'function') throw new Error('Не задана проверка контекста диагностики.');
+    const report = {
+      format: 'TESSA_INTERVAL_DIAGNOSTICS_V1', studioVersion: APP.version,
+      startedAt: nowIso(), matrixId: snapshot.matrixId, templateId: structure.templateId,
+      writesAttempted: 0, containsBusinessData: true, samples: [],
+      note: 'Сравнение запросов, не применение. saved-original — CardGet без перестройки Studio; это не запуск штатного редактора.',
+    };
+    // Serialize storage snapshots, never service objects, browser storage or
+    // HTTP headers. Bound each sample so an unusual server response cannot
+    // produce an unlimited diagnostic attachment. Nothing is sent elsewhere.
+    const copyStorage = value => {
+      const text = JSON.stringify(value);
+      if (!text || new TextEncoder().encode(text).byteLength > 2_000_000) throw new Error('Размер данных диагностики превышает 2 МБ на образец.');
+      return JSON.parse(text);
+    };
+    report.structureFromPreview = copyStorage(structure);
+    const failed = new Set((failedRows || []).filter(row => row.code === 'duplicate-interval-extractor').map(row => Number(row.excelRow)));
+    const plan = buildPlan(workbook, structure, snapshot);
+    const candidates = plan.actions.filter(action => action.type === 'add' && failed.has(Number(action.excelRow.excelRow))).slice(0, 2);
+    report.candidateRows = candidates.map(action => action.excelRow.excelRow);
+    if (!candidates.length) throw new Error('Нет отклонённых добавлений для диагностики. Выполните новую проверку Excel.');
+
+    const probe = async (kind, card, versionId, excelRow = null) => {
+      await assertContext();
+      const sample = { kind, excelRow, versionId, requestSent: false };
+      report.samples.push(sample);
+      const reader = Object.create(bridge);
+      // A local facade captures the real validateDuplicate contract without
+      // replacing the shared CardService or changing normal Apply behaviour.
+      reader.cardService = { request: async req => {
+        await assertContext();
+        if (canonicalValue(req.requestType) !== canonicalValue(REQUEST.ValidateDuplicate)) {
+          throw new Error('Диагностика допускает только запрос проверки дубликатов.');
+        }
+        sample.request = copyStorage(req.getStorage?.() || { requestType: req.requestType, info: req.info });
+        sample.requestSent = true;
+        const response = await bridge.cardService.request(req);
+        try {
+          sample.response = copyStorage(response.getStorage?.() || {
+            info: response.tryGetInfo?.() || response.info || {},
+            validation: { isSuccessful: response.validationResult?.isSuccessful },
+          });
+        } catch (error) { sample.captureError = String(error.message || error).slice(0, 1000); }
+        return response;
+      } };
+      try {
+        await reader.validateDuplicate(card, versionId);
+        sample.outcome = 'allowed';
+      } catch (error) {
+        sample.outcome = sample.requestSent ? 'rejected' : 'not-sent';
+        sample.code = error.code || 'diagnostic-check-failed';
+        sample.message = String(error.message || error).slice(0, 20000);
+      }
+      await assertContext();
+    };
+
+    // Pick an existing interval row close to the first candidate. Similarity is
+    // used only for this read-only control sample, never for identity or Apply.
+    const intervalIds = structure.conditions.filter(condition => ['Int', 'Decimal'].includes(operandKind(condition))).map(condition => condition.criterionRowId);
+    const controls = snapshot.rows.filter(row => row.rowCardId && intervalIds.some(id =>
+      row.values?.[id]?.some(value => value.to !== null && value.to !== undefined)));
+    const desired = candidates[0].excelRow;
+    const score = row => Object.keys(desired.flat || {}).reduce((n, key) => n + Number(arraysEqual(row.flat?.[key] || [], desired.flat[key] || [])), 0);
+    let control = null, bestScore = -1;
+    for (const row of controls) {
+      const candidateScore = score(row);
+      if (candidateScore > bestScore) { control = row; bestScore = candidateScore; }
+    }
+    try {
+      await assertContext();
+      if (control) {
+        const original = await bridge.getCard(control.rowCardId);
+        await assertContext();
+        const current = bridge.readMatrixRowFromCard(original, control, structure);
+        await probe('saved-original', original, control.versionId);
+        if (typeof original.clone === 'function') {
+          const columns = buildColumnMap(workbook, structure).columns;
+          const ids = {};
+          for (const column of columns.values()) {
+            const values = column.kind === 'function' ? current.roles[column.id] : current.values[column.id];
+            ids[column.key] = (values || []).map(value => column.kind === 'function'
+              ? `${value.id}|${value.roleTypeId}` : value.id == null ? '' : String(value.id));
+          }
+          const rebuilt = original.clone();
+          bridge.rebuildRowCard(rebuilt, control.versionId, { excelRow: 0, columns, flat: clonePlain(current.flat), ids }, structure, snapshot);
+          const after = bridge.readMatrixRowFromCard(rebuilt, control, structure);
+          if (reconciliationSemanticKey(current, structure) !== reconciliationSemanticKey(after, structure)) {
+            report.samples.push({ kind: 'saved-rebuilt', outcome: 'not-sent', code: 'rebuilt-control-differs' });
+          } else await probe('saved-rebuilt', rebuilt, control.versionId);
+        } else report.samples.push({ kind: 'saved-rebuilt', outcome: 'not-sent', code: 'card-clone-unavailable' });
+      } else report.samples.push({ kind: 'saved-original', outcome: 'not-sent', code: 'saved-interval-row-unavailable' });
+      for (const action of candidates) {
+        await assertContext();
+        const created = await bridge.createRowCard(structure.templateId);
+        await assertContext();
+        bridge.rebuildRowCard(created.card, created.versionId, action.excelRow, structure, snapshot);
+        await probe('proposed-add', created.card, created.versionId, action.excelRow.excelRow);
+      }
+    } catch (error) {
+      report.interrupted = true;
+      report.interruptionReason = String(error.message || error).slice(0, 1000);
+    }
+    report.finishedAt = nowIso();
+    return report;
+  }
+
+  async function runIntervalDiagnostics() {
+    if (APP.busy || !APP.plan || !APP.workbook || !APP.snapshot || !APP.structure) return;
+    const { plan, workbook, snapshot, structure } = APP;
+    if (!plan.skippedRows?.some(row => row.code === 'duplicate-interval-extractor')) return;
+    APP.abortRequested = false;
+    setBusy(true);
+    try {
+      const assertContext = async () => {
+        if (APP.abortRequested) throw new Error('Диагностика остановлена пользователем.');
+        if (APP.plan !== plan || APP.workbook !== workbook) throw new Error('Выбранный файл или проверка изменились.');
+        const current = await TessaBridge.create();
+        if (canonicalValue(current.mainCard.id) !== canonicalValue(plan.matrixId)
+          || canonicalValue(current.templateId()) !== canonicalValue(structure.templateId)) {
+          throw new Error('Открытая матрица или шаблон изменились. Диагностика остановлена.');
+        }
+      };
+      await assertContext();
+      if (APP.lastIntervalDiagnostics) {
+        // Unlike the public support summary, this opt-in diagnostic intentionally
+        // retains request.info.card. Keep the normal report's replacer unchanged.
+        downloadJson(APP.lastIntervalDiagnostics.value, APP.lastIntervalDiagnostics.name, null);
+        return;
+      }
+      const bridge = await TessaBridge.create();
+      setProgress(20, 'Диагностика интервалов', 'Сравниваю запросы без сохранения строк');
+      const result = await collectIntervalDiagnostics({ bridge, workbook, structure, snapshot, failedRows: plan.skippedRows, assertContext });
+      const name = `TESSA_Interval_Diagnostics_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      if (!result.interrupted) APP.lastIntervalDiagnostics = { value: result, name };
+      downloadJson(result, name, null);
+      setProgress(100, result.interrupted ? 'Диагностика прервана' : 'Диагностика готова',
+        result.interrupted ? result.interruptionReason : 'Файл скачан. Запись в TESSA не выполнялась.');
+    } catch (error) {
+      setProgress(100, 'Диагностика не выполнена', friendlyErrorMessage(error));
+    } finally {
+      setBusy(false);
+      updateIntervalDiagnosticControlState();
+    }
   }
 
   function reconciliationSummary(result) {
@@ -6935,6 +7101,7 @@
     const summary = document.querySelector('#tms-summary');
     const table = document.querySelector('#tms-plan');
     if (!summary || !table) return;
+    updateIntervalDiagnosticControlState();
     const applySection = document.querySelector('#tms-apply-section');
     if (applySection) applySection.hidden = false;
     const reviewed = buildReviewedPlan(plan, APP.review);
@@ -7216,6 +7383,7 @@
     });
     if (value) setProgress(Math.max(3, APP.progress?.percent || 0), APP.progress?.label === 'Готово' ? 'Подготавливаю операцию' : APP.progress?.label, APP.progress?.detail || '');
     if (!value) {
+      updateIntervalDiagnosticControlState();
       const stop = document.querySelector('#tms-stop');
       if (stop) stop.disabled = true;
       const apply = document.querySelector('#tms-apply');
@@ -7658,6 +7826,7 @@
             <div><button id="tms-download-fresh">Обновить справочники и скачать</button><p>Если в TESSA появились новые значения.</p></div>
             <div><button id="tms-refresh-excel" disabled>Обновить поля Excel</button><p>Добавить поля изменённого шаблона в выбранный файл. Правки, которые удалось перенести, останутся в новой книге.</p></div>
             <button id="tms-download-report" hidden disabled>Скачать отчёт</button>
+            <div id="tms-interval-tool" hidden><button id="tms-interval-diagnostics" disabled>Диагностика интервалов</button><p>Проверка без записи. Файл содержит запросы, ответы TESSA и значения проверяемых строк.</p></div>
           </div></details>
           <div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
           <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
@@ -7772,6 +7941,7 @@
       finally { setBusy(false); }
     });
     panel.querySelector('#tms-download-report').addEventListener('click', () => { downloadLastReport(); });
+    panel.querySelector('#tms-interval-diagnostics').addEventListener('click', runIntervalDiagnostics);
     panel.querySelector('#tms-reconcile').addEventListener('click', async () => {
       if (APP.busy || !APP.lastMutationReceipts?.receipts?.length) return;
       setBusy(true);
@@ -7873,6 +8043,7 @@
   }
 
   window.__TESSA_MATRIX_SYNC_EXPORTS__ = {
+    collectIntervalDiagnostics,
     createRuntimeMonitor, pickerColumns, pickerEntryKey, searchPickerEntries, pickerSelectionText,
     probeRuntimeEnvironment, inspectNativeViewCapabilitiesReadOnly, inspectMatrixCapabilitiesReadOnly,
     evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,
