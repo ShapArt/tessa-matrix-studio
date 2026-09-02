@@ -40,11 +40,13 @@ const review = E.createPlanReviewState();
 
 // Page 3 must expose actions 81..120, not silently cap Preview at the first 40.
 const page3 = E.selectPreviewItems(plan, review, E.createPreviewViewState({ page: 3, pageSize: 40 }));
-assert(page3.total === 120, `large preview lost actions: total=${page3.total}`);
-assert(page3.page === 3 && page3.pageCount === 3, `page metadata mismatch: ${JSON.stringify(page3)}`);
+assert(page3.total === 122, `large preview lost actions or skipped rows: total=${page3.total}`);
+assert(page3.page === 3 && page3.pageCount === 4, `page metadata mismatch: ${JSON.stringify(page3)}`);
 assert(page3.start === 81 && page3.end === 120, `page range mismatch: ${page3.start}-${page3.end}`);
 assert(page3.items.length === 40, `expected 40 actions on page 3, got ${page3.items.length}`);
 assert(page3.items.some(item => item.action?.excelRow?.excelRow === 101), 'Excel row 101 is not reviewable from page 3');
+const page4 = E.selectPreviewItems(plan, review, { page: 4, pageSize: 40 });
+assert(page4.items.length === 2 && page4.items.every(item => item.kind === 'skip'), 'All must keep the final skipped rows reachable');
 
 // Type filtering must operate over the full plan before paging.
 const deletes = E.selectPreviewItems(plan, review, E.createPreviewViewState({ filter: 'delete', pageSize: 40 }));

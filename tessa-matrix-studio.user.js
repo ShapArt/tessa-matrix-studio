@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.47
+// @version      1.9.48
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.47',
+    version: '1.9.48',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -5323,6 +5323,12 @@
     return `<details open class="tms-skipped-box"><summary><b>Не применяются отдельные поля: ${fields.length}</b></summary><div>Значения этих полей в TESSA сохраняются. Исправьте ячейки в Excel и выполните новую проверку.</div>${fields.slice(0, 20).map(field => `<div class="tms-skip-line">Excel ${escapeHtml(field.excelRow)} · ${escapeHtml(field.label)}: ${escapeHtml(field.reason)}</div>`).join('')}${fields.length > 20 ? '<div>Остальные поля указаны в строках Preview и отчёте.</div>' : ''}</details>`;
   }
 
+  function rowFailureReason(item) {
+    return item?.code === 'duplicate-interval-extractor'
+      ? 'TESSA не смогла сравнить интервалы при проверке дубликатов; сохранение не запускалось.'
+      : String(item?.reason || 'Причина не указана');
+  }
+
   function rowFailuresHtml(skips = [], reportAvailable = false) {
     // Input errors already have a separate section. Runtime failures must remain
     // visible even when they occurred during Preview or that Preview is consumed.
@@ -5330,9 +5336,7 @@
     if (!failures.length) return '';
     const lines = failures.slice(0, 20).map(item => {
       const stage = item.source.startsWith('preflight-') ? 'До применения' : 'При применении';
-      const reason = item.code === 'duplicate-interval-extractor'
-        ? 'TESSA не смогла сравнить интервалы при проверке дубликатов; сохранение не запускалось.'
-        : String(item.reason || 'Причина не указана').slice(0, 1000);
+      const reason = rowFailureReason(item).slice(0, 1000);
       return `<div class="tms-skip-line"><b>${item.excelRow ? `Excel ${escapeHtml(item.excelRow)}` : 'Строка'} · ${stage}</b><br>${escapeHtml(reason)}</div>`;
     });
     const hint = reportAvailable ? 'Подробности: «Дополнительно → Скачать отчёт».' : 'Подробности каждой строки — в фильтре «Пропустить».';
@@ -5938,7 +5942,7 @@
     const skipped = previewPlan.counts?.skip || 0;
     const detail = visible
       ? `Корректных изменений: ${visible}${skipped ? ` · пропустить строк: ${skipped}` : ''}${previewPlan.skippedFields?.length ? ` · не применяются поля: ${previewPlan.skippedFields.length}` : ''}`
-      : (skipped ? `Корректных изменений нет · пропустить: ${skipped}` : 'Изменений нет');
+      : (skipped ? `Нет изменений для применения · пропущено строк: ${skipped}` : 'Изменений нет');
     setProgress(100, 'Проверка завершена', detail);
     return previewPlan;
   }
@@ -6888,19 +6892,21 @@
     void review;
     const state = createPreviewViewState(viewState || {});
     const query = canonicalValue(state.query);
-    let items;
-    if (state.filter === 'skip') {
-      items = (plan?.skippedRows || []).map(skip => ({ kind: 'skip', skip }));
-      if (query) {
-        items = items.filter(item => canonicalValue(`${item.skip?.excelRow || ''} ${item.skip?.reason || ''}`).includes(query));
-      }
-    } else {
+    let items = [];
+    if (state.filter !== 'skip') {
       items = (plan?.actions || [])
         .filter(action => action?.type && action.type !== 'noop')
         .filter(action => state.filter === 'all' || action.type === state.filter)
         .map(action => ({ kind: 'action', action }));
-      if (query) items = items.filter(item => previewActionSearchText(item.action).includes(query));
     }
+    // "All" includes rejected rows, too. Keep actions first to preserve review
+    // ordering; these display-only items never enter the executable Apply plan.
+    if (state.filter === 'all' || state.filter === 'skip') {
+      items = items.concat((plan?.skippedRows || []).map(skip => ({ kind: 'skip', skip })));
+    }
+    if (query) items = items.filter(item => (item.kind === 'action'
+      ? previewActionSearchText(item.action)
+      : canonicalValue(`${item.skip?.excelRow || ''} ${rowFailureReason(item.skip)} ${item.skip?.reason || ''}`)).includes(query));
 
     const total = items.length;
     const pageCount = Math.max(1, Math.ceil(total / state.pageSize));
@@ -6942,6 +6948,7 @@
     const excludedRowCount = APP.review?.excludedRows?.size || 0;
     const excludedChangeCount = [...(APP.review?.excludedChanges?.values?.() || [])].reduce((sum, values) => sum + (values?.size || 0), 0);
     const hasReviewExclusions = excludedRowCount > 0 || excludedChangeCount > 0;
+    const hasSourceChanges = (plan.actions || []).some(action => action.type !== 'noop');
     summary.innerHTML = `
       <div class="tms-counters">
         <span class="tms-count tms-update">изменить <b>${c.update}</b></span>
@@ -6951,11 +6958,13 @@
         <span class="tms-count tms-skip">пропустить <b>${c.skip || 0}</b></span>
       </div>
       ${hasReviewExclusions ? `<div class="tms-review-note"><b>Фильтр применения включён.</b> Отключённые здесь изменения не попадут в TESSA; исходный Excel не изменяется.</div>` : ''}
-      ${rowFailuresHtml(skipped)}
+      ${skipped.length ? `<div class="tms-review-note"><b>${applyState.count === 0
+        ? 'Нет изменений для применения.'
+        : applyState.blocked ? 'Применение заблокировано.' : `Доступно для применения: ${applyState.count}.`}</b> Пропущено строк: ${skipped.length}. Причины указаны в списке ниже.</div>` : ''}
+      ${hasSourceChanges ? rowFailuresHtml(skipped) : ''}
       ${skippedFieldsHtml(reviewed.skippedFields)}
       ${reviewedSafety.blocked ? `<div class="tms-fatal"><b>Этот набор изменений нельзя безопасно применить</b><br>${(reviewedSafety.blockedReasons || []).map(escapeHtml).join('<br>')}</div>` : ''}
       ${applyState.batchBlocked ? `<div class="tms-fatal"><b>Слишком много изменений за один раз</b><br>Сейчас: ${applyState.count} · максимум: 2000. Раскройте «Выбрать часть изменений» и уменьшите число операций.</div>` : ''}
-      ${skipped.length ? `<details class="tms-skipped-box"><summary><b>Пропущено строк: ${skipped.length}</b> · ${applyState.blocked ? 'корректные строки проверены, но Apply сейчас заблокирован' : 'корректные изменения можно применить'}</summary><div>${skipped.slice(0, 20).map(item => `<div class="tms-skip-line">${item.excelRow ? `Excel ${item.excelRow}: ` : ''}${escapeHtml(item.reason)}</div>`).join('')}${skipped.length > 20 ? `<div class="tms-skip-more">Ещё ${skipped.length - 20}…</div>` : ''}</div></details>` : ''}
       ${warnings.length ? `<details class="tms-warning"><summary>Нужно проверить</summary><div>${warnings.map(item => `<div>${escapeHtml(item)}</div>`).join('')}</div></details>` : ''}
     `;
 
@@ -6977,7 +6986,7 @@
         ${filterButton('all', 'Все')}${filterButton('update', 'Изменить')}${filterButton('add', 'Добавить')}${filterButton('delete', 'Удалить')}${filterButton('skip', 'Пропустить')}
       </div>
       <input id="tms-preview-query" aria-label="Поиск изменений" class="tms-preview-query" type="search" placeholder="Найти строку или значение" value="${escapeHtml(selection.query)}">
-      <details class="tms-package-details" ${hasReviewExclusions || applyState.batchBlocked ? 'open' : ''}><summary>Выбрать часть изменений${hasReviewExclusions ? ' · выбор изменён' : ''}</summary><div class="tms-preview-package">
+      ${hasSourceChanges || hasReviewExclusions ? `<details class="tms-package-details" ${hasReviewExclusions || applyState.batchBlocked ? 'open' : ''}><summary>Выбрать часть изменений${hasReviewExclusions ? ' · выбор изменён' : ''}</summary><div class="tms-preview-package">
         <strong>Применить первые</strong>
         <select id="tms-review-package-limit" aria-label="Число операций для применения">
           <option value="1">1</option><option value="10">10</option><option value="100">100</option><option value="500">500</option><option value="2000">2000</option>
@@ -6991,7 +7000,7 @@
             : selection.filter === 'all'
               ? 'Из всех операций'
               : `Только: ${selection.filter === 'update' ? 'изменить' : selection.filter === 'add' ? 'добавить' : 'удалить'}`}</span>
-      </div></details>
+      </div></details>` : ''}
       <div class="tms-preview-pager" ${selection.pageCount <= 1 ? 'hidden' : ''}>
         <button type="button" data-preview-page="${Math.max(1, selection.page - 1)}" ${selection.page <= 1 ? 'disabled' : ''}>←</button>
         <span>Показано ${selection.start}–${selection.end} из ${selection.total} · стр. ${selection.page}/${selection.pageCount}</span>
@@ -7054,7 +7063,13 @@
     selection.items.filter(item => item.kind === 'skip').forEach(({ skip }) => {
       const item = document.createElement('details');
       item.className = 'tms-action tms-action-skip';
-      item.innerHTML = `<summary><b>ПРОПУСТИТЬ</b> — ${skip?.excelRow ? `Excel ${escapeHtml(skip.excelRow)}` : 'строка без номера'}</summary><div class="tms-action-body">${escapeHtml(skip?.reason || 'Причина не указана')}</div>`;
+      // Show short rejected-only plans immediately; retain full platform text
+      // behind an explicit disclosure rather than repeating it in the summary.
+      item.open = !hasSourceChanges && selection.total <= 20;
+      const reason = rowFailureReason(skip);
+      const technical = skip?.reason && skip.reason !== reason
+        ? `<details><summary>Технические подробности</summary><div>${escapeHtml(skip.reason)}</div></details>` : '';
+      item.innerHTML = `<summary><b>Пропущено</b> — ${skip?.excelRow ? `Excel ${escapeHtml(skip.excelRow)}` : 'строка без номера'}</summary><div class="tms-action-body">${escapeHtml(reason)}${technical}</div>`;
       table.appendChild(item);
     });
 
