@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.43
+// @version      1.9.44
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.43',
+    version: '1.9.44',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -2143,7 +2143,7 @@
     row(17, 24, [[0, 'Как заполнять значения', 11]]);
     row(18, 68, [
       [0, 'ПОИСК ПО СПРАВОЧНИКАМ\nМожно вводить уникальную часть названия прямо в ячейке. Если найден ровно один вариант, Studio сопоставит его с точной записью TESSA. Признаки: «Да» / «Нет». Число или диапазон: 0, 15, 4..15. Сохраняйте текстовый формат ячеек.', 12],
-      [4, 'НЕСКОЛЬКО ЗНАЧЕНИЙ\nВ Studio откройте «Дополнительно → Собрать значения для ячейки»: выберите поле, отметьте варианты, скопируйте и вставьте в Excel через F2 → Ctrl+V. Вручную разделяйте значения Alt+Enter. Обычный список заменяет значение.', 12],
+      [4, 'НЕСКОЛЬКО ЗНАЧЕНИЙ\nРядом со «Скачать Excel» нажмите «Собрать значения»: выберите поле, отметьте варианты, скопируйте и вставьте в Excel через F2 → Ctrl+V. Вручную разделяйте значения Alt+Enter. Обычный список заменяет значение.', 12],
     ]);
     row(23, 24, [[0, 'Дополнительные действия — когда нужны эти кнопки', 11]]);
     row(24, 70, [
@@ -7332,6 +7332,7 @@
     APP.picker = null;
     const host = document.querySelector('#tms-value-picker');
     if (host) { host.hidden = true; host.innerHTML = ''; }
+    document.querySelector('#tms-open-picker')?.setAttribute('aria-expanded', 'false');
   }
 
   function renderPickerResults() {
@@ -7367,6 +7368,7 @@
     APP.picker = { columns, columnIndex: 0, selected: new Map(), visibleItems: [], searchTimer: null };
     const host = document.querySelector('#tms-value-picker');
     host.hidden = false;
+    document.querySelector('#tms-open-picker')?.setAttribute('aria-expanded', 'true');
     host.innerHTML = `<div class="tms-picker-head"><b>Несколько значений в ячейке</b><button type="button" id="tms-picker-close" aria-label="Закрыть выбор значений">×</button></div>
       <label for="tms-picker-column">Поле Excel</label><select id="tms-picker-column">${columns.map((c, i) => `<option value="${i}">${escapeHtml(c.label)}</option>`).join('')}</select>
       <input id="tms-picker-query" type="search" aria-label="Поиск по справочнику" placeholder="Найти значение" maxlength="200">
@@ -7436,6 +7438,8 @@
       #tms-panel .tms-danger{color:var(--tms-red-dark)}
       #tms-panel .tms-close,#tms-panel .tms-help{width:32px;padding:2px;border-color:transparent;font-size:18px}
       #tms-panel .tms-ghost{background:var(--tms-bg)}
+      #tms-panel button.tms-subtle{border-color:transparent;background:transparent;color:var(--tms-muted);font-weight:500}
+      #tms-panel button.tms-subtle:hover:enabled{background:var(--tms-soft);color:var(--tms-ink);border-color:var(--tms-line)}
       #tms-panel input,#tms-panel select,#tms-panel textarea{font-family:inherit;font-size:13px;line-height:1.5;color:var(--tms-ink);border:1px solid var(--tms-line);border-radius:var(--tms-radius);background:var(--tms-bg);padding:7px 9px;min-height:32px;margin:0;max-width:100%}
       #tms-panel input[type=checkbox]{min-height:16px;width:16px;height:16px;margin:2px 0 0;accent-color:var(--tms-red);flex:none}
       #tms-panel :focus-visible,#tms-launch:focus-visible{outline:2px solid #234e86;outline-offset:2px}
@@ -7578,17 +7582,16 @@
           <div class="tms-operation-status" aria-live="polite" aria-atomic="true"><div class="tms-status-line" hidden><span id="tms-progress-label">Готово</span><span id="tms-progress-percent" class="tms-progress-percent">0%</span></div><div class="tms-progress-track" hidden><div id="tms-progress-fill" class="tms-progress-fill"></div></div><div id="tms-progress-detail" class="tms-progress-detail"></div></div>
         </div>
         <div class="tms-controls">
-          <div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button></div></div>
+          <div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button><button type="button" id="tms-open-picker" class="tms-subtle" aria-controls="tms-value-picker" aria-expanded="false" title="Несколько значений для одной ячейки">Собрать значения</button></div><section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section></div>
           <div class="tms-step"><div class="tms-step-label">2 · Изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
           <details class="tms-tools"><summary>Дополнительно</summary><div class="tms-tool-list">
-            <div><button type="button" id="tms-open-picker">Собрать значения для ячейки</button><p>Отметьте несколько вариантов и скопируйте в Excel.</p></div>
             <div><button id="tms-download-fresh">Обновить справочники и скачать</button><p>Если в TESSA появились новые значения.</p></div>
             <div><button id="tms-refresh-excel" disabled>Обновить поля Excel</button><p>Добавить поля изменённого шаблона в выбранный файл. Правки, которые удалось перенести, останутся в новой книге.</p></div>
           </div></details>
           <div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
           <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-download-report" hidden disabled>Скачать отчёт</button><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
         </div>
-        <section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section><div id="tms-summary"></div><div id="tms-plan"></div>
+        <div id="tms-summary"></div><div id="tms-plan"></div>
       </div>`;
     document.body.appendChild(panel);
 
