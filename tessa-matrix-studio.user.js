@@ -679,6 +679,13 @@
     return fallback?.value || '';
   }
 
+  function knownRoleTypeId(value) {
+    const text = normalizeSpace(value);
+    if (!text) return null;
+    const roleTypeId = Number(text);
+    return Number.isInteger(roleTypeId) && roleTypeId >= 0 && roleTypeId <= 7 ? roleTypeId : null;
+  }
+
   function definitionKey(kind, id) {
     return `${kind}:${canonicalValue(id)}`;
   }
@@ -1741,7 +1748,7 @@
 
   function dictionaryStructureSignature(structure) {
     const compact = {
-      projectionVersion: 2,
+      projectionVersion: 3,
       templateId: canonicalValue(structure?.templateId),
       conditions: (structure?.conditions || []).map(item => [
         canonicalValue(item.criterionRowId), canonicalValue(item.operandTypeId),
@@ -3980,8 +3987,44 @@
 
       const [criterionResults, roleResult] = await Promise.all([Promise.all(criterionJobs), roleJob]);
       for (const item of criterionResults) catalog.catalogs[item.catalogId] = item.catalog;
-      catalog.catalogs[roleResult.roleCatalogId] = { id: roleResult.roleCatalogId, label: 'Роли и пользователи TESSA', sourceView: roleResult.roleAlias || 'Текущая матрица', entries: roleResult.roleEntries };
-      structure.functions.forEach(fn => { catalog.columnCatalogIds[definitionKey('function', fn.id)] = roleResult.roleCatalogId; });
+
+      // FunctionType.ID uses the same numeric role-type domain as RoleTypeID.
+      // MtxRoles contains multiple role classes, so exposing one shared catalog to every
+      // function lets departments leak into Personal pickers (and vice versa). Partition
+      // only when the server actually returned typed role entries. Unknown/custom function
+      // types keep the old conservative shared catalog instead of being guessed.
+      const sharedRoleCatalog = {
+        id: roleResult.roleCatalogId,
+        label: 'Роли и пользователи TESSA',
+        sourceView: roleResult.roleAlias || 'Текущая матрица',
+        entries: roleResult.roleEntries,
+      };
+      const hasTypedRoleEntries = roleResult.roleEntries.some(entry => knownRoleTypeId(entry.roleTypeId) !== null);
+      const typedRoleCatalogIds = new Map();
+      const ensureSharedRoleCatalog = () => {
+        if (!catalog.catalogs[roleResult.roleCatalogId]) catalog.catalogs[roleResult.roleCatalogId] = sharedRoleCatalog;
+        return roleResult.roleCatalogId;
+      };
+
+      for (const fn of structure.functions) {
+        const functionRoleTypeId = hasTypedRoleEntries ? knownRoleTypeId(fn.typeId) : null;
+        if (functionRoleTypeId === null) {
+          catalog.columnCatalogIds[definitionKey('function', fn.id)] = ensureSharedRoleCatalog();
+          continue;
+        }
+        let typedCatalogId = typedRoleCatalogIds.get(functionRoleTypeId);
+        if (!typedCatalogId) {
+          typedCatalogId = `${roleResult.roleCatalogId}:type:${functionRoleTypeId}`;
+          typedRoleCatalogIds.set(functionRoleTypeId, typedCatalogId);
+          catalog.catalogs[typedCatalogId] = {
+            ...sharedRoleCatalog,
+            id: typedCatalogId,
+            label: `Роли и пользователи TESSA · тип ${functionRoleTypeId}`,
+            entries: roleResult.roleEntries.filter(entry => knownRoleTypeId(entry.roleTypeId) === functionRoleTypeId),
+          };
+        }
+        catalog.columnCatalogIds[definitionKey('function', fn.id)] = typedCatalogId;
+      }
 
       const normalized = mergeSnapshotIntoDictionaryCatalog(catalog, structure, snapshot);
       normalized.stats.cache = { hit: false, key: cacheKey, savedAt: options.transient ? null : Date.now(), ageMs: 0, ...(options.transient ? { transient: true } : {}) };
