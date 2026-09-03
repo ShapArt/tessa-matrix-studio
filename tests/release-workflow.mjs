@@ -15,6 +15,14 @@ assert(workflow.includes('workflow_dispatch:'), 'manual release fallback must st
 assert(workflow.includes('github.event.workflow_run.head_sha'), 'release must checkout the exact verified commit');
 assert(workflow.includes('tessa-matrix-studio.user.js'), 'release change gate must watch the userscript');
 
+// Release verification executes the same npm suite as Quality & Security. It must install the
+// lockfile-pinned devDependencies first, otherwise tests that require jsdom fail only at publish time.
+const installDependenciesIndex = workflow.indexOf('npm ci --ignore-scripts --no-audit --no-fund');
+const verifyStepIndex = workflow.indexOf('- name: Verify');
+assert(installDependenciesIndex >= 0, 'release must install test dependencies before npm test');
+assert(verifyStepIndex >= 0 && installDependenciesIndex < verifyStepIndex,
+  'release dependency installation must happen before the Verify step');
+
 // A release can land through a multi-commit/fast-forward integration. Looking only at HEAD^..HEAD
 // misses the userscript when the tip commit is docs-only. Compare the latest published release tag
 // with the exact verified HEAD instead.
