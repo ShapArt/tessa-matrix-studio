@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.10.0
+// @version      1.10.1
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.10.0',
+    version: '1.10.1',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -1416,9 +1416,9 @@
         entries: [],
       };
       catalogs[catalogId].entries.push({
-        selector: normalizeSpace(row['Выбор в Excel']),
-        previousSelectors: (() => { try { const values = JSON.parse(row['Прежние названия'] || '[]'); return Array.isArray(values) ? values.filter(v => typeof v === 'string').slice(0, 20) : []; } catch (_) { return []; } })(),
-        display: normalizeSpace(row['Отображение']),
+        selector: String(row['Выбор в Excel'] ?? '').trim(),
+        previousSelectors: (() => { try { const values = JSON.parse(row['Прежние названия'] || '[]'); return Array.isArray(values) ? values.filter(v => typeof v === 'string') : []; } catch (_) { return []; } })(),
+        display: String(row['Отображение'] ?? '').trim(),
         id: normalizeSpace(row['ID']),
         roleTypeId: normalizeSpace(row['RoleTypeID']),
         source: normalizeSpace(row['Источник']),
@@ -1667,7 +1667,7 @@
         continue;
       }
       const id = normalizeSpace(source.id);
-      let display = normalizeSpace(source.display);
+      const display = String(source.display ?? '').trim();
       const roleTypeId = source.roleTypeId === null || source.roleTypeId === undefined ? '' : normalizeSpace(source.roleTypeId);
       if (!display || !id) continue;
       const identity = `${canonicalValue(id)}|${canonicalValue(roleTypeId)}`;
@@ -1683,10 +1683,19 @@
       groups.get(key).push(item);
     }
     for (const group of groups.values()) {
+      // Details help distinguish namesakes; they are not part of an ordinary
+      // matrix caption. Keep legacy selectors as ID-bound aliases for old Excel.
+      if (group.length === 1) {
+        const item = group[0];
+        if (item.selector && item.selector !== item.display) item.previousSelectors = [...new Set([item.selector, ...(item.previousSelectors || [])])];
+        item.selector = item.display;
+        item.status = item.status || 'Доступно';
+        continue;
+      }
       const previous = new Map();
       for (const item of group) {
         const selector = normalizeSpace(item.selector);
-        if (selector && canonicalValue(selector).startsWith(canonicalValue(item.display))) previous.set(canonicalValue(selector), (previous.get(canonicalValue(selector)) || 0) + 1);
+        if (selector && canonicalValue(selector) !== canonicalValue(item.display) && canonicalValue(selector).startsWith(canonicalValue(item.display))) previous.set(canonicalValue(selector), (previous.get(canonicalValue(selector)) || 0) + 1);
       }
       const preserved = new Set(group.filter(item => previous.get(canonicalValue(item.selector)) === 1).map(item => canonicalValue(item.selector)));
       const used = new Set(preserved);
@@ -1815,31 +1824,43 @@
      * Не клонируем весь каталог (десятки тысяч записей) на каждый Preview/Export.
      * Базовый каталог уже нормализован и рассматривается как immutable. Сначала
      * проверяем текущие значения матрицы через O(1)-индекс; копируем только тот
-     * конкретный каталог, в котором действительно отсутствует текущее значение.
+     * конкретный каталог, где отсутствует значение или отличается его подпись.
      */
     const base = normalizeDictionaryCatalog(sourceCatalog || { catalogs: {}, columnCatalogIds: {}, stats: { errors: [] } });
-    const extrasByCatalog = new Map();
-    const pendingIdentity = new Map();
+    const changesByCatalog = new Map();
+    const captionsByCatalog = new Map();
 
-    const appendIfMissing = (catalogId, entry) => {
+    const appendCurrent = (catalogId, entry) => {
       const target = base.catalogs?.[catalogId];
-      if (!target || entry?.id === null || entry?.id === undefined || entry?.id === '') return;
+      if (!target || entry?.id === null || entry?.id === undefined || entry?.id === '' || !normalizeSpace(entry.display)) return;
       const id = canonicalValue(entry.id);
       const roleTypeId = entry.roleTypeId === null || entry.roleTypeId === undefined ? '' : canonicalValue(entry.roleTypeId);
+      const identity = `${id}|${roleTypeId}`;
       const lookup = dictionaryLookup(target);
       // Для ролей RoleTypeID является частью идентичности. Совпадение того же GUID
       // под другим типом роли нельзя считать эквивалентным текущему значению.
       const existing = roleTypeId
         ? (lookup?.byId?.get(`${id}|${roleTypeId}`) || [])
         : (lookup?.byId?.get(`${id}|`) || []);
-      if (existing.length) return;
-
-      if (!pendingIdentity.has(catalogId)) pendingIdentity.set(catalogId, new Set());
-      const identity = `${id}|${roleTypeId}`;
-      if (pendingIdentity.get(catalogId).has(identity)) return;
-      pendingIdentity.get(catalogId).add(identity);
-      if (!extrasByCatalog.has(catalogId)) extrasByCatalog.set(catalogId, []);
-      extrasByCatalog.get(catalogId).push(entry);
+      const pending = changesByCatalog.get(catalogId)?.get(identity);
+      const current = pending || existing[0];
+      const display = String(entry.display ?? '').trim();
+      if (!captionsByCatalog.has(catalogId)) captionsByCatalog.set(catalogId, new Map());
+      const captions = captionsByCatalog.get(catalogId);
+      const firstDisplay = captions.get(identity);
+      if (!firstDisplay) captions.set(identity, display);
+      if (current?.display === display || (firstDisplay && (current?.previousSelectors || []).includes(display))) return;
+      if (!changesByCatalog.has(catalogId)) changesByCatalog.set(catalogId, new Map());
+      // Every caption emitted into a matrix cell must survive XLSX serialization;
+      // truncating this list makes an untouched row fail its ID-and-text check.
+      const aliases = [...new Set([...(current?.previousSelectors || []), current?.selector, current?.display, ...(firstDisplay ? [display] : [])].filter(Boolean))];
+      // Preserve the selected identity and use the caption stored in the matrix.
+      // A different view caption remains searchable and useful for namesakes.
+      changesByCatalog.get(catalogId).set(identity, firstDisplay && current
+        ? { ...current, previousSelectors: aliases }
+        : { ...current, ...entry, display, selector: undefined,
+          qualifier: current?.display && current.display !== display ? current.display : current?.qualifier,
+          previousSelectors: aliases });
     };
 
     for (const condition of structure?.conditions || []) {
@@ -1852,12 +1873,12 @@
           if (isBoolean) {
             const semantic = booleanSemantic(item.value ?? item.id ?? item.display);
             if (semantic === null) continue;
-            appendIfMissing(catalogId, {
+            appendCurrent(catalogId, {
               id: semantic ? 'true' : 'false', display: semantic ? 'Да' : 'Нет', value: semantic,
               kind: 'Boolean', source: 'Boolean', status: 'Текущее значение', roleTypeId: '',
             });
           } else {
-            appendIfMissing(catalogId, {
+            appendCurrent(catalogId, {
               id: String(item.id ?? ''), display: item.display, roleTypeId: '',
               source: 'Текущая матрица', status: 'Текущее значение',
             });
@@ -1872,7 +1893,7 @@
       if (!catalogId || !base.catalogs?.[catalogId]) continue;
       for (const row of snapshot?.rows || []) {
         for (const item of row.roles?.[fn.id] || []) {
-          appendIfMissing(catalogId, {
+          appendCurrent(catalogId, {
             id: String(item.id ?? ''), display: item.display, roleTypeId: item.roleTypeId,
             source: 'Текущая матрица', status: 'Текущее значение',
           });
@@ -1882,7 +1903,7 @@
 
     // В типичном roundtrip все текущие значения уже есть в каталоге: возвращаем
     // исходный объект без 30–40 тыс. глубоких копирований и повторных сортировок.
-    if (!extrasByCatalog.size) return base;
+    if (!changesByCatalog.size) return base;
 
     const merged = {
       ...base,
@@ -1890,11 +1911,17 @@
       columnCatalogIds: { ...(base.columnCatalogIds || {}) },
       stats: { ...(base.stats || {}), errors: [...(base.stats?.errors || [])] },
     };
-    for (const [catalogId, extras] of extrasByCatalog.entries()) {
+    for (const [catalogId, changes] of changesByCatalog.entries()) {
       const source = base.catalogs[catalogId];
+      const entries = (source.entries || []).map(item => {
+        const key = `${canonicalValue(item.id)}|${canonicalValue(item.roleTypeId)}`;
+        const replacement = changes.get(key);
+        changes.delete(key);
+        return replacement || item;
+      });
       merged.catalogs[catalogId] = {
         ...source,
-        entries: finalizeDictionaryEntries([...(source.entries || []), ...extras]),
+        entries: finalizeDictionaryEntries([...entries, ...changes.values()]),
       };
     }
     merged.stats.catalogs = Object.keys(merged.catalogs).length;
@@ -1930,7 +1957,7 @@
       append(byDisplay, canonicalValue(item.display), item);
       searchRows.push({
         item,
-        haystack: searchCanonical(`${item.selector || ''} ${item.display || ''} ${item.qualifier || ''} ${item.searchText || ''} ${item.details || ''}`),
+        haystack: searchCanonical(`${item.selector || ''} ${item.display || ''} ${item.qualifier || ''} ${item.searchText || ''} ${item.details || ''} ${(item.previousSelectors || []).join(' ')}`),
       });
     }
 
@@ -2033,7 +2060,7 @@
   // ---------------------------------------------------------------------------
 
   function buildRoundtripGrid(structure, snapshot, matrixInfo, dictionaryCatalog = null, options = {}) {
-    const catalog = normalizeDictionaryCatalog(dictionaryCatalog);
+    const catalog = mergeSnapshotIntoDictionaryCatalog(dictionaryCatalog, structure, snapshot);
     const columns = [];
 
     for (const condition of structure.conditions) {
@@ -2086,7 +2113,7 @@
         const dict = catalog.catalogs?.[catalog.columnCatalogIds?.[key]];
         const items = snapshotRow.values?.[condition.criterionRowId] || [];
         const isBoolean = canonicalValue(condition.operandTypeId) === canonicalValue(OPERAND.Boolean);
-        values.push(items.map(item => isBoolean ? booleanDisplay(item.value ?? item.id ?? item.display) : dictionarySelector(dict, item.id, null, item.display)).join('\n'));
+        values.push(items.map(item => isBoolean ? booleanDisplay(item.value ?? item.id ?? item.display) : (item.display || dictionarySelector(dict, item.id, null, ''))).join('\n'));
         values.push(items.map(item => {
           if (isBoolean) { const semantic = booleanSemantic(item.value ?? item.id ?? item.display); return semantic === null ? '' : semantic ? 'true' : 'false'; }
           return item.id !== null && item.id !== undefined && item.id !== '' ? String(item.id) : '';
@@ -2096,7 +2123,7 @@
         const key = definitionKey('function', fn.id);
         const dict = catalog.catalogs?.[catalog.columnCatalogIds?.[key]];
         const items = snapshotRow.roles?.[fn.id] || [];
-        values.push(items.map(item => dictionarySelector(dict, item.id, item.roleTypeId, item.display)).join('\n'));
+        values.push(items.map(item => item.display || dictionarySelector(dict, item.id, item.roleTypeId, '')).join('\n'));
         values.push(items.map(item => `${item.id}|${item.roleTypeId}`).join('\n'));
       }
       for (let customIndex = 0; customIndex < customColumns.length; customIndex += 1) {
@@ -2831,7 +2858,7 @@
       catalogs[id] = { ...catalog, entries: catalog.entries.map(entry => {
         const old = originals.get(id)?.get(`${canonicalValue(entry.id)}|${canonicalValue(entry.roleTypeId)}`);
         return { ...entry, selector: old && canonicalValue(old.display) === canonicalValue(entry.display) ? old.selector : undefined,
-          previousSelectors: old ? [...new Set([old.selector, old.display, ...(old.previousSelectors || [])].filter(Boolean))].slice(0, 20) : entry.previousSelectors };
+          previousSelectors: old ? [...new Set([old.selector, old.display, ...(old.previousSelectors || []), ...(entry.previousSelectors || [])].filter(Boolean))] : entry.previousSelectors };
       }) };
     }
     return normalizeDictionaryCatalog({ ...fresh, catalogs });
@@ -3929,11 +3956,6 @@
             if (result.truncated) catalog.stats.errors.push(`${group.alias}: получено ${result.rows.length} из ${result.rowCount}; словарь неполный`);
           }
         } else catalog.stats.errors.push(`${label}: подходящее представление не найдено`);
-        for (const condition of group.conditions) {
-          for (const row of snapshot.rows || []) {
-            for (const item of row.values?.[condition.criterionRowId] || []) if (item.id !== null && item.id !== undefined && item.id !== '') entries.push({ id: String(item.id), display: item.display, roleTypeId: '', source: 'Текущая матрица', status: 'Текущее значение' });
-          }
-        }
         return { catalogId, catalog: { id: catalogId, label, sourceView: group.alias || 'Текущая матрица', projection, sourceCount, entries } };
       });
 
@@ -3953,7 +3975,6 @@
             if (roleEntries.length) break;
           }
         }
-        for (const row of snapshot.rows || []) for (const items of Object.values(row.roles || {})) for (const item of items) roleEntries.push({ id: String(item.id), display: item.display, roleTypeId: item.roleTypeId, source: 'Текущая матрица', status: 'Текущее значение' });
         return { roleCatalogId, roleAlias, roleEntries };
       })();
 
@@ -3962,7 +3983,7 @@
       catalog.catalogs[roleResult.roleCatalogId] = { id: roleResult.roleCatalogId, label: 'Роли и пользователи TESSA', sourceView: roleResult.roleAlias || 'Текущая матрица', entries: roleResult.roleEntries };
       structure.functions.forEach(fn => { catalog.columnCatalogIds[definitionKey('function', fn.id)] = roleResult.roleCatalogId; });
 
-      const normalized = normalizeDictionaryCatalog(catalog);
+      const normalized = mergeSnapshotIntoDictionaryCatalog(catalog, structure, snapshot);
       normalized.stats.cache = { hit: false, key: cacheKey, savedAt: options.transient ? null : Date.now(), ageMs: 0, ...(options.transient ? { transient: true } : {}) };
       const cached = options.transient || await writeDictionaryCache(cacheKey, normalized);
       if (!cached) normalized.stats.errors.push('Локальный кэш словарей недоступен; следующая выгрузка снова запросит данные TESSA.');
@@ -8475,7 +8496,6 @@
       #tms-panel .tms-help-item b{display:block;margin-bottom:4px}
       #tms-panel .tms-help-note{margin:12px 0}
       #tms-panel .tms-help-close{width:100%}
-      #tms-panel .tms-picker-launch{border:2px solid var(--tms-red);font-weight:700;min-height:40px}
       #tms-panel .tms-merge-conflict{background:#fff3c4;border:1px solid #b38b1a;padding:12px;margin:10px 0;color:#242424}
       #tms-panel .tms-merge-conflict label{display:block;margin:8px 0;overflow-wrap:anywhere}
       #tms-panel .tms-picker{display:grid;gap:8px;margin:12px 0;padding:12px;border:1px solid var(--tms-line);border-radius:var(--tms-radius)}
@@ -8540,7 +8560,7 @@
           <div class="tms-operation-status" aria-live="polite" aria-atomic="true"><div class="tms-status-line" hidden><span id="tms-progress-label">Готово</span><span id="tms-progress-percent" class="tms-progress-percent">0%</span></div><div class="tms-progress-track" hidden><div id="tms-progress-fill" class="tms-progress-fill"></div></div><div id="tms-progress-detail" class="tms-progress-detail"></div></div>
         </div>
         <div class="tms-controls">
-          <details class="tms-start-help"><summary>Перед началом работы</summary><p>В TESSA создайте черновик матрицы и перейдите в редактирование. Затем скачайте Excel: справочники при каждой выгрузке читаются заново.</p><p>Удалить строку: удалить её целиком в Excel. Удалить отдельное значение: очистить ячейку или убрать элемент списка. Полностью очищенная строка с сохранёнными служебными полями будет показана как пропущенная. При одновременном удалении и добавлении пометьте новые строки действием «Добавить».</p><p>Можно вводить полное название вручную. Однозначный фрагмент сопоставляется при проверке; неоднозначный требует уточнения. Автодополнение выпадающих списков зависит от версии Excel. Поиск в «Собрать значения» доступен независимо от неё.</p></details><div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button><button type="button" id="tms-open-picker" class="tms-picker-launch" aria-controls="tms-value-picker" aria-expanded="false" title="Несколько значений для одной ячейки">Собрать значения</button></div><section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section></div>
+          <details class="tms-start-help"><summary>Перед началом работы</summary><p>В TESSA создайте черновик матрицы и перейдите в редактирование. Затем скачайте Excel: справочники при каждой выгрузке читаются заново.</p><p>Удалить строку: удалить её целиком в Excel. Удалить отдельное значение: очистить ячейку или убрать элемент списка. Полностью очищенная строка с сохранёнными служебными полями будет показана как пропущенная. При одновременном удалении и добавлении пометьте новые строки действием «Добавить».</p><p>Можно вводить полное название вручную. Однозначный фрагмент сопоставляется при проверке; неоднозначный требует уточнения. Автодополнение выпадающих списков зависит от версии Excel. Поиск в «Собрать значения» доступен независимо от неё.</p></details><div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button><button type="button" id="tms-open-picker" aria-controls="tms-value-picker" aria-expanded="false" title="Несколько значений для одной ячейки">Собрать значения</button></div><section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section></div>
           <div class="tms-step"><div class="tms-step-label">2 · Изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
           <details class="tms-tools"><summary>Дополнительно</summary><div class="tms-tool-list">
             <div><button id="tms-download-fresh">Обновить справочники в моём Excel</button><p>Выберите изменённый файл в шаге 2. Скачается его копия с новыми справочниками; ваши строки и правки сохранятся.</p></div>
