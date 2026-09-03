@@ -2399,6 +2399,18 @@
     const map = buildColumnMap(workbook, structure);
     const desired = workbookRowsToDesired(workbook, map);
     const bases = workbook.roundtrip?.baselineRows || [];
+    const baseByCard = new Map(bases.map(base => [canonicalValue(base.rowCardId), base]));
+    const baseByVersion = new Map(bases.map(base => [canonicalValue(base.versionId), base]));
+    // Validate the original ledger before rebasing; otherwise damaged IDs or a
+    // cleared fingerprint would be silently replaced with trusted fresh values.
+    for (const local of desired) {
+      const base = baseByCard.get(canonicalValue(local.system.rowCardId)) || baseByVersion.get(canonicalValue(local.system.versionId));
+      if (base && ['rowCardId', 'versionId', 'baseFingerprint'].some(field => canonicalValue(local.system[field]) !== canonicalValue(base[field]))) {
+        throw new Error(`Строка Excel ${local.excelRow}: повреждены служебные идентификаторы или BaseFingerprint. Скачайте свежую выгрузку.`);
+      }
+    }
+    const issues = [...(map.mappingIssues || []), ...desired.flatMap(row => row.issues || [])];
+    if (issues.length) throw new Error(`Перед объединением исправьте значения Excel: ${issues.slice(0, 8).join(' ')}`);
     const byCard = new Map((snapshot.rows || []).map(row => [canonicalValue(row.rowCardId), row]));
     const conflicts = [], highlights = [], rows = workbook.rows.map(row => ({ ...row, values: [...row.values], cellMeta: row.cellMeta ? [...row.cellMeta] : undefined }));
     const byExcel = new Map(rows.map(row => [row.excelRow, row]));
@@ -2434,17 +2446,18 @@
       if ((counts.get(id) || 0) > 1 || local?.system.action === 'add') continue;
       if (!current) {
         if (!local) continue;
-        const changed = [...local.columns.values()].some(col => !arraysEqual(local.compare?.[col.key] || [], currentCompareValues(base.base, col)));
+        const changed = local.system.action !== 'delete' && [...local.columns.values()].some(col => !arraysEqual(local.compare?.[col.key] || [], currentCompareValues(base.base, col)));
         if (changed) conflicts.push({ id: `missing:${id}`, excelRow: local.excelRow, column: 'Строка удалена в TESSA', mine: 'Сохранить как новую строку', server: 'Удалить из Excel', base: 'Строка была в выгрузке', kind: 'remote-delete' });
         if (!changed || choices[`missing:${id}`] === 'server') rows.splice(rows.indexOf(byExcel.get(local.excelRow)), 1);
         else if (choices[`missing:${id}`] === 'mine') {
           const row = byExcel.get(local.excelRow);
           for (const field of ['rowCardId', 'versionId', 'baseFingerprint']) if (map.system[field] !== undefined) row.values[map.system[field]] = '';
+          if (map.system.action !== undefined) row.values[map.system.action] = 'ДОБАВИТЬ';
         }
         continue;
       }
       if (!local) {
-        if (base.baseFingerprint !== current.fingerprint) {
+        if (baselineRowChanged(base, current, structure)) {
           const key = `delete:${id}`;
           conflicts.push({ id: key, excelRow: '', column: `Удаление строки ${current.index + 1}`, mine: 'Удалить строку', server: 'Сохранить строку TESSA', base: 'Строка удалена в Excel', kind: 'local-delete' });
           if (choices[key] === 'server') {
@@ -2457,12 +2470,19 @@
       } else {
         const row = byExcel.get(local.excelRow);
         if (local.issues?.length) continue;
-        if (local.system.action === 'delete' && base.baseFingerprint !== current.fingerprint) {
-          const key = `explicit-delete:${id}`;
-          conflicts.push({ id: key, excelRow: local.excelRow, column: 'Удаление изменённой строки', mine: 'Удалить строку', server: 'Сохранить TESSA', base: 'Строка изменилась после выгрузки', kind: 'local-delete' });
-          if (choices[key] === 'server' && map.system.action !== undefined) row.values[map.system.action] = '';
-        }
-        for (const column of local.columns.values()) {
+        if (local.system.action === 'delete') {
+          if (baselineRowChanged(base, current, structure)) {
+            const key = `explicit-delete:${id}`;
+            conflicts.push({ id: key, excelRow: local.excelRow, column: 'Удаление изменённой строки', mine: 'Удалить строку', server: 'Сохранить TESSA', base: 'Строка изменилась после выгрузки', kind: 'local-delete' });
+            if (choices[key] === 'server' && map.system.action !== undefined) row.values[map.system.action] = '';
+          }
+          // A deletion is one row-level decision. Keeping TESSA must not apply
+          // old cell edits from the row that the user had marked for deletion.
+          for (const column of local.columns.values()) {
+            assign(row, column, current);
+            if (!arraysEqual(currentCompareValues(base.base, column), currentCompareValues(current, column))) highlights.push({ rowCardId: current.rowCardId, key: column.key, conflict: true });
+          }
+        } else for (const column of local.columns.values()) {
           const original = currentCompareValues(base.base, column), remote = currentCompareValues(current, column), mine = local.compare?.[column.key] || [];
           const mineChanged = !arraysEqual(mine, original), remoteChanged = !arraysEqual(remote, original);
           const key = `${local.excelRow}:${column.key}`;
@@ -2641,9 +2661,8 @@
         const identity = `v:${canonicalValue(base.versionId || '')}|c:${canonicalValue(base.rowCardId || '')}`;
         const current = base.versionId ? byVersion.get(canonicalValue(base.versionId)) : byCard.get(canonicalValue(base.rowCardId));
         if (current) {
-          const freshFingerprint = canonicalValue(current.fingerprint || fingerprintFlat(current.flat || {}));
           const exportedFingerprint = canonicalValue(base.baseFingerprint || '');
-          if (!exportedFingerprint || freshFingerprint !== exportedFingerprint) {
+          if (!exportedFingerprint || baselineRowChanged(base, current, structure)) {
             throw new Error(`Конфликт актуализации: физически удалённая строка TESSA ${base.versionId || base.rowCardId} изменилась после выгрузки Excel. Скачайте свежий файл и подтвердите удаление повторно.`);
           }
         }
@@ -4805,6 +4824,11 @@
     return Boolean(currentRow && exported && fresh && exported !== fresh);
   }
 
+  function baselineRowChanged(base, currentRow, structure) {
+    return canonicalValue(base.baseFingerprint) !== canonicalValue(currentRow.fingerprint || fingerprintFlat(currentRow.flat || {}))
+      || Boolean(base.base && currentRowCompareFingerprint(base.base, structure) !== currentRowCompareFingerprint(currentRow, structure));
+  }
+
   function exportedRowSemanticallyStale(excelRow, currentRow, structure) {
     if (!rawFingerprintChangedSinceExport(excelRow, currentRow)) return false;
     const exportedSemantic = canonicalValue(excelRow?.compareFingerprint || '');
@@ -4964,6 +4988,7 @@
     const actions = [];
     const issues = [];
     const warnings = [];
+    const skippedRows = [];
     const usedCurrent = new Set();
     // Копии определяем по повтору одной и той же пары скрытых ID внутри Excel.
     // Порядок строк не должен влиять на результат: если копию вставили выше источника,
@@ -4984,6 +5009,7 @@
     const byVersion = new Map(snapshot.rows.map(row => [canonicalValue(row.versionId), row]));
     const byCard = new Map(snapshot.rows.map(row => [canonicalValue(row.rowCardId), row]));
     const baselineRows = Array.isArray(workbook.roundtrip?.baselineRows) ? workbook.roundtrip.baselineRows : [];
+    const baselineByCard = new Map(baselineRows.map(row => [canonicalValue(row.rowCardId), row]));
     const baselineByIdentity = new Map(baselineRows.map(row => {
       const versionId = canonicalValue(row.versionId || '');
       const rowCardId = canonicalValue(row.rowCardId || '');
@@ -5159,6 +5185,16 @@
       }
       const currentRow = positionalOverwriteTarget || findCurrent(excelRow);
       const identityKey = currentRow ? canonicalValue(currentRow.versionId || currentRow.rowCardId) : '';
+      const sourceCurrent = findCurrent(excelRow);
+      const sourceBase = sourceCurrent && baselineByCard.get(canonicalValue(sourceCurrent.rowCardId));
+      if (sourceBase?.base && currentRowCompareFingerprint(sourceBase.base, structure) !== currentRowCompareFingerprint(sourceCurrent, structure)) {
+        // Equal labels do not prove an unchanged reference/role. Check the cell
+        // baseline before UPDATE, copied ADD or REPLACE can carry old IDs forward.
+        if (identityKey) usedCurrent.add(identityKey);
+        usedCurrent.add(canonicalValue(sourceCurrent.versionId || sourceCurrent.rowCardId));
+        issues.push(`Строка Excel ${excelRow.excelRow}: значения TESSA изменились после выгрузки Excel. Обновите поля Excel, чтобы объединить изменения.`);
+        continue;
+      }
 
       // Если строка была вставлена поверх другой существующей строки, физическая позиция
       // определяет цель. Скрытые ID источника для этой строки намеренно игнорируются:
@@ -5261,7 +5297,9 @@
         continue;
       }
 
-      if (currentRow && rawFingerprintChangedSinceExport(excelRow, currentRow)) {
+      const deletionBase = currentRow && baselineByCard.get(canonicalValue(currentRow.rowCardId));
+      const deletionChanged = action === 'delete' && deletionBase && baselineRowChanged(deletionBase, currentRow, structure);
+      if (currentRow && (deletionChanged || rawFingerprintChangedSinceExport(excelRow, currentRow))) {
         // DELETE остаётся строго raw-stale: удаление нельзя разрешать только по semantic ID.
         // Для обычной неизменённой строки допускаем лишь доказанный display-only drift.
         const stale = action === 'delete' || exportedRowSemanticallyStale(excelRow, currentRow, structure);
@@ -5306,7 +5344,9 @@
     if (automaticDeleteEnabled && !appendOnly && !identityMappingAnomaly) {
       const implicitDeleteCandidates = (snapshot.rows || []).filter(currentRow => {
         const identityKey = canonicalValue(currentRow.versionId || currentRow.rowCardId);
-        return Boolean(identityKey && !usedCurrent.has(identityKey));
+        // Absence only expresses deletion for rows that existed in this export.
+        // A colleague's subsequent ADD must never become our implicit DELETE.
+        return Boolean(identityKey && !usedCurrent.has(identityKey) && baselineByCard.has(canonicalValue(currentRow.rowCardId)));
       });
       // Если пользователь скопировал существующую строку поверх другой строки Excel,
       // скрытые ID источника продублируются, а ID затёртой строки исчезнет. Без этой
@@ -5319,6 +5359,10 @@
         for (const currentRow of implicitDeleteCandidates) {
           const identityKey = canonicalValue(currentRow.versionId || currentRow.rowCardId);
           usedCurrent.add(identityKey);
+          if (baselineRowChanged(baselineByCard.get(canonicalValue(currentRow.rowCardId)), currentRow, structure)) {
+            skippedRows.push(makeSkippedRow(null, `Строка TESSA ${currentRow.index + 1}: строка изменилась после выгрузки Excel. Обновите поля Excel и подтвердите удаление при объединении.`, 'baseline-conflict', 'delete'));
+            continue;
+          }
           actions.push({
             type: 'delete',
             excelRow: null,
@@ -5331,7 +5375,7 @@
       }
     }
     if (identityMappingAnomaly) warnings.push('Часть строк не удалось надёжно сопоставить. Они пропущены; автоматическое удаление для этого файла отключено.');
-    return { actions, issues, warnings, usedCurrent };
+    return { actions, issues, warnings, skippedRows, usedCurrent };
   }
 
   function duplicateRowKey(current, desired, structure) {
@@ -5449,7 +5493,7 @@
     }
 
     let actions = [...(built.actions || [])];
-    const skippedRows = [];
+    const skippedRows = [...(built.skippedRows || [])];
     const desiredByExcelRow = new Map(desired.map(row => [row.excelRow, row]));
 
     // Убираем из исполняемого плана строки, у которых уже найдена локальная ошибка.
