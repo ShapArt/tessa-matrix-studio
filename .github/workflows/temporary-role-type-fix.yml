@@ -41,12 +41,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- tessa-matrix-studio.user.js; then
-            echo "Source already patched."
+          if git diff --quiet; then
+            echo "Files already prepared."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tessa-matrix-studio.user.js
-          git commit -m "fix: filter function pickers by TESSA role type"
+          git add \
+            tessa-matrix-studio.user.js \
+            package.json package-lock.json \
+            README.md CHANGELOG.md \
+            .github/ISSUE_TEMPLATE/bug_report.yml \
+            docs/UAT-v1.10.0.md
+          git commit -m "release: prepare v1.10.2 role type fix"
           git push origin HEAD:fix/v1.10.0-dictionaries-merge
