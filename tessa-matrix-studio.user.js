@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.9.51
+// @version      1.10.0
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.9.51',
+    version: '1.10.0',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -1363,6 +1363,17 @@
     });
   }
 
+  function parseBaselineData(row) {
+    const keys = Object.keys(row).filter(key => /^BaseData\d+$/.test(key)).sort((a, b) => Number(a.slice(8)) - Number(b.slice(8)));
+    const text = keys.map(key => row[key] || '').join('');
+    if (!text) return {};
+    try {
+      const base = JSON.parse(text);
+      if (!base || typeof base.flat !== 'object' || !base.values || !base.roles || fingerprintFlat(base.flat) !== normalizeSpace(row.BaseFingerprint)) throw new Error('fingerprint');
+      return { base };
+    } catch (_) { throw new Error('Повреждены исходные значения Excel для объединения. Скачайте свежую выгрузку.'); }
+  }
+
   function parseBaselineRows(parsedSheets) {
     const baselineSheet = parsedSheets.get(ROUNDTRIP.BaselineSheet);
     if (!baselineSheet) return [];
@@ -1370,6 +1381,7 @@
       rowCardId: normalizeSpace(row['MatrixRowID']),
       versionId: normalizeSpace(row['MatrixVersionID']),
       baseFingerprint: normalizeSpace(row['BaseFingerprint']),
+      ...parseBaselineData(row),
     })).filter(row => row.rowCardId || row.versionId);
     const seen = new Set();
     for (const row of rows) {
@@ -1405,6 +1417,7 @@
       };
       catalogs[catalogId].entries.push({
         selector: normalizeSpace(row['Выбор в Excel']),
+        previousSelectors: (() => { try { const values = JSON.parse(row['Прежние названия'] || '[]'); return Array.isArray(values) ? values.filter(v => typeof v === 'string').slice(0, 20) : []; } catch (_) { return []; } })(),
         display: normalizeSpace(row['Отображение']),
         id: normalizeSpace(row['ID']),
         roleTypeId: normalizeSpace(row['RoleTypeID']),
@@ -1416,6 +1429,8 @@
     }
     return { version: 2, catalogs, columnCatalogIds };
   }
+
+  const WORKBOOK_ARCHIVES = new WeakMap();
 
   async function readXlsxArrayBuffer(arrayBuffer, fileName = 'matrix.xlsx') {
     const entries = await unzipArrayBuffer(arrayBuffer);
@@ -1461,7 +1476,7 @@
       if (values.some(v => normalizeSpace(v))) data.push({ excelRow: r + 1, values, cellMeta });
     }
     const format = metadata[ROUNDTRIP.FormatKey] || null;
-    return {
+    const workbook = {
       fileName,
       sheetName: matrixDescriptor.name,
       sheetNames: [...parsedSheets.keys()],
@@ -1483,6 +1498,8 @@
         baselineRows: parseBaselineRows(parsedSheets),
       },
     };
+    WORKBOOK_ARCHIVES.set(workbook, entries);
+    return workbook;
   }
 
 
@@ -1666,21 +1683,23 @@
       groups.get(key).push(item);
     }
     for (const group of groups.values()) {
-      if (group.length === 1) {
-        group[0].selector = group[0].display;
-        group[0].status = group[0].status || 'Доступно';
-        continue;
-      }
-      const used = new Map();
+      const previous = new Map();
       for (const item of group) {
+        const selector = normalizeSpace(item.selector);
+        if (selector && canonicalValue(selector).startsWith(canonicalValue(item.display))) previous.set(canonicalValue(selector), (previous.get(canonicalValue(selector)) || 0) + 1);
+      }
+      const preserved = new Set(group.filter(item => previous.get(canonicalValue(item.selector)) === 1).map(item => canonicalValue(item.selector)));
+      const used = new Set(preserved);
+      // Existing selectors are part of the workbook contract. Renumbering them
+      // after alphabetical sorting (1, 10, 11, 2...) can select another entity.
+      for (const item of [...group].sort((a,b) => `${a.id}|${a.roleTypeId}`.localeCompare(`${b.id}|${b.roleTypeId}`))) {
+        if (preserved.has(canonicalValue(item.selector))) { item.status = item.status || 'Доступно'; continue; }
         const qualifier = normalizeSpace(item.qualifier || humanQualifierFromDetails(item.details, item.display));
-        let selector = qualifier ? `${item.display} — ${qualifier}` : item.display;
-        const canonical = canonicalValue(selector);
-        const n = (used.get(canonical) || 0) + 1;
-        used.set(canonical, n);
-        if (n > 1 || !qualifier) selector = `${selector}${qualifier ? '' : ' — вариант'} ${n}`;
-        item.selector = selector;
-        item.status = item.status || 'Доступно';
+        const base = qualifier ? `${item.display} — ${qualifier}` : item.display;
+        let selector = base, n = 1;
+        if (group.length > 1 && !qualifier) selector = `${base} — вариант ${n++}`;
+        while (used.has(canonicalValue(selector))) selector = `${base}${qualifier ? '' : ' — вариант'} ${n++}`;
+        used.add(canonicalValue(selector)); item.selector = selector; item.status = item.status || 'Доступно';
       }
     }
     return values.sort((a, b) => a.selector.localeCompare(b.selector, 'ru', { sensitivity: 'base' }));
@@ -1701,7 +1720,7 @@
   function normalizeDictionaryCatalog(catalog) {
     if (!catalog) return { catalogs: {}, columnCatalogIds: {}, stats: { catalogs: 0, entries: 0, errors: [] } };
     if (NORMALIZED_DICTIONARY_CATALOGS.has(catalog)) return catalog;
-    for (const item of Object.values(catalog.catalogs || {})) item.entries = finalizeDictionaryEntries(item.entries || []);
+    for (const item of Object.values(catalog.catalogs || {})) { item.entries = finalizeDictionaryEntries(item.entries || []); DICTIONARY_LOOKUP_CACHE.delete(item); }
     const entries = Object.values(catalog.catalogs || {}).reduce((sum, item) => sum + item.entries.length, 0);
     catalog.stats = catalog.stats || {};
     catalog.stats.catalogs = Object.keys(catalog.catalogs || {}).length;
@@ -1713,10 +1732,11 @@
 
   function dictionaryStructureSignature(structure) {
     const compact = {
+      projectionVersion: 2,
       templateId: canonicalValue(structure?.templateId),
       conditions: (structure?.conditions || []).map(item => [
         canonicalValue(item.criterionRowId), canonicalValue(item.operandTypeId),
-        canonicalValue(item.autocompleteViewName || item.refSection), canonicalValue(item.autocompleteParamName),
+        canonicalValue(item.autocompleteViewName), canonicalValue(item.refSection), canonicalValue(item.autocompleteParamName),
       ]),
       functions: (structure?.functions || []).map(item => [canonicalValue(item.id), canonicalValue(item.typeId)]),
     };
@@ -1962,7 +1982,7 @@
         || [];
       explicitMatch = candidates.find(item => !explicitRoleType || canonicalValue(item.roleTypeId) === explicitRoleType) || null;
     }
-    if (explicitMatch && [canonicalValue(explicitMatch.selector), canonicalValue(explicitMatch.display)].includes(visibleCanonical)) {
+    if (explicitMatch && [explicitMatch.selector, explicitMatch.display, ...(explicitMatch.previousSelectors || [])].map(canonicalValue).includes(visibleCanonical)) {
       return resolvedItem(explicitMatch, 'id-and-text');
     }
 
@@ -2053,6 +2073,8 @@
       sourceIndex: item.sourceIndex,
     }));
     columns.push(...customColumns);
+    const includeActions = Boolean(options.includeActions) || snapshot.rows.some(row => row.action);
+    if (includeActions) columns.push({ header: 'Действие', schema: 'system:action', key: 'system:action', kind: 'system', hidden: false, width: 18 });
     columns.push({ header: '__TESSA_ROW_CARD_ID', schema: 'system:rowCardId', key: 'system:rowCardId', kind: 'system-hidden', hidden: true, width: 3 });
     columns.push({ header: '__TESSA_VERSION_ID', schema: 'system:versionId', key: 'system:versionId', kind: 'system-hidden', hidden: true, width: 3 });
     columns.push({ header: '__TESSA_BASE_FINGERPRINT', schema: 'system:baseFingerprint', key: 'system:baseFingerprint', kind: 'system-hidden', hidden: true, width: 3 });
@@ -2080,6 +2102,7 @@
       for (let customIndex = 0; customIndex < customColumns.length; customIndex += 1) {
         values.push(snapshotRow.customValues?.[customIndex] ?? '');
       }
+      if (includeActions) values.push(snapshotRow.action || '');
       values.push(snapshotRow.rowCardId || '', snapshotRow.versionId || '', snapshotRow.fingerprint || '');
       return values;
     });
@@ -2168,6 +2191,7 @@
     const visualRowCount = Math.max(1, grid.rows.length);
     const lastDataRow = dataStartRow + visualRowCount - 1;
     const validationLastRow = Math.min(1048576, Math.max(10000, lastDataRow + 5000));
+    const highlighted = new Set((options.highlights || []).map(item => `${canonicalValue(item.rowCardId)}|${item.key}`));
     const sheetRows = [];
     grid.metadata.forEach(([key, value], index) => {
       const rowNumber = index + 1;
@@ -2190,14 +2214,14 @@
       const height = Math.min(409, Math.max(32, lines * 15 + 10));
       sheetRows.push(`<row r="${rowNumber}" ht="${height}" customHeight="1">${values.map((value, colIndex) => value === null || value === undefined || value === ''
         ? `<c r="${indexToCol(colIndex)}${rowNumber}" s="${bodyStyle}"/>`
-        : xlsxStringCell(rowNumber, colIndex, value, bodyStyle)).join('')}</row>`);
+        : xlsxStringCell(rowNumber, colIndex, value, highlighted.has(`${canonicalValue(snapshot.rows[rowIndex]?.rowCardId)}|${grid.columns[colIndex]?.key}`) ? 15 : bodyStyle)).join('')}</row>`);
     });
     const cols = grid.columns.map((column, index) => `<col min="${index + 1}" max="${index + 1}" width="${column.width}" style="5" customWidth="1"${column.hidden ? ' hidden="1"' : ''}/>`).join('');
 
     // Служебный лист хранит только данные, необходимые для обратного сопоставления.
     // Статус и поисковую строку не дублируем в каждой из десятков тысяч строк:
     // статус имеет безопасный default, а поисковый индекс восстанавливается в памяти.
-    const dictionaryRows = [['CatalogID', 'Словарь', 'Выбор в Excel', 'Отображение', 'ID', 'RoleTypeID', 'Источник', 'Доп. данные']];
+    const dictionaryRows = [['CatalogID', 'Словарь', 'Выбор в Excel', 'Отображение', 'ID', 'RoleTypeID', 'Источник', 'Доп. данные', 'Прежние названия']];
     const namedRanges = [];
     const rangeByCatalog = {};
     let dictionaryRow = 2;
@@ -2208,7 +2232,7 @@
       for (const item of catalog.entries || []) {
         // Название и источник одинаковы для всего каталога. Записываем их только
         // в первой строке каталога — parser уже сохраняет эти метаданные при инициализации.
-        dictionaryRows.push([catalog.id, firstCatalogRow ? (catalog.label || catalog.id) : '', item.selector, item.display, item.id, item.roleTypeId, firstCatalogRow ? (catalog.sourceView || item.source || '') : '', item.details || '']);
+        dictionaryRows.push([catalog.id, firstCatalogRow ? (catalog.label || catalog.id) : '', item.selector, item.display, item.id, item.roleTypeId, firstCatalogRow ? (catalog.sourceView || item.source || '') : '', item.details || '', item.previousSelectors?.length ? JSON.stringify(item.previousSelectors) : '']);
         firstCatalogRow = false;
         dictionaryRow += 1;
       }
@@ -2237,8 +2261,8 @@
     }
     // Keep the dropdowns; editing guidance belongs on Инструкция, not in a
     // persistent Excel input-message popup covering the neighbouring cells.
-    for (const [rangeName, refs] of validationGroups) validations.push(`<dataValidation type="list" allowBlank="1" showInputMessage="0" showErrorMessage="0" sqref="${refs.join(' ')}"><formula1>${rangeName}</formula1></dataValidation>`);
-    if (booleanRefs.length) validations.push(`<dataValidation type="list" allowBlank="1" showInputMessage="0" showErrorMessage="1" sqref="${booleanRefs.join(' ')}"><formula1>"Да,Нет"</formula1></dataValidation>`);
+    for (const [rangeName, refs] of validationGroups) validations.push(`<dataValidation type="list" allowBlank="1" showDropDown="0" showInputMessage="0" showErrorMessage="0" sqref="${refs.join(' ')}"><formula1>${rangeName}</formula1></dataValidation>`);
+    if (booleanRefs.length) validations.push(`<dataValidation type="list" allowBlank="1" showDropDown="0" showInputMessage="0" showErrorMessage="1" sqref="${booleanRefs.join(' ')}"><formula1>"Да,Нет"</formula1></dataValidation>`);
 
     const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastCol}${lastDataRow}"/><sheetViews><sheetView workbookViewId="0"><pane xSplit="1" ySplit="${grid.headerRow}" topLeftCell="B${dataStartRow}" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>${cols}</cols><sheetData>${sheetRows.join('')}</sheetData><autoFilter ref="A${grid.headerRow}:${lastCol}${lastDataRow}"/><dataValidations count="${validations.length}">${validations.join('')}</dataValidations></worksheet>`;
 
@@ -2261,7 +2285,11 @@
     const baselineRows = [['MatrixRowID', 'MatrixVersionID', 'BaseFingerprint']];
     const baselineSourceRows = Array.isArray(options.baselineRows) ? options.baselineRows : (snapshot.rows || []);
     for (const row of baselineSourceRows) {
-      baselineRows.push([row.rowCardId || '', row.versionId || '', row.fingerprint || fingerprintFlat(row.flat || {})]);
+      if (!row.rowCardId && !row.versionId) continue;
+      const payload = JSON.stringify({ flat: row.flat || {}, values: row.values || {}, roles: row.roles || {} });
+      const chunks = !row.fingerprint || row.fingerprint === fingerprintFlat(row.flat || {}) ? (payload.match(/[\s\S]{1,30000}/g) || []) : [];
+      while (baselineRows[0].length < 3 + chunks.length) baselineRows[0].push(`BaseData${baselineRows[0].length - 2}`);
+      baselineRows.push([row.rowCardId || '', row.versionId || '', row.fingerprint || fingerprintFlat(row.flat || {}), ...chunks]);
     }
 
     const instructionSheet = instructionSheetXml();
@@ -2270,7 +2298,7 @@
     const schemaChangesSheet = genericSheetXml(changeRows, [32, 16, 40, 44, 72, 12, 40, 72]);
     const baselineSheet = genericSheetXml(baselineRows, [40, 40, 48], { autoFilter: false });
 
-    const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="5"><font><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FF292929"/><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="20"/><name val="Aptos Display"/><family val="2"/></font><font><b/><color rgb="FF292929"/><sz val="13"/><name val="Aptos Display"/><family val="2"/></font></fonts><fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE31E24"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFB5121B"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF292929"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF0F1"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF5F5F5"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFE5E5E5"/></left><right style="thin"><color rgb="FFE5E5E5"/></right><top style="thin"><color rgb="FFE5E5E5"/></top><bottom style="thin"><color rgb="FFE5E5E5"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="15"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="49" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="6" borderId="0" xfId="0"/><xf numFmtId="49" fontId="0" fillId="6" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="3" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="5" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf><xf numFmtId="0" fontId="2" fillId="6" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+    const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="5"><font><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FF292929"/><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="20"/><name val="Aptos Display"/><family val="2"/></font><font><b/><color rgb="FF292929"/><sz val="13"/><name val="Aptos Display"/><family val="2"/></font></fonts><fills count="8"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE31E24"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFB5121B"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF292929"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF0F1"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF5F5F5"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFE699"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFE5E5E5"/></left><right style="thin"><color rgb="FFE5E5E5"/></right><top style="thin"><color rgb="FFE5E5E5"/></top><bottom style="thin"><color rgb="FFE5E5E5"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="16"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="49" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="6" borderId="0" xfId="0"/><xf numFmtId="49" fontId="0" fillId="6" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="3" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="5" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf><xf numFmtId="0" fontId="2" fillId="6" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="49" fontId="0" fillId="7" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
     const sheetNames = ['Матрица', ROUNDTRIP.InstructionSheet, ROUNDTRIP.DictionarySheet, ROUNDTRIP.StructureSheet, ROUNDTRIP.SchemaChangesSheet, ROUNDTRIP.BaselineSheet];
     const sheetXml = [worksheet, instructionSheet, dictionarySheet, structureSheet, schemaChangesSheet, baselineSheet];
     const sheetOverrides = sheetNames.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('');
@@ -2321,13 +2349,13 @@
     setProgress(38, 'Читаю строки', 'Загружаю текущее состояние матрицы');
     log('Выгрузка текущей матрицы: читаю строки.');
     const snapshot = await bridge.loadSnapshot(structure);
-    setProgress(62, options.forceDictionaryRefresh ? 'Обновляю справочники' : 'Подключаю справочники', options.forceDictionaryRefresh ? 'Читаю свежие значения и роли из TESSA' : 'Использую кэш, где это безопасно');
+    setProgress(62, 'Обновляю справочники', 'Читаю свежие значения и роли из TESSA');
     log(options.forceDictionaryRefresh ? 'Выгрузка текущей матрицы: принудительно обновляю словари и роли.' : 'Выгрузка текущей матрицы: подключаю словари и роли.');
-    const dictionaryCatalog = await bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: Boolean(options.forceDictionaryRefresh) });
+    const dictionaryCatalog = await bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true });
     APP.dictionaryCatalog = dictionaryCatalog;
     const matrixInfo = bridge.matrixInfo();
     setProgress(84, 'Формирую Excel', `${snapshot.rows.length} строк`);
-    const bytes = await createRoundtripXlsxBytes(structure, snapshot, matrixInfo, dictionaryCatalog);
+    const bytes = await createRoundtripXlsxBytes(structure, snapshot, matrixInfo, dictionaryCatalog, { includeActions: true });
     const shortId = String(snapshot.matrixId || '').slice(0, 8);
     const name = `TESSA_Матрица_${sanitizeFileName(matrixInfo.TemplateName)}_${shortId}.xlsx`;
     downloadBlob(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name);
@@ -2364,6 +2392,106 @@
     return displays.map((display, index) => {
       const [id = '', roleTypeId = ''] = String(ids[index] || '').split('|');
       return { id, display, roleTypeId: roleTypeId === '' ? '' : Number(roleTypeId) };
+    });
+  }
+
+  function prepareThreeWayMerge(workbook, structure, snapshot, choices = {}) {
+    const map = buildColumnMap(workbook, structure);
+    const desired = workbookRowsToDesired(workbook, map);
+    const bases = workbook.roundtrip?.baselineRows || [];
+    const byCard = new Map((snapshot.rows || []).map(row => [canonicalValue(row.rowCardId), row]));
+    const conflicts = [], highlights = [], rows = workbook.rows.map(row => ({ ...row, values: [...row.values], cellMeta: row.cellMeta ? [...row.cellMeta] : undefined }));
+    const byExcel = new Map(rows.map(row => [row.excelRow, row]));
+    const counts = new Map();
+    for (const d of desired) { const id = canonicalValue(d.system.rowCardId); if (id) counts.set(id, (counts.get(id) || 0) + 1); }
+    const mergeCatalog = { ...workbook.dictionaryCatalog, catalogs: { ...(workbook.dictionaryCatalog?.catalogs || {}) }, columnCatalogIds: { ...(workbook.dictionaryCatalog?.columnCatalogIds || {}) } };
+    for (const column of map.columns.values()) {
+      const catalogId = mergeCatalog.columnCatalogIds[column.key];
+      if (!catalogId || !mergeCatalog.catalogs[catalogId]) continue;
+      const source = mergeCatalog.catalogs[catalogId];
+      const entries = [...source.entries];
+      const seen = new Set(entries.map(e => `${e.id}|${e.roleTypeId || ''}|${e.display}`));
+      for (const current of snapshot.rows) for (const item of (column.kind === 'function' ? current.roles?.[column.id] : current.values?.[column.id]) || []) {
+        if (item.id == null || !item.display) continue;
+        const roleTypeId = column.kind === 'function' ? item.roleTypeId : '';
+        const key = `${item.id}|${roleTypeId || ''}|${item.display}`;
+        if (!seen.has(key)) { entries.push({ ...item, roleTypeId, selector: item.display }); seen.add(key); }
+      }
+      mergeCatalog.catalogs[catalogId] = { ...source, entries };
+    }
+    const outputBases = bases.map(row => ({ ...row }));
+    const assign = (row, column, source) => {
+      const items = (column.kind === 'function' ? source.roles?.[column.id] : source.values?.[column.id]) || [];
+      row.values[column.index] = items.map(item => item.display ?? '').join('\n');
+      const companion = workbook.schemaTokens.indexOf(`companion:${column.key}`);
+      if (companion >= 0) row.values[companion] = items.map(item => column.kind === 'function' ? `${item.id}|${item.roleTypeId}` : item.id ?? '').join('\n');
+      if (row.cellMeta) row.cellMeta[column.index] = null;
+    };
+    for (const base of outputBases) {
+      if (!base.base) continue; // V1–V6 without cell baselines retain conservative conflict handling.
+      const id = canonicalValue(base.rowCardId), current = byCard.get(id);
+      const local = desired.find(row => canonicalValue(row.system.rowCardId) === id);
+      if ((counts.get(id) || 0) > 1 || local?.system.action === 'add') continue;
+      if (!current) {
+        if (!local) continue;
+        const changed = [...local.columns.values()].some(col => !arraysEqual(local.compare?.[col.key] || [], currentCompareValues(base.base, col)));
+        if (changed) conflicts.push({ id: `missing:${id}`, excelRow: local.excelRow, column: 'Строка удалена в TESSA', mine: 'Сохранить как новую строку', server: 'Удалить из Excel', base: 'Строка была в выгрузке', kind: 'remote-delete' });
+        if (!changed || choices[`missing:${id}`] === 'server') rows.splice(rows.indexOf(byExcel.get(local.excelRow)), 1);
+        else if (choices[`missing:${id}`] === 'mine') {
+          const row = byExcel.get(local.excelRow);
+          for (const field of ['rowCardId', 'versionId', 'baseFingerprint']) if (map.system[field] !== undefined) row.values[map.system[field]] = '';
+        }
+        continue;
+      }
+      if (!local) {
+        if (base.baseFingerprint !== current.fingerprint) {
+          const key = `delete:${id}`;
+          conflicts.push({ id: key, excelRow: '', column: `Удаление строки ${current.index + 1}`, mine: 'Удалить строку', server: 'Сохранить строку TESSA', base: 'Строка удалена в Excel', kind: 'local-delete' });
+          if (choices[key] === 'server') {
+            const row = { excelRow: Math.max(workbook.headerRow, ...rows.map(r => r.excelRow)) + 1, values: Array(workbook.headers.length).fill('') };
+            for (const column of map.columns.values()) assign(row, column, current);
+            for (const [field,value] of Object.entries({rowCardId:current.rowCardId,versionId:current.versionId,baseFingerprint:current.fingerprint})) if (map.system[field] !== undefined) row.values[map.system[field]] = value;
+            rows.push(row);
+          }
+        }
+      } else {
+        const row = byExcel.get(local.excelRow);
+        if (local.issues?.length) continue;
+        if (local.system.action === 'delete' && base.baseFingerprint !== current.fingerprint) {
+          const key = `explicit-delete:${id}`;
+          conflicts.push({ id: key, excelRow: local.excelRow, column: 'Удаление изменённой строки', mine: 'Удалить строку', server: 'Сохранить TESSA', base: 'Строка изменилась после выгрузки', kind: 'local-delete' });
+          if (choices[key] === 'server' && map.system.action !== undefined) row.values[map.system.action] = '';
+        }
+        for (const column of local.columns.values()) {
+          const original = currentCompareValues(base.base, column), remote = currentCompareValues(current, column), mine = local.compare?.[column.key] || [];
+          const mineChanged = !arraysEqual(mine, original), remoteChanged = !arraysEqual(remote, original);
+          const key = `${local.excelRow}:${column.key}`;
+          const conflict = mineChanged && remoteChanged && !arraysEqual(mine, remote);
+          if (conflict) conflicts.push({ id: key, excelRow: local.excelRow, column: column.name || column.excelHeader, mine: (local.flat[column.key] || []).join(' · ') || '(пусто)', server: (current.flat[column.key] || []).join(' · ') || '(пусто)', base: (base.base.flat[column.key] || []).join(' · ') || '(пусто)', kind: 'cell' });
+          if (remoteChanged && (!mineChanged || arraysEqual(mine, remote) || choices[key] === 'server')) assign(row, column, current);
+          if (remoteChanged) highlights.push({ rowCardId: current.rowCardId, key: column.key, conflict });
+        }
+        if (map.system.baseFingerprint !== undefined) row.values[map.system.baseFingerprint] = current.fingerprint;
+        if (map.system.versionId !== undefined) row.values[map.system.versionId] = current.versionId;
+      }
+      base.versionId = current.versionId; base.baseFingerprint = current.fingerprint; base.base = { flat: current.flat, values: current.values, roles: current.roles };
+    }
+    return { workbook: { ...workbook, dictionaryCatalog: mergeCatalog, rows, roundtrip: { ...workbook.roundtrip, baselineRows: outputBases.filter(base => byCard.has(canonicalValue(base.rowCardId))) } }, conflicts, unresolved: conflicts.filter(c => !['mine', 'server'].includes(choices[c.id])), highlights };
+  }
+
+  function resolveMergeConflicts(conflicts) {
+    const host = document.querySelector('#tms-merge-conflicts');
+    if (!host) throw new Error('Не удалось показать конфликты объединения.');
+    host.hidden = false;
+    host.innerHTML = `<h3>Выберите значения для новой книги</h3><p>Жёлтым отмечены пересекающиеся изменения. До вашего выбора книга не пересобирается.</p>${conflicts.map((c, i) => `<fieldset class="tms-merge-conflict"><legend>${escapeHtml(c.excelRow ? `Excel ${c.excelRow} · ${c.column}` : c.column)}</legend><p>Было: ${escapeHtml(c.base)}</p><label><input type="radio" name="merge-${i}" value="mine"> Мой Excel: ${escapeHtml(c.mine)}</label><label><input type="radio" name="merge-${i}" value="server"> TESSA: ${escapeHtml(c.server)}</label></fieldset>`).join('')}<p id="tms-merge-status" role="status"></p><button type="button" id="tms-merge-confirm">Объединить выбранное</button> <button type="button" id="tms-merge-cancel">Отмена</button>`;
+    host.querySelector('input')?.focus();
+    return new Promise((resolve, reject) => {
+      host.querySelector('#tms-merge-cancel').onclick = () => { host.hidden = true; reject(new Error('Объединение отменено. Исходный Excel сохранён.')); };
+      host.querySelector('#tms-merge-confirm').onclick = () => {
+        const choices = Object.fromEntries(conflicts.map((c,i) => [c.id, host.querySelector(`input[name="merge-${i}"]:checked`)?.value]));
+        if (Object.values(choices).some(value => !value)) { host.querySelector('#tms-merge-status').textContent = 'Выберите вариант для каждого конфликта.'; return; }
+        host.hidden = true; resolve(choices);
+      };
     });
   }
 
@@ -2505,7 +2633,7 @@
         const identity = `v:${canonicalValue(base.versionId || '')}|c:${canonicalValue(base.rowCardId || '')}`;
         return identity !== 'v:|c:' && !desiredIdentities.has(identity) && !overwriteTargetIdentities.has(identity);
       });
-      const rowDeficit = Math.max(0, baselineRows.length - desiredRows.length);
+      const rowDeficit = Math.max(0, baselineRows.length - desiredRows.filter(row => row.system.action !== 'add').length);
       if (missingBaseline.length && missingBaseline.length !== rowDeficit) {
         throw new Error('Конфликт актуализации: baseline показывает пропавшую исходную identity, но число строк Excel не соответствует чистому физическому удалению. Возможно, повреждены скрытые ID или одновременно выполнены удаление и добавление. Выполните эти операции отдельно в свежей выгрузке.');
       }
@@ -2626,6 +2754,7 @@
   }
 
   async function refreshWorkbookSchema(workbook, sourceName = 'выбранный Excel') {
+    APP.abortRequested = false;
     setProgress(10, 'Проверяю выбранный Excel', sourceName);
     log(`Обновление Excel-схемы: ${sourceName}`);
     setProgress(20, 'Подключаюсь к TESSA', 'Проверяю открытую матрицу');
@@ -2634,19 +2763,31 @@
     setProgress(30, 'Читаю актуальную структуру TESSA', 'Сверяю критерии и функции');
     const structure = await bridge.requestStructure(templateId);
     const matrixInfo = bridge.matrixInfo();
+    if (canonicalValue(workbook.roundtrip?.matrixId) !== canonicalValue(matrixInfo.matrixId)) throw new Error('Excel относится к другой матрице. Откройте матрицу, из которой он выгружен.');
     const workbookTemplateId = canonicalValue(workbook.roundtrip?.templateId);
     if (!workbook.roundtrip?.enabled || workbookTemplateId !== canonicalValue(matrixInfo.TemplateID)) throw new Error('Выбранный Excel относится к другому шаблону или не является roundtrip-файлом.');
     setProgress(45, 'Читаю строки TESSA', 'Нужно сохранить ваши изменения и актуальные ID');
     log('Обновление Excel-схемы: читаю все строки и страницы TESSA.');
     const snapshot = await bridge.loadSnapshot(structure);
     setProgress(62, 'Переношу ваши изменения', 'Сохраняю значения и пользовательские столбцы');
-    const merged = mergeWorkbookIntoCurrentSnapshot(workbook, structure, snapshot);
+    let prepared = prepareThreeWayMerge(workbook, structure, snapshot);
+    if (prepared.unresolved.length) {
+      const choices = await resolveMergeConflicts(prepared.unresolved);
+      if (APP.abortRequested) throw new Error('Объединение остановлено.');
+      const freshBridge = await TessaBridge.create();
+      if (canonicalValue(freshBridge.mainCard.id) !== canonicalValue(snapshot.matrixId) || canonicalValue(freshBridge.templateId()) !== canonicalValue(structure.templateId)) throw new Error('Матрица изменилась. Повторите обновление.');
+      prepared = prepareThreeWayMerge(workbook, structure, snapshot, choices);
+    }
+    const merged = mergeWorkbookIntoCurrentSnapshot(prepared.workbook, structure, snapshot);
     setProgress(76, 'Обновляю справочники', 'Подключаю актуальные значения');
     log('Обновление Excel-схемы: подключаю словари (локальный кэш или сервер).');
-    const dictionaryCatalog = await bridge.loadDictionaryCatalog(structure, snapshot);
+    const dictionaryCatalog = await bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true });
     setProgress(90, 'Формирую актуальный Excel', 'Новые поля + ваши изменения');
     const bytes = await createRoundtripXlsxBytes(structure, merged.snapshot, matrixInfo, dictionaryCatalog, {
       schemaChanges: merged.schemaChanges,
+      baselineRows: snapshot.rows,
+      highlights: prepared.highlights,
+      includeActions: true,
       customColumns: merged.customColumns,
     });
     const shortId = String(snapshot.matrixId || '').slice(0, 8);
@@ -2655,6 +2796,90 @@
     log(`Excel-схема обновлена: строк ${merged.snapshot.rows.length}; новых столбцов ${merged.schemaChanges.missingDefinitions.length}; удалённых ${merged.schemaChanges.staleDefinitions.length}; пользовательских ${merged.customColumns.length}.`);
     setProgress(100, 'Excel актуализирован', `Новых полей: ${merged.schemaChanges.missingDefinitions.length} · пользовательских: ${merged.customColumns.length}`);
     return { name, workbook, structure, snapshot, merged, dictionaryCatalog, bytes };
+  }
+
+  function preserveWorkbookSelectors(workbook, fresh) {
+    const originals = new Map();
+    for (const [key, newId] of Object.entries(fresh.columnCatalogIds || {})) {
+      const oldId = workbook.dictionaryCatalog?.columnCatalogIds?.[key];
+      const old = workbook.dictionaryCatalog?.catalogs?.[oldId];
+      if (!old) continue;
+      if (!originals.has(newId)) originals.set(newId, new Map());
+      for (const entry of old.entries || []) originals.get(newId).set(`${canonicalValue(entry.id)}|${canonicalValue(entry.roleTypeId)}`, entry);
+    }
+    const catalogs = {};
+    for (const [id, catalog] of Object.entries(fresh.catalogs || {})) {
+      catalogs[id] = { ...catalog, entries: catalog.entries.map(entry => {
+        const old = originals.get(id)?.get(`${canonicalValue(entry.id)}|${canonicalValue(entry.roleTypeId)}`);
+        return { ...entry, selector: old && canonicalValue(old.display) === canonicalValue(entry.display) ? old.selector : undefined,
+          previousSelectors: old ? [...new Set([old.selector, old.display, ...(old.previousSelectors || [])].filter(Boolean))].slice(0, 20) : entry.previousSelectors };
+      }) };
+    }
+    return normalizeDictionaryCatalog({ ...fresh, catalogs });
+  }
+
+  async function refreshWorkbookDictionaries(workbook, structure, catalog) {
+    if (!workbook.roundtrip?.enabled) throw new Error('Выберите Excel, выгруженный из Studio.');
+    const archive = WORKBOOK_ARCHIVES.get(workbook);
+    if (!archive) throw new Error('Выберите исходный файл Excel повторно.');
+    const decoder = new TextDecoder();
+    const entries = new Map(archive);
+    const descriptors = parseWorkbookSheets(entries, decoder);
+    const pathOf = name => descriptors.find(item => item.name === name)?.path;
+    const dictionaryPath = pathOf(ROUNDTRIP.DictionarySheet), structurePath = pathOf(ROUNDTRIP.StructureSheet), matrixPath = pathOf(workbook.sheetName);
+    if (!dictionaryPath || !structurePath || !matrixPath) throw new Error('В книге отсутствуют служебные листы справочников.');
+    catalog = preserveWorkbookSelectors(workbook, catalog);
+    const donorBytes = await createRoundtripXlsxBytes(structure, { rows: [] }, {}, catalog);
+    const donor = await unzipArrayBuffer(donorBytes.buffer.slice(donorBytes.byteOffset, donorBytes.byteOffset + donorBytes.byteLength));
+    const donorDescriptors = parseWorkbookSheets(donor, decoder);
+    const donorPath = name => donorDescriptors.find(item => item.name === name)?.path;
+    // Replace reference data only. Matrix cells, IDs, formulas, row order, styles,
+    // baseline ledger and arbitrary user worksheets stay byte-for-byte intact.
+    const dictionaryXml = decoder.decode(donor.get(donorPath(ROUNDTRIP.DictionarySheet))).replace(/\s+s="\d+"/g, '');
+    entries.set(dictionaryPath, dictionaryXml);
+    const structureRows = workbook.parsedSheets.get(ROUNDTRIP.StructureSheet).rows.map(row => [...row]);
+    for (const row of structureRows.slice(1)) row[6] = catalog.columnCatalogIds?.[row[0]] || '';
+    entries.set(structurePath, genericSheetXml(structureRows, [], { autoFilter: false }).replace(/\s+s="\d+"/g, ''));
+    const namespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+    const donorWorkbook = decoder.decode(donor.get('xl/workbook.xml'));
+    const ranges = [...donorWorkbook.matchAll(/<definedName\b([^>]*)>([\s\S]*?)<\/definedName>/g)].map(m => ({ name: attr(m[1], 'name'), formula: m[2] }));
+    const ids = Object.values(normalizeDictionaryCatalog(catalog).catalogs).filter(item => item.entries.length).map(item => item.id);
+    const rangeByCatalog = new Map(ids.map((id, i) => [id, ranges[i]?.name]));
+    let workbookXml = decoder.decode(entries.get('xl/workbook.xml'));
+    const namesPattern = /<(?:[\w.-]+:)?definedNames\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?definedNames>/;
+    const existingNames = workbookXml.match(namesPattern)?.[1] || '';
+    const preservedNames = existingNames.replace(/<(?:[\w.-]+:)?definedName\b([^>]*)>[\s\S]*?<\/(?:[\w.-]+:)?definedName>/g, (all, attrs) => /^_TMS_DV_/.test(attr(attrs, 'name') || '') ? '' : all);
+    const namesXml = `<definedNames xmlns="${namespace}">${preservedNames}${ranges.map(r => `<definedName name="${r.name}">${r.formula}</definedName>`).join('')}</definedNames>`;
+    workbookXml = namesPattern.test(workbookXml) ? workbookXml.replace(namesPattern, () => namesXml) : workbookXml.replace(/(<\/(?:[\w.-]+:)?sheets>)/, (_, end) => end + namesXml);
+    entries.set('xl/workbook.xml', workbookXml);
+    let matrixXml = decoder.decode(entries.get(matrixPath));
+    const validationPattern = /<(?:[\w.-]+:)?dataValidations\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?dataValidations>/;
+    const oldValidation = matrixXml.match(validationPattern)?.[1] || '';
+    const preserved = [...oldValidation.matchAll(/<(?:[\w.-]+:)?dataValidation\b[^>]*>[\s\S]*?<\/(?:[\w.-]+:)?dataValidation>/g)].map(m => m[0]).filter(xml => !/_TMS_DV_/.test(xml));
+    const endRow = Math.min(1048576, Math.max(10000, ...(workbook.rows || []).map(r => r.excelRow + 5000)));
+    workbook.schemaTokens.forEach((key, index) => {
+      const range = rangeByCatalog.get(catalog.columnCatalogIds?.[key]);
+      if (range) preserved.push(`<dataValidation type="list" allowBlank="1" showDropDown="0" showInputMessage="0" showErrorMessage="0" sqref="${indexToCol(index)}${workbook.headerRow + 1}:${indexToCol(index)}${endRow}"><formula1>${range}</formula1></dataValidation>`);
+    });
+    const validationXml = `<dataValidations xmlns="${namespace}" count="${preserved.length}">${preserved.join('')}</dataValidations>`;
+    matrixXml = validationPattern.test(matrixXml) ? matrixXml.replace(validationPattern, () => validationXml) : matrixXml.replace(/(<(?:[\w.-]+:)?(?:hyperlinks|printOptions|pageMargins|pageSetup|headerFooter|drawing|extLst)\b|<\/(?:[\w.-]+:)?worksheet>)/, (_, tail) => validationXml + tail);
+    entries.set(matrixPath, matrixXml);
+    return makeZip([...entries]);
+  }
+
+  async function refreshSelectedWorkbookDictionaries(file) {
+    if (!file) throw new Error('Сначала выберите изменённый Excel в шаге 2.');
+    setProgress(10, 'Читаю ваш Excel', 'Матрица и ваши правки сохранятся');
+    const workbook = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
+    const bridge = await TessaBridge.create(), matrixInfo = bridge.matrixInfo();
+    if (canonicalValue(workbook.roundtrip?.templateId) !== canonicalValue(matrixInfo.TemplateID)) throw new Error('Excel относится к другому шаблону.');
+    const structure = await bridge.requestStructure(bridge.templateId());
+    setProgress(35, 'Обновляю справочники', 'Читаю актуальные значения TESSA');
+    const catalog = await bridge.loadDictionaryCatalog(structure, { rows: [] }, { forceRefresh: true });
+    const bytes = await refreshWorkbookDictionaries(workbook, structure, catalog);
+    downloadBlob(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), file.name.replace(/\.xlsx$/i, '') + '_СПРАВОЧНИКИ.xlsx');
+    setProgress(100, 'Справочники обновлены', catalog.stats.errors.length ? `Есть неполные справочники: ${catalog.stats.errors.length}. Запустите диагностику.` : 'Матрица и ваши изменения сохранены в новом файле');
+    return { bytes, catalog };
   }
 
   async function refreshSelectedWorkbook(file) {
@@ -3525,24 +3750,50 @@
     findCompatibleViewAlias(condition) {
       const api = this.viewApi();
       if (!api) return null;
-      const aliases = this.repositoryViewAliases();
       const directCandidates = [condition.autocompleteViewName, condition.refSection, condition.autocompleteViewName ? `${condition.autocompleteViewName}s` : null, condition.refSection ? `${condition.refSection}s` : null, condition.autocompleteViewName ? `Gch${condition.autocompleteViewName}` : null].filter(Boolean);
       for (const candidate of directCandidates) {
         try { if (api.service.getByName(candidate)?.metadata) return candidate; } catch (_) { /* continue */ }
       }
-      const wanted = canonicalValue(`${condition.autocompleteViewName || ''} ${condition.refSection || ''}`);
-      const wantedTokens = new Set(wanted.split(/\s+/).filter(token => token.length > 2));
-      const scored = aliases.map(item => {
-        const text = canonicalValue(`${item.alias} ${item.metadata?.caption || ''}`);
-        let score = 0;
-        if (canonicalValue(item.alias) === canonicalValue(condition.autocompleteViewName)) score += 100;
-        if (canonicalValue(item.alias).startsWith(canonicalValue(condition.autocompleteViewName || '___'))) score += 40;
-        if (canonicalValue(item.alias).includes(canonicalValue(condition.refSection || '___'))) score += 35;
-        for (const token of wantedTokens) if (text.includes(token)) score += 5;
-        if (/history|report|task|log|истор|отчет|задач/.test(text)) score -= 20;
-        return { ...item, score };
-      }).sort((a, b) => b.score - a.score);
-      return scored[0]?.score >= 10 ? scored[0].alias : null;
+      return null;
+    }
+
+    dictionaryReferences(metadata) {
+      const refs = metadata?.references || metadata?.References || [];
+      const values = Array.isArray(refs) ? refs : typeof refs.values === 'function' ? [...refs.values()] : Object.values(refs);
+      return values.map(ref => ({
+        colPrefix: ref.colPrefix ?? ref.ColPrefix ?? '',
+        refSection: ref.refSection ?? ref.RefSection ?? [],
+        displayValueColumn: ref.displayValueColumn ?? ref.DisplayValueColumn ?? '',
+      }));
+    }
+
+    dictionaryProjection(result, options = {}) {
+      const columns = Array.from(result.columns || []);
+      const index = name => columns.findIndex(col => canonicalValue(col) === canonicalValue(name));
+      const refs = result.references || [];
+      const section = canonicalValue(options.refSection || '');
+      const sections = ref => (Array.isArray(ref.refSection) ? ref.refSection : String(ref.refSection || '').split(/\s+/)).filter(x => typeof x === 'string').map(canonicalValue);
+      const matched = refs.filter(ref => sections(ref).includes(section));
+      // The native selector uses the first reference matching RefSection.
+      const reference = matched[0] || (!section && refs.length === 1 ? refs[0] : null);
+      let prefix = reference?.colPrefix;
+      let displayColumn = reference?.displayValueColumn;
+      if (!prefix) {
+        // Older SDKs omit reference metadata. Use an exact column pair only;
+        // never infer identity from row contents or choose a parent by score.
+        const stems = [options.roleMode ? 'Role' : '', options.refSection || '', result.alias || '']
+          .flatMap(value => { const base = value.replace(/^Gch/, '').replace(/Multi$/, ''); return [value, base, base.replace(/ies$/, 'y').replace(/s$/, ''), base.replace(/^Ord/, '').replace(/s$/, '')]; }).filter(Boolean);
+        const pairs = columns.filter(col => /ID$/i.test(col)).map(col => col.slice(0, -2)).filter(stem => ['Name', 'Title', 'FullName', 'Caption'].some(end => index(`${stem}${end}`) >= 0));
+        prefix = stems.find(stem => index(`${stem}ID`) >= 0 && ['Name', 'Title', 'FullName', 'Caption'].some(end => index(`${stem}${end}`) >= 0));
+        if (!prefix && pairs.length === 1) prefix = pairs[0];
+        if (!prefix && index('ID') >= 0) prefix = '';
+        if (prefix === undefined) throw new Error('Не определена ссылка справочника: нет однозначной пары ID/название. Обновите диагностику метаданных.');
+      }
+      const idIndex = index(`${prefix}ID`);
+      let displayIndex = displayColumn ? index(displayColumn) : -1;
+      if (displayIndex < 0) displayIndex = ['Name', 'Title', 'FullName', 'Caption'].map(end => index(`${prefix}${end}`)).find(i => i >= 0) ?? -1;
+      if (idIndex < 0 || displayIndex < 0 || idIndex === displayIndex) throw new Error('Колонки ссылки справочника не найдены в ответе TESSA.');
+      return { idIndex, displayIndex, idColumn: columns[idIndex], displayColumn: columns[displayIndex], refSection: options.refSection || '', via: reference ? 'metadata' : 'exact-column-pair' };
     }
 
     localizeValue(value) {
@@ -3571,37 +3822,17 @@
       if (!result || result.error || !Array.isArray(result.rows)) return [];
       const columns = Array.from(result.columns || []);
       const rows = result.rows || [];
-      const sample = rows.slice(0, 100);
-      const wantedKind = options.wantedKind || 'guid';
+      const { idIndex, displayIndex } = this.dictionaryProjection(result, options);
       const roleMode = Boolean(options.roleMode);
-      const scoreId = (alias, index) => {
-        const text = canonicalValue(alias);
-        const values = sample.map(row => row[index]).filter(value => value !== null && value !== undefined && String(value).trim() !== '');
-        const typeScore = wantedKind === 'int' ? (values.some(value => Number.isInteger(Number(value))) ? 20 : 0) : (values.some(isGuidLike) ? 20 : 0);
-        return typeScore + (/roleid|partnerid|businessscopeid|typeid|rowid|(^| )id($| )/.test(text) ? 14 : 0) - (/roletypeid/.test(text) ? 20 : 0);
-      };
-      const scoreDisplay = (alias, index) => {
-        const text = canonicalValue(alias);
-        const preferred = canonicalValue(options.preferredDisplay || '');
-        const values = sample.map(row => normalizeSpace(row[index])).filter(Boolean);
-        return (preferred && text === preferred ? 30 : 0) + (/name|наимен|назван|display|caption|fullname|flow/.test(text) ? 15 : 0) + (values.some(value => !isGuidLike(value) && !/^\d+$/.test(value)) ? 8 : 0) - (/id|type|email|comment|описан|inn|kpp/.test(text) ? 5 : 0);
-      };
-      let idIndex = columns.map((alias, index) => ({ index, score: scoreId(alias, index) })).sort((a,b)=>b.score-a.score)[0]?.index ?? 0;
-      let displayIndex = columns.map((alias, index) => ({ index, score: scoreDisplay(alias, index) })).sort((a,b)=>b.score-a.score)[0]?.index ?? Math.min(1, columns.length - 1);
       let roleTypeIndex = columns.findIndex(alias => /roletypeid/i.test(String(alias)));
       if (roleMode && roleTypeIndex < 0 && rows.some(row => row.length > columns.length && Number.isFinite(Number(row[row.length - 1])))) roleTypeIndex = Math.max(...rows.map(row => row.length)) - 1;
-      const hiddenIndex = columns.findIndex(alias => /^(is)?hidden$|disabled/i.test(String(alias)));
-      const activeIndex = columns.findIndex(alias => /^(is)?active$|ispartneractive/i.test(String(alias)));
+      const hiddenIndex = columns.findIndex(alias => /(?:^|Is)Hidden$|Disabled$/i.test(String(alias)));
+      const activeIndex = columns.findIndex(alias => /(?:^|Is)Active$/i.test(String(alias)));
       const entries = [];
       for (const row of rows) {
         const id = row[idIndex];
         let display = this.localizeValue(row[displayIndex]);
-        if (looksTechnicalValue(display)) {
-          const better = columns.map((alias, index) => ({ alias, value: this.localizeValue(row[index]), score: scoreDisplay(alias, index) }))
-            .filter(item => item.value && !looksTechnicalValue(item.value) && canonicalValue(item.value) !== canonicalValue(id))
-            .sort((a, b) => b.score - a.score)[0];
-          if (better?.value) display = normalizeSpace(better.value);
-        }
+        if (isGuidLike(display) || /^\$[A-Za-z0-9_.-]+$/.test(display)) continue;
         if (!display || id === null || id === undefined || id === '') continue;
         const hidden = hiddenIndex >= 0 && [true, 1, '1', 'true'].includes(row[hiddenIndex]);
         const inactive = activeIndex >= 0 && [false, 0, '0', 'false'].includes(row[activeIndex]);
@@ -3656,22 +3887,26 @@
         }
         if (![canonicalValue(OPERAND.ReferenceGuid), canonicalValue(OPERAND.ReferenceInt)].includes(operand)) continue;
         const alias = this.findCompatibleViewAlias(condition);
-        const catalogId = `criterion-view:${alias || condition.autocompleteViewName || condition.refSection || condition.criterionRowId}:${operand}`;
+        const catalogId = `criterion-view:${alias || condition.autocompleteViewName || condition.refSection || condition.criterionRowId}:${operand}:${condition.refSection || ''}`;
         catalog.columnCatalogIds[key] = catalogId;
         if (!criterionGroups.has(catalogId)) criterionGroups.set(catalogId, { alias, conditions: [], wantedKind: operand === canonicalValue(OPERAND.ReferenceInt) ? 'int' : 'guid' });
         criterionGroups.get(catalogId).conditions.push(condition);
       }
 
+      const queries = new Map();
+      const query = alias => { if (!queries.has(alias)) queries.set(alias, this.queryViewSample(alias, 200000, { forceRefresh })); return queries.get(alias); };
+
       // Самые тяжёлые представления (GchPartners и MtxRoles) читаются параллельно.
       const criterionJobs = [...criterionGroups.entries()].map(async ([catalogId, group]) => {
         const label = group.conditions.map(item => item.criterionName).join(' / ');
-        let entries = [];
+        let entries = [], projection = null, sourceCount = 0;
         if (group.alias) {
           log(`Словарь: ${label} ← ${group.alias}`);
-          const result = await this.queryViewSample(group.alias, 200000);
+          const result = await query(group.alias);
           if (result.error) catalog.stats.errors.push(`${group.alias}: ${String(result.error).split('\n')[0]}`);
           else {
-            entries = this.extractDictionaryEntries(result, { wantedKind: group.wantedKind, preferredDisplay: group.conditions[0].autocompleteParamName });
+            try { projection = this.dictionaryProjection(result, { refSection: group.conditions[0].refSection }); entries = this.extractDictionaryEntries(result, { wantedKind: group.wantedKind, refSection: group.conditions[0].refSection }); sourceCount = entries.length; }
+            catch (error) { catalog.stats.errors.push(`${label}: ${error.message}`); }
             if (result.truncated) catalog.stats.errors.push(`${group.alias}: получено ${result.rows.length} из ${result.rowCount}; словарь неполный`);
           }
         } else catalog.stats.errors.push(`${label}: подходящее представление не найдено`);
@@ -3680,19 +3915,21 @@
             for (const item of row.values?.[condition.criterionRowId] || []) if (item.id !== null && item.id !== undefined && item.id !== '') entries.push({ id: String(item.id), display: item.display, roleTypeId: '', source: 'Текущая матрица', status: 'Текущее значение' });
           }
         }
-        return { catalogId, catalog: { id: catalogId, label, sourceView: group.alias || 'Текущая матрица', entries } };
+        return { catalogId, catalog: { id: catalogId, label, sourceView: group.alias || 'Текущая матрица', projection, sourceCount, entries } };
       });
 
       const roleJob = (async () => {
         const roleCatalogId = 'roles:MtxRoles';
         let roleEntries = [];
         let roleAlias = null;
-        for (const alias of ['MtxRoles', 'GchRolesForMultiselect', 'ApprovalProcessEditorRoles', 'DiadocRoles']) {
+        for (const alias of ['MtxRoles']) {
           log(`Словарь ролей: пробую ${alias}`);
-          const result = await this.queryViewSample(alias, 200000);
+          const result = await query(alias);
+          if (result.error) catalog.stats.errors.push(`Роли: ${result.error}`);
           if (!result.error && result.rows?.length) {
             roleAlias = alias;
-            roleEntries = this.extractDictionaryEntries(result, { wantedKind: 'guid', roleMode: true, preferredDisplay: 'RoleName' });
+            try { roleEntries = this.extractDictionaryEntries(result, { wantedKind: 'guid', roleMode: true }); }
+            catch (error) { catalog.stats.errors.push(`Роли: ${error.message}`); }
             if (result.truncated) catalog.stats.errors.push(`${alias}: получено ${result.rows.length} из ${result.rowCount}; словарь ролей неполный`);
             if (roleEntries.length) break;
           }
@@ -3727,6 +3964,7 @@
         const rows = Array.from(result?.rows || []).slice(0, maxRows).map(row => Array.from(row || []).map(value => safePlain(this.unwrapTyped(value), { maxDepth: 5 })));
         return {
           alias: viewAlias,
+          references: this.dictionaryReferences(view.metadata),
           columns,
           schemeTypes: Array.from(result?.schemeTypes || []).map(item => item?.toString?.() || String(item)),
           rowCount: result?.rowCount ?? rows.length,
@@ -4878,9 +5116,9 @@
         const identity = `v:${canonicalValue(base.versionId || '')}|c:${canonicalValue(base.rowCardId || '')}`;
         return identity !== 'v:|c:' && !desiredIdentities.has(identity) && !overwriteTargetIdentities.has(identity);
       });
-      const rowDeficit = Math.max(0, baselineRows.length - desired.length);
+      const rowDeficit = Math.max(0, baselineRows.length - desired.filter(row => row.system.action !== 'add').length);
       if (missingBaseline.length > rowDeficit) {
-        const noIdentityRows = desired.filter(row => row.hasData && !excelIdentityKey(row));
+        const noIdentityRows = desired.filter(row => row.hasData && row.system.action !== 'add' && !excelIdentityKey(row));
         for (const excelRow of noIdentityRows) {
           baselineIntegrityRows.add(excelRow);
           issues.push(`Строка Excel ${excelRow.excelRow}: потеряны скрытые MatrixRowID/MatrixVersionID. Строка не будет считаться новой, а автоматическое удаление отключено. Скачайте свежую выгрузку или выполните DELETE и ADD отдельно.`);
@@ -7160,7 +7398,14 @@
     }, schemaOk);
     await run('dictionaries', 'Чтение справочников', async () => {
       catalog = await bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true, transient: true });
-      capture('dictionaries.json', catalog);
+      // Search text is reproducible. Shard large reference data so one large
+      // dictionary cannot discard every catalog from a diagnostic package.
+      capture('dictionaries.json', { columnCatalogIds: catalog.columnCatalogIds, stats: catalog.stats, catalogs: Object.fromEntries(Object.entries(catalog.catalogs).map(([id,c]) => [id, { id, label:c.label, sourceView:c.sourceView, projection:c.projection, sourceCount:c.sourceCount, entries:c.entries.length }])) });
+      let dictionaryIndex = 0;
+      for (const [id, dictionary] of Object.entries(catalog.catalogs)) {
+        dictionaryIndex++;
+        for (let offset = 0; offset < dictionary.entries.length; offset += 500) capture(`dictionaries/${dictionaryIndex}-${offset}.json`, { id, offset, entries: dictionary.entries.slice(offset, offset + 500).map(({ searchText, ...entry }) => entry) });
+      }
       return { status: catalog.stats.errors?.length ? 'fail' : 'pass', detail: catalog.stats.errors?.join('\n') || `${catalog.stats.entries} значений в ${catalog.stats.catalogs} справочниках.` };
     }, snapshotOk);
     const roundtripOk = await run('roundtrip', 'Выгрузка и обратное чтение всех полей', async () => {
@@ -7173,8 +7418,8 @@
       return { detail: `${snapshot.rows.length} строк × ${structure.conditions.length + structure.functions.length} полей: расхождений нет.` };
     }, snapshotOk);
     await run('selected-plan', 'Изменения и ошибки выбранного Excel', async () => {
-      capture('selected-workbook.json', selected);
-      plan = buildPlan(selected, structure, snapshot); capture('selected-plan.json', plan);
+      capture('selected-workbook.json', { fileName: selected.fileName, sheetName: selected.sheetName, headers: selected.headers, schemaTokens: selected.schemaTokens, roundtrip: selected.roundtrip, rows: selected.rows });
+      plan = buildPlan(selected, structure, snapshot); capture('selected-plan.json', compactPlanForExport(plan));
       return { status: plan.safety?.blocked || plan.counts.skip || plan.skippedFields?.length ? 'fail' : 'pass', detail: `Изменить: ${plan.counts.update}; добавить: ${plan.counts.add}; удалить: ${plan.counts.delete}; пропустить: ${plan.counts.skip}; ошибочных полей: ${plan.skippedFields?.length || 0}.` };
     }, Boolean(snapshotOk && selected));
 
@@ -7187,6 +7432,56 @@
       }
       return { excelRow: 0, columns, flat: clonePlain(row.flat), ids };
     };
+    if (catalog) for (const [id, dictionary] of Object.entries(catalog.catalogs)) {
+      await run(`catalog-${id}`, `Справочник: ${dictionary.label || 'Значения'}`, async () => {
+        const lookup = dictionaryLookup(dictionary);
+        const bad = (dictionary.entries || []).filter(entry => !entry.display || isGuidLike(entry.display) || /^\$[A-Za-z0-9_.-]+$/.test(entry.display));
+        if (bad.length) throw new Error(`Технических или пустых названий: ${bad.length}.`);
+        const columnKey = Object.keys(catalog.columnCatalogIds).find(key => catalog.columnCatalogIds[key] === id);
+        const column = { key: columnKey, kind: columnKey?.startsWith('function:') ? 'function' : 'criterion', excelHeader: dictionary.label };
+        let checked = 0, ambiguous = 0;
+        for (const entry of dictionary.entries) {
+          const sameName = lookup.byDisplay.get(canonicalValue(entry.display)) || [];
+          if (sameName.length > 1) { ambiguous++; continue; }
+          const resolved = resolveEmbeddedDictionaryValue({ dictionaryCatalog: catalog }, column, entry.selector || entry.display, '');
+          if (!resolved.resolved) throw new Error('Значение из справочника не распознано при ручном вводе.');
+          checked++;
+        }
+        return { detail: `Проверено названий: ${checked}; одинаковых названий с уточнением: ${ambiguous}. Источник: ${dictionary.sourceView || 'текущая матрица'}.` };
+      });
+    }
+    if (generated && columns) for (const column of columns.values()) {
+      await run(`field-${column.key}`, `Поле: ${column.name || column.excelHeader}`, async () => {
+        const controlRow = snapshot.rows.find(row => (column.kind === 'function' ? row.roles?.[column.id] : row.values?.[column.id])?.length);
+        if (!controlRow) return { status: 'not-run', detail: 'В матрице нет заполненного примера этого поля.' };
+        if (!controlRow.card?.clone) return { status: 'not-run', detail: 'Карточка для проверки перестройки недоступна.' };
+        const desired = desiredFromRow(controlRow);
+        desired.flat[column.key] = []; desired.ids[column.key] = [];
+        const cloned = controlRow.card.clone();
+        const removesLastRole = column.kind === 'function' && !Object.entries(controlRow.roles || {}).some(([id,items]) => id !== column.id && items.length);
+        try { bridge.rebuildRowCard(cloned, controlRow.versionId, desired, structure, snapshot); }
+        catch (error) {
+          if (removesLastRole && /не останется ни одного исполнителя/.test(error.message || '')) return { detail: 'Защита сработала: удалить последнего исполнителя из существующей строки нельзя. Записи не было.' };
+          throw error;
+        }
+        if (removesLastRole) throw new Error('Подготовка разрешила строку без исполнителей.');
+        const after = bridge.readMatrixRowFromCard(cloned, controlRow, structure);
+        if (currentCompareValues(after, column).length) throw new Error('Очистка поля не удаляет его значения в подготовленной карточке.');
+        for (const other of columns.values()) if (other.key !== column.key && !arraysEqual(currentCompareValues(after, other), currentCompareValues(controlRow, other))) throw new Error('При очистке изменилось другое поле.');
+        return { detail: 'Очистка отдельного поля проверена на копии карточки; остальные поля сохранены. Записи не было.' };
+      });
+    }
+    await run('physical-delete', 'Удаление строки в Excel: сопоставление', async () => {
+      if (!generated.rows.length) return { status: 'not-run', detail: 'Нет строк для контрольного удаления.' };
+      const index = Math.floor(generated.rows.length / 2);
+      const sample = { ...generated, rows: generated.rows.filter((_, i) => i !== index) };
+      const deleted = buildPlan(sample, structure, snapshot);
+      const target = snapshot.rows[index];
+      const action = deleted.actions.find(a => a.type === 'delete' && a.currentRow.rowCardId === target.rowCardId);
+      if (!action) throw new Error('Удаление целой строки не распознано.');
+      return { detail: 'Удаление строки из середины Excel распознано по исходной версии. Серверное удаление не вызывалось.' };
+    }, Boolean(generated && snapshotOk));
+
     const control = snapshotOk ? snapshot.rows.find(row => Object.values(row.values || {}).some(items => items.some(v => v.to != null))) || snapshot.rows[0] : null;
     await run('saved-validation', 'Сервер: сохранённая строка', async () => {
       await bridge.validateDuplicate(control.card, control.versionId); return { detail: 'Сервер разрешил проверку существующей версии.' };
@@ -7273,7 +7568,7 @@
       if (!result) {
         result = await collectStudioDiagnostics({
           connect: async () => { const bridge = await TessaBridge.create(); context = { id: bridge.mainCard.id, templateId: bridge.templateId() }; return bridge; },
-          probe: probeRuntimeEnvironment, file, workbook: originalWorkbook, previous, assertContext,
+          probe: probeRuntimeEnvironment, file, workbook: originalWorkbook, previous, assertContext, limits: { candidates: 200 },
           onProgress: report => { renderStudioDiagnostics(report); setProgress(Math.min(94, 5 + report.checks.length * 4), 'Проверки без записи', report.checks.at(-1)?.title || 'Подготовка'); },
         });
       }
@@ -7861,10 +8156,11 @@
     if (!APP.busy) {
       for (const [selector, enabled] of [['#tms-download-current', availability.export.enabled], ['#tms-download-fresh', availability.export.enabled], ['#tms-analyze', availability.analyze.enabled]]) {
         const button = document.querySelector(selector);
-        if (button) button.disabled = !enabled || (selector === '#tms-analyze' && !document.querySelector('#tms-file')?.files?.length);
+        if (button) button.disabled = !enabled || (['#tms-analyze', '#tms-download-fresh'].includes(selector) && !document.querySelector('#tms-file')?.files?.length);
       }
       const apply = document.querySelector('#tms-apply');
       if (apply) apply.disabled = !availability.apply.enabled || !APP.plan || !APP.reviewedApplyEnabled;
+      const writeTest = document.querySelector('#tms-test-write'); if (writeTest) writeTest.disabled = !availability.apply.enabled || !APP.plan || !APP.reviewedApplyEnabled;
       updateReconciliationControlState();
     }
     return { probe, capabilities, availability };
@@ -7887,7 +8183,7 @@
       const key = definitionKey(schema.kind, schema.id);
       const dictionary = catalog?.catalogs?.[catalog?.columnCatalogIds?.[key]];
       if (!dictionary?.entries?.length || dictionaryLookup(dictionary).isBoolean) return [];
-      return [{ key, label: source.headers[index], catalog: dictionary }];
+      return [{ key, kind: schema.kind, label: source.headers[index], catalog: dictionary }];
     });
   }
 
@@ -7910,8 +8206,8 @@
   function pickerSelectionText(items) {
     const unique = [...new Map(items.map(item => [pickerEntryKey(item), item])).values()];
     const values = unique.map(item => String(item.selector || item.display || '').trim());
-    if (values.some(value => /[\n\r;\t]/.test(value))) throw new Error('В названии есть разделитель. Укажите точный ID в служебном столбце Excel.');
-    if (values.some(value => /^[=+@-]/.test(value))) throw new Error('Название похоже на формулу Excel. Используйте точный ID.');
+    if (values.some(value => /[\n\r;\t]/.test(value))) throw new Error('В названии есть разделитель. Такое значение нельзя собрать автоматически. Выберите его в штатном редакторе TESSA.');
+    if (values.some(value => /^[=+@-]/.test(value))) throw new Error('Название начинается со знака формулы. Выберите его в штатном редакторе TESSA.');
     const result = values.join('\n');
     if (result.length > 32767) throw new Error('В ячейке Excel может быть не больше 32767 символов. Уменьшите выбор.');
     return result;
@@ -7961,7 +8257,7 @@
     document.querySelector('#tms-open-picker')?.setAttribute('aria-expanded', 'true');
     host.innerHTML = `<div class="tms-picker-head"><b>Несколько значений в ячейке</b><button type="button" id="tms-picker-close" aria-label="Закрыть выбор значений">×</button></div>
       <label for="tms-picker-column">Поле Excel</label><select id="tms-picker-column">${columns.map((c, i) => `<option value="${i}">${escapeHtml(c.label)}</option>`).join('')}</select>
-      <input id="tms-picker-query" type="search" aria-label="Поиск по справочнику" placeholder="Найти значение" maxlength="200">
+      <p class="tms-muted">Поиск по текущему полю. Enter выбирает единственный результат; Esc закрывает окно.</p><details><summary>Продолжить набор из ячейки Excel</summary><textarea id="tms-picker-paste" rows="2" aria-label="Значения из Excel"></textarea><button id="tms-picker-import" type="button">Добавить в набор</button></details><input id="tms-picker-query" type="search" aria-label="Поиск по справочнику" placeholder="Найти значение" maxlength="200">
       <div id="tms-picker-count" class="tms-muted" aria-live="polite"></div><div id="tms-picker-results" class="tms-picker-results"></div>
       <div id="tms-picker-selected" class="tms-picker-selected"></div><label for="tms-picker-output">Готовое содержимое ячейки</label><textarea id="tms-picker-output" readonly rows="3"></textarea>
       <p class="tms-muted">Скопируйте набор. В Excel нажмите F2 в нужной ячейке и вставьте: все значения останутся внутри неё.</p>
@@ -7969,7 +8265,7 @@
     host.onchange = event => {
       const state = APP.picker; if (!state || APP.busy) return;
       if (event.target.id === 'tms-picker-column') {
-        state.columnIndex = Number(event.target.value); state.selected.clear(); host.querySelector('#tms-picker-query').value = '';
+        state.selections = state.selections || new Map(); state.selections.set(state.columnIndex, state.selected); state.columnIndex = Number(event.target.value); state.selected = state.selections.get(state.columnIndex) || new Map(); host.querySelector('#tms-picker-query').value = '';
       } else if (event.target.dataset.pickerIndex !== undefined) {
         const item = state.visibleItems[Number(event.target.dataset.pickerIndex)]; if (!item) return;
         if (event.target.checked) state.selected.set(pickerEntryKey(item), item); else state.selected.delete(pickerEntryKey(item));
@@ -7985,6 +8281,17 @@
       const button = event.target.closest('button'); const state = APP.picker;
       if (!button || !state || APP.busy) return;
       if (button.id === 'tms-picker-close') { closeValuePicker(); document.querySelector('#tms-open-picker')?.focus(); return; }
+      if (button.id === 'tms-picker-import') {
+        const column = state.columns[state.columnIndex], dictionary = { catalogs: { selected: column.catalog }, columnCatalogIds: { [column.key]: 'selected' } };
+        const unknown = [];
+        for (const value of splitCell(host.querySelector('#tms-picker-paste').value)) {
+          const result = resolveEmbeddedDictionaryValue({ dictionaryCatalog: dictionary }, { key: column.key, kind: column.kind, excelHeader: column.label }, value, '');
+          const entry = result.resolved ? column.catalog.entries.find(e => (column.kind === 'function' ? `${e.id}|${e.roleTypeId}` : String(e.id)) === result.explicit) : null;
+          if (entry) state.selected.set(pickerEntryKey(entry), entry); else unknown.push(value);
+        }
+        renderPickerResults();
+        if (unknown.length) host.querySelector('#tms-picker-message').textContent = `Не найдены или неоднозначны: ${unknown.join('; ')}`;
+      }
       if (button.id === 'tms-picker-clear') { state.selected.clear(); renderPickerResults(); }
       if (button.dataset.pickerRemove !== undefined) {
         const item = [...state.selected.values()][Number(button.dataset.pickerRemove)];
@@ -7996,6 +8303,15 @@
         output.focus(); output.select();
         try { await navigator.clipboard.writeText(output.value); if (APP.picker === state) message.textContent = 'Скопировано. Вставьте в Excel через F2 → Ctrl+V.'; }
         catch (_) { if (APP.picker === state) message.textContent = 'Текст выделен. Нажмите Ctrl+C, затем F2 → Ctrl+V в Excel.'; }
+      }
+    };
+    host.onkeydown = event => {
+      if (event.key === 'Escape') { closeValuePicker(); document.querySelector('#tms-open-picker')?.focus(); }
+      if (event.key === 'Enter' && event.target.id === 'tms-picker-query' && APP.picker) {
+        event.preventDefault();
+        clearTimeout(APP.picker.searchTimer); renderPickerResults();
+        if (APP.picker.visibleItems.length === 1) { const item = APP.picker.visibleItems[0]; APP.picker.selected.set(pickerEntryKey(item), item); renderPickerResults(); }
+        else host.querySelector('#tms-picker-results input')?.focus();
       }
     };
     renderPickerResults();
@@ -8115,6 +8431,9 @@
       #tms-panel .tms-help-item b{display:block;margin-bottom:4px}
       #tms-panel .tms-help-note{margin:12px 0}
       #tms-panel .tms-help-close{width:100%}
+      #tms-panel .tms-picker-launch{border:2px solid var(--tms-red);font-weight:700;min-height:40px}
+      #tms-panel .tms-merge-conflict{background:#fff3c4;border:1px solid #b38b1a;padding:12px;margin:10px 0;color:#242424}
+      #tms-panel .tms-merge-conflict label{display:block;margin:8px 0;overflow-wrap:anywhere}
       #tms-panel .tms-picker{display:grid;gap:8px;margin:12px 0;padding:12px;border:1px solid var(--tms-line);border-radius:var(--tms-radius)}
       #tms-panel .tms-picker-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
       #tms-panel .tms-picker-results{max-height:240px;overflow:auto;border:1px solid var(--tms-line);border-radius:4px}
@@ -8177,19 +8496,19 @@
           <div class="tms-operation-status" aria-live="polite" aria-atomic="true"><div class="tms-status-line" hidden><span id="tms-progress-label">Готово</span><span id="tms-progress-percent" class="tms-progress-percent">0%</span></div><div class="tms-progress-track" hidden><div id="tms-progress-fill" class="tms-progress-fill"></div></div><div id="tms-progress-detail" class="tms-progress-detail"></div></div>
         </div>
         <div class="tms-controls">
-          <div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button><button type="button" id="tms-open-picker" class="tms-subtle" aria-controls="tms-value-picker" aria-expanded="false" title="Несколько значений для одной ячейки">Собрать значения</button></div><section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section></div>
+          <details class="tms-start-help"><summary>Перед началом работы</summary><p>В TESSA создайте черновик матрицы и перейдите в редактирование. Затем скачайте Excel: справочники при каждой выгрузке читаются заново.</p><p>Удалить строку: удалить её целиком в Excel. Удалить отдельное значение: очистить ячейку или убрать элемент списка. Полностью очищенная строка с сохранёнными служебными полями будет показана как пропущенная. При одновременном удалении и добавлении пометьте новые строки действием «Добавить».</p><p>Можно вводить полное название вручную. Однозначный фрагмент сопоставляется при проверке; неоднозначный требует уточнения. Автодополнение выпадающих списков зависит от версии Excel. Поиск в «Собрать значения» доступен независимо от неё.</p></details><div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button><button type="button" id="tms-open-picker" class="tms-picker-launch" aria-controls="tms-value-picker" aria-expanded="false" title="Несколько значений для одной ячейки">Собрать значения</button></div><section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section></div>
           <div class="tms-step"><div class="tms-step-label">2 · Изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
           <details class="tms-tools"><summary>Дополнительно</summary><div class="tms-tool-list">
-            <div><button id="tms-download-fresh">Обновить справочники и скачать</button><p>Если в TESSA появились новые значения.</p></div>
-            <div><button id="tms-refresh-excel" disabled>Обновить поля Excel</button><p>Добавить поля изменённого шаблона в выбранный файл. Правки, которые удалось перенести, останутся в новой книге.</p></div>
+            <div><button id="tms-download-fresh">Обновить справочники в моём Excel</button><p>Выберите изменённый файл в шаге 2. Скачается его копия с новыми справочниками; ваши строки и правки сохранятся.</p></div>
+            <div><button id="tms-refresh-excel" disabled>Объединить с актуальной TESSA</button><p>Добавить новые поля и изменения других пользователей. Совпавшие правки объединяются; конфликты покажем для выбора. В старых книгах без исходных значений объединение ограничено.</p></div>
             <button id="tms-download-report" hidden disabled>Скачать отчёт</button>
             <details id="tms-test-tools"><summary>Проверки и диагностика</summary>
               <p>Проверка матрицы и Excel без сохранения строк. Пакет содержит рабочие значения, запросы и ответы TESSA.</p>
               <div class="tms-row"><button id="tms-run-tests" type="button">Запустить проверки</button><button id="tms-download-diagnostics" type="button">Скачать пакет диагностики</button></div>
-              <div id="tms-tests-result" role="status" aria-live="polite">Проверки ещё не запускались.</div>
+              <details><summary>Проверка с записью</summary><p>Сначала проверьте Excel и выберите операции в Preview. Кнопка применяет именно эти изменения после обычного подтверждения, затем перечитывает результат. Для испытаний используйте отдельный тестовый черновик. Добавление, изменение и удаление проверяются только если есть в выбранном наборе.</p><button id="tms-test-write" type="button">Применить выбранное и проверить запись</button></details><div id="tms-tests-result" role="status" aria-live="polite">Проверки ещё не запускались.</div>
             </details>
           </div></details>
-          <div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
+          <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
           <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
         </div>
         <div id="tms-summary"></div><div id="tms-plan"></div>
@@ -8285,7 +8604,7 @@
     });
     panel.querySelector('#tms-download-fresh').addEventListener('click', async () => {
       if (APP.busy) return; setBusy(true);
-      try { requireRuntimeOperation('export'); await exportCurrentMatrixXlsx({ forceDictionaryRefresh: true });  }
+      try { requireRuntimeOperation('export'); await refreshSelectedWorkbookDictionaries(panel.querySelector('#tms-file').files?.[0]);  }
       catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); setProgress(100, 'Не удалось обновить справочники', message); }
       finally { setBusy(false); }
     });
@@ -8354,7 +8673,7 @@
         setProgress(100, 'Не удалось обновить отображение', message);
       } finally { setBusy(false); }
     });
-    panel.querySelector('#tms-apply').addEventListener('click', async () => {
+    const applySelected = async (verifyWrites = false) => {
       if (APP.busy) return;
       const availability = applyAvailability(APP.plan, APP.review);
       if (!availability.canApply) {
@@ -8366,6 +8685,16 @@
         const reviewedPlan = buildReviewedPlan(APP.plan, APP.review);
         requireRuntimeOperation('apply', reviewedPlan.actions);
         const result = await applyPlan(reviewedPlan);
+        if (result && verifyWrites && APP.lastMutationReceipts?.receipts?.length && !APP.abortRequested) {
+          setProgress(97, 'Проверяю запись', 'Перечитываю изменённые, добавленные и удалённые строки');
+          try {
+            APP.lastReconciliation = await runReconciliationRead(() => TessaBridge.create(), APP.lastMutationReceipts, { attempts: 3, baseDelayMs: 450 });
+            result.reconciliation = APP.lastReconciliation;
+          } catch (error) { result.reconciliation = { status: 'incomplete', reason: friendlyErrorMessage(error) }; }
+          APP.lastReconciliation = result.reconciliation;
+          rememberReport(result, `TESSA_Write_Check_${Date.now()}.json`);
+          setProgress(100, 'Проверка записи завершена', reconciliationSummary(APP.lastReconciliation));
+        }
         if (result) {
           invalidatePlanStateAfterApply(APP, result);
           renderPlanConsumedNotice(result);
@@ -8378,7 +8707,9 @@
         rememberReport({ app: { name: APP.name, version: APP.version }, planId: APP.plan?.id, failedAt: nowIso(), error: message, technicalError: error?.message || String(error), matrixId: APP.plan?.matrixId || null, logs: APP.logs.slice(-120) }, `TESSA_Matrix_ErrorReport_${Date.now()}.json`);
         setProgress(100, 'Применение не завершено', `${message} Подробности — в отчёте.`);
       } finally { setBusy(false); }
-    });
+    };
+    panel.querySelector('#tms-apply').addEventListener('click', () => applySelected(false));
+    panel.querySelector('#tms-test-write').addEventListener('click', () => applySelected(true));
     refreshRuntimeCapabilities([]);
     APP.runtimeMonitor = createRuntimeMonitor({
       active: () => panel.classList.contains('tms-open') && document.visibilityState !== 'hidden' && !APP.busy,
@@ -8412,7 +8743,7 @@
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
-    buildRoundtripGrid, createRoundtripXlsxBytes, mergeWorkbookIntoCurrentSnapshot, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
+    buildRoundtripGrid, createRoundtripXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, isWriterLockError, refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,

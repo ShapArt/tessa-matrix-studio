@@ -6,15 +6,17 @@
 
 Выгрузка матрицы в Excel → массовая правка → проверка изменений → безопасное применение в TESSA.
 
-[![Version](https://img.shields.io/badge/version-1.9.51-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.10.0-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-userscript-24292F?style=flat-square&logo=tampermonkey)](https://www.tampermonkey.net/)
 
 ### [УСТАНОВИТЬ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js) · [СКАЧАТЬ РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [ОТКРЫТЬ КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [СООБЩИТЬ ОБ ОШИБКЕ](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.9.51 · Автор: Шаповалов Артём**
+**v1.10.0 · Автор: Шаповалов Артём**
 
 </div>
+
+В 1.10.0 исправлен выбор колонок справочников, добавлено обновление справочников в выбранном Excel с сохранением правок и объединение с актуальной TESSA с выбором конфликтов. Каждый новый экспорт перечитывает справочники. [Новые сценарии и UAT](docs/UAT-v1.10.0.md).
 
 В 1.9.51 появился раздел **Дополнительно → Проверки и диагностика**. «Запустить проверки» показывает результаты в Studio; «Скачать пакет диагностики» за один клик выполняет прогон и собирает ZIP. Повторное скачивание готового пакета не обращается к серверу. [Что проверяется и как собрать пакет](docs/STUDIO-DIAGNOSTICS.md).
 
@@ -89,7 +91,7 @@ Studio автоматически подключается к открытой �
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.9.51** в Tampermonkey.
+2. Подтвердите установку версии **1.10.0** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -437,7 +439,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.9.51**
+Текущая версия: **1.10.0**
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)
