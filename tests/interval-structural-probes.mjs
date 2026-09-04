@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
+// Stage 1 GREEN is verified on a normal PR run after the bounded helper patch lands.
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 globalThis.document = { body: { innerText: '' }, querySelector: () => null, querySelectorAll: () => [] };
