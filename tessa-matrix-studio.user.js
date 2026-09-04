@@ -7243,9 +7243,10 @@
     report.candidateRows = candidates.map(action => action.excelRow.excelRow);
     if (!candidates.length) throw new Error('Нет отклонённых добавлений для диагностики. Выполните новую проверку Excel.');
 
-    const probe = async (kind, card, versionId, excelRow = null) => {
+    const probe = async (kind, card, versionId, excelRow = null, structuralMode = null) => {
       await assertContext();
       const sample = { kind, excelRow, versionId, requestSent: false };
+      if (structuralMode) sample.structuralMode = structuralMode;
       report.samples.push(sample);
       const reader = Object.create(bridge);
       // A local facade captures the real validateDuplicate contract without
@@ -7254,6 +7255,10 @@
         await assertContext();
         if (canonicalValue(req.requestType) !== canonicalValue(REQUEST.ValidateDuplicate)) {
           throw new Error('Диагностика допускает только запрос проверки дубликатов.');
+        }
+        if (structuralMode) {
+          if (!req.info?.card) throw new Error('В запросе структурной диагностики отсутствует сериализованная карточка.');
+          applyIntervalStructuralProbe(req.info.card, structuralMode);
         }
         sample.request = copyStorage(req.getStorage?.() || { requestType: req.requestType, info: req.info });
         sample.requestSent = true;
@@ -7275,6 +7280,7 @@
         sample.message = String(error.message || error).slice(0, 20000);
       }
       await assertContext();
+      return sample;
     };
 
     // Pick an existing interval row close to the first candidate. Similarity is
@@ -7309,7 +7315,14 @@
           const after = bridge.readMatrixRowFromCard(rebuilt, control, structure);
           if (reconciliationSemanticKey(current, structure) !== reconciliationSemanticKey(after, structure)) {
             report.samples.push({ kind: 'saved-rebuilt', outcome: 'not-sent', code: 'rebuilt-control-differs' });
-          } else await probe('saved-rebuilt', rebuilt, control.versionId);
+          } else {
+            const rebuiltSample = await probe('saved-rebuilt', rebuilt, control.versionId);
+            if (rebuiltSample?.outcome === 'rejected' && rebuiltSample?.code === 'duplicate-interval-extractor') {
+              for (const mode of ['clear-interval-changed', 'clear-interval-state', 'clear-interval-markers']) {
+                await probe(`saved-rebuilt-${mode}`, rebuilt, control.versionId, null, mode);
+              }
+            }
+          }
         } else report.samples.push({ kind: 'saved-rebuilt', outcome: 'not-sent', code: 'card-clone-unavailable' });
       } else report.samples.push({ kind: 'saved-original', outcome: 'not-sent', code: 'saved-interval-row-unavailable' });
       for (const action of candidates) {
