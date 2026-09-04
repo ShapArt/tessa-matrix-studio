@@ -130,7 +130,9 @@ assert(reviewed.actions[0].type === 'update' && reviewed.actions[0].changes.leng
 assert(reviewed.counts.update === 1 && reviewed.counts.noop === 1,
   `restore-all counters are wrong: ${JSON.stringify(reviewed.counts)}`);
 
-// 4. Частичная отмена не должна позволить собрать дублирующую строку.
+// 4. Частичная отмена, которая собирает дубль, должна локально пропустить эту строку,
+// а не превращать весь пакет в глобально небезопасный. Если других операций нет,
+// Apply просто нечего выполнять; возврат review-состояния снова делает UPDATE доступным.
 const duplicateTarget = currentRow(1, 'card-46', 'version-46', 'org-old', 'УРАЛЬСКАЯ МЯСНАЯ КОМПАНИЯ ООО', 'signer-new', 'Петров П.П.');
 const duplicatePlan = {
   ...plan,
@@ -141,9 +143,13 @@ const duplicatePlan = {
 const duplicateReview = E.createPlanReviewState();
 E.setPlanReviewChange(duplicateReview, update, orgColumn.key, true);
 const duplicateReviewed = E.buildReviewedPlan(duplicatePlan, duplicateReview);
-assert(duplicateReviewed.safety?.blocked === true,
-  `review-created duplicate must block Apply: ${JSON.stringify(duplicateReviewed.safety)}`);
-assert((duplicateReviewed.safety?.blockedReasons || []).some(reason => /дублир|одинаков/i.test(reason)),
-  `duplicate block needs a clear reason: ${JSON.stringify(duplicateReviewed.safety?.blockedReasons)}`);
+assert(duplicateReviewed.safety?.blocked === false,
+  `review-created duplicate must stay row-local: ${JSON.stringify(duplicateReviewed.safety)}`);
+assert(duplicateReviewed.actions.length === 0,
+  `review-created duplicate must remove the conflicting mutation: ${JSON.stringify(duplicateReviewed.actions)}`);
+assert(duplicateReviewed.skippedRows.some(item => item.excelRow === 45 && item.source === 'duplicate-validation'),
+  `review-created duplicate needs a row-local skip reason: ${JSON.stringify(duplicateReviewed.skippedRows)}`);
+assert(duplicateReviewed.counts.update === 0 && duplicateReviewed.counts.skip === 1,
+  `review-created duplicate counters are wrong: ${JSON.stringify(duplicateReviewed.counts)}`);
 
 console.log('TESSA Matrix Studio selective review undo tests: OK');

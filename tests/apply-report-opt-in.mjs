@@ -65,6 +65,23 @@ workbook.rows[0].values[signerIdIndex] = 'person-2|role-type';
 const plan = E.buildPlan(workbook, structure, snapshot);
 plan.safety = { blocked: false, blockedReasons: [] };
 
+// Preview itself must be exportable before any write. The result is a compact snapshot
+// of the reviewed plan, its skips, and current Apply availability; downloading stays opt-in.
+assert(typeof E.buildPreviewReport === 'function', 'Preview report builder is not exported');
+const previewReport = E.buildPreviewReport(plan, E.createPlanReviewState());
+assert(previewReport.format === 'TESSA_MATRIX_PREVIEW_REPORT_V1', `unexpected preview report format: ${previewReport.format}`);
+assert(previewReport.studioVersion === APP.version, 'preview report lost Studio version');
+assert(previewReport.plan?.counts?.update === 1 && previewReport.plan?.counts?.skip === 0,
+  `preview report counters are wrong: ${JSON.stringify(previewReport.plan?.counts)}`);
+assert(previewReport.apply?.canApply === true && previewReport.apply?.count === 1,
+  `preview report lost Apply availability: ${JSON.stringify(previewReport.apply)}`);
+assert(Array.isArray(previewReport.skippedRows) && Array.isArray(previewReport.skippedFields),
+  'preview report must expose row/field skips');
+assert(code.includes('id="tms-download-report" hidden disabled>Скачать результат</button>'),
+  'Preview result download must be visible next to the Check step after a plan exists');
+assert(code.includes('rememberReport(buildPreviewReport(plan, APP.review),'),
+  'rendered Preview must refresh the downloadable result for the current review state');
+
 const bridge = {
   matrixInfo: () => matrixInfo,
   templateId: () => structure.templateId,
@@ -137,4 +154,4 @@ setBusy(false);
 assert(refreshButton.hidden && refreshButton.disabled, 'successful refresh resurrected an unnecessary button');
 assert(!JSON.stringify(APP.lastReport).includes('expectedSemanticKey'), 'private receipt leaked into a report');
 
-console.log('TESSA Matrix Studio diagnostic reports are opt-in, not automatic downloads: OK');
+console.log('TESSA Matrix Studio Preview/Apply diagnostic reports are opt-in and downloadable: OK');
