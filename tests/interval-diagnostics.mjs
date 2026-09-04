@@ -34,7 +34,8 @@ for (const [excelRow, range] of [[16, '810..819'], [17, '820..829'], [18, '830..
   workbook.rows.push({ excelRow, values });
 }
 const failedRows = [16, 17, 18].map(excelRow => ({ excelRow, code: 'duplicate-interval-extractor' }));
-function fixture() {
+function fixture({ allowRequestNumbers = [] } = {}) {
+  const allowedRequests = new Set(allowRequestNumbers);
   const row = (data, rowId = 'row', state = 0) => ({ data, rowId, state, set(key, value) { this.data[key] = value; } });
   const card = (id, version, filled) => ({
     id, sections: {
@@ -70,6 +71,8 @@ function fixture() {
     cardService: {
       request: async request => {
         calls.push(['request', request.requestType]);
+        const requestNumber = calls.filter(call => call[0] === 'request').length;
+        if (allowedRequests.has(requestNumber)) return { info: { ok: true }, validationResult: { isSuccessful: true } };
         return { info: {}, validationResult: { isSuccessful: false, build: () => 'LeftOperandExtractor is null' } };
       },
       store: () => { throw new Error('Store must never run'); },
@@ -138,6 +141,15 @@ assert.equal(JSON.stringify(f.stored.getStorage()), f.unchanged, 'control card w
 assert.equal(snapshot.rows[0], original);
 assert.equal(JSON.stringify({ workbook, snapshot }), inputsBefore, 'collector changed workbook or snapshot');
 
+// If rebuilt control is already accepted, there is no interval-extractor failure to isolate.
+const acceptedRebuilt = fixture({ allowRequestNumbers: [2] });
+const acceptedResult = await E.collectIntervalDiagnostics({ ...acceptedRebuilt, workbook, structure, snapshot, failedRows, assertContext: async () => {} });
+assert.deepEqual(acceptedResult.samples.map(s => s.kind), ['saved-original', 'saved-rebuilt', 'proposed-add', 'proposed-add']);
+assert.equal(acceptedResult.samples[1].outcome, 'allowed');
+assert.equal(acceptedResult.samples.some(s => s.structuralMode), false, 'structural probes ran without a rejected rebuilt control');
+assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'request').length, 4);
+assert.equal(acceptedResult.writesAttempted, 0);
+
 // Switching card/cancelling during a request stops every subsequent request.
 const stopped = fixture();
 const partial = await E.collectIntervalDiagnostics({ ...stopped, workbook, structure, snapshot, failedRows,
@@ -180,4 +192,4 @@ assert.equal(APP.lastIntervalDiagnostics, null);
 assert.equal(button.disabled, true);
 assert.equal(controls.get('#tms-interval-tool').hidden, true);
 E.TessaBridge.create = oldCreate;
-console.log('TESSA interval diagnosis: bounded structural probes, unchanged control, no Store/Delete, cancellation and opt-in raw report: OK');
+console.log('TESSA interval diagnosis: bounded structural probes, rejected-only gate, unchanged control, no Store/Delete, cancellation and opt-in raw report: OK');
