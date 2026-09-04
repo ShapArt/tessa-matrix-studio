@@ -7186,6 +7186,36 @@
     }
   }
 
+  // Read-only interval diagnostics may test one structural marker at a time on the
+  // detached outgoing duplicate-check storage. The SDK Card itself is never mutated.
+  function applyIntervalStructuralProbe(cardStorage, mode) {
+    const modes = new Set(['clear-interval-changed', 'clear-interval-state', 'clear-interval-markers']);
+    if (!modes.has(mode)) throw new Error(`Неизвестный режим структурной диагностики: ${mode}`);
+
+    const sections = cardStorage?.Sections || cardStorage?.sections || {};
+    const section = sections?.[S.Values];
+    const rows = section?.Rows || section?.rows || [];
+    for (const row of rows) {
+      const data = row?.data && typeof row.data === 'object' ? row.data : row;
+      if (!data || typeof data !== 'object') continue;
+      const hasFrom = Object.prototype.hasOwnProperty.call(data, F.IntValue);
+      const hasTo = Object.prototype.hasOwnProperty.call(data, F.IntToValue);
+      if (!hasFrom && !hasTo) continue;
+
+      if (mode === 'clear-interval-changed' || mode === 'clear-interval-markers') {
+        delete row['.changed'];
+        delete row.changed;
+        if (data !== row) { delete data['.changed']; delete data.changed; }
+      }
+      if (mode === 'clear-interval-state' || mode === 'clear-interval-markers') {
+        delete row['.state'];
+        delete row.state;
+        if (data !== row) { delete data['.state']; delete data.state; }
+      }
+    }
+    return cardStorage;
+  }
+
   // Explicit, bounded diagnosis of the unresolved interval error. This collector
   // does not use preflightPlan/applyPlan and never returns an executable plan.
   // CardNew prepares an in-memory card; the only business request is the same
@@ -8843,7 +8873,7 @@
   }
 
   window.__TESSA_MATRIX_SYNC_EXPORTS__ = {
-    collectIntervalDiagnostics, collectStudioDiagnostics, makeStudioDiagnosticPackage,
+    applyIntervalStructuralProbe, collectIntervalDiagnostics, collectStudioDiagnostics, makeStudioDiagnosticPackage,
     createRuntimeMonitor, pickerColumns, pickerEntryKey, searchPickerEntries, pickerSelectionText,
     probeRuntimeEnvironment, inspectNativeViewCapabilitiesReadOnly, inspectMatrixCapabilitiesReadOnly,
     evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,
