@@ -1,0 +1,94 @@
+name: PR59 Green Patcher
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'diag/interval-structural-probes-v1.10.2'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Apply bounded structural probe wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tessa-matrix-studio.user.js')
+          text = path.read_text(encoding='utf-8')
+          if "saved-rebuilt-clear-interval-changed" in text:
+              print('Patch already present; no-op.')
+              raise SystemExit(0)
+
+          old = "const probe = async (kind, card, versionId, excelRow = null) => {"
+          new = "const probe = async (kind, card, versionId, excelRow = null, requestTransform = null) => {"
+          if text.count(old) != 1:
+              raise SystemExit(f'Expected exactly one probe signature anchor, found {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = """        sample.request = copyStorage(req.getStorage?.() || { requestType: req.requestType, info: req.info });
+        sample.requestSent = true;"""
+          new = """        if (requestTransform) {
+          const outgoingCard = req?.info?.card;
+          if (!outgoingCard || typeof outgoingCard !== 'object') {
+            throw new Error('В запросе проверки дубликатов отсутствует сериализованная карточка.');
+          }
+          requestTransform(outgoingCard);
+        }
+        sample.request = copyStorage(req.getStorage?.() || { requestType: req.requestType, info: req.info });
+        sample.requestSent = true;"""
+          if text.count(old) != 1:
+              raise SystemExit(f'Expected exactly one request capture anchor, found {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = """      await assertContext();
+    };
+
+    // Pick an existing interval row close to the first candidate."""
+          new = """      await assertContext();
+      return sample;
+    };
+
+    // Pick an existing interval row close to the first candidate."""
+          if text.count(old) != 1:
+              raise SystemExit(f'Expected exactly one probe return anchor, found {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = """          } else await probe('saved-rebuilt', rebuilt, control.versionId);
+        } else report.samples.push({ kind: 'saved-rebuilt', outcome: 'not-sent', code: 'card-clone-unavailable' });"""
+          new = """          } else {
+            const rebuiltSample = await probe('saved-rebuilt', rebuilt, control.versionId);
+            if (rebuiltSample.outcome === 'rejected') {
+              for (const mode of ['clear-interval-changed', 'clear-interval-state', 'clear-interval-markers']) {
+                await probe(`saved-rebuilt-${mode}`, rebuilt, control.versionId, null,
+                  outgoingCard => applyIntervalStructuralProbe(outgoingCard, mode));
+              }
+            }
+          }
+        } else report.samples.push({ kind: 'saved-rebuilt', outcome: 'not-sent', code: 'card-clone-unavailable' });"""
+          if text.count(old) != 1:
+              raise SystemExit(f'Expected exactly one rebuilt probe anchor, found {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          if git diff --quiet -- tessa-matrix-studio.user.js; then
+            echo 'No changes required.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tessa-matrix-studio.user.js
+          git commit -m 'diag: wire bounded interval structural probes'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
