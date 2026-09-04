@@ -5489,6 +5489,72 @@
     return issues;
   }
 
+  // Duplicate conflicts are row-local whenever the conflicting mutation can be
+  // identified by its Excel row. Removing one bad mutation can reveal another
+  // duplicate against the unchanged TESSA snapshot, so prune to a fixed point.
+  // Conflicts that cannot be mapped back to an executable Excel mutation remain
+  // unresolved and are allowed to keep the global safety gate fail-closed.
+  function localizeDuplicateConflicts(actions, skippedRows, snapshot, structure, source = 'duplicate-validation') {
+    let remaining = [...(actions || [])];
+    const skipped = [...(skippedRows || [])];
+    const localizedIssues = [];
+    let unresolvedIssues = [];
+    const maxPasses = Math.max(1, remaining.filter(action => action?.type && action.type !== 'noop').length + 1);
+
+    for (let pass = 0; pass < maxPasses; pass += 1) {
+      const issues = detectPlanDuplicateConflicts(remaining.filter(action => action?.type !== 'noop'), snapshot, structure);
+      if (!issues.length) return { actions: remaining, skippedRows: skipped, localizedIssues, unresolvedIssues: [] };
+
+      const executableByRow = new Map();
+      for (const action of remaining) {
+        if (!action?.type || action.type === 'noop') continue;
+        const rowNumber = Number(action.excelRow?.excelRow);
+        if (Number.isFinite(rowNumber) && rowNumber > 0) executableByRow.set(rowNumber, action);
+      }
+
+      const reasonsByRow = new Map();
+      unresolvedIssues = [];
+      for (const issue of issues) {
+        const rows = issueExcelRows(issue).filter(rowNumber => executableByRow.has(rowNumber));
+        if (!rows.length) {
+          unresolvedIssues.push(issue);
+          continue;
+        }
+        localizedIssues.push(issue);
+        for (const rowNumber of rows) {
+          if (!reasonsByRow.has(rowNumber)) reasonsByRow.set(rowNumber, []);
+          reasonsByRow.get(rowNumber).push(issue);
+        }
+      }
+
+      if (!reasonsByRow.size) {
+        return { actions: remaining, skippedRows: skipped, localizedIssues, unresolvedIssues: [...new Set(unresolvedIssues.length ? unresolvedIssues : issues)] };
+      }
+
+      const removedRows = new Set();
+      remaining = remaining.filter(action => {
+        if (!action?.type || action.type === 'noop') return true;
+        const rowNumber = Number(action.excelRow?.excelRow);
+        if (!Number.isFinite(rowNumber) || !reasonsByRow.has(rowNumber)) return true;
+        removedRows.add(rowNumber);
+        return false;
+      });
+      for (const rowNumber of removedRows) {
+        const action = executableByRow.get(rowNumber);
+        const reasons = [...new Set(reasonsByRow.get(rowNumber) || [])];
+        skipped.push(makeSkippedRow(rowNumber, reasons.join(' '), source, action?.type || null));
+      }
+    }
+
+    const tail = detectPlanDuplicateConflicts(remaining.filter(action => action?.type !== 'noop'), snapshot, structure);
+    return {
+      actions: remaining,
+      skippedRows: skipped,
+      localizedIssues: [...new Set(localizedIssues)],
+      unresolvedIssues: [...new Set([...unresolvedIssues, ...tail])],
+    };
+  }
+
   function issueExcelRows(issue) {
     const rows = [];
     const text = String(issue || '');
@@ -5587,20 +5653,16 @@
       return false;
     });
 
-    // Дубликаты после применения тоже локальны: пропускаем только изменяемые Excel-строки,
-    // которые образуют конфликт, а не весь файл.
-    const duplicateIssues = detectPlanDuplicateConflicts(actions, snapshot, structure);
-    if (duplicateIssues.length) {
-      const duplicateRows = new Set();
-      for (const issue of duplicateIssues) issueExcelRows(issue).forEach(rowNumber => duplicateRows.add(rowNumber));
-      actions = actions.filter(action => {
-        const rowNumber = action.excelRow?.excelRow;
-        if (!rowNumber || !duplicateRows.has(rowNumber)) return true;
-        const reasons = duplicateIssues.filter(issue => issueExcelRows(issue).includes(rowNumber));
-        skippedRows.push(makeSkippedRow(rowNumber, reasons.join(' '), 'duplicate-validation', action.type));
-        return false;
-      });
-    }
+    // Дубликаты локализуются до устойчивого состояния. Это важно для каскада:
+    // пропуск одного конфликтующего UPDATE может вернуть исходную строку TESSA и тем
+    // самым обнаружить дубль у следующего ADD. Весь корректный пакет при этом живёт.
+    const localizedDuplicates = localizeDuplicateConflicts(actions, skippedRows, snapshot, structure);
+    actions = localizedDuplicates.actions;
+    skippedRows.length = 0;
+    skippedRows.push(...localizedDuplicates.skippedRows);
+    // В обычном Planner каждый duplicate issue содержит изменяемую Excel-строку.
+    // Если это когда-либо перестанет быть так, не угадываем: превращаем в fatal issue.
+    fatalIssues.push(...localizedDuplicates.unresolvedIssues);
 
     const templateMode = canonicalValue(workbook.roundtrip?.templateMode || workbook.metadata?.[ROUNDTRIP.TemplateModeKey] || '');
     if (!workbook.rows.length && templateMode.startsWith('append_only')) {
@@ -5850,7 +5912,7 @@
   function buildReviewedPlan(plan, review = null) {
     if (!plan) return null;
     const state = review || createPlanReviewState();
-    const actions = (plan.actions || []).map(action => {
+    let actions = (plan.actions || []).map(action => {
       const actionKey = planReviewActionKey(action);
       const rowExcluded = Boolean(state.excludedRows?.has?.(actionKey));
       // Whole-operation review is intentionally available for every mutation type.
@@ -5880,20 +5942,51 @@
       reviewApplied: true,
     };
 
-    // Частичная отмена меняет итоговую строку, поэтому заново проверяем дубли.
-    // Иначе пользователь мог бы убрать одно поле и случайно собрать комбинацию,
-    // уже существующую в другой строке TESSA.
-    const duplicateIssues = detectPlanDuplicateConflicts(actions.filter(action => action.type !== 'noop'), plan.snapshot, plan.structure);
+    // Частичная отмена тоже может собрать дубль. Как и Planner, локализуем только
+    // конфликтующую Excel-операцию и продолжаем с остальными. Повторяем проверку до
+    // устойчивого состояния, потому что один локальный SKIP может открыть следующий.
+    const localizedDuplicates = localizeDuplicateConflicts(actions, plan.skippedRows || [], plan.snapshot, plan.structure);
+    actions = localizedDuplicates.actions;
+    reviewed.actions = actions;
+    reviewed.skippedRows = localizedDuplicates.skippedRows;
+    reviewed.counts = countActions(actions, reviewed.skippedRows);
     const safety = plan.safety
       ? { ...plan.safety, blockedReasons: [...(plan.safety.blockedReasons || [])] }
       : { blocked: false, blockedReasons: [] };
-    if (duplicateIssues.length) {
+    if (localizedDuplicates.unresolvedIssues.length) {
       safety.blocked = true;
-      safety.blockedReasons = [...new Set([...safety.blockedReasons, ...duplicateIssues])];
+      safety.blockedReasons = [...new Set([...safety.blockedReasons, ...localizedDuplicates.unresolvedIssues])];
     }
     reviewed.safety = safety;
-    reviewed.reviewIssues = duplicateIssues;
+    reviewed.reviewIssues = [...new Set([...localizedDuplicates.localizedIssues, ...localizedDuplicates.unresolvedIssues])];
     return reviewed;
+  }
+
+  function buildPreviewReport(plan, review = null) {
+    const reviewed = buildReviewedPlan(plan, review);
+    const availability = reviewedApplyAvailability(reviewed, plan?.safety);
+    return {
+      format: 'TESSA_MATRIX_PREVIEW_REPORT_V1',
+      studioVersion: APP.version,
+      createdAt: nowIso(),
+      plan: compactPlanForExport(reviewed),
+      skippedRows: [...(reviewed?.skippedRows || [])],
+      skippedFields: [...(reviewed?.skippedFields || [])],
+      reviewIssues: [...(reviewed?.reviewIssues || [])],
+      review: {
+        excludedRows: [...(review?.excludedRows || [])],
+        excludedChanges: Object.fromEntries([...(review?.excludedChanges || new Map())].map(([key, values]) => [key, [...values]])),
+      },
+      apply: {
+        canApply: availability.canApply,
+        count: availability.count,
+        blocked: availability.blocked,
+        batchBlocked: availability.batchBlocked,
+        warning: availability.warning || null,
+        reason: availability.reason || null,
+        blockedReasons: availability.blockedReasons || [],
+      },
+    };
   }
 
   function compactPlanForExport(plan) {
@@ -6350,6 +6443,13 @@
     APP.reviewedApplyEnabled = false;
     APP.lastIntervalDiagnostics = null;
     APP.lastStudioDiagnostics = null;
+    APP.lastReport = null;
+    const reportButton = document.querySelector?.('#tms-download-report');
+    if (reportButton) {
+      reportButton.hidden = true;
+      reportButton.title = '';
+      setControlDisabled(reportButton, true);
+    }
     renderStudioDiagnostics();
     updateIntervalDiagnosticControlState();
     for (const id of ['#tms-summary', '#tms-plan']) {
@@ -6754,9 +6854,8 @@
     return { count, warning, blocked, reason };
   }
 
-  function applyAvailability(plan, review = null) {
-    const reviewed = buildReviewedPlan(plan, review);
-    const safety = reviewed?.safety || plan?.safety || { blocked: false, blockedReasons: [] };
+  function reviewedApplyAvailability(reviewed, fallbackSafety = null) {
+    const safety = reviewed?.safety || fallbackSafety || { blocked: false, blockedReasons: [] };
     const batch = evaluateApplyBatch(reviewed?.actions || []);
     const safetyReasons = safety.blocked ? [...(safety.blockedReasons || [])] : [];
     const blockedReasons = batch.blocked ? [...safetyReasons, batch.reason].filter(Boolean) : safetyReasons;
@@ -6777,6 +6876,11 @@
       blockedReasons,
       label,
     };
+  }
+
+  function applyAvailability(plan, review = null) {
+    const reviewed = buildReviewedPlan(plan, review);
+    return reviewedApplyAvailability(reviewed, plan?.safety);
   }
 
   function previewPreflightPolicy(actions) {
@@ -8115,6 +8219,8 @@
           ? `Большой пакет: ${applyState.count} операций. Перед записью потребуется дополнительное подтверждение.`
           : '';
     }
+    rememberReport(buildPreviewReport(plan, APP.review),
+      `TESSA_Matrix_Preview_${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
   }
 
   // Presentation only: preserve order, repeated labels and IDs in the plan.
@@ -8651,14 +8757,13 @@
           <details class="tms-tools"><summary>Дополнительно</summary><div class="tms-tool-list">
             <div><button id="tms-download-fresh">Обновить справочники в моём Excel</button><p>Выберите изменённый файл в шаге 2. Скачается его копия с новыми справочниками; ваши строки и правки сохранятся.</p></div>
             <div><button id="tms-refresh-excel" disabled>Объединить с актуальной TESSA</button><p>Добавить новые поля и изменения других пользователей. Совпавшие правки объединяются; конфликты покажем для выбора. В старых книгах без исходных значений объединение ограничено.</p></div>
-            <button id="tms-download-report" hidden disabled>Скачать отчёт</button>
             <details id="tms-test-tools"><summary>Проверки и диагностика</summary>
               <p>Проверка матрицы и Excel без сохранения строк. Пакет содержит рабочие значения, запросы и ответы TESSA.</p>
               <div class="tms-row"><button id="tms-run-tests" type="button">Запустить проверки</button><button id="tms-download-diagnostics" type="button">Скачать пакет диагностики</button></div>
               <details><summary>Проверка с записью</summary><p>Сначала проверьте Excel и выберите операции в Preview. Кнопка применяет именно эти изменения после обычного подтверждения, затем перечитывает результат. Для испытаний используйте отдельный тестовый черновик. Добавление, изменение и удаление проверяются только если есть в выбранном наборе.</p><button id="tms-test-write" type="button">Применить выбранное и проверить запись</button></details><div id="tms-tests-result" role="status" aria-live="polite">Проверки ещё не запускались.</div>
             </details>
           </div></details>
-          <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
+          <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-download-report" hidden disabled>Скачать результат</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
           <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
         </div>
         <div id="tms-summary"></div><div id="tms-plan"></div>
@@ -8900,7 +9005,7 @@
     safePlain, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
     preflightPlan, applyPreflightPreview, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, detectPlanDuplicateConflicts, friendlyErrorMessage,
-    dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, compactPlanForExport,
+    dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport,
     TessaBridge,
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },
   };
