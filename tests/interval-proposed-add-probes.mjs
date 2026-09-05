@@ -34,6 +34,8 @@ values[workbook.headers.indexOf('Подписание__ID')] = 'person|1';
 workbook.rows.push({ excelRow: 16, values });
 const failedRows = [{ excelRow: 16, code: 'duplicate-interval-extractor' }];
 
+// One rejected candidate is enough to prove the live path and keeps the diagnostic
+// budget explicit: 2 controls + 1 proposed-add + exactly 3 detached marker probes.
 function fixture() {
   const row = (data, rowId = 'row', state = 0) => ({ data, rowId, state, set(key, value) { this.data[key] = value; } });
   const card = (id, version, filled) => ({
