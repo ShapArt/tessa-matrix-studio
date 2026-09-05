@@ -7302,9 +7302,20 @@
     for (const row of rows) {
       const data = row?.data && typeof row.data === 'object' ? row.data : row;
       if (!data || typeof data !== 'object') continue;
-      const hasFrom = Object.prototype.hasOwnProperty.call(data, F.IntValue);
-      const hasTo = Object.prototype.hasOwnProperty.call(data, F.IntToValue);
-      if (!hasFrom && !hasTo) continue;
+      const storageValue = value => {
+        if (value && typeof value === 'object') {
+          if (Object.prototype.hasOwnProperty.call(value, '$__value')) return value.$__value;
+          if (Object.prototype.hasOwnProperty.call(value, 'value')) return value.value;
+        }
+        return value;
+      };
+      const present = value => {
+        const scalar = storageValue(value);
+        return scalar !== null && scalar !== undefined && scalar !== '';
+      };
+      const isIntInterval = present(data[F.IntValue]) && present(data[F.IntToValue]);
+      const isDecimalInterval = present(data[F.DecimalValue]) && present(data[F.DecimalToValue]);
+      if (!isIntInterval && !isDecimalInterval) continue;
 
       if (mode === 'clear-interval-changed' || mode === 'clear-interval-markers') {
         delete row['.changed'];
