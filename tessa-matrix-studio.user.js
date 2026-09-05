@@ -7331,6 +7331,70 @@
     return cardStorage;
   }
 
+  // Once exact interval-row markers are ruled out, CardNew diagnostics can move one
+  // structural family at a time on the same detached outgoing request storage.
+  // This transformer never touches the SDK Card used by normal Preview/Apply.
+  function applyCardNewTopologyProbe(cardStorage, mode) {
+    const modes = new Set([
+      'clear-version-changed', 'clear-version-state', 'clear-version-markers',
+      'clear-noninterval-markers', 'clear-all-row-markers',
+    ]);
+    if (!modes.has(mode)) throw new Error(`Неизвестный режим структурной диагностики: ${mode}`);
+
+    const sections = cardStorage?.Sections || cardStorage?.sections || {};
+    const sectionRows = name => {
+      const section = sections?.[name];
+      return section?.Rows || section?.rows || [];
+    };
+    const rowData = row => row?.data && typeof row.data === 'object' ? row.data : row;
+    const storageValue = value => {
+      if (value && typeof value === 'object') {
+        if (Object.prototype.hasOwnProperty.call(value, '$__value')) return value.$__value;
+        if (Object.prototype.hasOwnProperty.call(value, 'value')) return value.value;
+      }
+      return value;
+    };
+    const present = value => {
+      const scalar = storageValue(value);
+      return scalar !== null && scalar !== undefined && scalar !== '';
+    };
+    const isIntervalRow = row => {
+      const data = rowData(row);
+      if (!data || typeof data !== 'object') return false;
+      return (present(data[F.IntValue]) && present(data[F.IntToValue]))
+        || (present(data[F.DecimalValue]) && present(data[F.DecimalToValue]));
+    };
+    const clearChanged = row => {
+      if (!row || typeof row !== 'object') return;
+      const data = rowData(row);
+      delete row['.changed'];
+      delete row.changed;
+      if (data && data !== row) { delete data['.changed']; delete data.changed; }
+    };
+    const clearState = row => {
+      if (!row || typeof row !== 'object') return;
+      const data = rowData(row);
+      delete row['.state'];
+      delete row.state;
+      if (data && data !== row) { delete data['.state']; delete data.state; }
+    };
+    const clearMarkers = row => { clearChanged(row); clearState(row); };
+
+    const versionRows = sectionRows(S.Versions);
+    if (mode === 'clear-version-changed' || mode === 'clear-version-markers') versionRows.forEach(clearChanged);
+    if (mode === 'clear-version-state' || mode === 'clear-version-markers') versionRows.forEach(clearState);
+
+    if (mode === 'clear-noninterval-markers') {
+      sectionRows(S.Values).filter(row => !isIntervalRow(row)).forEach(clearMarkers);
+      sectionRows(S.Roles).forEach(clearMarkers);
+    }
+
+    if (mode === 'clear-all-row-markers') {
+      for (const name of [S.Versions, S.Values, S.Roles]) sectionRows(name).forEach(clearMarkers);
+    }
+    return cardStorage;
+  }
+
   // Explicit, bounded diagnosis of the unresolved interval error. This collector
   // does not use preflightPlan/applyPlan and never returns an executable plan.
   // CardNew prepares an in-memory card; the only business request is the same
@@ -7373,7 +7437,14 @@
         }
         if (structuralMode) {
           if (!req.info?.card) throw new Error('В запросе структурной диагностики отсутствует сериализованная карточка.');
-          applyIntervalStructuralProbe(req.info.card, structuralMode);
+          const intervalModes = new Set(['clear-interval-changed', 'clear-interval-state', 'clear-interval-markers']);
+          const topologyModes = new Set([
+            'clear-version-changed', 'clear-version-state', 'clear-version-markers',
+            'clear-noninterval-markers', 'clear-all-row-markers',
+          ]);
+          if (intervalModes.has(structuralMode)) applyIntervalStructuralProbe(req.info.card, structuralMode);
+          else if (topologyModes.has(structuralMode)) applyCardNewTopologyProbe(req.info.card, structuralMode);
+          else throw new Error(`Неизвестный режим структурной диагностики: ${structuralMode}`);
         }
         sample.request = copyStorage(req.getStorage?.() || { requestType: req.requestType, info: req.info });
         sample.requestSent = true;
@@ -7457,8 +7528,25 @@
           && proposedSample?.outcome === 'rejected'
           && proposedSample?.code === 'duplicate-interval-extractor') {
           proposedStructuralProbed = true;
+          const rejectedExtractor = sample => sample?.outcome === 'rejected'
+            && sample?.code === 'duplicate-interval-extractor';
+          const intervalSamples = [];
           for (const mode of ['clear-interval-changed', 'clear-interval-state', 'clear-interval-markers']) {
-            await probe(`proposed-add-${mode}`, created.card, created.versionId, action.excelRow.excelRow, mode);
+            intervalSamples.push(await probe(`proposed-add-${mode}`, created.card, created.versionId, action.excelRow.excelRow, mode));
+          }
+          if (intervalSamples.every(rejectedExtractor)) {
+            const versionSamples = [];
+            for (const mode of ['clear-version-changed', 'clear-version-state', 'clear-version-markers']) {
+              const sample = await probe(`proposed-add-${mode}`, created.card, created.versionId, action.excelRow.excelRow, mode);
+              versionSamples.push(sample);
+              if (!rejectedExtractor(sample)) break;
+            }
+            if (versionSamples.length === 3 && versionSamples.every(rejectedExtractor)) {
+              const nonInterval = await probe('proposed-add-clear-noninterval-markers', created.card, created.versionId, action.excelRow.excelRow, 'clear-noninterval-markers');
+              if (rejectedExtractor(nonInterval)) {
+                await probe('proposed-add-clear-all-row-markers', created.card, created.versionId, action.excelRow.excelRow, 'clear-all-row-markers');
+              }
+            }
           }
         }
       }
@@ -9123,7 +9211,7 @@
   }
 
   window.__TESSA_MATRIX_SYNC_EXPORTS__ = {
-    applyIntervalStructuralProbe, collectIntervalDiagnostics, collectStudioDiagnostics, makeStudioDiagnosticPackage,
+    applyIntervalStructuralProbe, applyCardNewTopologyProbe, collectIntervalDiagnostics, collectStudioDiagnostics, makeStudioDiagnosticPackage,
     createRuntimeMonitor, pickerColumns, pickerEntryKey, searchPickerEntries, pickerSelectionText,
     probeRuntimeEnvironment, inspectNativeViewCapabilitiesReadOnly, inspectMatrixCapabilitiesReadOnly,
     evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,
