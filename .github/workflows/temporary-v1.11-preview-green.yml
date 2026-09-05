@@ -1,0 +1,39 @@
+name: Temporary v1.11 Preview GREEN
+
+on:
+  push:
+    branches: [feat/v1.11-preview-support-ux]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    if: github.actor == 'ShapArt'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/v1.11-preview-support-ux
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Apply bounded patch
+        run: python3 tools/temporary-v1.11-preview-support-patch.py
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Targeted GREEN
+        run: node tests/preview-support-ux.mjs
+      - name: Full regression suite
+        run: npm test
+      - name: Commit self-cleaned implementation
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m 'feat: improve Preview support UX'
+          git push origin HEAD:feat/v1.11-preview-support-ux
