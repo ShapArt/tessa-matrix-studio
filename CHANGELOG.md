@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.11.3 — 2026-09-05
+
+- Расширена read-only диагностика issue #57 ещё одним доказанным structural probe: после всех отклонённых interval/version/non-interval/all-row marker-проверок Studio повторяет duplicate-check того же CardNew payload без section-level `.changed` на `MtxRouteMatrixRow` (sample `proposed-add-clear-main-section-changed`). Старый live raw diagnostic показывал этот marker у CardNew и его отсутствие у native saved card.
+- Каждый отправленный duplicate-check sample теперь содержит privacy-safe `identityTopology`: наличие CardID, Card.Version, количество version/value/role rows, совпадение request version с version-row, счётчики OwnerRowID mismatch/missing, missing/duplicate RowID и row marker counts. Сырые GUID, ФИО, роли, названия критериев и бизнес-значения в summary не включаются.
+- Новый envelope probe меняет только detached-сериализацию запроса; TemplateID и остальные поля/строки не меняются, дополнительные CardNew не создаются. Максимум для одного candidate: 12 duplicate-check запросов; accepted-rebuilt + два candidates: 13.
+- Store/Delete не выполняются, `writesAttempted = 0`; Apply, preflight и серверный ValidateDuplicate не менялись. Релиз не объявляет `LeftOperandExtractor is null` исправленным — свежий live JSON нужен для классификации минимального trigger.
+
 ## 1.11.2 — 2026-09-05
 
 - Исправлена точность read-only interval probes: строки значений с `IntValue/IntToValue = null` больше не считаются интервалами только из-за наличия полей в storage; interval определяется только по реально заполненным обеим границам Int или Decimal диапазона.
