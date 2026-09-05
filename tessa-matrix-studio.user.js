@@ -5806,7 +5806,7 @@
   function keepReviewedPackage(plan, review = null, options = {}) {
     if (!plan) return review || createPlanReviewState();
     const filter = ['all', 'update', 'add', 'delete'].includes(options.filter) ? options.filter : 'all';
-    if (options.filter === 'skip') throw new Error('Пропущенные строки нельзя включить в пакет Apply.');
+    if (options.filter === 'skip' || options.filter === 'error') throw new Error('Пропущенные строки и ошибки нельзя включить в пакет Apply.');
     const limit = Math.max(0, Math.min(2000, Math.trunc(Number(options.limit) || 0)));
     const state = review || createPlanReviewState();
     const executable = (plan.actions || []).filter(action => action?.type && action.type !== 'noop');
@@ -8150,10 +8150,10 @@
         <select id="tms-review-package-limit" aria-label="Число операций для применения">
           <option value="1">1</option><option value="10">10</option><option value="100">100</option><option value="500">500</option><option value="2000">2000</option>
         </select>
-        <button type="button" data-review-package="keep" ${selection.filter === 'skip' ? 'disabled' : ''}>Выбрать</button>
+        <button type="button" data-review-package="keep" ${selection.filter === 'skip' || selection.filter === 'error' ? 'disabled' : ''}>Выбрать</button>
         <button type="button" data-review-package="reset">Вернуть всё</button>
-        <span>${selection.filter === 'skip'
-          ? 'Пропущенные строки не применяются'
+        <span>${selection.filter === 'skip' || selection.filter === 'error'
+          ? (selection.filter === 'error' ? 'Ошибки не применяются' : 'Пропущенные строки не применяются')
           : selection.query
             ? 'По текущему фильтру и поиску'
             : selection.filter === 'all'
@@ -8170,7 +8170,7 @@
     if (!selection.total) {
       const empty = document.createElement('div');
       empty.className = 'tms-empty';
-      empty.textContent = selection.filter === 'skip' ? 'Пропущенных строк по этому фильтру нет.' : 'Изменений по этому фильтру нет.';
+      empty.textContent = selection.filter === 'skip' ? 'Пропущенных строк по этому фильтру нет.' : selection.filter === 'error' ? 'Ошибок по этому фильтру нет.' : 'Изменений по этому фильтру нет.';
       table.appendChild(empty);
     }
     const previewActions = selection.items.filter(item => item.kind === 'action').map(item => item.action);
