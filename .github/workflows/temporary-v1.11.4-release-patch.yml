@@ -1,0 +1,39 @@
+name: Temporary v1.11.4 release patch
+
+on:
+  push:
+    branches: [release/v1.11.4]
+    paths:
+      - tools/temporary-v1.11.4-release-patch.py
+      - .github/workflows/temporary-v1.11.4-release-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  release-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: release/v1.11.4
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Apply release metadata patch
+        run: python3 tools/temporary-v1.11.4-release-patch.py
+      - name: Install test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify release tree
+        run: npm test
+      - name: Commit self-cleaned release files
+        run: |
+          rm tools/temporary-v1.11.4-release-patch.py
+          rm .github/workflows/temporary-v1.11.4-release-patch.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js package.json package-lock.json README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml tools/temporary-v1.11.4-release-patch.py .github/workflows/temporary-v1.11.4-release-patch.yml
+          git commit -m "release: publish v1.11.4 unified diagnostics"
+          git push origin HEAD:release/v1.11.4
