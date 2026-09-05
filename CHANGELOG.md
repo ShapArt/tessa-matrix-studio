@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.11.1 — 2026-09-05
+
+- Расширена read-only «Диагностика интервалов» для live-кейса issue #57: если `saved-rebuilt` проходит duplicate-check, но первый новый `proposed-add` отклоняется с `duplicate-interval-extractor / LeftOperandExtractor is null`, Studio теперь запускает три однофакторные проверки именно на том же CardNew payload.
+- Добавлены samples `proposed-add-clear-interval-changed`, `proposed-add-clear-interval-state` и `proposed-add-clear-interval-markers`. Они меняют только detached-сериализацию interval-row перед duplicate-check; исходная SDK Card не мутируется и дополнительные CardNew для probes не создаются.
+- Диагностика остаётся ограниченной: при одном candidate максимум 6 duplicate-check запросов (2 control + proposed-add + 3 structural), при двух candidates максимум 7. Если structural probes уже запускались на `saved-rebuilt`, второй набор для `proposed-add` не запускается.
+- Store/Delete не выполняются, `writesAttempted = 0`; Apply, preflight и серверный ValidateDuplicate не менялись. Релиз не объявляет `LeftOperandExtractor is null` исправленным — ошибка по-прежнему fail-closed и должна быть классифицирована по свежему live JSON.
+
 ## 1.11.0 — 2026-09-05
 
 - В Preview добавлен отдельный фильтр «Ошибки»: он показывает пропущенные строки со стабильным кодом ошибки, а «Пропустить» по-прежнему показывает весь набор отклонённых строк. Поиск по номеру Excel-строки, полю и видимому значению остаётся presentation-only и не меняет состав Apply.
