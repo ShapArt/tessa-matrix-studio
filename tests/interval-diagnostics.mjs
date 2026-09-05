@@ -164,15 +164,16 @@ assert.deepEqual(acceptedResult.samples.map(s => s.kind), [
   'proposed-add-clear-version-markers',
   'proposed-add-clear-noninterval-markers',
   'proposed-add-clear-all-row-markers',
+  'proposed-add-clear-main-section-changed',
   'proposed-add',
 ]);
 assert.equal(acceptedResult.samples[1].outcome, 'allowed');
 assert.deepEqual(acceptedResult.samples.filter(s => s.structuralMode).map(s => s.structuralMode), [
   'clear-interval-changed', 'clear-interval-state', 'clear-interval-markers',
   'clear-version-changed', 'clear-version-state', 'clear-version-markers',
-  'clear-noninterval-markers', 'clear-all-row-markers',
+  'clear-noninterval-markers', 'clear-all-row-markers', 'clear-main-section-changed',
 ], 'rejected proposed-add must progressively deepen only after narrower probes keep rejecting');
-assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'request').length, 12, 'accepted rebuilt path is bounded to two controls + eight detached probes + second proposed-add baseline');
+assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'request').length, 13, 'accepted rebuilt path is bounded to two controls + nine detached probes + second proposed-add baseline');
 assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'new').length, 2, 'structural probes must not allocate extra CardNew cards');
 assert.equal(acceptedResult.writesAttempted, 0);
 

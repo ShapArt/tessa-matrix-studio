@@ -107,6 +107,7 @@ assert.deepEqual(result.samples.map(sample => sample.kind), [
   'proposed-add-clear-version-markers',
   'proposed-add-clear-noninterval-markers',
   'proposed-add-clear-all-row-markers',
+  'proposed-add-clear-main-section-changed',
 ], 'rejected CardNew interval must deepen into bounded topology probes after exact interval probes all reject');
 assert.equal(result.samples[0].outcome, 'allowed');
 assert.equal(result.samples[1].outcome, 'allowed');
@@ -120,8 +121,9 @@ assert.deepEqual(result.samples.slice(3).map(sample => sample.structuralMode), [
   'clear-version-markers',
   'clear-noninterval-markers',
   'clear-all-row-markers',
+  'clear-main-section-changed',
 ]);
-assert.equal(f.calls.filter(call => call[0] === 'request').length, 11, 'one candidate must stay bounded to 2 controls + 1 proposed-add + 8 detached probes');
+assert.equal(f.calls.filter(call => call[0] === 'request').length, 12, 'one candidate must stay bounded to 2 controls + 1 proposed-add + 9 detached probes');
 assert.equal(f.calls.filter(call => call[0] === 'new').length, 1, 'all structural probes must reuse the captured proposed-add payload, not create more CardNew cards');
 assert.equal(result.writesAttempted, 0);
 assert.equal(result.samples.every(sample => sample.request?.info?.card), true);
