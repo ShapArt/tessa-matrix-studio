@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
+// Final trusted-actor commit intentionally re-triggers the PR quality gate after the
+// self-cleaning helper workflow writes the production userscript change.
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 globalThis.document = { body: { innerText: '' }, querySelector: () => null, querySelectorAll: () => [] };
