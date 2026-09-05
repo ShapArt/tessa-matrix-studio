@@ -87,7 +87,7 @@ assert.equal(supportWithIds.matrixId, 'matrix-secret-id');
 assert.equal(supportWithIds.templateId, 'template-secret-id');
 assert.ok(!JSON.stringify(supportWithIds).includes('person-secret'), 'includeIds may expose matrix/template IDs, never business row/role IDs');
 
-assert.ok(code.includes("data-preview-filter=\"error\""), 'Preview toolbar must expose an Error filter');
+assert.ok(code.includes("filterButton('error', 'Ошибки')"), 'Preview toolbar must expose an Error filter');
 assert.ok(code.includes('id="tms-download-support-report"'), 'Preview must expose a support-report download button');
 assert.ok(code.includes('tms-role-type'), 'Preview role values must render a visible role-type badge');
 
