@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.11.4 — 2026-09-05
+
+- «Проверки и диагностика» теперь автоматически добавляет read-only interval diagnostics в обычный `TESSA_Diagnostics_*.zip`, когда текущий Preview содержит `duplicate-interval-extractor`. Отдельный ручной запуск «Диагностика интервалов» остаётся доступным.
+- Если успешная interval diagnostics уже была собрана в текущей сессии, Studio переиспользует `APP.lastIntervalDiagnostics` и не повторяет серверные probes.
+- В ZIP добавляются `interval/TESSA_Interval_Diagnostics.json` с полным opt-in raw evidence и `interval/interval-summary.json` с privacy-safe whitelist: outcomes/codes/structuralMode и обезличенный `identityTopology`, без сырых запросов, серверных сообщений, GUID, ФИО и бизнес-значений.
+- Изменение касается только диагностического UX. Apply, Store, Delete, preflight и серверный ValidateDuplicate не менялись; `writesAttempted = 0` сохраняется. Issue #57 и `LeftOperandExtractor is null` этим релизом не объявляются исправленными.
+
 ## 1.11.3 — 2026-09-05
 
 - Расширена read-only диагностика issue #57 ещё одним доказанным structural probe: после всех отклонённых interval/version/non-interval/all-row marker-проверок Studio повторяет duplicate-check того же CardNew payload без section-level `.changed` на `MtxRouteMatrixRow` (sample `proposed-add-clear-main-section-changed`). Старый live raw diagnostic показывал этот marker у CardNew и его отсутствие у native saved card.
