@@ -59,6 +59,17 @@ text = read(path)
 text = replace_once(text, '      placeholder: 1.10.3', '      placeholder: 1.11.0', 'bug report placeholder')
 write(path, text)
 
+# Keep the new support-report regression valid across future version bumps.
+path = 'tests/preview-support-ux.mjs'
+text = read(path)
+text = replace_once(
+    text,
+    "assert.equal(support.studioVersion, '1.10.3');",
+    "const declaredStudioVersion = code.match(/\\/\\/ @version\\s+([^\\s]+)/)?.[1];\nassert.equal(support.studioVersion, declaredStudioVersion, 'support report must use the declared userscript version');",
+    'release-agnostic Preview support version assertion',
+)
+write(path, text)
+
 # Changelog entry. Keep explicit statement that interval server blocker is not fixed.
 path = 'CHANGELOG.md'
 text = read(path)
@@ -77,4 +88,4 @@ for temp in [
     if temp.exists():
         temp.unlink()
 
-print('Prepared v1.11.0 release metadata and removed temporary patch files')
+print('Prepared v1.11.0 release metadata, release-agnostic test, and removed temporary patch files')
