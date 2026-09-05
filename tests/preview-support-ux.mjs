@@ -69,6 +69,11 @@ assert.deepEqual(errors.items.map(item => item.skip.excelRow), [21, 23]);
 assert.equal(E.selectPreviewItems(plan, review, { filter: 'skip', pageSize: 50 }).total, 3, 'SKIP remains the full rejected-row set');
 assert.equal(E.selectPreviewItems(plan, review, { filter: 'all', query: 'подписание' }).total >= 1, true, 'search must find field labels');
 assert.equal(E.selectPreviewItems(plan, review, { filter: 'all', query: '23' }).total, 1, 'search must find Excel row numbers');
+assert.throws(
+  () => E.keepReviewedPackage(plan, E.createPlanReviewState(), { filter: 'error', limit: 1 }),
+  /нельзя включить в пакет Apply/i,
+  'Error-only display must never fall back to the all-actions bulk Apply package',
+);
 
 assert.equal(typeof E.buildPreviewSupportReport, 'function', 'buildPreviewSupportReport must be exported');
 const support = E.buildPreviewSupportReport(plan, review, { includeIds: false });
@@ -88,6 +93,7 @@ assert.equal(supportWithIds.templateId, 'template-secret-id');
 assert.ok(!JSON.stringify(supportWithIds).includes('person-secret'), 'includeIds may expose matrix/template IDs, never business row/role IDs');
 
 assert.ok(code.includes("filterButton('error', 'Ошибки')"), 'Preview toolbar must expose an Error filter');
+assert.ok(code.includes("selection.filter === 'skip' || selection.filter === 'error'"), 'SKIP and ERROR views must both disable bulk Apply selection');
 assert.ok(code.includes('id="tms-download-support-report"'), 'Preview must expose a support-report download button');
 assert.ok(code.includes('tms-role-type'), 'Preview role values must render a visible role-type badge');
 
