@@ -101,7 +101,7 @@ assert.ok(result.samples.every(s => s.code === 'duplicate-interval-extractor'));
 assert.ok(result.samples.every(s => s.request.info.card && s.response && s.message));
 assert.equal(result.samples[0].request.info.card.id, 'saved-card');
 assert.deepEqual(result.candidateRows, [16, 17], 'at most two failed additions');
-assert.equal(f.calls.filter(c => c[0] === 'request').length, 7, 'bounded diagnostic should add exactly three structural requests');
+assert.equal(f.calls.filter(c => c[0] === 'request').length, 7, 'rejected rebuilt control stays bounded to its three exact interval probes plus two proposed-add controls');
 assert.equal(f.calls.filter(c => c[0] === 'new').length, 2);
 assert.equal(result.writesAttempted, 0);
 
@@ -111,10 +111,15 @@ const rowsOf = sample => {
   const section = sections[S.Values] || {};
   return section.Rows || section.rows || [];
 };
+const unwrap = value => value && typeof value === 'object' && '$__value' in value ? value.$__value : value;
+const present = value => {
+  const scalar = unwrap(value);
+  return scalar !== null && scalar !== undefined && scalar !== '';
+};
 const intervalRowOf = sample => rowsOf(sample).find(r => {
   const data = r?.data && typeof r.data === 'object' ? r.data : r;
-  return Object.prototype.hasOwnProperty.call(data || {}, F.IntValue)
-    || Object.prototype.hasOwnProperty.call(data || {}, F.IntToValue);
+  return (present(data?.[F.IntValue]) && present(data?.[F.IntToValue]))
+    || (present(data?.[F.DecimalValue]) && present(data?.[F.DecimalToValue]));
 });
 const rebuiltBase = result.samples[1];
 const clearChanged = result.samples[2];
@@ -141,7 +146,10 @@ assert.equal(JSON.stringify(f.stored.getStorage()), f.unchanged, 'control card w
 assert.equal(snapshot.rows[0], original);
 assert.equal(JSON.stringify({ workbook, snapshot }), inputsBefore, 'collector changed workbook or snapshot');
 
-// If rebuilt control is already accepted, there is no interval-extractor failure to isolate.
+// If rebuilt control is accepted but the outgoing CardNew still fails, the first
+// proposed-add is isolated progressively: exact interval markers -> version markers ->
+// non-interval/role markers -> all row markers. The second candidate remains only a
+// baseline proposed-add, so the whole diagnostic stays bounded.
 const acceptedRebuilt = fixture({ allowRequestNumbers: [2] });
 const acceptedResult = await E.collectIntervalDiagnostics({ ...acceptedRebuilt, workbook, structure, snapshot, failedRows, assertContext: async () => {} });
 assert.deepEqual(acceptedResult.samples.map(s => s.kind), [
@@ -151,13 +159,21 @@ assert.deepEqual(acceptedResult.samples.map(s => s.kind), [
   'proposed-add-clear-interval-changed',
   'proposed-add-clear-interval-state',
   'proposed-add-clear-interval-markers',
+  'proposed-add-clear-version-changed',
+  'proposed-add-clear-version-state',
+  'proposed-add-clear-version-markers',
+  'proposed-add-clear-noninterval-markers',
+  'proposed-add-clear-all-row-markers',
   'proposed-add',
 ]);
 assert.equal(acceptedResult.samples[1].outcome, 'allowed');
 assert.deepEqual(acceptedResult.samples.filter(s => s.structuralMode).map(s => s.structuralMode), [
   'clear-interval-changed', 'clear-interval-state', 'clear-interval-markers',
-], 'rejected proposed-add must get marker probes when rebuilt control is allowed');
-assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'request').length, 7);
+  'clear-version-changed', 'clear-version-state', 'clear-version-markers',
+  'clear-noninterval-markers', 'clear-all-row-markers',
+], 'rejected proposed-add must progressively deepen only after narrower probes keep rejecting');
+assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'request').length, 12, 'accepted rebuilt path is bounded to two controls + eight detached probes + second proposed-add baseline');
+assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'new').length, 2, 'structural probes must not allocate extra CardNew cards');
 assert.equal(acceptedResult.writesAttempted, 0);
 
 // Switching card/cancelling during a request stops every subsequent request.
