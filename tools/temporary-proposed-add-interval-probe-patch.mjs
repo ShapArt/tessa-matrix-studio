@@ -37,6 +37,31 @@ if (count !== 1) throw new Error(`candidate loop: expected exactly one source bl
 code = code.replace(before, after);
 fs.writeFileSync(file, code);
 
+const testFile = 'tests/interval-diagnostics.mjs';
+let test = fs.readFileSync(testFile, 'utf8');
+const oldContract = `assert.deepEqual(acceptedResult.samples.map(s => s.kind), ['saved-original', 'saved-rebuilt', 'proposed-add', 'proposed-add']);
+assert.equal(acceptedResult.samples[1].outcome, 'allowed');
+assert.equal(acceptedResult.samples.some(s => s.structuralMode), false, 'structural probes ran without a rejected rebuilt control');
+assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'request').length, 4);`;
+const newContract = `assert.deepEqual(acceptedResult.samples.map(s => s.kind), [
+  'saved-original',
+  'saved-rebuilt',
+  'proposed-add',
+  'proposed-add-clear-interval-changed',
+  'proposed-add-clear-interval-state',
+  'proposed-add-clear-interval-markers',
+  'proposed-add',
+]);
+assert.equal(acceptedResult.samples[1].outcome, 'allowed');
+assert.deepEqual(acceptedResult.samples.filter(s => s.structuralMode).map(s => s.structuralMode), [
+  'clear-interval-changed', 'clear-interval-state', 'clear-interval-markers',
+], 'rejected proposed-add must get marker probes when rebuilt control is allowed');
+assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'request').length, 7);`;
+const testCount = test.split(oldContract).length - 1;
+if (testCount !== 1) throw new Error(`accepted-rebuilt contract: expected exactly one source block, got ${testCount}`);
+test = test.replace(oldContract, newContract);
+fs.writeFileSync(testFile, test);
+
 for (const path of [
   '.github/workflows/temporary-proposed-add-interval-probe-patch.yml',
   'tools/temporary-proposed-add-interval-probe-patch.mjs',
@@ -44,4 +69,4 @@ for (const path of [
   try { fs.unlinkSync(path); } catch (error) { if (error.code !== 'ENOENT') throw error; }
 }
 
-console.log('patched rejected proposed-add interval probes and self-cleaned temporary files');
+console.log('patched rejected proposed-add interval probes, aligned regression contract, and self-cleaned temporary files');
