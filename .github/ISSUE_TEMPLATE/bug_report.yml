@@ -56,7 +56,7 @@ body:
         - Apply — результат / source-skipped строки
         - Apply — обновление отображения после записи
         - Проверка результата после Apply
-        - Диагностика интервалов / LeftOperandExtractor
+        - Диагностика интервалов / CardNew / LeftOperandExtractor
         - Справочник / поиск значения
         - Актуализировать выбранный Excel
         - Применить к TESSA
