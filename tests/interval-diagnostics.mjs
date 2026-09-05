@@ -144,10 +144,20 @@ assert.equal(JSON.stringify({ workbook, snapshot }), inputsBefore, 'collector ch
 // If rebuilt control is already accepted, there is no interval-extractor failure to isolate.
 const acceptedRebuilt = fixture({ allowRequestNumbers: [2] });
 const acceptedResult = await E.collectIntervalDiagnostics({ ...acceptedRebuilt, workbook, structure, snapshot, failedRows, assertContext: async () => {} });
-assert.deepEqual(acceptedResult.samples.map(s => s.kind), ['saved-original', 'saved-rebuilt', 'proposed-add', 'proposed-add']);
+assert.deepEqual(acceptedResult.samples.map(s => s.kind), [
+  'saved-original',
+  'saved-rebuilt',
+  'proposed-add',
+  'proposed-add-clear-interval-changed',
+  'proposed-add-clear-interval-state',
+  'proposed-add-clear-interval-markers',
+  'proposed-add',
+]);
 assert.equal(acceptedResult.samples[1].outcome, 'allowed');
-assert.equal(acceptedResult.samples.some(s => s.structuralMode), false, 'structural probes ran without a rejected rebuilt control');
-assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'request').length, 4);
+assert.deepEqual(acceptedResult.samples.filter(s => s.structuralMode).map(s => s.structuralMode), [
+  'clear-interval-changed', 'clear-interval-state', 'clear-interval-markers',
+], 'rejected proposed-add must get marker probes when rebuilt control is allowed');
+assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'request').length, 7);
 assert.equal(acceptedResult.writesAttempted, 0);
 
 // Switching card/cancelling during a request stops every subsequent request.

@@ -7429,12 +7429,27 @@
           }
         } else report.samples.push({ kind: 'saved-rebuilt', outcome: 'not-sent', code: 'card-clone-unavailable' });
       } else report.samples.push({ kind: 'saved-original', outcome: 'not-sent', code: 'saved-interval-row-unavailable' });
+      // Live control can be saved-rebuilt=allowed while CardNew/proposed-add alone
+      // fails with LeftOperandExtractor. Reuse the first rejected outgoing CardNew
+      // payload for the same three one-variable interval-marker probes. If the rebuilt
+      // control already ran those probes, do not double the diagnostic request budget.
+      const rebuiltStructuralRan = report.samples.some(sample =>
+        sample?.structuralMode && String(sample.kind || '').startsWith('saved-rebuilt-'));
+      let proposedStructuralProbed = false;
       for (const action of candidates) {
         await assertContext();
         const created = await bridge.createRowCard(structure.templateId);
         await assertContext();
         bridge.rebuildRowCard(created.card, created.versionId, action.excelRow, structure, snapshot);
-        await probe('proposed-add', created.card, created.versionId, action.excelRow.excelRow);
+        const proposedSample = await probe('proposed-add', created.card, created.versionId, action.excelRow.excelRow);
+        if (!rebuiltStructuralRan && !proposedStructuralProbed
+          && proposedSample?.outcome === 'rejected'
+          && proposedSample?.code === 'duplicate-interval-extractor') {
+          proposedStructuralProbed = true;
+          for (const mode of ['clear-interval-changed', 'clear-interval-state', 'clear-interval-markers']) {
+            await probe(`proposed-add-${mode}`, created.card, created.versionId, action.excelRow.excelRow, mode);
+          }
+        }
       }
     } catch (error) {
       report.interrupted = true;
