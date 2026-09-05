@@ -5806,7 +5806,7 @@
   function keepReviewedPackage(plan, review = null, options = {}) {
     if (!plan) return review || createPlanReviewState();
     const filter = ['all', 'update', 'add', 'delete'].includes(options.filter) ? options.filter : 'all';
-    if (options.filter === 'skip') throw new Error('Пропущенные строки нельзя включить в пакет Apply.');
+    if (options.filter === 'skip' || options.filter === 'error') throw new Error('Пропущенные строки и ошибки нельзя включить в пакет Apply.');
     const limit = Math.max(0, Math.min(2000, Math.trunc(Number(options.limit) || 0)));
     const state = review || createPlanReviewState();
     const executable = (plan.actions || []).filter(action => action?.type && action.type !== 'noop');
@@ -7914,6 +7914,60 @@
     };
   }
 
+  function buildPreviewSupportReport(plan, review = null, options = {}) {
+    const reviewed = buildReviewedPlan(plan, review);
+    const availability = applyAvailability(plan, review);
+    const reasonCodes = [...new Set([
+      ...(reviewed?.skippedRows || []).map(item => normalizeSpace(item?.code || '')).filter(Boolean),
+      ...(reviewed?.skippedFields || []).map(item => normalizeSpace(item?.code || '')).filter(Boolean),
+    ])].sort();
+    const roleTypeIds = new Set();
+    const collectRow = row => {
+      for (const values of Object.values(row?.ids || {})) {
+        for (const packed of values || []) {
+          const typeId = previewPackedRoleTypeId(packed);
+          if (typeId) roleTypeIds.add(typeId);
+        }
+      }
+      for (const values of Object.values(row?.roles || {})) {
+        for (const item of values || []) {
+          const typeId = normalizeSpace(item?.roleTypeId ?? '');
+          if (typeId) roleTypeIds.add(typeId);
+        }
+      }
+    };
+    for (const action of reviewed?.actions || []) {
+      collectRow(action?.excelRow);
+      collectRow(action?.currentRow);
+    }
+    return {
+      format: 'TESSA_MATRIX_SUPPORT_REPORT_V1',
+      studioVersion: APP.version,
+      createdAt: nowIso(),
+      ...(options.includeIds ? {
+        matrixId: plan?.matrixId || null,
+        templateId: plan?.templateId || null,
+      } : {}),
+      counts: {
+        update: Number(reviewed?.counts?.update || 0),
+        add: Number(reviewed?.counts?.add || 0),
+        delete: Number(reviewed?.counts?.delete || 0),
+        noop: Number(reviewed?.counts?.noop || 0),
+        skip: Number(reviewed?.counts?.skip || 0),
+        skippedFields: Number(reviewed?.skippedFields?.length || 0),
+      },
+      reasonCodes,
+      roleTypeIds: [...roleTypeIds].sort(),
+      sources: [...new Set((reviewed?.skippedRows || []).map(item => normalizeSpace(item?.source || '')).filter(Boolean))].sort(),
+      apply: {
+        canApply: Boolean(availability.canApply),
+        count: Number(availability.count || 0),
+        blocked: Boolean(availability.blocked),
+        batchBlocked: Boolean(availability.batchBlocked),
+      },
+    };
+  }
+
   function jsonReplacer(key, value) {
     if (key === 'card' || key === 'bridge' || key === 'columnMap') return undefined;
     if (value instanceof Map) return Object.fromEntries(value);
@@ -7930,10 +7984,43 @@
    * Session-only view state for large Preview. It never changes the plan itself and
    * therefore cannot alter Apply semantics by paging/filtering the DOM.
    */
+  function previewRoleTypeLabel(roleTypeId) {
+    const key = canonicalValue(roleTypeId);
+    const known = {
+      '0': 'Статическая',
+      '1': 'Сотрудник',
+      '2': 'Подразделение',
+      '3': 'Динамическая',
+      '4': 'Контекстная',
+      '5': 'Метароль',
+      '6': 'Задача',
+      '7': 'SmartRole',
+    };
+    return known[key] || `RoleTypeID: ${String(roleTypeId ?? '').trim() || '—'}`;
+  }
+
+  function previewPackedRoleTypeId(value) {
+    const text = String(value ?? '');
+    const separator = text.lastIndexOf('|');
+    if (separator < 0 || separator === text.length - 1) return '';
+    return text.slice(separator + 1).trim();
+  }
+
+  function previewIdsForKey(row, key) {
+    if (Array.isArray(row?.ids?.[key])) return row.ids[key];
+    if (!String(key || '').startsWith('function:')) return [];
+    const functionId = String(key).slice('function:'.length);
+    return (row?.roles?.[functionId] || []).map(item => `${item?.id ?? ''}|${item?.roleTypeId ?? ''}`);
+  }
+
+  function isPreviewErrorSkip(skip) {
+    return Boolean(normalizeSpace(skip?.code || ''));
+  }
+
   function createPreviewViewState(overrides = {}) {
     const pageSize = Math.max(1, Math.min(200, Math.trunc(Number(overrides.pageSize) || 40)));
     const page = Math.max(1, Math.trunc(Number(overrides.page) || 1));
-    const filter = ['all', 'update', 'add', 'delete', 'skip'].includes(canonicalValue(overrides.filter))
+    const filter = ['all', 'update', 'add', 'delete', 'skip', 'error'].includes(canonicalValue(overrides.filter))
       ? canonicalValue(overrides.filter)
       : 'all';
     return { page, pageSize, filter, query: normalizeSpace(overrides.query || '') };
@@ -7961,16 +8048,19 @@
     const state = createPreviewViewState(viewState || {});
     const query = canonicalValue(state.query);
     let items = [];
-    if (state.filter !== 'skip') {
+    if (!['skip', 'error'].includes(state.filter)) {
       items = (plan?.actions || [])
         .filter(action => action?.type && action.type !== 'noop')
         .filter(action => state.filter === 'all' || action.type === state.filter)
         .map(action => ({ kind: 'action', action }));
     }
-    // "All" includes rejected rows, too. Keep actions first to preserve review
-    // ordering; these display-only items never enter the executable Apply plan.
-    if (state.filter === 'all' || state.filter === 'skip') {
-      items = items.concat((plan?.skippedRows || []).map(skip => ({ kind: 'skip', skip })));
+    // "All" includes rejected rows, too. SKIP is the full rejected-row set;
+    // ERROR is the stricter subset with a stable machine-readable code.
+    if (state.filter === 'all' || state.filter === 'skip' || state.filter === 'error') {
+      const skipped = state.filter === 'error'
+        ? (plan?.skippedRows || []).filter(isPreviewErrorSkip)
+        : (plan?.skippedRows || []);
+      items = items.concat(skipped.map(skip => ({ kind: 'skip', skip })));
     }
     if (query) items = items.filter(item => (item.kind === 'action'
       ? previewActionSearchText(item.action)
@@ -8052,7 +8142,7 @@
     const filterButton = (value, label) => `<button type="button" class="tms-preview-filter${selection.filter === value ? ' tms-active' : ''}" data-preview-filter="${value}">${label}</button>`;
     toolbar.innerHTML = `
       <div class="tms-preview-filters">
-        ${filterButton('all', 'Все')}${filterButton('update', 'Изменить')}${filterButton('add', 'Добавить')}${filterButton('delete', 'Удалить')}${filterButton('skip', 'Пропустить')}
+        ${filterButton('all', 'Все')}${filterButton('update', 'Изменить')}${filterButton('add', 'Добавить')}${filterButton('delete', 'Удалить')}${filterButton('skip', 'Пропустить')}${filterButton('error', 'Ошибки')}
       </div>
       <input id="tms-preview-query" aria-label="Поиск изменений" class="tms-preview-query" type="search" placeholder="Найти строку или значение" value="${escapeHtml(selection.query)}">
       ${hasSourceChanges || hasReviewExclusions ? `<details class="tms-package-details" ${hasReviewExclusions || applyState.batchBlocked ? 'open' : ''}><summary>Выбрать часть изменений${hasReviewExclusions ? ' · выбор изменён' : ''}</summary><div class="tms-preview-package">
@@ -8060,10 +8150,10 @@
         <select id="tms-review-package-limit" aria-label="Число операций для применения">
           <option value="1">1</option><option value="10">10</option><option value="100">100</option><option value="500">500</option><option value="2000">2000</option>
         </select>
-        <button type="button" data-review-package="keep" ${selection.filter === 'skip' ? 'disabled' : ''}>Выбрать</button>
+        <button type="button" data-review-package="keep" ${selection.filter === 'skip' || selection.filter === 'error' ? 'disabled' : ''}>Выбрать</button>
         <button type="button" data-review-package="reset">Вернуть всё</button>
-        <span>${selection.filter === 'skip'
-          ? 'Пропущенные строки не применяются'
+        <span>${selection.filter === 'skip' || selection.filter === 'error'
+          ? (selection.filter === 'error' ? 'Ошибки не применяются' : 'Пропущенные строки не применяются')
           : selection.query
             ? 'По текущему фильтру и поиску'
             : selection.filter === 'all'
@@ -8080,7 +8170,7 @@
     if (!selection.total) {
       const empty = document.createElement('div');
       empty.className = 'tms-empty';
-      empty.textContent = selection.filter === 'skip' ? 'Пропущенных строк по этому фильтру нет.' : 'Изменений по этому фильтру нет.';
+      empty.textContent = selection.filter === 'skip' ? 'Пропущенных строк по этому фильтру нет.' : selection.filter === 'error' ? 'Ошибок по этому фильтру нет.' : 'Изменений по этому фильтру нет.';
       table.appendChild(empty);
     }
     const previewActions = selection.items.filter(item => item.kind === 'action').map(item => item.action);
@@ -8119,12 +8209,12 @@
             const button = rowExcluded ? '' : `<button type="button" class="tms-review-btn tms-review-change-btn" data-review-action="${escapeHtml(actionKey)}" data-review-change="${escapeHtml(change.key)}" aria-pressed="${individuallyExcluded ? 'true' : 'false'}">${individuallyExcluded ? 'Вернуть' : 'Исключить'}</button>`;
             return `<div class="tms-diff${excluded ? ' tms-diff-excluded' : ''}">
               <div class="tms-diff-head"><b>${escapeHtml(change.label || change.key)}</b>${button}</div>
-              <div class="tms-diff-values"><div class="tms-before"><small>Было</small>${previewValuesHtml(change.before, plan.columnMap, change.key)}</div><div class="tms-after"><small>Будет</small>${previewValuesHtml(change.after, plan.columnMap, change.key)}</div></div>
+              <div class="tms-diff-values"><div class="tms-before"><small>Было</small>${previewValuesHtml(change.before, plan.columnMap, change.key, previewIdsForKey(action.currentRow, change.key))}</div><div class="tms-after"><small>Будет</small>${previewValuesHtml(change.after, plan.columnMap, change.key, previewIdsForKey(action.excelRow, change.key))}</div></div>
               ${excluded ? '<div class="tms-review-state">Это изменение не будет применено</div>' : ''}
             </div>`;
           }).join('')}`;
-      } else if (action.type === 'add') body.innerHTML = `${rowReviewControl}${flatToHtml(action.excelRow.flat, plan.columnMap)}`;
-      else body.innerHTML = `${rowReviewControl}${flatToHtml(action.currentRow.flat, plan.columnMap)}`;
+      } else if (action.type === 'add') body.innerHTML = `${rowReviewControl}${flatToHtml(action.excelRow.flat, plan.columnMap, action.excelRow)}`;
+      else body.innerHTML = `${rowReviewControl}${flatToHtml(action.currentRow.flat, plan.columnMap, action.currentRow)}`;
       item.appendChild(body);
       table.appendChild(item);
     });
@@ -8219,22 +8309,32 @@
           ? `Большой пакет: ${applyState.count} операций. Перед записью потребуется дополнительное подтверждение.`
           : '';
     }
+    const supportReportButton = document.querySelector('#tms-download-support-report');
+    if (supportReportButton) {
+      supportReportButton.hidden = false;
+      setControlDisabled(supportReportButton, false);
+    }
     rememberReport(buildPreviewReport(plan, APP.review),
       `TESSA_Matrix_Preview_${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
   }
 
   // Presentation only: preserve order, repeated labels and IDs in the plan.
   // A Boolean is rendered as Да/Нет only when the template declares that type.
-  function previewValuesHtml(values, columnMap, key) {
+  function previewValuesHtml(values, columnMap, key, ids = []) {
     if (!values?.length) return 'Не заполнено';
     const column = columnMap?.columns?.get?.(String(key).slice(String(key).indexOf(':') + 1));
     const isBoolean = column?.key === key && operandKind(column) === 'Boolean';
-    return values.map(value => `<span class="tms-value">${escapeHtml(isBoolean ? booleanDisplay(value) : value)}</span>`).join('');
+    const isRole = column?.key === key && column?.kind === 'function';
+    return values.map((value, index) => {
+      const typeId = isRole ? previewPackedRoleTypeId(ids?.[index]) : '';
+      const typeBadge = typeId ? `<small class="tms-role-type">${escapeHtml(previewRoleTypeLabel(typeId))}</small>` : '';
+      return `<span class="tms-value">${escapeHtml(isBoolean ? booleanDisplay(value) : value)}${typeBadge}</span>`;
+    }).join('');
   }
 
-  function flatToHtml(flat, columnMap = null) {
+  function flatToHtml(flat, columnMap = null, row = null) {
     const labels = new Map([...(columnMap?.columns?.values?.() || [])].map(column => [column.key, column.excelHeader || column.name]));
-    return Object.entries(flat).filter(([, value]) => value?.length).map(([key, value]) => `<div><b>${escapeHtml(labels.get(key) || key)}</b>: ${previewValuesHtml(value, columnMap, key)}</div>`).join('') || 'Пустая строка';
+    return Object.entries(flat).filter(([, value]) => value?.length).map(([key, value]) => `<div><b>${escapeHtml(labels.get(key) || key)}</b>: ${previewValuesHtml(value, columnMap, key, previewIdsForKey(row, key))}</div>`).join('') || 'Пустая строка';
   }
 
   function escapeHtml(value) {
@@ -8664,6 +8764,7 @@
       #tms-panel .tms-diff-values small{display:block;color:var(--tms-muted);font-size:11px;margin-bottom:4px}
       #tms-panel .tms-after{color:var(--tms-success)}
       #tms-panel .tms-value{display:block;white-space:pre-wrap;overflow-wrap:anywhere}
+      #tms-panel .tms-role-type{display:inline-block;margin-left:6px;padding:1px 5px;border:1px solid var(--tms-line);border-radius:999px;background:var(--tms-bg);color:var(--tms-muted);font-size:10px;line-height:1.4;vertical-align:middle;white-space:nowrap}
       #tms-panel .tms-value+.tms-value{margin-top:5px;padding-top:5px;border-top:1px solid var(--tms-line)}
       #tms-panel .tms-diff-excluded .tms-diff-values{text-decoration:line-through;color:var(--tms-muted)}
       #tms-panel .tms-preview-toolbar{display:grid;gap:8px;margin:12px 0}
@@ -8763,7 +8864,7 @@
               <details><summary>Проверка с записью</summary><p>Сначала проверьте Excel и выберите операции в Preview. Кнопка применяет именно эти изменения после обычного подтверждения, затем перечитывает результат. Для испытаний используйте отдельный тестовый черновик. Добавление, изменение и удаление проверяются только если есть в выбранном наборе.</p><button id="tms-test-write" type="button">Применить выбранное и проверить запись</button></details><div id="tms-tests-result" role="status" aria-live="polite">Проверки ещё не запускались.</div>
             </details>
           </div></details>
-          <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-download-report" hidden disabled>Скачать результат</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
+          <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-download-report" hidden disabled>Скачать результат</button><button id="tms-download-support-report" hidden disabled>Отчёт для поддержки</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
           <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
         </div>
         <div id="tms-summary"></div><div id="tms-plan"></div>
@@ -8876,6 +8977,11 @@
       finally { setBusy(false); }
     });
     panel.querySelector('#tms-download-report').addEventListener('click', () => { downloadLastReport(); });
+    panel.querySelector('#tms-download-support-report').addEventListener('click', () => {
+      if (APP.busy || !APP.plan) return;
+      downloadJson(buildPreviewSupportReport(APP.plan, APP.review),
+        `TESSA_Matrix_Support_${new Date().toISOString().replace(/[:.]/g, '-')}.json`, null);
+    });
     panel.querySelector('#tms-run-tests').addEventListener('click', () => runStudioDiagnostics());
     panel.querySelector('#tms-download-diagnostics').addEventListener('click', () => runStudioDiagnostics(true));
     panel.querySelector('#tms-reconcile').addEventListener('click', async () => {
@@ -9000,7 +9106,7 @@
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, isWriterLockError, refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,
-    createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems,
+    createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
     preflightPlan, applyPreflightPreview, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,

@@ -121,3 +121,10 @@ UI-фильтр и поиск меняют видимый список. Искл
 - `renderStudioDiagnostics`: текстовые результаты с экранированием. Свёрнутый раздел находится внутри «Дополнительно».
 - `loadDictionaryCatalog({forceRefresh:true,transient:true})`: перечитывает справочники, не изменяя рабочий кэш; `queryViewSample({forceRefresh:true})` отключает серверный view cache для этих чтений.
 - `tests/studio-diagnostics.mjs`: действующие planner/XLSX/bridge методы с искусственным сервером, плюс фактические обработчики кнопок. Корпоративные данные в тестах отсутствуют.
+
+
+## Preview support UX (1.11.0)
+
+Preview остаётся presentation-only: `selectPreviewItems` фильтрует отображение, но не состав Apply. Фильтр «Ошибки» показывает только пропущенные строки со стабильным `code`; «Пропустить» сохраняет полный набор rejected rows. Для function-полей Preview показывает `RoleTypeID` как человекочитаемый тип для стандартных TESSA 0–7, а неизвестные значения не угадывает (`RoleTypeID: N`).
+
+`buildPreviewSupportReport` формирует privacy-safe отчёт без бизнес-значений, ФИО и row/role IDs: только версия Studio, счётчики, reason codes, источники пропусков, встреченные RoleTypeID и доступность Apply. Matrix/Template ID включаются только явной опцией. Полный Preview JSON остаётся отдельным ручным экспортом.
