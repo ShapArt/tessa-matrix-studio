@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.11.2 — 2026-09-05
+
+- Исправлена точность read-only interval probes: строки значений с `IntValue/IntToValue = null` больше не считаются интервалами только из-за наличия полей в storage; interval определяется только по реально заполненным обеим границам Int или Decimal диапазона.
+- Если `saved-rebuilt` проходит, а первый CardNew `proposed-add` и три точных interval-marker probe всё ещё отклоняются с `duplicate-interval-extractor`, диагностика последовательно проверяет version-row `.changed`, `.state`, оба маркера, затем маркеры неинтервальных value/role rows и, последним bounded вариантом, все row markers.
+- Более глубокие probes используют тот же captured CardNew payload и останавливаются, как только более узкий вариант перестаёт воспроизводить extractor failure. Дополнительные CardNew для probes не создаются.
+- Максимальный accepted-rebuilt путь с двумя candidates ограничен 12 duplicate-check запросами: 2 controls + 1 proposed-add + 8 detached probes + второй proposed-add baseline. Store/Delete не выполняются, `writesAttempted = 0`; Apply/Preflight/ValidateDuplicate не менялись.
+- Релиз остаётся диагностическим: `LeftOperandExtractor is null` не объявляется исправленным. Следующий live JSON должен показать, является ли триггером interval-row, version-row, non-interval/role markers или общий row-marker topology.
+
 ## 1.11.1 — 2026-09-05
 
 - Расширена read-only «Диагностика интервалов» для live-кейса issue #57: если `saved-rebuilt` проходит duplicate-check, но первый новый `proposed-add` отклоняется с `duplicate-interval-extractor / LeftOperandExtractor is null`, Studio теперь запускает три однофакторные проверки именно на том же CardNew payload.
