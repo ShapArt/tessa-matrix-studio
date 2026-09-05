@@ -1,0 +1,42 @@
+name: Temporary proposed-add interval probe patch
+
+on:
+  push:
+    branches: [fix/proposed-add-interval-probes-final]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    if: github.actor == 'ShapArt'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fix/proposed-add-interval-probes-final
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Apply bounded patch
+        run: node tools/temporary-proposed-add-interval-probe-patch.mjs
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Targeted GREEN
+        run: |
+          node tests/interval-proposed-add-probes.mjs
+          node tests/interval-diagnostics.mjs
+          node tests/interval-structural-probes.mjs
+      - name: Full regression suite
+        run: npm test
+      - name: Commit self-cleaned patch
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix: probe rejected proposed-add interval payload'
+          git push origin HEAD:fix/proposed-add-interval-probes-final
