@@ -22,7 +22,7 @@ const add = {
 const del = {
   type: 'delete',
   excelRow: null,
-  currentRow: { index: 8, rowCardId: 'card-delete', versionId: 'version-delete', fingerprint: 'fp-delete', flat: { role: ['Петров П.П.'] } },
+  currentRow: { index: 8, rowCardId: 'card-delete', versionId: 'version-delete', fingerprint: 'fp-delete', flat: { role: ['Петров П.П.'] }, roles: {} },
   changes: [],
   expectedFingerprint: 'fp-delete',
   match: { matchedBy: 'missing-row-auto-delete', lowConfidence: false },
@@ -112,7 +112,7 @@ assert(code.includes("const supportsWholeActionReview = action.type === 'update'
   'Preview must explicitly support whole-operation review for UPDATE/ADD/DELETE');
 assert(code.includes("} else if (action.type === 'add') body.innerHTML = `${rowReviewControl}"),
   'ADD Preview must render the whole-operation review control');
-assert(code.includes("else body.innerHTML = `${rowReviewControl}${flatToHtml(action.currentRow.flat, plan.columnMap)}`;"),
-  'DELETE Preview must render the whole-operation review control');
+assert(code.includes("else body.innerHTML = `${rowReviewControl}${flatToHtml(action.currentRow.flat, plan.columnMap, action.currentRow)}`;"),
+  'DELETE Preview must render the whole-operation review control while passing row metadata for typed role badges');
 
 console.log('TESSA Matrix Studio selective review for ADD/DELETE and row-local cascading duplicates: OK');
