@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
+// Trusted-actor touch: rerun the normal PR gate after the self-cleaning implementation commit.
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 globalThis.document = { body: { innerText: '' }, querySelector: () => null, querySelectorAll: () => [] };
