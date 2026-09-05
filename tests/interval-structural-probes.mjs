@@ -27,6 +27,13 @@ const referenceRow = {
   '.state': typed('int', 2),
   '.changed': ['ReferenceValueID'].map(v => typed('str', v)),
   CriterionName: typed('str', 'Sensitive reference criterion'),
+  // Real TESSA value-row storage contains all typed value fields. Non-applicable
+  // numeric fields are present as null, so field presence alone must NOT classify
+  // this reference row as an interval row.
+  IntValue: null,
+  IntToValue: null,
+  DecimalValue: null,
+  DecimalToValue: null,
   ReferenceValueID: typed('uid', 'reference-id'),
   ReferenceValueName: typed('str', 'Sensitive business value'),
 };
@@ -70,7 +77,7 @@ const lower = {
     MtxRouteMatrixRowVersionValues: {
       rows: [
         { state: 2, data: { IntValue: 1, IntToValue: 2, keep: 'yes' } },
-        { state: 2, data: { ReferenceValueID: 'id', keep: 'also' } },
+        { state: 2, data: { IntValue: null, IntToValue: null, ReferenceValueID: 'id', keep: 'also' } },
       ],
     },
   },
