@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 
-// Релизный контракт сверяет публичный README, changelog и issue-template с фактической версией userscript.
+// Релизный контракт сверяет публичный README, changelog и issue-template с версией,
+// которую реально получит пользователь из GitHub Release. Большой base userscript может
+// оставаться на предыдущем patch, пока release.yml детерминированно собирает hotfix overlays.
 const read = (path) => fs.readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
@@ -21,27 +23,32 @@ assert(versionMatch, 'userscript @version is missing');
 assert(downloadMatch, 'userscript @downloadURL is missing');
 assert(updateMatch, 'userscript @updateURL is missing');
 
-const version = versionMatch[1];
+const baseVersion = versionMatch[1];
+const publicVersion = pkg.version;
 const downloadUrl = downloadMatch[1];
 const updateUrl = updateMatch[1];
 
 const parseVersion = value => String(value || '').split('.').map(part => Number(part));
-const isOnePatchAhead = (next, base) => {
+const isComposedPatchAhead = (next, base) => {
   const a = parseVersion(next);
   const b = parseVersion(base);
   return a.length === 3 && b.length === 3
     && a.every(Number.isInteger) && b.every(Number.isInteger)
-    && a[0] === b[0] && a[1] === b[1] && a[2] === b[2] + 1;
+    && a[0] === b[0] && a[1] === b[1] && a[2] > b[2];
 };
-const overlayExists = fs.existsSync(new URL('../hotfixes/interval-add-valid-fallback.js', import.meta.url));
-assert(pkg.version === version || (overlayExists && isOnePatchAhead(pkg.version, version)),
-  `package.json version ${pkg.version} is not compatible with base userscript ${version}`);
+const intervalOverlayExists = fs.existsSync(new URL('../hotfixes/interval-add-valid-fallback.js', import.meta.url));
+const rangeTransformExists = fs.existsSync(new URL('../hotfixes/malformed-range-diagnostic-transform.mjs', import.meta.url));
+if (publicVersion !== baseVersion) {
+  assert(intervalOverlayExists, `base userscript ${baseVersion} differs from public release ${publicVersion} without interval composition`);
+  assert(rangeTransformExists, `base userscript ${baseVersion} differs from public release ${publicVersion} without range transform`);
+  assert(isComposedPatchAhead(publicVersion, baseVersion), `public release ${publicVersion} must be a later patch of base userscript ${baseVersion}`);
+}
 
-assert(readme.includes(`version-${version}-`), 'README version badge is out of sync');
-assert(readme.includes(`**v${version} · Автор: Шаповалов Артём**`), 'README header version is out of sync');
-assert(readme.includes(`Подтвердите установку версии **${version}**`), 'README quick-start install version is out of sync');
-assert(readme.includes(`Текущая версия: **${version}**`), 'README support version is out of sync');
-assert(changelog.includes(`## ${version} —`), 'CHANGELOG latest release entry is out of sync');
+assert(readme.includes(`version-${publicVersion}-`), 'README version badge is out of sync');
+assert(readme.includes(`**v${publicVersion} · Автор: Шаповалов Артём**`), 'README header version is out of sync');
+assert(readme.includes(`Подтвердите установку версии **${publicVersion}**`), 'README quick-start install version is out of sync');
+assert(readme.includes(`Текущая версия: **${publicVersion}**`), 'README support version is out of sync');
+assert(changelog.includes(`## ${publicVersion} —`), 'CHANGELOG latest release entry is out of sync');
 assert(readme.includes(downloadUrl), 'README does not contain userscript download URL');
 assert(updateUrl !== downloadUrl, 'metadata update URL must stay separate from full userscript download URL');
 assert(downloadUrl === 'https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js', 'userscript download must track latest GitHub Release');
@@ -60,7 +67,7 @@ assert(changelog.includes('baseline-ledger') || runbook.includes('Roundtrip V6')
 assert(!readme.includes('# Боевой UAT перед раздачей пользователям'), 'public README must not contain the internal pre-release UAT block');
 assert(!readme.includes('Стоп-критерии'), 'public README must not contain the removed UAT stop-criteria block');
 
-assert(bugTemplate.includes(`placeholder: ${version}`), 'bug report version placeholder is out of sync');
+assert(bugTemplate.includes(`placeholder: ${publicVersion}`), 'bug report version placeholder is out of sync');
 assert(bugTemplate.includes('Счётчики preview'), 'bug report lost preview counters field');
 assert(bugTemplate.includes('свежей выгрузке'), 'bug report lost fresh-export safety reminder');
 
