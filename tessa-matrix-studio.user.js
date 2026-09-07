@@ -7745,24 +7745,33 @@
                   // failure, compare one independently created CardNewMode.Valid card. This
                   // stays read-only and deliberately does not change createRowCard/Apply.
                   if (rejectedExtractor(envelope)) {
-                    try {
-                      await assertContext();
-                      const validCreated = await bridge.createDiagnosticRowCard(structure.templateId, 'Valid');
-                      await assertContext();
-                      bridge.rebuildRowCard(validCreated.card, validCreated.versionId, action.excelRow, structure, snapshot);
-                      const validSample = await probe('proposed-add-newmode-valid', validCreated.card, validCreated.versionId, action.excelRow.excelRow);
-                      validSample.cardNewMode = 'Valid';
-                    } catch (error) {
-                      report.samples.push({
-                        kind: 'proposed-add-newmode-valid',
-                        excelRow: action.excelRow.excelRow,
-                        outcome: 'not-sent',
-                        code: error?.code || 'cardnew-mode-valid-unavailable',
-                        message: String(error?.message || error).slice(0, 20000),
-                        cardNewMode: 'Valid',
-                      });
-                    }
-                  }
+          // Context guards intentionally live outside the CardNew error capture.
+          // A user cancel/card switch must interrupt the collector, not be
+          // misreported as an ordinary unavailable Valid diagnostic control.
+          await assertContext();
+          let validCreated = null;
+          let validCreateError = null;
+          try {
+            validCreated = await bridge.createDiagnosticRowCard(structure.templateId, 'Valid');
+          } catch (error) {
+            validCreateError = error;
+          }
+          await assertContext();
+          if (!validCreated) {
+            report.samples.push({
+              kind: 'proposed-add-newmode-valid',
+              excelRow: action.excelRow.excelRow,
+              outcome: 'not-sent',
+              code: validCreateError?.code || 'cardnew-mode-valid-unavailable',
+              message: String(validCreateError?.message || validCreateError || 'CardNewMode.Valid не вернул карточку.').slice(0, 20000),
+              cardNewMode: 'Valid',
+            });
+          } else {
+            bridge.rebuildRowCard(validCreated.card, validCreated.versionId, action.excelRow, structure, snapshot);
+            const validSample = await probe('proposed-add-newmode-valid', validCreated.card, validCreated.versionId, action.excelRow.excelRow);
+            validSample.cardNewMode = 'Valid';
+          }
+        }
                 }
               }
             }
