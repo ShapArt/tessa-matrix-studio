@@ -11,14 +11,14 @@ const code = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.me
 vm.runInThisContext(code, { filename: 'tessa-matrix-studio.user.js' });
 
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
-const ENTRY_COUNT = 70_000;
+const ENTRY_COUNT = 80_000;
 const catalogId = 'roles:self-roundtrip-limit';
 
 // Regression for a production invariant: a workbook successfully produced by Studio
 // must be accepted by the same Studio parser. v1.11.7 can generate a hidden
 // dictionary sheet above the old 500k physical-cell guard after per-function
 // dictionaries were introduced, so export succeeds but Preview rejects its own XLSX.
-// 70k entries are deliberately enough to cross the v1.11.7 parser ceiling.
+// 80k entries are deliberately enough to cross the v1.11.7 parser ceiling.
 const entries = Array.from({ length: ENTRY_COUNT }, (_, index) => ({
   id: `role-${index}`,
   roleTypeId: String((index % 3) + 1),
