@@ -1,0 +1,85 @@
+name: One-shot v1.11.8 metadata
+
+on:
+  push:
+    branches: [hotfix/v1.11.8-xlsx-self-roundtrip]
+
+permissions:
+  contents: write
+
+jobs:
+  metadata:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: hotfix/v1.11.8-xlsx-self-roundtrip
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Synchronize v1.11.8 metadata
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          lock = Path('package-lock.json')
+          source = lock.read_text(encoding='utf-8')
+          if source.count('"version": "1.11.7"') != 2:
+              raise SystemExit('package-lock old version count is not 2')
+          lock.write_text(source.replace('"version": "1.11.7"', '"version": "1.11.8"'), encoding='utf-8')
+
+          readme = Path('README.md')
+          source = readme.read_text(encoding='utf-8')
+          if source.count('1.11.7') < 1:
+              raise SystemExit('README has no v1.11.7 anchors')
+          readme.write_text(source.replace('1.11.7', '1.11.8'), encoding='utf-8')
+
+          issue = Path('.github/ISSUE_TEMPLATE/bug_report.yml')
+          source = issue.read_text(encoding='utf-8')
+          if source.count('placeholder: 1.11.7') != 1:
+              raise SystemExit('issue template version anchor missing')
+          issue.write_text(source.replace('placeholder: 1.11.7', 'placeholder: 1.11.8', 1), encoding='utf-8')
+
+          changelog = Path('CHANGELOG.md')
+          source = changelog.read_text(encoding='utf-8')
+          header = '# Changelog\n\n'
+          if not source.startswith(header):
+              raise SystemExit('CHANGELOG header unexpected')
+          lines = [
+              '## 1.11.8 — 2026-09-07',
+              '',
+              '- Исправлено противоречие roundtrip: Studio мог успешно сформировать XLSX, а затем сам отклонить его на Preview ошибкой `слишком много ячеек SpreadsheetML (500001 > 500000)`.',
+              '- После разделения справочников по функциям служебный лист `Словари` на крупных матрицах может законно превышать прежние внутренние потолки 100 000 строк / 500 000 физических ячеек.',
+              '- Ограничения парсера SpreadsheetML подняты до 200 000 строк и 1 500 000 физических ячеек. Это остаются конечные защитные лимиты; ZIP-ограничения по размеру, распакованному объёму, количеству файлов и коэффициенту сжатия не ослаблялись.',
+              '- Добавлена регрессия на 140 000 записей справочника: один и тот же Studio должен успешно выполнить `export → import` без потери записей.',
+              '- Маршрутизация справочников по столбцам, Preview/Apply/Store/Delete и серверная логика TESSA не менялись.',
+              '',
+              '',
+          ]
+          changelog.write_text(header + '\n'.join(lines) + source[len(header):], encoding='utf-8')
+          PY
+
+      - name: Remove one-shot workflow from final tree
+        run: rm .github/workflows/one-shot-v1.11.8-metadata.yml
+
+      - name: Install test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify full regression suite
+        run: npm test
+
+      - name: Commit verified v1.11.8 metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A package-lock.json README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml .github/workflows/one-shot-v1.11.8-metadata.yml
+          git diff --cached --quiet && { echo "No metadata changes generated"; exit 1; }
+          git commit -m "chore: prepare v1.11.8 XLSX roundtrip hotfix"
+          git push origin HEAD:hotfix/v1.11.8-xlsx-self-roundtrip
