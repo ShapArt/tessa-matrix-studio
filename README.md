@@ -6,12 +6,12 @@
 
 `TESSA → XLSX → массовая правка → точный diff → review → controlled apply`
 
-[![Version](https://img.shields.io/badge/version-1.11.8-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.11.10-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 
 ### [УСТАНОВИТЬ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js) · [РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [ISSUES](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.11.8 · Автор: Шаповалов Артём**
+**v1.11.10 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -67,7 +67,7 @@ Studio проверяет файл fail-closed: повреждённые слу�
 
 В 1.9.51 появился раздел **Дополнительно → Проверки и диагностика**. «Запустить проверки» показывает результаты в Studio; «Скачать пакет диагностики» за один клик выполняет прогон и собирает ZIP. Повторное скачивание готового пакета не обращается к серверу. [Что проверяется и как собрать пакет](docs/STUDIO-DIAGNOSTICS.md).
 
-**Отказ `LeftOperandExtractor` для двух добавлений пока не устранён.** Свежая диагностика 1.9.50 подтвердила, что удаление пустых временных секций его не исправило. Новый раздел собирает недостающие контрольные запросы; он не обходит отказ и не сохраняет тестовые строки.
+**Серверный `LeftOperandExtractor is null` остаётся открытым live-блокером (#57).** В 1.11.9 добавлен узкий повтор через `CardNewMode.Valid`, но свежий live-прогон 1.11.9 снова получил `duplicate-interval-extractor`. Studio не трактует такой ответ как «дублей нет»: серверный `ValidateDuplicate` не обходится, а Store не запускается без успешной проверки.
 
 «Скачать отчёт» находится в «Дополнительно». Исправление блокировки после Apply сохранено: отчёт доступен после завершения операции и после «Проверить результат».
 
@@ -104,7 +104,7 @@ Studio автоматически подключается к открытой �
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.11.8** в Tampermonkey.
+2. Подтвердите установку версии **1.11.10** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -451,7 +451,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.11.8**
+Текущая версия: **1.11.10**
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)
