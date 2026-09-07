@@ -15,8 +15,9 @@ const ENTRY_COUNT = 140_000;
 const catalogId = 'roles:stack-regression';
 
 // v1.11.5+ can legitimately materialize well over 100k dictionary rows because
-// function-specific role catalogs preserve independent ordering/selectors. Export
-// must not spread the entire row array into Math.max (V8 throws RangeError before ZIP).
+// function-specific role catalogs preserve independent ordering/selectors. This
+// regression guards genericSheetXml itself: row cardinality must never become a
+// function-call argument count (the old spread into Math.max overflowed the stack).
 const entries = Array.from({ length: ENTRY_COUNT }, (_, index) => ({
   id: `role-${index}`,
   roleTypeId: '1',
