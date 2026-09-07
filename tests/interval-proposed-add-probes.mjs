@@ -185,6 +185,8 @@ assert.equal(Object.prototype.hasOwnProperty.call(newRequests[0], 'newMode'), fa
 await modeBridge.createDiagnosticRowCard('template', 'Valid');
 assert.equal(newRequests[1].newMode, 7, 'diagnostic CardNew must map Valid through the runtime enum');
 
+// Review guard: context checks stay outside the CardNew error capture, so a card switch
+// or user cancellation remains fail-closed instead of being mislabeled as a Valid-mode miss.
 // A context switch/cancel that happens immediately after the Valid CardNew allocation
 // must interrupt the whole collector. It must not be swallowed as a harmless not-sent
 // diagnostic sample, otherwise a single-candidate run can silently finish in stale context.
