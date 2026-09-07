@@ -1,0 +1,86 @@
+name: One-shot v1.11.5 metadata
+
+on:
+  push:
+    branches: [fix/v1.11.5-column-dictionaries]
+
+permissions:
+  contents: write
+
+jobs:
+  metadata:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/v1.11.5-column-dictionaries
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Synchronize v1.11.5 metadata
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          lock_path = Path('package-lock.json')
+          lock = json.loads(lock_path.read_text(encoding='utf-8'))
+          lock['version'] = '1.11.5'
+          lock['packages']['']['version'] = '1.11.5'
+          lock_path.write_text(json.dumps(lock, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          readme_path = Path('README.md')
+          readme = readme_path.read_text(encoding='utf-8')
+          replacements = {
+            'version-1.11.4-': 'version-1.11.5-',
+            '**v1.11.4 · Автор: Шаповалов Артём**': '**v1.11.5 · Автор: Шаповалов Артём**',
+            'Подтвердите установку версии **1.11.4**': 'Подтвердите установку версии **1.11.5**',
+            'Текущая версия: **1.11.4**': 'Текущая версия: **1.11.5**',
+          }
+          for old, new in replacements.items():
+            if old not in readme:
+              raise SystemExit(f'README marker missing: {old}')
+            readme = readme.replace(old, new, 1)
+          readme_path.write_text(readme, encoding='utf-8')
+
+          bug_path = Path('.github/ISSUE_TEMPLATE/bug_report.yml')
+          bug = bug_path.read_text(encoding='utf-8')
+          if 'placeholder: 1.11.4' not in bug:
+            raise SystemExit('bug template version marker missing')
+          bug_path.write_text(bug.replace('placeholder: 1.11.4', 'placeholder: 1.11.5', 1), encoding='utf-8')
+
+          changelog_path = Path('CHANGELOG.md')
+          changelog = changelog_path.read_text(encoding='utf-8')
+          marker = '# Changelog\n\n'
+          if marker not in changelog:
+            raise SystemExit('CHANGELOG header missing')
+          entry = '''## 1.11.5 — 2026-09-07
+
+- Исправлена привязка Excel-справочников для функций матрицы в реальной TESSA: GUID `FunctionType.ID` больше не трактуется как `RoleTypeID` и не сваливает все функции в один общий `MtxRoles`.
+- Для каждой функции с GUID/кастомным типом создаётся отдельный каталог ролей. Типы ролей, уже используемые именно этой функцией, идут первыми; Personal используется как безопасный следующий вариант, при этом Department/Group/Static и другие допустимые роли не удаляются.
+- Существующие значения сохраняются и разрешаются по точной паре `RoleID|RoleTypeID`, включая legacy и корпоративные типы ролей (например `RoleTypeID=9`). Установки, где `FunctionType.ID` действительно числовой RoleType, сохраняют строгую фильтрацию.
+- Версия проекции справочников поднята до 4, поэтому старый локальный кэш с общим `MtxRoles` не переживает обновление.
+- Добавлены регрессии для реального GUID типа функции, независимых function-пикеров и маршрутизации ссылочных критериев по `View + RefSection`; строковые/числовые поля не получают ложные выпадающие списки.
+- Apply/Store/Delete/ValidateDuplicate и fail-closed обработка `LeftOperandExtractor is null` не менялись.
+
+'''
+          if '## 1.11.5 —' in changelog:
+            raise SystemExit('1.11.5 changelog entry already exists')
+          changelog_path.write_text(changelog.replace(marker, marker + entry, 1), encoding='utf-8')
+      - name: Install test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify full regression suite
+        run: npm test
+      - name: Commit verified metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml
+          git diff --cached --quiet && { echo "No metadata changes generated"; exit 1; }
+          git commit -m "release: prepare v1.11.5 dictionary routing"
+          git push origin HEAD:fix/v1.11.5-column-dictionaries
