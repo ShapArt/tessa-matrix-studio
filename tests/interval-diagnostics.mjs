@@ -67,7 +67,13 @@ function fixture({ allowRequestNumbers = [] } = {}) {
     section: (card, name) => card.sections[name], rowValue: (row, key) => row.data[key], isDeleted: r => r.state === 2,
     addRow: section => { const r = row({}); section.rows.push(r); return r; },
     getCard: async id => { calls.push(['get', id]); return stored; },
-    createRowCard: async () => { calls.push(['new']); const versionId = `new-${++serial}`; return { card: card(`card-${serial}`, versionId, false), versionId }; },
+    createRowCard: async () => { calls.push(['new', 'default']); const versionId = `new-${++serial}`; return { card: card(`card-${serial}`, versionId, false), versionId }; },
+    createDiagnosticRowCard: async (_templateId, modeName) => {
+      assert.equal(modeName, 'Valid', 'interval diagnostics must request only CardNewMode.Valid');
+      calls.push(['new', 'Valid']);
+      const versionId = `new-${++serial}`;
+      return { card: card(`card-${serial}`, versionId, false), versionId, diagnosticNewMode: modeName };
+    },
     cardService: {
       request: async request => {
         calls.push(['request', request.requestType]);
@@ -165,16 +171,18 @@ assert.deepEqual(acceptedResult.samples.map(s => s.kind), [
   'proposed-add-clear-noninterval-markers',
   'proposed-add-clear-all-row-markers',
   'proposed-add-clear-main-section-changed',
+  'proposed-add-newmode-valid',
   'proposed-add',
 ]);
+assert.equal(acceptedResult.samples.at(-2).cardNewMode, 'Valid', 'deepest rejected path must include the explicit Valid CardNew control');
 assert.equal(acceptedResult.samples[1].outcome, 'allowed');
 assert.deepEqual(acceptedResult.samples.filter(s => s.structuralMode).map(s => s.structuralMode), [
   'clear-interval-changed', 'clear-interval-state', 'clear-interval-markers',
   'clear-version-changed', 'clear-version-state', 'clear-version-markers',
   'clear-noninterval-markers', 'clear-all-row-markers', 'clear-main-section-changed',
 ], 'rejected proposed-add must progressively deepen only after narrower probes keep rejecting');
-assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'request').length, 13, 'accepted rebuilt path is bounded to two controls + nine detached probes + second proposed-add baseline');
-assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'new').length, 2, 'structural probes must not allocate extra CardNew cards');
+assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'request').length, 14, 'accepted rebuilt path is bounded to two controls + nine detached probes + one Valid CardNew control + second proposed-add baseline');
+assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'new').length, 3, 'structural probes reuse the default CardNew; only one explicit Valid control may allocate an extra card');
 assert.equal(acceptedResult.writesAttempted, 0);
 
 // Switching card/cancelling during a request stops every subsequent request.

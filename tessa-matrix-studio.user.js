@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.11.5
+// @version      1.11.6
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.11.5',
+    version: '1.11.6',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -3520,9 +3520,26 @@
     }
 
     async createRowCard(templateId) {
+      // Production/preflight keeps the platform's native CardNew default exactly as before.
+      // Diagnostic CardNew modes must go through createDiagnosticRowCard and never leak into Apply.
+      return this.createRowCardInternal(templateId);
+    }
+
+    async createDiagnosticRowCard(templateId, modeName = 'Valid') {
+      const mode = this.cards?.CardNewMode?.[modeName];
+      if (mode === null || mode === undefined) {
+        const error = new Error(`CardNewMode.${modeName} недоступен в runtime этой сборки TESSA. Диагностический запрос не отправлен.`);
+        error.code = 'cardnew-mode-unavailable';
+        throw error;
+      }
+      return this.createRowCardInternal(templateId, mode, { diagnosticNewMode: modeName });
+    }
+
+    async createRowCardInternal(templateId, newMode = undefined, metadata = {}) {
       const req = new this.cards.CardNewRequest();
       req.cardTypeId = this.cardTypes.mtxRouteMatrixRow.id;
       req.cardTypeName = this.cardTypes.mtxRouteMatrixRow.alias;
+      if (newMode !== undefined) req.newMode = newMode;
       const methodName = this.assertCanCreateRows();
       const response = await this.cardService[methodName](req);
       const error = this.validationError(response, 'Не удалось получить структуру новой строки матрицы');
@@ -3535,7 +3552,7 @@
       version.rowId = this.Guid.newGuid();
       version.state = this.CardRowState.Inserted;
       version.set(F.LinkCount, 0, this.FieldType.Int);
-      return { card, cardId: String(card.id), versionId: String(version.rowId), newMethod: methodName };
+      return { card, cardId: String(card.id), versionId: String(version.rowId), newMethod: methodName, ...metadata };
     }
 
     addRow(section) {
@@ -7723,7 +7740,38 @@
               if (rejectedExtractor(nonInterval)) {
                 const allRows = await probe('proposed-add-clear-all-row-markers', created.card, created.versionId, action.excelRow.excelRow, 'clear-all-row-markers');
                 if (rejectedExtractor(allRows)) {
-                  await probe('proposed-add-clear-main-section-changed', created.card, created.versionId, action.excelRow.excelRow, 'clear-main-section-changed');
+                  const envelope = await probe('proposed-add-clear-main-section-changed', created.card, created.versionId, action.excelRow.excelRow, 'clear-main-section-changed');
+                  // If every bounded payload/topology probe still reproduces the extractor
+                  // failure, compare one independently created CardNewMode.Valid card. This
+                  // stays read-only and deliberately does not change createRowCard/Apply.
+                  if (rejectedExtractor(envelope)) {
+          // Context guards intentionally live outside the CardNew error capture.
+          // A user cancel/card switch must interrupt the collector, not be
+          // misreported as an ordinary unavailable Valid diagnostic control.
+          await assertContext();
+          let validCreated = null;
+          let validCreateError = null;
+          try {
+            validCreated = await bridge.createDiagnosticRowCard(structure.templateId, 'Valid');
+          } catch (error) {
+            validCreateError = error;
+          }
+          await assertContext();
+          if (!validCreated) {
+            report.samples.push({
+              kind: 'proposed-add-newmode-valid',
+              excelRow: action.excelRow.excelRow,
+              outcome: 'not-sent',
+              code: validCreateError?.code || 'cardnew-mode-valid-unavailable',
+              message: String(validCreateError?.message || validCreateError || 'CardNewMode.Valid не вернул карточку.').slice(0, 20000),
+              cardNewMode: 'Valid',
+            });
+          } else {
+            bridge.rebuildRowCard(validCreated.card, validCreated.versionId, action.excelRow, structure, snapshot);
+            const validSample = await probe('proposed-add-newmode-valid', validCreated.card, validCreated.versionId, action.excelRow.excelRow);
+            validSample.cardNewMode = 'Valid';
+          }
+        }
                 }
               }
             }
