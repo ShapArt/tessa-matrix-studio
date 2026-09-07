@@ -1,0 +1,43 @@
+name: Temporary v1.11.10 public docs patch
+
+on:
+  push:
+    branches:
+      - fix/v1.11.10-malformed-range-diagnostic
+    paths:
+      - .github/workflows/tms-v1.11.10-docs-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/v1.11.10-malformed-range-diagnostic
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Patch public docs
+        run: node scripts/patch-v1.11.10-public-docs.mjs
+      - name: Verify documentation contract
+        run: node tests/docs.mjs
+      - name: Verify package lock
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Commit patched release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml package-lock.json
+          if git diff --cached --quiet; then
+            echo "No documentation patch was needed."
+            exit 0
+          fi
+          git commit -m "docs: synchronize v1.11.10 public release metadata"
+          git push origin HEAD:fix/v1.11.10-malformed-range-diagnostic
