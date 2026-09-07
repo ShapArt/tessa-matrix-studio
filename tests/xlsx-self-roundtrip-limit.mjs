@@ -14,10 +14,10 @@ const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 const ENTRY_COUNT = 140_000;
 const catalogId = 'roles:self-roundtrip-limit';
 
-// Regression for a production invariant: a workbook successfully produced by Studio
-// must be accepted by the same Studio parser. v1.11.7 can generate a hidden
-// dictionary sheet above both the old 500k physical-cell guard and the old 100k
-// SpreadsheetML row guard after per-function dictionaries were introduced.
+// Regression for the production invariant that a workbook successfully produced by
+// Studio must be accepted by the same Studio parser. v1.11.7 could generate a hidden
+// dictionary sheet large enough to hit the exact 500001 > 500000 Preview rejection,
+// and eventually the former 100k SpreadsheetML row guard as catalogs kept growing.
 // 140k entries mirrors the already-supported export cardinality regression.
 const entries = Array.from({ length: ENTRY_COUNT }, (_, index) => ({
   id: `role-${index}`,
