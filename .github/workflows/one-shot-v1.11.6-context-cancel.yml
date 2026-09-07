@@ -1,0 +1,98 @@
+name: One-shot v1.11.6 context cancellation fix
+
+on:
+  push:
+    branches: [diag/v1.11.6-cardnew-valid]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: diag/v1.11.6-cardnew-valid
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Apply context cancellation fix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tessa-matrix-studio.user.js')
+          source = path.read_text(encoding='utf-8')
+          old = '''                  if (rejectedExtractor(envelope)) {
+                    try {
+                      await assertContext();
+                      const validCreated = await bridge.createDiagnosticRowCard(structure.templateId, 'Valid');
+                      await assertContext();
+                      bridge.rebuildRowCard(validCreated.card, validCreated.versionId, action.excelRow, structure, snapshot);
+                      const validSample = await probe('proposed-add-newmode-valid', validCreated.card, validCreated.versionId, action.excelRow.excelRow);
+                      validSample.cardNewMode = 'Valid';
+                    } catch (error) {
+                      report.samples.push({
+                        kind: 'proposed-add-newmode-valid',
+                        excelRow: action.excelRow.excelRow,
+                        outcome: 'not-sent',
+                        code: error?.code || 'cardnew-mode-valid-unavailable',
+                        message: String(error?.message || error).slice(0, 20000),
+                        cardNewMode: 'Valid',
+                      });
+                    }
+                  }'''
+          new = '''                  if (rejectedExtractor(envelope)) {
+                    // Context guards intentionally live outside the CardNew error capture.
+                    // A user cancel/card switch must interrupt the collector, not be
+                    // misreported as an ordinary unavailable Valid diagnostic control.
+                    await assertContext();
+                    let validCreated = null;
+                    let validCreateError = null;
+                    try {
+                      validCreated = await bridge.createDiagnosticRowCard(structure.templateId, 'Valid');
+                    } catch (error) {
+                      validCreateError = error;
+                    }
+                    await assertContext();
+                    if (!validCreated) {
+                      report.samples.push({
+                        kind: 'proposed-add-newmode-valid',
+                        excelRow: action.excelRow.excelRow,
+                        outcome: 'not-sent',
+                        code: validCreateError?.code || 'cardnew-mode-valid-unavailable',
+                        message: String(validCreateError?.message || validCreateError || 'CardNewMode.Valid не вернул карточку.').slice(0, 20000),
+                        cardNewMode: 'Valid',
+                      });
+                    } else {
+                      bridge.rebuildRowCard(validCreated.card, validCreated.versionId, action.excelRow, structure, snapshot);
+                      const validSample = await probe('proposed-add-newmode-valid', validCreated.card, validCreated.versionId, action.excelRow.excelRow);
+                      validSample.cardNewMode = 'Valid';
+                    }
+                  }'''
+          if source.count(old) != 1:
+              raise SystemExit('expected CardNewMode.Valid diagnostic block exactly once')
+          path.write_text(source.replace(old, new, 1), encoding='utf-8')
+          PY
+      - name: Remove one-shot workflow from final tree
+        run: rm .github/workflows/one-shot-v1.11.6-context-cancel.yml
+      - name: Install test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify focused cancellation regression
+        run: node tests/interval-proposed-add-probes.mjs
+      - name: Verify full regression suite
+        run: npm test
+      - name: Commit verified fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A tessa-matrix-studio.user.js .github/workflows/one-shot-v1.11.6-context-cancel.yml
+          git diff --cached --quiet && { echo "No production change generated"; exit 1; }
+          git commit -m "fix: propagate cancellation from Valid interval probe"
+          git push origin HEAD:diag/v1.11.6-cardnew-valid
