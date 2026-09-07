@@ -66,17 +66,27 @@ replaceOnce(
       if (!priority.has(roleTypeId)) priority.set(roleTypeId, priority.size);
     });
 
-    return Array.from(entries || [])
-      .map((entry, index) => ({ entry, index }))
-      .sort((a, b) => {
-        const aType = catalogRoleTypeId(a.entry?.roleTypeId);
-        const bType = catalogRoleTypeId(b.entry?.roleTypeId);
-        const aPriority = priority.has(aType) ? priority.get(aType) : 1000;
-        const bPriority = priority.has(bType) ? priority.get(bType) : 1000;
-        return aPriority - bPriority || a.index - b.index;
-      })
-      .map(item => item.entry);
+    // finalizeDictionaryEntries intentionally alphabetizes ordinary catalogs. Carry a
+    // numeric pickerPriority on function-role entries so that normalization can preserve
+    // the function-specific role-class order while still sorting names inside one class.
+    return Array.from(entries || []).map(entry => {
+      const roleTypeId = catalogRoleTypeId(entry?.roleTypeId);
+      return {
+        ...entry,
+        pickerPriority: priority.has(roleTypeId) ? priority.get(roleTypeId) : 1000,
+      };
+    });
   }`
+);
+
+replaceOnce(
+  'dictionary priority normalization',
+`    return values.sort((a, b) => a.selector.localeCompare(b.selector, 'ru', { sensitivity: 'base' }));`,
+`    return values.sort((a, b) => {
+      const aPriority = Number.isFinite(Number(a.pickerPriority)) ? Number(a.pickerPriority) : Number.MAX_SAFE_INTEGER;
+      const bPriority = Number.isFinite(Number(b.pickerPriority)) ? Number(b.pickerPriority) : Number.MAX_SAFE_INTEGER;
+      return aPriority - bPriority || a.selector.localeCompare(b.selector, 'ru', { sensitivity: 'base' });
+    });`
 );
 
 replaceOnce(
