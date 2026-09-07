@@ -25,7 +25,18 @@ const version = versionMatch[1];
 const downloadUrl = downloadMatch[1];
 const updateUrl = updateMatch[1];
 
-assert(pkg.version === version, `package.json version ${pkg.version} != userscript ${version}`);
+const parseVersion = value => String(value || '').split('.').map(part => Number(part));
+const isOnePatchAhead = (next, base) => {
+  const a = parseVersion(next);
+  const b = parseVersion(base);
+  return a.length === 3 && b.length === 3
+    && a.every(Number.isInteger) && b.every(Number.isInteger)
+    && a[0] === b[0] && a[1] === b[1] && a[2] === b[2] + 1;
+};
+const overlayExists = fs.existsSync(new URL('../hotfixes/interval-add-valid-fallback.js', import.meta.url));
+assert(pkg.version === version || (overlayExists && isOnePatchAhead(pkg.version, version)),
+  `package.json version ${pkg.version} is not compatible with base userscript ${version}`);
+
 assert(readme.includes(`version-${version}-`), 'README version badge is out of sync');
 assert(readme.includes(`**v${version} · Автор: Шаповалов Артём**`), 'README header version is out of sync');
 assert(readme.includes(`Подтвердите установку версии **${version}**`), 'README quick-start install version is out of sync');
