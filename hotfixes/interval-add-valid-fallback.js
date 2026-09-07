@@ -79,7 +79,16 @@
           if (!valid?.card || !valid?.versionId) throw error;
           const { excelRow, structure, snapshot } = holder.rebuildArgs;
           originalRebuildRowCard.call(this, valid.card, valid.versionId, excelRow, structure, snapshot);
-          await originalValidateDuplicate.call(this, valid.card, valid.versionId);
+          try {
+            await originalValidateDuplicate.call(this, valid.card, valid.versionId);
+          } catch (validError) {
+            if (validError?.code === 'duplicate-interval-extractor') {
+              const evidence = '[CardNewMode.Default=extractor-error; CardNewMode.Valid=extractor-error]';
+              const message = String(validError?.message || 'LeftOperandExtractor is null');
+              if (!message.includes(evidence)) validError.message = `${message} ${evidence}`;
+            }
+            throw validError;
+          }
 
           valid.intervalExtractorFallback = 'CardNewMode.Valid';
           holder.current = valid;
