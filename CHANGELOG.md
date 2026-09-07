@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.11.11 — 2026-09-08
+
+- Для live-блокера #57 Preview/support evidence теперь явно фиксирует обе попытки guarded interval fallback, если и обычный CardNew, и повтор через `CardNewMode.Valid` завершаются тем же `duplicate-interval-extractor / LeftOperandExtractor is null`. В причине безопасно отображается `CardNewMode.Default=extractor-error; CardNewMode.Valid=extractor-error`, поэтому результат больше не зависит от порядка запуска Preview и отдельной диагностики.
+- Семантика записи не менялась: второй CardNew по-прежнему создаётся только после известного extractor failure, та же желаемая строка снова проходит тот же серверный `ValidateDuplicate`, а повторный extractor failure снова выбрасывается наружу и блокирует Store.
+- Реальный duplicate и любые посторонние серверные ошибки не переопределяются; успешный `CardNewMode.Valid` по-прежнему должен быть подтверждён сервером до попадания строки в prepared ADD. Store/Delete и fail-closed границы остаются без изменений.
+- Добавлена RED→GREEN регрессия на live-сценарий «Default rejected + Valid rejected»: до исправления Preview содержал только `LeftOperandExtractor is null`, после исправления содержит исходную ошибку и обе mode/outcome метки. Issue #57 остаётся OPEN до успешного live `ValidateDuplicate` на реальной TESSA.
+
 ## 1.11.10 — 2026-09-07
 
 - Повторный импорт уже применённого точного ADD стал идемпотентным: если желаемая строка полностью совпадает ровно с одной неизменяемой строкой текущей TESSA, Studio привязывает её к точной server identity и показывает как «без изменений» вместо ложного duplicate-SKIP. Повторная запись и Store для такой строки не выполняются.
