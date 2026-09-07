@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.11.6
+// @version      1.11.7
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.11.6',
+    version: '1.11.7',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -2218,7 +2218,10 @@
   }
 
   function genericSheetXml(rows, widths = [], options = {}) {
-    const maxCols = Math.max(1, ...rows.map(row => row.length));
+    let maxCols = 1;
+    for (const row of rows) {
+      if (row.length > maxCols) maxCols = row.length;
+    }
     const lastCol = indexToCol(maxCols - 1);
     const lastRow = Math.max(1, rows.length);
     const xmlRows = rows.map((values, rowIndex) => {
