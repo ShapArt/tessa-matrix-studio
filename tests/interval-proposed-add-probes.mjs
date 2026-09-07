@@ -185,4 +185,31 @@ assert.equal(Object.prototype.hasOwnProperty.call(newRequests[0], 'newMode'), fa
 await modeBridge.createDiagnosticRowCard('template', 'Valid');
 assert.equal(newRequests[1].newMode, 7, 'diagnostic CardNew must map Valid through the runtime enum');
 
+// A context switch/cancel that happens immediately after the Valid CardNew allocation
+// must interrupt the whole collector. It must not be swallowed as a harmless not-sent
+// diagnostic sample, otherwise a single-candidate run can silently finish in stale context.
+const cancelled = fixture();
+let validAllocated = false;
+const createValid = cancelled.bridge.createDiagnosticRowCard;
+cancelled.bridge.createDiagnosticRowCard = async (...args) => {
+  const created = await createValid(...args);
+  validAllocated = true;
+  return created;
+};
+const cancelledResult = await E.collectIntervalDiagnostics({
+  ...cancelled,
+  workbook,
+  structure,
+  snapshot,
+  failedRows,
+  assertContext: async () => {
+    if (validAllocated) throw new Error('context changed during CardNewMode.Valid control');
+  },
+});
+assert.equal(cancelledResult.interrupted, true, 'context cancellation after Valid CardNew allocation must propagate to collector interruption');
+assert.match(cancelledResult.interruptionReason || '', /context changed during CardNewMode\.Valid control/);
+assert.equal(cancelled.calls.filter(call => call[0] === 'request').length, 12, 'no ValidateDuplicate request may be sent after context cancellation');
+assert.deepEqual(cancelled.calls.filter(call => call[0] === 'new').map(call => call[1]), ['default', 'Valid']);
+assert.equal(cancelledResult.writesAttempted, 0);
+
 console.log('TESSA interval diagnosis: bounded structural probes + explicit CardNewMode.Valid control: OK');
