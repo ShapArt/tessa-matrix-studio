@@ -2,8 +2,6 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
-// Final trusted-actor commit intentionally re-triggers the PR quality gate after the
-// self-cleaning helper workflow writes the production userscript change.
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 globalThis.document = { body: { innerText: '' }, querySelector: () => null, querySelectorAll: () => [] };
@@ -36,9 +34,11 @@ values[workbook.headers.indexOf('Подписание__ID')] = 'person|1';
 workbook.rows.push({ excelRow: 16, values });
 const failedRows = [{ excelRow: 16, code: 'duplicate-interval-extractor' }];
 
-// One rejected candidate is enough to prove the live path. The same CardNew payload
-// is reused for every read-only probe. After the three exact interval-row marker probes
-// all reject, diagnostics deepen into version-row / non-interval / all-row marker topology.
+// One rejected candidate is enough to prove the live path. The default CardNew payload
+// is reused for structural probes. Only after every bounded structural probe still
+// reproduces LeftOperandExtractor do we create one second, read-only CardNew using
+// CardNewMode.Valid. That isolates CardNew extension/default-value behavior without
+// changing the production createRowCard path or attempting Store/Delete.
 function fixture() {
   const row = (data, rowId = 'row', state = 0) => ({ data, rowId, state, set(key, value) { this.data[key] = value; } });
   const card = (id, version, filled) => ({
@@ -66,6 +66,11 @@ function fixture() {
     CardRowState: { value: { Inserted: 1, Deleted: 2 } },
     Guid: { value: { newGuid: () => `guid-${++serial}` } },
   });
+  const makeCreated = mode => {
+    calls.push(['new', mode]);
+    const versionId = `new-${++serial}`;
+    return { card: card(`card-${serial}`, versionId, false), versionId };
+  };
   Object.assign(bridge, {
     core: { TypedField: { createGuid: value => ({ type: 'Guid', value }) }, StorageHelper: { tryGet: (info, key) => info[key] } },
     cards: { CardRequest: class { constructor() { this.info = {}; } } },
@@ -73,7 +78,11 @@ function fixture() {
     section: (source, name) => source.sections[name], rowValue: (r, key) => r.data[key], isDeleted: r => r.state === 2,
     addRow: section => { const r = row({}); section.rows.push(r); return r; },
     getCard: async id => { calls.push(['get', id]); return stored; },
-    createRowCard: async () => { calls.push(['new']); const versionId = `new-${++serial}`; return { card: card(`card-${serial}`, versionId, false), versionId }; },
+    createRowCard: async () => makeCreated('default'),
+    createDiagnosticRowCard: async (_templateId, modeName) => {
+      assert.equal(modeName, 'Valid', 'diagnostic CardNew must explicitly request CardNewMode.Valid');
+      return makeCreated('Valid');
+    },
     cardService: {
       request: async request => {
         calls.push(['request', request.requestType]);
@@ -108,11 +117,12 @@ assert.deepEqual(result.samples.map(sample => sample.kind), [
   'proposed-add-clear-noninterval-markers',
   'proposed-add-clear-all-row-markers',
   'proposed-add-clear-main-section-changed',
-], 'rejected CardNew interval must deepen into bounded topology probes after exact interval probes all reject');
+  'proposed-add-newmode-valid',
+], 'rejected CardNew interval must end with one explicit CardNewMode.Valid control probe');
 assert.equal(result.samples[0].outcome, 'allowed');
 assert.equal(result.samples[1].outcome, 'allowed');
 assert.equal(result.samples[2].code, 'duplicate-interval-extractor');
-assert.deepEqual(result.samples.slice(3).map(sample => sample.structuralMode), [
+assert.deepEqual(result.samples.slice(3, 12).map(sample => sample.structuralMode), [
   'clear-interval-changed',
   'clear-interval-state',
   'clear-interval-markers',
@@ -123,9 +133,56 @@ assert.deepEqual(result.samples.slice(3).map(sample => sample.structuralMode), [
   'clear-all-row-markers',
   'clear-main-section-changed',
 ]);
-assert.equal(f.calls.filter(call => call[0] === 'request').length, 12, 'one candidate must stay bounded to 2 controls + 1 proposed-add + 9 detached probes');
-assert.equal(f.calls.filter(call => call[0] === 'new').length, 1, 'all structural probes must reuse the captured proposed-add payload, not create more CardNew cards');
+assert.equal(result.samples.at(-1).cardNewMode, 'Valid');
+assert.equal(f.calls.filter(call => call[0] === 'request').length, 13, 'one candidate must stay bounded to 2 controls + 1 proposed-add + 9 detached probes + 1 Valid CardNew probe');
+assert.deepEqual(f.calls.filter(call => call[0] === 'new').map(call => call[1]), ['default', 'Valid'], 'diagnostics may create only the default CardNew plus one Valid control');
 assert.equal(result.writesAttempted, 0);
 assert.equal(result.samples.every(sample => sample.request?.info?.card), true);
 
-console.log('TESSA interval diagnosis: rejected proposed-add gets bounded interval + CardNew topology probes: OK');
+// The actual bridge helper must leave ordinary production CardNew untouched and set
+// newMode only on the explicit diagnostic path.
+const newRequests = [];
+let modeSerial = 0;
+class TestRow {
+  constructor() { this.data = {}; this.rowId = null; this.state = 0; }
+  set(key, value) { this.data[key] = value; }
+}
+const makeNewCard = () => {
+  const sections = new Map();
+  return {
+    id: null,
+    sections: {
+      getOrAdd(name) {
+        if (!sections.has(name)) sections.set(name, { fields: { set() {} }, rows: [] });
+        return sections.get(name);
+      },
+      tryGet(name) { return sections.get(name); },
+    },
+  };
+};
+const modeBridge = Object.create(E.TessaBridge.prototype);
+Object.assign(modeBridge, {
+  cards: {
+    CardNewRequest: class {},
+    CardNewMode: { Default: 0, Valid: 7 },
+    CardRow: TestRow,
+    CardRowState: { Inserted: 1, Deleted: 2 },
+  },
+  cardTypes: { mtxRouteMatrixRow: { id: 'row-type', alias: 'MtxRouteMatrixRow' } },
+  core: {
+    FieldType: { Guid: 'Guid', Int: 'Int' },
+    Guid: { newGuid: () => `mode-guid-${++modeSerial}` },
+  },
+  cardService: {
+    new: async req => {
+      newRequests.push(req);
+      return { card: makeNewCard(), validationResult: { isSuccessful: true } };
+    },
+  },
+});
+await modeBridge.createRowCard('template');
+assert.equal(Object.prototype.hasOwnProperty.call(newRequests[0], 'newMode'), false, 'normal createRowCard must keep the platform default mode');
+await modeBridge.createDiagnosticRowCard('template', 'Valid');
+assert.equal(newRequests[1].newMode, 7, 'diagnostic CardNew must map Valid through the runtime enum');
+
+console.log('TESSA interval diagnosis: bounded structural probes + explicit CardNewMode.Valid control: OK');
