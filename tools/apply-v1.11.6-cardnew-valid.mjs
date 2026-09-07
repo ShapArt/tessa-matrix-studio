@@ -100,4 +100,50 @@ replaceOnce(
 );
 
 fs.writeFileSync(path, source, 'utf8');
-console.log('Applied CardNewMode.Valid read-only interval diagnostic patch.');
+
+const testPath = 'tests/interval-diagnostics.mjs';
+let testSource = fs.readFileSync(testPath, 'utf8');
+function replaceTestOnce(label, before, after) {
+  const first = testSource.indexOf(before);
+  if (first < 0) throw new Error(`${label}: expected test block not found`);
+  if (testSource.indexOf(before, first + 1) >= 0) throw new Error(`${label}: test block is not unique`);
+  testSource = testSource.slice(0, first) + after + testSource.slice(first + before.length);
+}
+
+replaceTestOnce(
+  'existing interval fixture CardNew controls',
+`    createRowCard: async () => { calls.push(['new']); const versionId = \`new-\${++serial}\`; return { card: card(\`card-\${serial}\`, versionId, false), versionId }; },`,
+`    createRowCard: async () => { calls.push(['new', 'default']); const versionId = \`new-\${++serial}\`; return { card: card(\`card-\${serial}\`, versionId, false), versionId }; },
+    createDiagnosticRowCard: async (_templateId, modeName) => {
+      assert.equal(modeName, 'Valid', 'interval diagnostics must request only CardNewMode.Valid');
+      calls.push(['new', 'Valid']);
+      const versionId = \`new-\${++serial}\`;
+      return { card: card(\`card-\${serial}\`, versionId, false), versionId, diagnosticNewMode: modeName };
+    },`
+);
+
+replaceTestOnce(
+  'accepted rebuilt expected CardNewMode sample',
+`  'proposed-add-clear-main-section-changed',
+  'proposed-add',
+]);`,
+`  'proposed-add-clear-main-section-changed',
+  'proposed-add-newmode-valid',
+  'proposed-add',
+]);
+assert.equal(acceptedResult.samples.at(-2).cardNewMode, 'Valid', 'deepest rejected path must include the explicit Valid CardNew control');`
+);
+
+replaceTestOnce(
+  'accepted rebuilt request budget',
+`assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'request').length, 13, 'accepted rebuilt path is bounded to two controls + nine detached probes + second proposed-add baseline');`,
+`assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'request').length, 14, 'accepted rebuilt path is bounded to two controls + nine detached probes + one Valid CardNew control + second proposed-add baseline');`
+);
+replaceTestOnce(
+  'accepted rebuilt CardNew budget',
+`assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'new').length, 2, 'structural probes must not allocate extra CardNew cards');`,
+`assert.equal(acceptedRebuilt.calls.filter(c => c[0] === 'new').length, 3, 'structural probes reuse the default CardNew; only one explicit Valid control may allocate an extra card');`
+);
+
+fs.writeFileSync(testPath, testSource, 'utf8');
+console.log('Applied CardNewMode.Valid read-only interval diagnostic patch and updated regression contract.');
