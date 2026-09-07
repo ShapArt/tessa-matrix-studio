@@ -22,6 +22,11 @@ jobs:
           package-manager-cache: false
       - name: Apply exact source patch
         run: node tools/apply-v1.11.5-column-dictionaries.mjs
+      - name: Stage synchronized release metadata for verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i 's/1\.11\.4/1.11.5/g' package.json package-lock.json README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml
       - name: Install test dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Verify focused regression
