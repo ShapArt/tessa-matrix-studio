@@ -93,6 +93,7 @@ function makeBridge({ fallbackOutcome = 'allowed', unrelated = false } = {}) {
     requestStructure: async () => structure,
     loadSnapshot: async () => fresh,
     resolveReferenceOnline: async () => null,
+    resolveCriterion: (_condition, display) => E.parseRange(display, 'Int'),
     resolveRole: (_fn, display, packedId) => {
       const [id, roleTypeId] = String(packedId || '').split('|');
       return { id, display, roleTypeId };
