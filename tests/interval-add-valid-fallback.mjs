@@ -133,6 +133,22 @@ function makeBridge({ fallbackOutcome = 'allowed', unrelated = false } = {}) {
   ]);
 }
 
+// If both CardNew modes hit the extractor failure, Preview/support evidence must
+// say so explicitly. This keeps the live #57 diagnosis independent from whether
+// the user happened to run Diagnostics before or after Preview.
+{
+  const bridge = makeBridge({ fallbackOutcome: 'extractor' });
+  const result = await E.preflightPlan(plan, { previewOnly: true, bridge, structure, fresh });
+  assert.equal(result.preparedAdds.size, 0);
+  assert.equal(result.runtimeSkips.length, 1);
+  assert.equal(result.runtimeSkips[0].code, 'duplicate-interval-extractor');
+  assert.match(result.runtimeSkips[0].reason, /CardNewMode\.Default.*extractor.*CardNewMode\.Valid.*extractor/i);
+  assert.deepEqual(bridge.calls, [
+    'new:default', 'rebuild:default', 'validate:default',
+    'new:Valid', 'rebuild:valid', 'validate:valid',
+  ]);
+}
+
 // Unrelated server failures never allocate the second CardNew.
 {
   const bridge = makeBridge({ unrelated: true });
