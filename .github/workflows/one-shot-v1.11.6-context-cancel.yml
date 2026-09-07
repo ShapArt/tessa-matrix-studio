@@ -27,25 +27,19 @@ jobs:
           from pathlib import Path
           path = Path('tessa-matrix-studio.user.js')
           source = path.read_text(encoding='utf-8')
-          old = '''                  if (rejectedExtractor(envelope)) {
-                    try {
-                      await assertContext();
-                      const validCreated = await bridge.createDiagnosticRowCard(structure.templateId, 'Valid');
-                      await assertContext();
-                      bridge.rebuildRowCard(validCreated.card, validCreated.versionId, action.excelRow, structure, snapshot);
-                      const validSample = await probe('proposed-add-newmode-valid', validCreated.card, validCreated.versionId, action.excelRow.excelRow);
-                      validSample.cardNewMode = 'Valid';
-                    } catch (error) {
-                      report.samples.push({
-                        kind: 'proposed-add-newmode-valid',
-                        excelRow: action.excelRow.excelRow,
-                        outcome: 'not-sent',
-                        code: error?.code || 'cardnew-mode-valid-unavailable',
-                        message: String(error?.message || error).slice(0, 20000),
-                        cardNewMode: 'Valid',
-                      });
-                    }
-                  }'''
+          probe_anchor = "proposed-add-clear-main-section-changed"
+          anchor_pos = source.find(probe_anchor)
+          if anchor_pos < 0:
+              raise SystemExit('main-section diagnostic anchor missing')
+          start_anchor = "                  if (rejectedExtractor(envelope)) {"
+          start = source.find(start_anchor, anchor_pos)
+          if start < 0:
+              raise SystemExit('Valid diagnostic start anchor missing')
+          end_anchor = "                        cardNewMode: 'Valid',\n                      });\n                    }\n                  }"
+          end_start = source.find(end_anchor, start)
+          if end_start < 0:
+              raise SystemExit('Valid diagnostic end anchor missing')
+          end = end_start + len(end_anchor)
           new = '''                  if (rejectedExtractor(envelope)) {
                     // Context guards intentionally live outside the CardNew error capture.
                     // A user cancel/card switch must interrupt the collector, not be
@@ -74,9 +68,7 @@ jobs:
                       validSample.cardNewMode = 'Valid';
                     }
                   }'''
-          if source.count(old) != 1:
-              raise SystemExit('expected CardNewMode.Valid diagnostic block exactly once')
-          path.write_text(source.replace(old, new, 1), encoding='utf-8')
+          path.write_text(source[:start] + new + source[end:], encoding='utf-8')
           PY
       - name: Remove one-shot workflow from final tree
         run: rm .github/workflows/one-shot-v1.11.6-context-cancel.yml
