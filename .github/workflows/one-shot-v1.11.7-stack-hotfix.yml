@@ -1,0 +1,53 @@
+name: One-shot v1.11.7 XLSX stack hotfix
+
+on:
+  push:
+    branches: [hotfix/v1.11.7-xlsx-stack]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: hotfix/v1.11.7-xlsx-stack
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Replace unsafe large-array spread
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tessa-matrix-studio.user.js')
+          source = path.read_text(encoding='utf-8')
+          old = "    const maxCols = Math.max(1, ...rows.map(row => row.length));"
+          new = "    let maxCols = 1;\n    for (const row of rows) {\n      if (row.length > maxCols) maxCols = row.length;\n    }"
+          if source.count(old) != 1:
+              raise SystemExit(f'expected unsafe maxCols spread exactly once, got {source.count(old)}')
+          path.write_text(source.replace(old, new, 1), encoding='utf-8')
+          PY
+      - name: Remove one-shot workflow from final tree
+        run: rm .github/workflows/one-shot-v1.11.7-stack-hotfix.yml
+      - name: Install test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify focused stack regression
+        run: node tests/xlsx-stack-cardinality.mjs
+      - name: Verify full regression suite
+        run: npm test
+      - name: Commit verified hotfix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A tessa-matrix-studio.user.js .github/workflows/one-shot-v1.11.7-stack-hotfix.yml
+          git diff --cached --quiet && { echo "No hotfix change generated"; exit 1; }
+          git commit -m "fix: avoid XLSX dictionary call-stack overflow"
+          git push origin HEAD:hotfix/v1.11.7-xlsx-stack
