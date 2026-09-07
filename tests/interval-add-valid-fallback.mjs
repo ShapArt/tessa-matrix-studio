@@ -12,8 +12,12 @@ globalThis.document = {
 };
 
 const source = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
+const hotfix = fs.readFileSync(new URL('../hotfixes/interval-add-valid-fallback.js', import.meta.url), 'utf8');
 vm.runInThisContext(source, { filename: 'tessa-matrix-studio.user.js' });
+vm.runInThisContext(hotfix, { filename: 'interval-add-valid-fallback.js' });
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
+const installFallback = globalThis.__TMS_INSTALL_INTERVAL_ADD_VALID_FALLBACK__;
+assert.equal(typeof installFallback, 'function', 'interval ADD hotfix installer missing');
 const O = E.constants.OPERAND;
 
 const structure = {
@@ -52,11 +56,37 @@ function extractorError() {
   return error;
 }
 
-function makeBridge({ fallbackOutcome = 'allowed' } = {}) {
+function makeBridge({ fallbackOutcome = 'allowed', unrelated = false } = {}) {
   const calls = [];
   const defaultCard = { marker: 'default' };
   const validCard = { marker: 'valid' };
-  return {
+  const proto = {
+    async createRowCard() {
+      calls.push('new:default');
+      return { card: defaultCard, cardId: 'default-card', versionId: 'default-version', newMethod: 'new' };
+    },
+    async createDiagnosticRowCard(_templateId, modeName) {
+      calls.push(`new:${modeName}`);
+      assert.equal(modeName, 'Valid');
+      return { card: validCard, cardId: 'valid-card', versionId: 'valid-version', newMethod: 'new', diagnosticNewMode: 'Valid' };
+    },
+    rebuildRowCard(card) { calls.push(`rebuild:${card.marker}`); },
+    async validateDuplicate(card) {
+      calls.push(`validate:${card.marker}`);
+      if (unrelated) {
+        const error = new Error('permission denied'); error.code = 'permission-denied'; throw error;
+      }
+      if (card === defaultCard) throw extractorError();
+      if (fallbackOutcome === 'allowed') return;
+      if (fallbackOutcome === 'duplicate') {
+        const error = new Error('duplicate'); error.code = 'duplicate-found'; throw error;
+      }
+      throw extractorError();
+    },
+  };
+  installFallback(proto);
+  const bridge = Object.create(proto);
+  Object.assign(bridge, {
     calls, defaultCard, validCard,
     matrixInfo: () => ({ matrixId: 'matrix', TemplateID: 'template', StateName: 'Черновик' }),
     templateId: () => 'template',
@@ -68,31 +98,12 @@ function makeBridge({ fallbackOutcome = 'allowed' } = {}) {
       return { id, display, roleTypeId };
     },
     assertCanCreateRows: () => {},
-    createRowCard: async () => {
-      calls.push('new:default');
-      return { card: defaultCard, cardId: 'default-card', versionId: 'default-version', newMethod: 'new' };
-    },
-    createDiagnosticRowCard: async (_templateId, modeName) => {
-      calls.push(`new:${modeName}`);
-      assert.equal(modeName, 'Valid');
-      return { card: validCard, cardId: 'valid-card', versionId: 'valid-version', newMethod: 'new', diagnosticNewMode: 'Valid' };
-    },
-    rebuildRowCard: (card) => { calls.push(`rebuild:${card.marker}`); },
-    validateDuplicate: async (card) => {
-      calls.push(`validate:${card.marker}`);
-      if (card === defaultCard) throw extractorError();
-      if (fallbackOutcome === 'allowed') return;
-      if (fallbackOutcome === 'duplicate') {
-        const error = new Error('duplicate'); error.code = 'duplicate-found'; throw error;
-      }
-      throw extractorError();
-    },
-  };
+  });
+  return bridge;
 }
 
-// RED: an interval ADD rejected only by the known extractor defect must retry once
-// through CardNewMode.Valid, run the same server duplicate check again and prepare
-// ONLY the server-accepted Valid card for Store.
+// Known server extractor failure gets exactly one Valid CardNew retry. The same
+// ValidateDuplicate contract must accept the fallback before it reaches preparedAdds.
 {
   const bridge = makeBridge();
   const result = await E.preflightPlan(plan, { previewOnly: true, bridge, structure, fresh });
@@ -100,6 +111,7 @@ function makeBridge({ fallbackOutcome = 'allowed' } = {}) {
   assert.equal(result.preparedAdds.size, 1);
   const prepared = result.preparedAdds.get(69);
   assert.equal(prepared.card, bridge.validCard, 'preflight must keep the server-validated Valid card');
+  assert.equal(prepared.versionId, 'valid-version');
   assert.equal(prepared.intervalExtractorFallback, 'CardNewMode.Valid');
   assert.deepEqual(bridge.calls, [
     'new:default', 'rebuild:default', 'validate:default',
@@ -107,7 +119,7 @@ function makeBridge({ fallbackOutcome = 'allowed' } = {}) {
   ]);
 }
 
-// Any real duplicate must remain fail-closed. The fallback is not a bypass.
+// A real duplicate returned by the retry stays fail-closed; this is not a bypass.
 {
   const bridge = makeBridge({ fallbackOutcome: 'duplicate' });
   const result = await E.preflightPlan(plan, { previewOnly: true, bridge, structure, fresh });
@@ -120,13 +132,9 @@ function makeBridge({ fallbackOutcome = 'allowed' } = {}) {
   ]);
 }
 
-// Unrelated validation errors must never allocate a second CardNew.
+// Unrelated server failures never allocate the second CardNew.
 {
-  const bridge = makeBridge();
-  bridge.validateDuplicate = async card => {
-    bridge.calls.push(`validate:${card.marker}`);
-    const error = new Error('permission denied'); error.code = 'permission-denied'; throw error;
-  };
+  const bridge = makeBridge({ unrelated: true });
   const result = await E.preflightPlan(plan, { previewOnly: true, bridge, structure, fresh });
   assert.equal(result.preparedAdds.size, 0);
   assert.equal(result.runtimeSkips.length, 1);
