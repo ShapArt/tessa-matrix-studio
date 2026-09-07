@@ -5555,6 +5555,63 @@
     return JSON.stringify(stableObject(normalized));
   }
 
+  /**
+   * Makes repeated imports idempotent without weakening duplicate safety.
+   *
+   * A new Excel ADD that is semantically identical to exactly one unchanged current
+   * TESSA row is already satisfied by server state. Treat it as a read-only NOOP and
+   * attach the exact current identity. No ValidateDuplicate/Store call is skipped for
+   * a real mutation because there is no mutation left to execute.
+   *
+   * We deliberately do NOT collapse:
+   * - matches against multiple current rows (server state is ambiguous),
+   * - matches against a row that another action UPDATEs/DELETEs,
+   * - duplicate new ADDs when no current row already satisfies them.
+   */
+  function normalizeIdempotentExistingAdds(actions, snapshot, structure = null) {
+    const input = [...(actions || [])];
+    const touchedCurrent = new Set();
+    for (const action of input) {
+      if (!['update', 'delete'].includes(action?.type) || !action.currentRow) continue;
+      const identity = canonicalValue(action.currentRow.versionId || action.currentRow.rowCardId);
+      if (identity) touchedCurrent.add(identity);
+    }
+
+    const currentBySemanticKey = new Map();
+    for (const row of snapshot?.rows || []) {
+      const identity = canonicalValue(row.versionId || row.rowCardId);
+      if (!identity || touchedCurrent.has(identity)) continue;
+      const key = duplicateRowKey(row, null, structure);
+      if (!currentBySemanticKey.has(key)) currentBySemanticKey.set(key, []);
+      currentBySemanticKey.get(key).push(row);
+    }
+
+    const excelRows = [];
+    const normalized = input.map(action => {
+      if (action?.type !== 'add' || !action.excelRow) return action;
+      const key = duplicateRowKey(null, action.excelRow, structure);
+      const matches = currentBySemanticKey.get(key) || [];
+      if (matches.length !== 1) return action;
+      const currentRow = matches[0];
+      excelRows.push(Number(action.excelRow.excelRow));
+      return {
+        ...action,
+        type: 'noop',
+        currentRow,
+        changes: [],
+        match: { ...(action.match || {}), matchedBy: 'existing-identical-add', lowConfidence: false },
+        expectedFingerprint: currentRow.fingerprint,
+        originalType: action.originalType || 'add',
+        idempotentExistingAdd: true,
+      };
+    });
+
+    return {
+      actions: normalized,
+      excelRows: [...new Set(excelRows.filter(Number.isFinite))].sort((a, b) => a - b),
+    };
+  }
+
   function detectPlanDuplicateConflicts(actions, snapshot, structure = null) {
     const finalRows = new Map((snapshot?.rows || []).map(row => [canonicalValue(row.versionId || row.rowCardId), { label: `TESSA ${row.index + 1}`, current: row }]));
     for (const action of actions || []) {
@@ -5740,6 +5797,12 @@
       return false;
     });
 
+    // Повторный импорт уже применённого точного ADD — не ошибка и не новая запись.
+    // Привязываем его только к единственной неизменяемой строке TESSA и превращаем
+    // в NOOP до duplicate-localization. Неоднозначные/настоящие дубли остаются fail-closed.
+    const idempotentExistingAdds = normalizeIdempotentExistingAdds(actions, snapshot, structure);
+    actions = idempotentExistingAdds.actions;
+
     // Дубликаты локализуются до устойчивого состояния. Это важно для каскада:
     // пропуск одного конфликтующего UPDATE может вернуть исходную строку TESSA и тем
     // самым обнаружить дубль у следующего ADD. Весь корректный пакет при этом живёт.
@@ -5757,6 +5820,9 @@
     }
 
     const warnings = [...columnMap.warnings, ...(built.warnings || [])];
+    if (idempotentExistingAdds.excelRows.length) {
+      warnings.push(`Уже существуют в TESSA и считаются без изменений: Excel ${idempotentExistingAdds.excelRows.join(', ')}. Повторная запись не выполняется.`);
+    }
     const uniqueFragmentResolutions = desired.flatMap(row => row.resolutions || []);
     if (uniqueFragmentResolutions.length) warnings.push(`По уникальному фрагменту автоматически найдено значений: ${uniqueFragmentResolutions.length}. ${uniqueFragmentResolutions.slice(0, 6).join(' | ')}${uniqueFragmentResolutions.length > 6 ? ' | …' : ''}`);
     const nonEmptyFingerprints = desired.filter(row => row.hasData).map(x => x.compareFingerprint || x.fingerprint);
@@ -6028,6 +6094,10 @@
       counts: countActions(actions, plan.skippedRows || []),
       reviewApplied: true,
     };
+
+    // Review может убрать часть UPDATE и тем самым сделать ADD уже удовлетворённым
+    // текущей строкой TESSA. Повторяем ту же безопасную idempotency-нормализацию.
+    actions = normalizeIdempotentExistingAdds(actions, plan.snapshot, plan.structure).actions;
 
     // Частичная отмена тоже может собрать дубль. Как и Planner, локализуем только
     // конфликтующую Excel-операцию и продолжаем с остальными. Повторяем проверку до
