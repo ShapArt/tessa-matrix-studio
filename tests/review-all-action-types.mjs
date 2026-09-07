@@ -61,10 +61,11 @@ E.setPlanReviewRow(review, del, false);
 reviewed = E.buildReviewedPlan(plan, review);
 assert(reviewed.actions[1].type === 'delete', 'restoring DELETE must restore the original operation');
 
-// A duplicate can appear only after earlier conflicting edits were already skipped.
-// This mirrors live UAT: Excel 15/37 were skipped first, which restored TESSA 1 and
-// made a later ADD (Excel 38) duplicate that unchanged row. That second-order duplicate
-// must become another local SKIP, not a global safety block for unrelated valid actions.
+// A previous conflicting edit can be skipped first and thereby restore an unchanged TESSA row.
+// If a later ADD is now exactly satisfied by that one current row, the reviewed plan is idempotent:
+// attach the exact identity and show a read-only NOOP instead of creating a second SKIP.
+// Real new-new duplicates and ambiguous current-state matches are covered separately by
+// idempotent-existing-add.mjs and still remain fail-closed.
 const originalRow = { index: 0, rowCardId: 'card-original', versionId: 'version-original', flat: { value: ['A'] } };
 const goodCurrent = { index: 1, rowCardId: 'card-good', versionId: 'version-good', flat: { value: ['B'] } };
 const goodUpdate = {
@@ -95,13 +96,17 @@ const cascadePlan = {
 };
 const cascadeReviewed = E.buildReviewedPlan(cascadePlan, E.createPlanReviewState());
 assert(cascadeReviewed.safety?.blocked === false,
-  `localized cascading duplicate must not globally block Apply: ${JSON.stringify(cascadeReviewed.safety)}`);
-assert(cascadeReviewed.actions.length === 1 && cascadeReviewed.actions[0].type === 'update' && cascadeReviewed.actions[0].excelRow.excelRow === 16,
-  `only unrelated good UPDATE should remain executable: ${JSON.stringify(cascadeReviewed.actions)}`);
-assert(cascadeReviewed.skippedRows.some(item => item.excelRow === 38 && item.source === 'duplicate-validation'),
-  `cascading duplicate ADD must be a row-local SKIP: ${JSON.stringify(cascadeReviewed.skippedRows)}`);
-assert(cascadeReviewed.counts.update === 1 && cascadeReviewed.counts.add === 0 && cascadeReviewed.counts.skip === 3,
-  `cascading duplicate counters are wrong: ${JSON.stringify(cascadeReviewed.counts)}`);
+  `idempotent cascading ADD must not globally block Apply: ${JSON.stringify(cascadeReviewed.safety)}`);
+const cascadeUpdate = cascadeReviewed.actions.find(action => action.type === 'update');
+const cascadeNoop = cascadeReviewed.actions.find(action => action.type === 'noop' && action.excelRow?.excelRow === 38);
+assert(cascadeReviewed.actions.length === 2 && cascadeUpdate?.excelRow?.excelRow === 16,
+  `unrelated good UPDATE must remain executable beside the idempotent NOOP: ${JSON.stringify(cascadeReviewed.actions)}`);
+assert(cascadeNoop?.match?.matchedBy === 'existing-identical-add' && cascadeNoop.currentRow?.rowCardId === 'card-original',
+  `cascading exact ADD must attach the one matching current identity: ${JSON.stringify(cascadeNoop)}`);
+assert(!cascadeReviewed.skippedRows.some(item => item.excelRow === 38),
+  `idempotent existing ADD must not create another SKIP: ${JSON.stringify(cascadeReviewed.skippedRows)}`);
+assert(cascadeReviewed.counts.update === 1 && cascadeReviewed.counts.add === 0 && cascadeReviewed.counts.noop === 1 && cascadeReviewed.counts.skip === 2,
+  `idempotent cascading counters are wrong: ${JSON.stringify(cascadeReviewed.counts)}`);
 const cascadeAvailability = E.applyAvailability(cascadePlan, E.createPlanReviewState());
 assert(cascadeAvailability.canApply === true && cascadeAvailability.count === 1,
   `unrelated good operation must stay applicable: ${JSON.stringify(cascadeAvailability)}`);
@@ -115,4 +120,4 @@ assert(code.includes("} else if (action.type === 'add') body.innerHTML = `${rowR
 assert(code.includes("else body.innerHTML = `${rowReviewControl}${flatToHtml(action.currentRow.flat, plan.columnMap, action.currentRow)}`;"),
   'DELETE Preview must render the whole-operation review control while passing row metadata for typed role badges');
 
-console.log('TESSA Matrix Studio selective review for ADD/DELETE and row-local cascading duplicates: OK');
+console.log('TESSA Matrix Studio selective review for ADD/DELETE and idempotent cascading ADD: OK');
