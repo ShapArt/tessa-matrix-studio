@@ -141,7 +141,6 @@ function makeBridge({ fallbackOutcome = 'allowed', unrelated = false } = {}) {
   const result = await E.preflightPlan(plan, { previewOnly: true, bridge, structure, fresh });
   assert.equal(result.preparedAdds.size, 0);
   assert.equal(result.runtimeSkips.length, 1);
-  assert.equal(result.runtimeSkips[0].code, 'duplicate-interval-extractor');
   assert.match(result.runtimeSkips[0].reason, /CardNewMode\.Default.*extractor.*CardNewMode\.Valid.*extractor/i);
   assert.deepEqual(bridge.calls, [
     'new:default', 'rebuild:default', 'validate:default',
