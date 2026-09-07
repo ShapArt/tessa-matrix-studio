@@ -1,0 +1,70 @@
+name: One-shot v1.11.7 metadata
+
+on:
+  push:
+    branches: [hotfix/v1.11.7-xlsx-stack]
+
+permissions:
+  contents: write
+
+jobs:
+  metadata:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: hotfix/v1.11.7-xlsx-stack
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Synchronize v1.11.7 metadata
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new, count=None):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              actual = text.count(old)
+              if count is not None and actual != count:
+                  raise SystemExit(f'{path}: expected {count} occurrences of {old!r}, got {actual}')
+              if actual == 0:
+                  raise SystemExit(f'{path}: missing {old!r}')
+              p.write_text(text.replace(old, new), encoding='utf-8')
+
+          replace('tessa-matrix-studio.user.js', '// @version      1.11.6', '// @version      1.11.7', 1)
+          replace('tessa-matrix-studio.user.js', "version: '1.11.6'", "version: '1.11.7'", 1)
+          replace('package.json', '"version": "1.11.6"', '"version": "1.11.7"', 1)
+          replace('package-lock.json', '"version": "1.11.6"', '"version": "1.11.7"', 2)
+          replace('README.md', '1.11.6', '1.11.7')
+          replace('.github/ISSUE_TEMPLATE/bug_report.yml', 'placeholder: 1.11.6', 'placeholder: 1.11.7', 1)
+
+          changelog = Path('CHANGELOG.md')
+          text = changelog.read_text(encoding='utf-8')
+          anchor = '# Changelog\n\n'
+          section = '''## 1.11.7 — 2026-09-07\n\n- Срочно исправлена ошибка выгрузки Excel `Maximum call stack size exceeded`, появившаяся на матрицах с очень большими встроенными справочниками после разделения каталогов ролей по функциям.\n- Причина была в `genericSheetXml`: количество столбцов вычислялось через `Math.max(...rows.map(...))`, что превращало каждую строку большого листа `Словари` в отдельный аргумент функции и упиралось в лимит аргументов JavaScript/V8.\n- Вычисление ширины служебного листа переведено на обычный итеративный проход без spread-вызова; состав справочников, именованные диапазоны и привязка каждого столбца к своему каталогу не менялись.\n- Добавлена регрессия на 140 000 строк встроенного справочника: до исправления она стабильно падала с тем же `RangeError`, после исправления XLSX формируется успешно.\n- Изменение не затрагивает Preview/Apply/Store/Delete и серверную проверку дубликатов.\n\n'''
+          if '## 1.11.7 — 2026-09-07' not in text:
+              if not text.startswith(anchor):
+                  raise SystemExit('CHANGELOG anchor not found')
+              changelog.write_text(anchor + section + text[len(anchor):], encoding='utf-8')
+          PY
+      - name: Remove one-shot workflow from release tree
+        run: rm .github/workflows/one-shot-v1.11.7-metadata.yml
+      - name: Install test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify full regression suite
+        run: npm test
+      - name: Commit verified v1.11.7 metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && { echo "No release metadata change generated"; exit 1; }
+          git commit -m "chore: prepare v1.11.7 XLSX stack hotfix"
+          git push origin HEAD:hotfix/v1.11.7-xlsx-stack
