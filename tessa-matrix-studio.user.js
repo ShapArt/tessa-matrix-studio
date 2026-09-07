@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.11.7
+// @version      1.11.8
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.11.7',
+    version: '1.11.8',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -117,10 +117,10 @@
   // These ceilings prevent tiny XML from materializing pathological sparse arrays or
   // forcing the browser to parse an unreasonable number of physical row/cell nodes.
   const SPREADSHEETML_LIMITS = Object.freeze({
-    MaxRowNumber: 100000,
+    MaxRowNumber: 200000,
     MaxColumnNumber: 16384, // Excel XFD
-    MaxParsedRows: 100000,
-    MaxParsedCells: 500000,
+    MaxParsedRows: 200000,
+    MaxParsedCells: 1500000,
   });
 
 
