@@ -2218,7 +2218,10 @@
   }
 
   function genericSheetXml(rows, widths = [], options = {}) {
-    const maxCols = Math.max(1, ...rows.map(row => row.length));
+    let maxCols = 1;
+    for (const row of rows) {
+      if (row.length > maxCols) maxCols = row.length;
+    }
     const lastCol = indexToCol(maxCols - 1);
     const lastRow = Math.max(1, rows.length);
     const xmlRows = rows.map((values, rowIndex) => {
