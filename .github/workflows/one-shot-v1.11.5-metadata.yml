@@ -21,8 +21,9 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - name: Synchronize v1.11.5 metadata
-        shell: python
+        shell: bash
         run: |
+          python - <<'PY'
           import json
           from pathlib import Path
 
@@ -59,17 +60,19 @@ jobs:
             raise SystemExit('CHANGELOG header missing')
           entry = '''## 1.11.5 — 2026-09-07
 
-- Исправлена привязка Excel-справочников для функций матрицы в реальной TESSA: GUID `FunctionType.ID` больше не трактуется как `RoleTypeID` и не сваливает все функции в один общий `MtxRoles`.
-- Для каждой функции с GUID/кастомным типом создаётся отдельный каталог ролей. Типы ролей, уже используемые именно этой функцией, идут первыми; Personal используется как безопасный следующий вариант, при этом Department/Group/Static и другие допустимые роли не удаляются.
-- Существующие значения сохраняются и разрешаются по точной паре `RoleID|RoleTypeID`, включая legacy и корпоративные типы ролей (например `RoleTypeID=9`). Установки, где `FunctionType.ID` действительно числовой RoleType, сохраняют строгую фильтрацию.
-- Версия проекции справочников поднята до 4, поэтому старый локальный кэш с общим `MtxRoles` не переживает обновление.
-- Добавлены регрессии для реального GUID типа функции, независимых function-пикеров и маршрутизации ссылочных критериев по `View + RefSection`; строковые/числовые поля не получают ложные выпадающие списки.
-- Apply/Store/Delete/ValidateDuplicate и fail-closed обработка `LeftOperandExtractor is null` не менялись.
+          - Исправлена привязка Excel-справочников для функций матрицы в реальной TESSA: GUID `FunctionType.ID` больше не трактуется как `RoleTypeID` и не сваливает все функции в один общий `MtxRoles`.
+          - Для каждой функции с GUID/кастомным типом создаётся отдельный каталог ролей. Типы ролей, уже используемые именно этой функцией, идут первыми; Personal используется как безопасный следующий вариант, при этом Department/Group/Static и другие допустимые роли не удаляются.
+          - Существующие значения сохраняются и разрешаются по точной паре `RoleID|RoleTypeID`, включая legacy и корпоративные типы ролей (например `RoleTypeID=9`). Установки, где `FunctionType.ID` действительно числовой RoleType, сохраняют строгую фильтрацию.
+          - Версия проекции справочников поднята до 4, поэтому старый локальный кэш с общим `MtxRoles` не переживает обновление.
+          - Добавлены регрессии для реального GUID типа функции, независимых function-пикеров и маршрутизации ссылочных критериев по `View + RefSection`; строковые/числовые поля не получают ложные выпадающие списки.
+          - Apply/Store/Delete/ValidateDuplicate и fail-closed обработка `LeftOperandExtractor is null` не менялись.
 
-'''
+          '''
+          entry = '\n'.join(line[10:] if line.startswith('          ') else line for line in entry.splitlines()) + '\n'
           if '## 1.11.5 —' in changelog:
             raise SystemExit('1.11.5 changelog entry already exists')
           changelog_path.write_text(changelog.replace(marker, marker + entry, 1), encoding='utf-8')
+          PY
       - name: Install test dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Verify full regression suite
