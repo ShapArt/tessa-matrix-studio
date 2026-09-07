@@ -1,0 +1,136 @@
+name: One-shot v1.11.8 XLSX self-roundtrip hotfix
+
+on:
+  push:
+    branches: [hotfix/v1.11.8-xlsx-self-roundtrip]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: hotfix/v1.11.8-xlsx-self-roundtrip
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Align parser ceilings with Studio-generated workbooks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one occurrence of {old!r}, got {count}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          js = Path('tessa-matrix-studio.user.js')
+          text = js.read_text(encoding='utf-8')
+          replacements = [
+              ('// @version      1.11.7', '// @version      1.11.8'),
+              ("version: '1.11.7'", "version: '1.11.8'"),
+              ('MaxRowNumber: 100000,', 'MaxRowNumber: 200000,'),
+              ('MaxParsedRows: 100000,', 'MaxParsedRows: 200000,'),
+              ('MaxParsedCells: 500000,', 'MaxParsedCells: 1500000,'),
+          ]
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'userscript: expected exactly one {old!r}, got {count}')
+              text = text.replace(old, new, 1)
+          old_comment = "// These ceilings prevent tiny XML from materializing pathological sparse arrays or\n  // forcing the browser to parse an unreasonable number of physical row/cell nodes."
+          new_comment = "// These ceilings prevent tiny XML from materializing pathological sparse arrays or\n  // forcing unreasonable physical row/cell counts. They intentionally cover the largest\n  // workbook Studio itself can currently generate; ZIP byte/ratio guards remain stricter\n  // outer resource bounds for untrusted files."
+          if old_comment not in text:
+              raise SystemExit('userscript SpreadsheetML comment anchor missing')
+          text = text.replace(old_comment, new_comment, 1)
+          js.write_text(text, encoding='utf-8')
+
+          sec = Path('tests/xlsx-spreadsheetml-security.mjs')
+          text = sec.read_text(encoding='utf-8')
+          pairs = [
+              ("assert(code.includes('MaxRowNumber: 100000'), 'production SpreadsheetML row ceiling drifted from 100000');",
+               "assert(code.includes('MaxRowNumber: 200000'), 'production SpreadsheetML row ceiling drifted from 200000');"),
+              ("assert(code.includes('MaxParsedRows: 100000'), 'production parsed-row ceiling drifted from 100000');",
+               "assert(code.includes('MaxParsedRows: 200000'), 'production parsed-row ceiling drifted from 200000');"),
+              ("assert(code.includes('MaxParsedCells: 500000'), 'production parsed-cell ceiling drifted from 500000');",
+               "assert(code.includes('MaxParsedCells: 1500000'), 'production parsed-cell ceiling drifted from 1500000');"),
+          ]
+          for old, new in pairs:
+              if text.count(old) != 1:
+                  raise SystemExit(f'security test anchor missing/duplicated: {old}')
+              text = text.replace(old, new, 1)
+          sec.write_text(text, encoding='utf-8')
+
+          replace_once('package.json', '"version": "1.11.7"', '"version": "1.11.8"')
+
+          lock = Path('package-lock.json')
+          text = lock.read_text(encoding='utf-8')
+          count = text.count('"version": "1.11.7"')
+          if count != 2:
+              raise SystemExit(f'package-lock: expected 2 version occurrences, got {count}')
+          lock.write_text(text.replace('"version": "1.11.7"', '"version": "1.11.8"'), encoding='utf-8')
+
+          readme = Path('README.md')
+          text = readme.read_text(encoding='utf-8')
+          if '1.11.7' not in text:
+              raise SystemExit('README old version missing')
+          readme.write_text(text.replace('1.11.7', '1.11.8'), encoding='utf-8')
+
+          issue = Path('.github/ISSUE_TEMPLATE/bug_report.yml')
+          text = issue.read_text(encoding='utf-8')
+          if 'placeholder: 1.11.7' not in text:
+              raise SystemExit('issue template old version missing')
+          issue.write_text(text.replace('placeholder: 1.11.7', 'placeholder: 1.11.8', 1), encoding='utf-8')
+
+          changelog = Path('CHANGELOG.md')
+          text = changelog.read_text(encoding='utf-8')
+          header = '# Changelog\n\n'
+          if not text.startswith(header):
+              raise SystemExit('CHANGELOG header unexpected')
+          entry = '''## 1.11.8 — 2026-09-07
+
+- Исправлено противоречие roundtrip: Studio мог успешно сформировать XLSX, а затем сам отклонить его на Preview ошибкой `слишком много ячеек SpreadsheetML (500001 > 500000)`.
+- После разделения справочников по функциям служебный лист `Словари` на крупных матрицах может законно превышать прежние внутренние потолки 100 000 строк / 500 000 физических ячеек.
+- Ограничения парсера SpreadsheetML подняты до 200 000 строк и 1 500 000 физических ячеек. Это остаются конечные защитные лимиты; ZIP-ограничения по размеру, распакованному объёму, количеству файлов и коэффициенту сжатия не ослаблялись.
+- Добавлена регрессия на 140 000 записей справочника: один и тот же Studio должен успешно выполнить `export → import` без потери записей.
+- Маршрутизация справочников по столбцам, Preview/Apply/Store/Delete и серверная логика TESSA не менялись.
+
+'''
+          changelog.write_text(header + entry + text[len(header):], encoding='utf-8')
+          PY
+
+      - name: Remove one-shot workflow from final tree
+        run: rm -f .github/workflows/one-shot-v1.11.8-self-roundtrip-hotfix.yml
+
+      - name: Install test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify focused XLSX regressions
+        run: |
+          node tests/xlsx-self-roundtrip-limit.mjs
+          node tests/xlsx-spreadsheetml-security.mjs
+
+      - name: Verify full regression suite
+        run: npm test
+
+      - name: Commit verified hotfix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && { echo "No changes to commit"; exit 1; }
+          git commit -m "fix: align XLSX parser ceilings with Studio exports"
+          git push origin HEAD:hotfix/v1.11.8-xlsx-self-roundtrip
