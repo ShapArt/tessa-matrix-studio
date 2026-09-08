@@ -4,8 +4,14 @@ import assert from 'node:assert/strict';
 
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
-vm.runInThisContext(fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8'));
+const source = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
+vm.runInThisContext(source);
 const E = window.__TESSA_MATRIX_SYNC_EXPORTS__;
+
+// The ordinary Apply button must verify what was actually persisted. A successful
+// Store response alone is not enough to tell the user that ADD/DELETE really stuck.
+assert.match(source, /#tms-apply'\)\.addEventListener\('click', \(\) => applySelected\(true\)\)/,
+  'normal Apply still skips post-write reconciliation');
 
 const structure = {
   templateId: 'crud-template',
@@ -32,8 +38,6 @@ const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byt
 const book = await E.readXlsxArrayBuffer(buffer);
 const index = token => book.schemaTokens.indexOf(token);
 
-// Existing row B: user clears every business cell but leaves the hidden identity intact.
-// This is explicit user intent to DELETE the exact exported row.
 const cleared = { ...book.rows[1], values: [...book.rows[1].values] };
 for (let i = 0; i < cleared.values.length; i++) cleared.values[i] = '';
 cleared.values[index('system:rowCardId')] = 'r2';
@@ -41,18 +45,11 @@ cleared.values[index('system:versionId')] = 'v2';
 cleared.values[index('system:baseFingerprint')] = snapshot.rows[1].fingerprint;
 cleared.values[index('system:action')] = '';
 
-// Existing row C is physically removed from Excel: its baseline identity disappears.
-// Rows A and D remain unchanged.
 const rowA = book.rows[0];
 const rowD = book.rows[3];
-
-// Completely blank gaps must be inert and must not affect DELETE/ADD inference.
 const blank1 = { excelRow: 50, values: Array(book.headers.length).fill('') };
 const blank2 = { excelRow: 51, values: Array(book.headers.length).fill('') };
 const blank3 = { excelRow: 52, values: Array(book.headers.length).fill('') };
-
-// A populated row after blank gaps with no hidden identity is a new ADD even if the
-// user did not touch the optional Action column.
 const added = { excelRow: 60, values: Array(book.headers.length).fill('') };
 added.values[index('criterion:c')] = '5';
 added.values[index('function:f')] = 'Тестер';
@@ -68,8 +65,6 @@ assert.equal(plan.actions.find(a => a.type === 'add')?.excelRow?.excelRow, 60);
 assert.ok(!plan.warnings.some(message => /автоматическое удаление.*отключено/i.test(message)),
   `legal ADD + DELETE triggered the identity-loss guard: ${JSON.stringify(plan.warnings)}`);
 
-// Concurrent server changes keep DELETE fail-closed: user intent is known, but an
-// outdated workbook must never delete a row that changed after export.
 const changedServerRow = sourceRow(2);
 changedServerRow.flat = { ...changedServerRow.flat, 'criterion:c': ['200'] };
 changedServerRow.values = { c: [{ kind: 'Int', value: 200, display: '200' }] };
@@ -81,4 +76,4 @@ assert.ok(!guarded.actions.some(a => a.type === 'delete' && a.currentRow.rowCard
 assert.match(JSON.stringify([guarded.skippedRows, guarded.warnings, guarded.issues]), /измени|конфликт/i,
   'concurrent cleared-row DELETE was not surfaced as a conflict');
 
-console.log('Cleared-row DELETE + physical DELETE + blank gaps + new no-ID ADD: OK');
+console.log('Cleared-row DELETE + physical DELETE + blank gaps + new no-ID ADD + verified Apply: OK');
