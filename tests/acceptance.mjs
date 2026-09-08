@@ -140,7 +140,7 @@ assert(plan.counts.skip === 1 && plan.counts.noop === 1 && plan.counts.update ==
 assert(plan.skippedRows.some(item => /исполнител/i.test(item.reason)), 'role SKIP reason is missing');
 
 // 7. Массовое удаление защищено отдельным guard.
-assert(E.deletionGuard({ counts: { delete: 10 }, sourceRowCount: 50 }).blocked === true, 'mass delete guard must block 10/50');
+assert(E.deletionGuard({ counts: { delete: 10 }, sourceRowCount: 50 }).blocked === false, 'reviewed baseline deletions must allow 10/50');
 assert(E.deletionGuard({ counts: { delete: 9 }, sourceRowCount: 50 }).blocked === false, 'mass delete guard must not block 9/50');
 
 function makeBridge(fresh = snapshot, options = {}) {

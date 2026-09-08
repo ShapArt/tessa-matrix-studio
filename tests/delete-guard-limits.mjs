@@ -16,20 +16,9 @@ assert(typeof deletionGuard === 'function', 'deletionGuard is missing');
 
 const guard = (deletes, rows) => deletionGuard({ counts: { delete: deletes }, sourceRowCount: rows });
 
-let result = guard(99, 1000);
-assert(result.blocked === false, `99/1000 must remain allowed, got ${JSON.stringify(result)}`);
-
-result = guard(100, 1000);
-assert(result.blocked === true, `100/1000 must be hard-blocked, got ${JSON.stringify(result)}`);
-assert(result.rule === 'absolute', `100/1000 must report absolute rule, got ${JSON.stringify(result)}`);
-assert(/100|пакет|удален/i.test(result.reason || ''), `absolute block needs readable reason: ${JSON.stringify(result)}`);
-
-result = guard(10, 50);
-assert(result.blocked === true, `10/50 must stay blocked by ratio rule, got ${JSON.stringify(result)}`);
-assert(result.rule === 'ratio', `10/50 must report ratio rule, got ${JSON.stringify(result)}`);
-
-result = guard(9, 50);
-assert(result.blocked === false, `9/50 must remain allowed, got ${JSON.stringify(result)}`);
-assert(result.rule === null || result.rule === undefined, `allowed result must not report destructive rule: ${JSON.stringify(result)}`);
-
-console.log('TESSA Matrix Studio destructive DELETE guard limits: OK');
+for (const [deletes, rows] of [[99,1000], [100,1000], [10,50], [9,50], [1000,1000]]) {
+  const result = guard(deletes, rows);
+  assert(result.blocked === false, `valid deletions must not be capped: ${JSON.stringify(result)}`);
+  assert(result.deleteCount === deletes && result.ratio === deletes / rows, 'preview counts must remain accurate');
+}
+console.log('TESSA Matrix Studio DELETE count and ratio do not block reviewed operations: OK');

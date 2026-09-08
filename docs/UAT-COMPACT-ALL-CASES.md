@@ -94,7 +94,7 @@
 - 500 mutations: штатный Apply.
 - 501–2000: дополнительное подтверждение.
 - 2001+: Apply disabled заранее.
-- DELETE guards: 9/50 allowed; 10/50 blocked by ratio; 100/1000 blocked absolutely.
+- DELETE counts: 9/50, 10/50 and 100/1000 remain available after baseline and target-version checks; no count/ratio cap.
 - Stale UPDATE после Preview.
 - ADD duplicate race.
 - DELETE race.

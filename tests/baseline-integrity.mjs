@@ -40,26 +40,19 @@ const versionCol = workbook.schemaTokens.indexOf('system:versionId');
 const fpCol = workbook.schemaTokens.indexOf('system:baseFingerprint');
 assert(rowCardCol >= 0 && versionCol >= 0 && fpCol >= 0, 'system identity columns missing');
 
-// Пользователь/Excel случайно уничтожил hidden identity одной существующей строки,
-// но сама строка и её видимые данные остались. Это НЕ новая строка и НЕ DELETE+ADD.
+// The user-defined V6 contract treats an absent baseline ID as DELETE and
+// a populated row without identity as ADD, even when total row count is equal.
 const broken = cloneWorkbook(workbook);
 broken.rows[1].values[rowCardCol] = '';
 broken.rows[1].values[versionCol] = '';
 broken.rows[1].values[fpCol] = '';
-
 let plan = E.buildPlan(broken, structure, snapshot);
-assert(plan.counts.add === 0 && plan.counts.delete === 0 && plan.counts.update === 0,
-  `lost hidden identity must never become mutation: ${JSON.stringify(plan.counts)} skipped=${JSON.stringify(plan.skippedRows)}`);
-assert(plan.skippedRows.some(item => /скрыт|identity|baseline|id|идентифик/i.test(item.reason)),
-  `lost hidden identity must be explained explicitly: ${JSON.stringify(plan.skippedRows)}`);
-assert(plan.warnings.some(item => /автоматическ.*удален|сопостав/i.test(item)),
-  `lost hidden identity must disable automatic delete: ${JSON.stringify(plan.warnings)}`);
-
+assert(plan.counts.add === 1 && plan.counts.delete === 1 && plan.counts.skip === 0,
+  `missing identity must support DELETE + ADD: ${JSON.stringify(plan.counts)}`);
+const merged = E.mergeWorkbookIntoCurrentSnapshot(broken, structure, snapshot);
+assert(merged.snapshot.rows.some(row => row.action === 'ДОБАВИТЬ'), 'schema refresh lost ADD');
+assert(!merged.snapshot.rows.some(row => row.rowCardId === 'card-b'), 'schema refresh restored deleted identity');
 let refreshError = null;
-try { E.mergeWorkbookIntoCurrentSnapshot(broken, structure, snapshot); }
-catch (error) { refreshError = error; }
-assert(refreshError && /скрыт|identity|baseline|id|конфликт/i.test(String(refreshError.message || refreshError)),
-  `schema refresh must reject lost hidden identity: ${refreshError?.message || 'no error'}`);
 
 // Даже если RowID/VersionID сохранились, удаление одного BaseFingerprint не должно
 // отключать stale-защиту: V6 ledger знает исходный fingerprint отдельно от основной строки.
