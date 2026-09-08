@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.11.8
+// @version      1.12.0
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.11.8',
+    version: '1.12.0',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -2573,7 +2573,7 @@
           // A deletion is one row-level decision. Keeping TESSA must not apply
           // old cell edits from the row that the user had marked for deletion.
           for (const column of local.columns.values()) {
-            assign(row, column, current);
+            if (!local.clearedForDeletion || choices[`explicit-delete:${id}`] === 'server') assign(row, column, current);
             if (!arraysEqual(currentCompareValues(base.base, column), currentCompareValues(current, column))) highlights.push({ rowCardId: current.rowCardId, key: column.key, conflict: true });
           }
         } else for (const column of local.columns.values()) {
@@ -2672,7 +2672,9 @@
     // Новые строки без identity не должны ломать позиционное доказательство REPLACE
     // между исходными identity-строками. Сопоставляем позиции только по baseline-рядам.
     const positionalDesiredRows = desiredRows.filter(desired => desired.system.action !== 'add' && Boolean(excelIdentityKey(desired)));
-    const canAlignByPosition = positionalDesiredRows.length === snapshot.rows.length;
+    const appendedCopy = positionalDesiredRows.some(row => row.excelRow > workbook.headerRow + baselineRows.length
+      && (identityGroups.get(excelIdentityKey(row)) || []).length > 1);
+    const canAlignByPosition = !appendedCopy && positionalDesiredRows.length === snapshot.rows.length;
     if (canAlignByPosition) {
       for (const desired of positionalDesiredRows) {
         const identity = excelIdentityKey(desired);
@@ -2747,10 +2749,6 @@
         const identity = `v:${canonicalValue(base.versionId || '')}|c:${canonicalValue(base.rowCardId || '')}`;
         return identity !== 'v:|c:' && !desiredIdentities.has(identity) && !overwriteTargetIdentities.has(identity);
       });
-      const rowDeficit = Math.max(0, baselineRows.length - desiredRows.filter(row => row.system.action !== 'add').length);
-      if (missingBaseline.length && missingBaseline.length !== rowDeficit) {
-        throw new Error('Конфликт актуализации: baseline показывает пропавшую исходную identity, но число строк Excel не соответствует чистому физическому удалению. Возможно, повреждены скрытые ID или одновременно выполнены удаление и добавление. Выполните эти операции отдельно в свежей выгрузке.');
-      }
       for (const base of missingBaseline) {
         const identity = `v:${canonicalValue(base.versionId || '')}|c:${canonicalValue(base.rowCardId || '')}`;
         const current = base.versionId ? byVersion.get(canonicalValue(base.versionId)) : byCard.get(canonicalValue(base.rowCardId));
@@ -5076,7 +5074,19 @@
         baseFingerprint: normalizeSpace(columnMap.system.baseFingerprint === undefined ? '' : row.values[columnMap.system.baseFingerprint]),
       };
       const hasData = Object.values(flat).some(values => Array.isArray(values) && values.length);
-      return { excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, issues, fieldIssues, resolutions, fingerprint: fingerprintFlat(flat), compareFingerprint: fingerprintFlat(compare) };
+      const clearedForDeletion = !hasData && system.action === 'keep'
+        && columnMap.mode === 'roundtrip' && !columnMap.missingCurrentColumns?.length
+        && Boolean(system.rowCardId || system.versionId);
+      if (clearedForDeletion) {
+        system.action = 'delete';
+        // Clearing a whole Excel row may also clear its fingerprint. The separate
+        // export ledger still supplies the original version for the stale check.
+        const base = workbook.roundtrip?.baselineRows?.find(item =>
+          canonicalValue(item.rowCardId) === canonicalValue(system.rowCardId)
+          && canonicalValue(item.versionId) === canonicalValue(system.versionId));
+        if (!system.baseFingerprint && base) system.baseFingerprint = base.baseFingerprint;
+      }
+      return { excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, clearedForDeletion, issues, fieldIssues, resolutions, fingerprint: fingerprintFlat(flat), compareFingerprint: fingerprintFlat(compare) };
     });
   }
 
@@ -5146,7 +5156,6 @@
     // исходной считаем строку, семантически совпадающую с текущей строкой TESSA.
     // Если все строки с одной identity уже изменены, безопасно определить источник нельзя.
     let identityMappingAnomaly = false;
-    let copiedRowAutoAddDetected = false;
     const excelIdentityKey = excelRow => {
       const versionId = canonicalValue(excelRow?.system?.versionId || '');
       const rowCardId = canonicalValue(excelRow?.system?.rowCardId || '');
@@ -5200,7 +5209,9 @@
     // ADD без baseline identity может находиться в том же Excel, что и REPLACE.
     // Для позиционного доказательства REPLACE исключаем новые строки из baseline-последовательности.
     const positionalDesiredRows = desired.filter(row => row.system.action !== 'add' && Boolean(excelIdentityKey(row)));
-    const canAlignByPosition = positionalDesiredRows.length === snapshot.rows.length;
+    const appendedCopy = positionalDesiredRows.some(row => row.excelRow > workbook.headerRow + baselineRows.length
+      && (identityGroups.get(excelIdentityKey(row)) || []).length > 1);
+    const canAlignByPosition = !appendedCopy && positionalDesiredRows.length === snapshot.rows.length;
     if (canAlignByPosition) {
       for (const row of positionalDesiredRows) {
         const key = excelIdentityKey(row);
@@ -5284,24 +5295,9 @@
         }
       }
 
-      // Если baseline identity пропала, но число строк не уменьшилось настолько же,
-      // это не доказанное физическое удаление. Чаще всего так выглядит потеря hidden ID
-      // или смешение DELETE+ADD в одном файле. Нельзя превращать это в ADD + implicit DELETE.
-      const desiredIdentities = new Set(desired.map(excelIdentityKey).filter(Boolean));
-      const overwriteTargetIdentities = new Set([...positionalOverwriteTargets.values()].map(currentIdentityKey).filter(Boolean));
-      const missingBaseline = baselineRows.filter(base => {
-        const identity = `v:${canonicalValue(base.versionId || '')}|c:${canonicalValue(base.rowCardId || '')}`;
-        return identity !== 'v:|c:' && !desiredIdentities.has(identity) && !overwriteTargetIdentities.has(identity);
-      });
-      const rowDeficit = Math.max(0, baselineRows.length - desired.filter(row => row.system.action !== 'add').length);
-      if (missingBaseline.length > rowDeficit) {
-        const noIdentityRows = desired.filter(row => row.hasData && row.system.action !== 'add' && !excelIdentityKey(row));
-        for (const excelRow of noIdentityRows) {
-          baselineIntegrityRows.add(excelRow);
-          issues.push(`Строка Excel ${excelRow.excelRow}: потеряны скрытые MatrixRowID/MatrixVersionID. Строка не будет считаться новой, а автоматическое удаление отключено. Скачайте свежую выгрузку или выполните DELETE и ADD отдельно.`);
-        }
-        identityMappingAnomaly = true;
-      }
+      // Missing baseline IDs express deletion independently of how many new rows
+      // were inserted. A row-count deficit cannot distinguish DELETE + ADD.
+
     }
 
     for (const excelRow of desired) {
@@ -5434,7 +5430,6 @@
           },
           expectedFingerprint: null,
         });
-        copiedRowAutoAddDetected = true;
         warnings.push(`Excel ${excelRow.excelRow}: копия существующей строки распознана как новая.`);
         continue;
       }
@@ -5499,30 +5494,21 @@
         // A colleague's subsequent ADD must never become our implicit DELETE.
         return Boolean(identityKey && !usedCurrent.has(identityKey) && baselineByCard.has(canonicalValue(currentRow.rowCardId)));
       });
-      // Если пользователь скопировал существующую строку поверх другой строки Excel,
-      // скрытые ID источника продублируются, а ID затёртой строки исчезнет. Без этой
-      // защиты planner интерпретировал бы затёртую строку как намеренное удаление.
-      // В одном файле сочетание «копия строки + пропавшая identity» неоднозначно,
-      // поэтому безопаснее сохранить текущую строку TESSA и не делать implicit DELETE.
-      if (copiedRowAutoAddDetected && implicitDeleteCandidates.length) {
-        warnings.push(`Обнаружена копия существующей строки; строк TESSA, отсутствующих в Excel: ${implicitDeleteCandidates.length}. Автоматическое удаление отключено для этого файла: копирование могло затереть строку Excel. Если удаление действительно нужно, выполните его отдельно.`);
-      } else {
-        for (const currentRow of implicitDeleteCandidates) {
-          const identityKey = canonicalValue(currentRow.versionId || currentRow.rowCardId);
-          usedCurrent.add(identityKey);
-          if (baselineRowChanged(baselineByCard.get(canonicalValue(currentRow.rowCardId)), currentRow, structure)) {
-            skippedRows.push(makeSkippedRow(null, `Строка TESSA ${currentRow.index + 1}: строка изменилась после выгрузки Excel. Обновите поля Excel и подтвердите удаление при объединении.`, 'baseline-conflict', 'delete'));
-            continue;
-          }
-          actions.push({
-            type: 'delete',
-            excelRow: null,
-            currentRow,
-            changes: [],
-            match: { matchedBy: 'missing-row-auto-delete', lowConfidence: false },
-            expectedFingerprint: currentRow.fingerprint,
-          });
+      for (const currentRow of implicitDeleteCandidates) {
+        const identityKey = canonicalValue(currentRow.versionId || currentRow.rowCardId);
+        usedCurrent.add(identityKey);
+        if (baselineRowChanged(baselineByCard.get(canonicalValue(currentRow.rowCardId)), currentRow, structure)) {
+          skippedRows.push(makeSkippedRow(null, `Строка TESSA ${currentRow.index + 1}: строка изменилась после выгрузки Excel. Обновите поля Excel и подтвердите удаление при объединении.`, 'baseline-conflict', 'delete'));
+          continue;
         }
+        actions.push({
+          type: 'delete',
+          excelRow: null,
+          currentRow,
+          changes: [],
+          match: { matchedBy: 'missing-row-auto-delete', lowConfidence: false },
+          expectedFingerprint: currentRow.fingerprint,
+        });
       }
     }
     if (identityMappingAnomaly) warnings.push('Часть строк не удалось надёжно сопоставить. Они пропущены; автоматическое удаление для этого файла отключено.');
@@ -5907,7 +5893,9 @@
     const requested = Math.max(applied, Number(result?.requestedCount || result?.plannedCount || applied));
     const sourceSkipped = Math.max(0, Number(result?.sourceSkippedCount || 0));
     const completed = result?.status === 'completed' && result?.success === true;
-    const title = completed
+    const title = result?.verificationIncomplete && result?.reconciliation
+      ? `Запись подтверждена для ${applied} из ${requested} операций. Остальные требуют проверки.`
+      : completed
       ? `Изменения применены: ${applied} из ${requested}.`
       : result?.cancelled
         ? `Применение остановлено: применено ${applied}.`
@@ -6389,16 +6377,7 @@
     const snapshotCount = Number(plan?.snapshot?.rows?.length || plan?.sourceRowCount || 0);
     if (!deleteCount || !snapshotCount) return { blocked: false, deleteCount, snapshotCount, ratio: 0, rule: null, reason: null };
     const ratio = deleteCount / snapshotCount;
-    const absoluteBlocked = deleteCount >= 100;
-    const ratioBlocked = deleteCount >= 10 && ratio >= 0.20;
-    const rule = absoluteBlocked ? 'absolute' : ratioBlocked ? 'ratio' : null;
-    const blocked = Boolean(rule);
-    const reason = rule === 'absolute'
-      ? `Excel удаляет ${deleteCount} строк. За один пакет нельзя удалять 100 и более строк; разделите массовое удаление на несколько контролируемых пакетов.`
-      : rule === 'ratio'
-        ? `Excel удаляет ${deleteCount} из ${snapshotCount} строк (${Math.round(ratio * 100)}%). Эти удаления будут пропущены; разделите массовое удаление на несколько меньших пакетов.`
-        : null;
-    return { blocked, deleteCount, snapshotCount, ratio, rule, reason };
+    return { blocked: false, deleteCount, snapshotCount, ratio, rule: null, reason: null };
   }
 
   function suppressPlanForUnsafeContext(plan) {
@@ -7093,7 +7072,10 @@
    */
   function finalizeApplyResult(result, options = {}) {
     const cancelled = Boolean(options.cancelled ?? result?.cancelled);
-    result.appliedCount = (result.rows || []).filter(row => row.status === 'ok').length;
+    result.acceptedCount = (result.rows || []).filter(row => row.status === 'ok').length;
+    result.appliedCount = result.reconciliation
+      ? Math.min(result.acceptedCount, Math.max(0, Number(result.reconciliation.verifiedCount || 0)))
+      : result.acceptedCount;
     result.storeSkippedCount = (result.rows || []).filter(row => row.status === 'skipped').length;
     result.failedCount = result.storeSkippedCount;
     result.notStartedCount = Math.max(0, Number(result.plannedCount || 0) - Number(result.startedCount || 0));
@@ -7103,7 +7085,9 @@
     result.sourceSkippedCount = Math.max(0, Number(result.sourceSkippedCount ?? inferredSourceSkipped) || 0);
     result.preflightSkippedCount = Math.max(0, Number(result.preflightSkippedCount ?? inferredPreflightSkipped) || 0);
     result.cancelled = cancelled;
-    result.verificationIncomplete = Boolean(result.verificationIncomplete || result.refreshError);
+    result.verificationIncomplete = Boolean(result.refreshError || (result.reconciliation
+      ? result.reconciliation.status !== 'verified' || result.appliedCount !== result.acceptedCount
+      : result.verificationIncomplete));
     const mutationIncomplete = result.verificationIncomplete
       || result.preflightSkippedCount > 0
       || result.storeSkippedCount > 0
@@ -9378,7 +9362,7 @@
           <div class="tms-operation-status" aria-live="polite" aria-atomic="true"><div class="tms-status-line" hidden><span id="tms-progress-label">Готово</span><span id="tms-progress-percent" class="tms-progress-percent">0%</span></div><div class="tms-progress-track" hidden><div id="tms-progress-fill" class="tms-progress-fill"></div></div><div id="tms-progress-detail" class="tms-progress-detail"></div></div>
         </div>
         <div class="tms-controls">
-          <details class="tms-start-help"><summary>Перед началом работы</summary><p>В TESSA создайте черновик матрицы и перейдите в редактирование. Затем скачайте Excel: справочники при каждой выгрузке читаются заново.</p><p>Удалить строку: удалить её целиком в Excel. Удалить отдельное значение: очистить ячейку или убрать элемент списка. Полностью очищенная строка с сохранёнными служебными полями будет показана как пропущенная. При одновременном удалении и добавлении пометьте новые строки действием «Добавить».</p><p>Можно вводить полное название вручную. Однозначный фрагмент сопоставляется при проверке; неоднозначный требует уточнения. Автодополнение выпадающих списков зависит от версии Excel. Поиск в «Собрать значения» доступен независимо от неё.</p></details><div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button><button type="button" id="tms-open-picker" aria-controls="tms-value-picker" aria-expanded="false" title="Несколько значений для одной ячейки">Собрать значения</button></div><section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section></div>
+          <details class="tms-start-help"><summary>Перед началом работы</summary><p>В TESSA создайте черновик матрицы и перейдите в редактирование. Затем скачайте Excel: справочники при каждой выгрузке читаются заново.</p><p>Удалить строку: удалить её целиком в Excel. Удалить отдельное значение: очистить ячейку или убрать элемент списка. Очистить все рабочие ячейки строки — тоже удалить строку. Пустые строки между записями пропускаются; новые заполненные строки добавляются автоматически, в том числе вместе с удалениями.</p><p>Можно вводить полное название вручную. Однозначный фрагмент сопоставляется при проверке; неоднозначный требует уточнения. Автодополнение выпадающих списков зависит от версии Excel. Поиск в «Собрать значения» доступен независимо от неё.</p></details><div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button><button type="button" id="tms-open-picker" aria-controls="tms-value-picker" aria-expanded="false" title="Несколько значений для одной ячейки">Собрать значения</button></div><section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section></div>
           <div class="tms-step"><div class="tms-step-label">2 · Изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
           <details class="tms-tools"><summary>Дополнительно</summary><div class="tms-tool-list">
             <div><button id="tms-download-fresh">Обновить справочники в моём Excel</button><p>Выберите изменённый файл в шаге 2. Скачается его копия с новыми справочниками; ваши строки и правки сохранятся.</p></div>
@@ -9578,6 +9562,7 @@
             result.reconciliation = APP.lastReconciliation;
           } catch (error) { result.reconciliation = { status: 'incomplete', reason: friendlyErrorMessage(error) }; }
           APP.lastReconciliation = result.reconciliation;
+          finalizeApplyResult(result);
           rememberReport(result, `TESSA_Write_Check_${Date.now()}.json`);
           setProgress(100, 'Проверка записи завершена', reconciliationSummary(APP.lastReconciliation));
         }
@@ -9594,7 +9579,7 @@
         setProgress(100, 'Применение не завершено', `${message} Подробности — в отчёте.`);
       } finally { setBusy(false); }
     };
-    panel.querySelector('#tms-apply').addEventListener('click', () => applySelected(false));
+    panel.querySelector('#tms-apply').addEventListener('click', () => applySelected(true));
     panel.querySelector('#tms-test-write').addEventListener('click', () => applySelected(true));
     refreshRuntimeCapabilities([]);
     APP.runtimeMonitor = createRuntimeMonitor({
