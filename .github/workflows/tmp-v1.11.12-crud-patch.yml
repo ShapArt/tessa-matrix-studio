@@ -1,0 +1,68 @@
+name: Temporary v1.11.12 CRUD patch
+
+on:
+  push:
+    branches:
+      - fix/v1.11.12-crud-roundtrip
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[crud-patched]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/v1.11.12-crud-roundtrip
+          fetch-depth: 0
+      - name: Patch CRUD semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'tessa-matrix-studio.user.js';
+          let s = fs.readFileSync(path, 'utf8');
+          function replaceOnce(from, to, label) {
+            const first = s.indexOf(from);
+            if (first < 0) throw new Error(`missing patch target: ${label}`);
+            if (s.indexOf(from, first + from.length) >= 0) throw new Error(`patch target not unique: ${label}`);
+            s = s.slice(0, first) + to + s.slice(first + from.length);
+          }
+
+          replaceOnce(
+            "      const hasData = Object.values(flat).some(values => Array.isArray(values) && values.length);\n      return { excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, issues, fieldIssues, resolutions, fingerprint: fingerprintFlat(flat), compareFingerprint: fingerprintFlat(compare) };",
+            "      const hasData = Object.values(flat).some(values => Array.isArray(values) && values.length);\n      // User intent: an exported row whose business cells were fully cleared is a DELETE.\n      // Hidden identity proves the exact target; normal stale/concurrency guards still apply later.\n      if (!hasData && system.action === 'keep' && (system.rowCardId || system.versionId)) system.action = 'delete';\n      return { excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, issues, fieldIssues, resolutions, fingerprint: fingerprintFlat(flat), compareFingerprint: fingerprintFlat(compare) };",
+            'cleared row => delete');
+
+          replaceOnce(
+            "      // Если baseline identity пропала, но число строк не уменьшилось настолько же,\n      // это не доказанное физическое удаление. Чаще всего так выглядит потеря hidden ID\n      // или смешение DELETE+ADD в одном файле. Нельзя превращать это в ADD + implicit DELETE.\n      const desiredIdentities = new Set(desired.map(excelIdentityKey).filter(Boolean));\n      const overwriteTargetIdentities = new Set([...positionalOverwriteTargets.values()].map(currentIdentityKey).filter(Boolean));\n      const missingBaseline = baselineRows.filter(base => {\n        const identity = `v:${canonicalValue(base.versionId || '')}|c:${canonicalValue(base.rowCardId || '')}`;\n        return identity !== 'v:|c:' && !desiredIdentities.has(identity) && !overwriteTargetIdentities.has(identity);\n      });\n      const rowDeficit = Math.max(0, baselineRows.length - desired.filter(row => row.system.action !== 'add').length);\n      if (missingBaseline.length > rowDeficit) {\n        const noIdentityRows = desired.filter(row => row.hasData && row.system.action !== 'add' && !excelIdentityKey(row));\n        for (const excelRow of noIdentityRows) {\n          baselineIntegrityRows.add(excelRow);\n          issues.push(`Строка Excel ${excelRow.excelRow}: потеряны скрытые MatrixRowID/MatrixVersionID. Строка не будет считаться новой, а автоматическое удаление отключено. Скачайте свежую выгрузку или выполните DELETE и ADD отдельно.`);\n        }\n        identityMappingAnomaly = true;\n      }",
+            "      // V6 baseline ledger, not row count, is the source of truth for physical DELETE.\n      // A populated no-ID row is an independent ADD; blank no-ID gaps are ignored.\n      // Missing baseline identities are handled below as exact implicit DELETE candidates,\n      // with baselineRowChanged() keeping concurrent server edits fail-closed.",
+            'remove row-count baseline heuristic');
+
+          replaceOnce(
+            "      // Если пользователь скопировал существующую строку поверх другой строки Excel,\n      // скрытые ID источника продублируются, а ID затёртой строки исчезнет. Без этой\n      // защиты planner интерпретировал бы затёртую строку как намеренное удаление.\n      // В одном файле сочетание «копия строки + пропавшая identity» неоднозначно,\n      // поэтому безопаснее сохранить текущую строку TESSA и не делать implicit DELETE.\n      if (copiedRowAutoAddDetected && implicitDeleteCandidates.length) {\n        warnings.push(`Обнаружена копия существующей строки; строк TESSA, отсутствующих в Excel: ${implicitDeleteCandidates.length}. Автоматическое удаление отключено для этого файла: копирование могло затереть строку Excel. Если удаление действительно нужно, выполните его отдельно.`);\n      } else {\n        for (const currentRow of implicitDeleteCandidates) {\n          const identityKey = canonicalValue(currentRow.versionId || currentRow.rowCardId);\n          usedCurrent.add(identityKey);\n          if (baselineRowChanged(baselineByCard.get(canonicalValue(currentRow.rowCardId)), currentRow, structure)) {\n            skippedRows.push(makeSkippedRow(null, `Строка TESSA ${currentRow.index + 1}: строка изменилась после выгрузки Excel. Обновите поля Excel и подтвердите удаление при объединении.`, 'baseline-conflict', 'delete'));\n            continue;\n          }\n          actions.push({\n            type: 'delete',\n            excelRow: null,\n            currentRow,\n            changes: [],\n            match: { matchedBy: 'missing-row-auto-delete', lowConfidence: false },\n            expectedFingerprint: currentRow.fingerprint,\n          });\n        }\n      }",
+            "      // Physical absence of an exported baseline identity is explicit DELETE intent,\n      // even when the same workbook also contains copied/new ADD rows. The exact baseline\n      // identity and fingerprint still protect against deleting concurrent server changes.\n      for (const currentRow of implicitDeleteCandidates) {\n        const identityKey = canonicalValue(currentRow.versionId || currentRow.rowCardId);\n        usedCurrent.add(identityKey);\n        if (baselineRowChanged(baselineByCard.get(canonicalValue(currentRow.rowCardId)), currentRow, structure)) {\n          skippedRows.push(makeSkippedRow(null, `Строка TESSA ${currentRow.index + 1}: строка изменилась после выгрузки Excel. Обновите поля Excel и подтвердите удаление при объединении.`, 'baseline-conflict', 'delete'));\n          continue;\n        }\n        actions.push({\n          type: 'delete',\n          excelRow: null,\n          currentRow,\n          changes: [],\n          match: { matchedBy: 'missing-row-auto-delete', lowConfidence: false },\n          expectedFingerprint: currentRow.fingerprint,\n        });\n      }",
+            'allow copied/new ADD plus physical DELETE');
+
+          replaceOnce(
+            "      const rowDeficit = Math.max(0, baselineRows.length - desiredRows.filter(row => row.system.action !== 'add').length);\n      if (missingBaseline.length && missingBaseline.length !== rowDeficit) {\n        throw new Error('Конфликт актуализации: baseline показывает пропавшую исходную identity, но число строк Excel не соответствует чистому физическому удалению. Возможно, повреждены скрытые ID или одновременно выполнены удаление и добавление. Выполните эти операции отдельно в свежей выгрузке.');\n      }",
+            "      // Missing baseline identities are independent physical DELETE intents.\n      // Do not infer corruption from net row count: the same workbook may legitimately\n      // contain ADD rows and arbitrary blank gaps. Per-row baseline/concurrency checks below\n      // remain the authority for whether each DELETE is safe.",
+            'three-way merge mixed add/delete');
+
+          replaceOnce(
+            "    panel.querySelector('#tms-apply').addEventListener('click', () => applySelected(false));",
+            "    panel.querySelector('#tms-apply').addEventListener('click', () => applySelected(true));",
+            'normal Apply reconciliation');
+
+          fs.writeFileSync(path, s);
+          NODE
+          node --check tessa-matrix-studio.user.js
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js
+          git commit -m "fix: restore CRUD user intent [crud-patched]"
+          git push origin HEAD:fix/v1.11.12-crud-roundtrip
