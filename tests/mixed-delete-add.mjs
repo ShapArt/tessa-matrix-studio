@@ -22,3 +22,4 @@ for(const index of [0,1,2]){
  assert.equal(E.buildPlan(sample,structure,snapshot).actions.find(a=>a.type==='delete').currentRow.rowCardId,rows[index].rowCardId);
 }
 console.log('Physical delete first/middle/last and explicit ADD together, including schema refresh: OK');
+await import('./crud-user-intent-roundtrip.mjs');
