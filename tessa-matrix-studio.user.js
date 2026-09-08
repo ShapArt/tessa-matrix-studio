@@ -2747,10 +2747,10 @@
         const identity = `v:${canonicalValue(base.versionId || '')}|c:${canonicalValue(base.rowCardId || '')}`;
         return identity !== 'v:|c:' && !desiredIdentities.has(identity) && !overwriteTargetIdentities.has(identity);
       });
-      const rowDeficit = Math.max(0, baselineRows.length - desiredRows.filter(row => row.system.action !== 'add').length);
-      if (missingBaseline.length && missingBaseline.length !== rowDeficit) {
-        throw new Error('Конфликт актуализации: baseline показывает пропавшую исходную identity, но число строк Excel не соответствует чистому физическому удалению. Возможно, повреждены скрытые ID или одновременно выполнены удаление и добавление. Выполните эти операции отдельно в свежей выгрузке.');
-      }
+      // Missing baseline identities are independent physical DELETE intents.
+      // Do not infer corruption from net row count: the same workbook may legitimately
+      // contain ADD rows and arbitrary blank gaps. Per-row baseline/concurrency checks below
+      // remain the authority for whether each DELETE is safe.
       for (const base of missingBaseline) {
         const identity = `v:${canonicalValue(base.versionId || '')}|c:${canonicalValue(base.rowCardId || '')}`;
         const current = base.versionId ? byVersion.get(canonicalValue(base.versionId)) : byCard.get(canonicalValue(base.rowCardId));
@@ -5076,6 +5076,9 @@
         baseFingerprint: normalizeSpace(columnMap.system.baseFingerprint === undefined ? '' : row.values[columnMap.system.baseFingerprint]),
       };
       const hasData = Object.values(flat).some(values => Array.isArray(values) && values.length);
+      // User intent: an exported row whose business cells were fully cleared is a DELETE.
+      // Hidden identity proves the exact target; normal stale/concurrency guards still apply later.
+      if (!hasData && system.action === 'keep' && (system.rowCardId || system.versionId)) system.action = 'delete';
       return { excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, issues, fieldIssues, resolutions, fingerprint: fingerprintFlat(flat), compareFingerprint: fingerprintFlat(compare) };
     });
   }
@@ -5284,24 +5287,10 @@
         }
       }
 
-      // Если baseline identity пропала, но число строк не уменьшилось настолько же,
-      // это не доказанное физическое удаление. Чаще всего так выглядит потеря hidden ID
-      // или смешение DELETE+ADD в одном файле. Нельзя превращать это в ADD + implicit DELETE.
-      const desiredIdentities = new Set(desired.map(excelIdentityKey).filter(Boolean));
-      const overwriteTargetIdentities = new Set([...positionalOverwriteTargets.values()].map(currentIdentityKey).filter(Boolean));
-      const missingBaseline = baselineRows.filter(base => {
-        const identity = `v:${canonicalValue(base.versionId || '')}|c:${canonicalValue(base.rowCardId || '')}`;
-        return identity !== 'v:|c:' && !desiredIdentities.has(identity) && !overwriteTargetIdentities.has(identity);
-      });
-      const rowDeficit = Math.max(0, baselineRows.length - desired.filter(row => row.system.action !== 'add').length);
-      if (missingBaseline.length > rowDeficit) {
-        const noIdentityRows = desired.filter(row => row.hasData && row.system.action !== 'add' && !excelIdentityKey(row));
-        for (const excelRow of noIdentityRows) {
-          baselineIntegrityRows.add(excelRow);
-          issues.push(`Строка Excel ${excelRow.excelRow}: потеряны скрытые MatrixRowID/MatrixVersionID. Строка не будет считаться новой, а автоматическое удаление отключено. Скачайте свежую выгрузку или выполните DELETE и ADD отдельно.`);
-        }
-        identityMappingAnomaly = true;
-      }
+      // V6 baseline ledger, not row count, is the source of truth for physical DELETE.
+      // A populated no-ID row is an independent ADD; blank no-ID gaps are ignored.
+      // Missing baseline identities are handled below as exact implicit DELETE candidates,
+      // with baselineRowChanged() keeping concurrent server edits fail-closed.
     }
 
     for (const excelRow of desired) {
@@ -5499,30 +5488,24 @@
         // A colleague's subsequent ADD must never become our implicit DELETE.
         return Boolean(identityKey && !usedCurrent.has(identityKey) && baselineByCard.has(canonicalValue(currentRow.rowCardId)));
       });
-      // Если пользователь скопировал существующую строку поверх другой строки Excel,
-      // скрытые ID источника продублируются, а ID затёртой строки исчезнет. Без этой
-      // защиты planner интерпретировал бы затёртую строку как намеренное удаление.
-      // В одном файле сочетание «копия строки + пропавшая identity» неоднозначно,
-      // поэтому безопаснее сохранить текущую строку TESSA и не делать implicit DELETE.
-      if (copiedRowAutoAddDetected && implicitDeleteCandidates.length) {
-        warnings.push(`Обнаружена копия существующей строки; строк TESSA, отсутствующих в Excel: ${implicitDeleteCandidates.length}. Автоматическое удаление отключено для этого файла: копирование могло затереть строку Excel. Если удаление действительно нужно, выполните его отдельно.`);
-      } else {
-        for (const currentRow of implicitDeleteCandidates) {
-          const identityKey = canonicalValue(currentRow.versionId || currentRow.rowCardId);
-          usedCurrent.add(identityKey);
-          if (baselineRowChanged(baselineByCard.get(canonicalValue(currentRow.rowCardId)), currentRow, structure)) {
-            skippedRows.push(makeSkippedRow(null, `Строка TESSA ${currentRow.index + 1}: строка изменилась после выгрузки Excel. Обновите поля Excel и подтвердите удаление при объединении.`, 'baseline-conflict', 'delete'));
-            continue;
-          }
-          actions.push({
-            type: 'delete',
-            excelRow: null,
-            currentRow,
-            changes: [],
-            match: { matchedBy: 'missing-row-auto-delete', lowConfidence: false },
-            expectedFingerprint: currentRow.fingerprint,
-          });
+      // Physical absence of an exported baseline identity is explicit DELETE intent,
+      // even when the same workbook also contains copied/new ADD rows. The exact baseline
+      // identity and fingerprint still protect against deleting concurrent server changes.
+      for (const currentRow of implicitDeleteCandidates) {
+        const identityKey = canonicalValue(currentRow.versionId || currentRow.rowCardId);
+        usedCurrent.add(identityKey);
+        if (baselineRowChanged(baselineByCard.get(canonicalValue(currentRow.rowCardId)), currentRow, structure)) {
+          skippedRows.push(makeSkippedRow(null, `Строка TESSA ${currentRow.index + 1}: строка изменилась после выгрузки Excel. Обновите поля Excel и подтвердите удаление при объединении.`, 'baseline-conflict', 'delete'));
+          continue;
         }
+        actions.push({
+          type: 'delete',
+          excelRow: null,
+          currentRow,
+          changes: [],
+          match: { matchedBy: 'missing-row-auto-delete', lowConfidence: false },
+          expectedFingerprint: currentRow.fingerprint,
+        });
       }
     }
     if (identityMappingAnomaly) warnings.push('Часть строк не удалось надёжно сопоставить. Они пропущены; автоматическое удаление для этого файла отключено.');
@@ -9594,7 +9577,7 @@
         setProgress(100, 'Применение не завершено', `${message} Подробности — в отчёте.`);
       } finally { setBusy(false); }
     };
-    panel.querySelector('#tms-apply').addEventListener('click', () => applySelected(false));
+    panel.querySelector('#tms-apply').addEventListener('click', () => applySelected(true));
     panel.querySelector('#tms-test-write').addEventListener('click', () => applySelected(true));
     refreshRuntimeCapabilities([]);
     APP.runtimeMonitor = createRuntimeMonitor({
