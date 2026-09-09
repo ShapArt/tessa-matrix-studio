@@ -7,12 +7,14 @@ on:
       - 'tessa-matrix-studio.user.js'
       - 'tools/apply-v1.12.2-runtime-hardening.mjs'
       - 'tools/apply-v1.12.2-metadata.mjs'
+      - 'tools/apply-v1.12.2-test-contracts.mjs'
       - 'tests/live-write-check-contract.mjs'
       - 'tests/delete-membership-transition.mjs'
       - 'tests/main-matrix-save-contract.mjs'
       - 'tests/interval-diagnostics-capability.mjs'
       - 'tests/native-runtime-recorder.mjs'
       - 'tests/post-apply-view-refresh.mjs'
+      - 'tests/studio-diagnostics.mjs'
       - 'package.json'
       - 'README.md'
       - 'CHANGELOG.md'
@@ -53,12 +55,20 @@ jobs:
           else
             echo 'need_metadata=true' >> "$GITHUB_OUTPUT"
           fi
+          if grep -q "duplicateCapability.capability, 'unsupported-server-contract'" tests/studio-diagnostics.mjs; then
+            echo 'need_test_contracts=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'need_test_contracts=true' >> "$GITHUB_OUTPUT"
+          fi
       - name: Apply runtime patch
         if: steps.state.outputs.need_runtime == 'true'
         run: node tools/apply-v1.12.2-runtime-hardening.mjs
       - name: Apply release metadata
         if: steps.state.outputs.need_metadata == 'true'
         run: node tools/apply-v1.12.2-metadata.mjs
+      - name: Apply updated test contracts
+        if: steps.state.outputs.need_test_contracts == 'true'
+        run: node tools/apply-v1.12.2-test-contracts.mjs
       - name: Install dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Targeted runtime contracts
@@ -74,17 +84,18 @@ jobs:
           node tests/reconciliation.mjs
           node tests/apply-verification-accounting.mjs
           node tests/post-apply-view-refresh.mjs
+          node tests/studio-diagnostics.mjs
       - name: Full regression suite
         run: npm test
       - name: Commit verified generated files
-        if: steps.state.outputs.need_runtime == 'true' || steps.state.outputs.need_metadata == 'true'
+        if: steps.state.outputs.need_runtime == 'true' || steps.state.outputs.need_metadata == 'true' || steps.state.outputs.need_test_contracts == 'true'
         shell: bash
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add tessa-matrix-studio.user.js package-lock.json README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml
+          git add tessa-matrix-studio.user.js package-lock.json README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml tests/studio-diagnostics.mjs
           if git diff --cached --quiet; then
-            echo '::error::Expected runtime/metadata patch produced no tracked changes.'
+            echo '::error::Expected runtime/metadata/test patch produced no tracked changes.'
             exit 1
           fi
           git commit -m 'fix: harden runtime delete/save contracts (1.12.2)'
