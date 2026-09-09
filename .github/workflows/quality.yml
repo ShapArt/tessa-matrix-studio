@@ -25,7 +25,9 @@ jobs:
           package-manager-cache: false
       - name: Install test dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Syntax and regression tests
+      - name: Test fidelity / coverage contract
+        run: node tests/test-coverage-contract.mjs
+      - name: Syntax and full regression tests
         run: npm test
 
   codeql:
