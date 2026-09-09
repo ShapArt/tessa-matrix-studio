@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.12.0
+// @version      1.12.1
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.12.0',
+    version: '1.12.1',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -65,6 +65,7 @@
     abortRequested: false,
     logs: [],
     lastReport: null,
+    lastSupportReport: null,
     lastIntervalDiagnostics: null,
     lastStudioDiagnostics: null,
     dictionaryCatalog: null,
@@ -4618,6 +4619,38 @@
       return response;
     }
 
+    async saveMainMatrixAfterApply() {
+      const hasEditorChanges = typeof this.editor?.cardModel?.hasChanges === 'function'
+        ? await this.editor.cardModel.hasChanges()
+        : false;
+      if (hasEditorChanges) {
+        throw new Error('Основная карточка матрицы получила несохранённые изменения во время Apply. Автосохранение остановлено, чтобы не перезаписать параллельную правку.');
+      }
+      if (!this.mainCard || typeof this.mainCard.clone !== 'function') {
+        throw new Error('Не удалось подготовить основную карточку матрицы к сохранению.');
+      }
+      const card = this.mainCard.clone();
+      if (typeof card.removeAllButChanged !== 'function') {
+        throw new Error('Текущая версия TESSA не поддерживает безопасную подготовку карточки к сохранению.');
+      }
+      card.removeAllButChanged();
+      card.clean?.();
+
+      const req = new this.cards.CardStoreRequest();
+      req.card = card;
+      req.forceTransaction = true;
+      const response = await this.cardService.store(req);
+      const error = this.validationError(response, 'Не удалось сохранить основную карточку матрицы');
+      if (error) throw error;
+      return {
+        ok: true,
+        skipped: false,
+        method: 'force-transaction-store',
+        cardId: String(response?.cardId || this.mainCard.id || ''),
+        cardVersion: response?.cardVersion ?? null,
+      };
+    }
+
     async deleteMatrixRow(versionId) {
       const req = new this.cards.CardRequest();
       req.requestType = REQUEST.DeleteRow;
@@ -6309,6 +6342,78 @@
     };
   }
 
+  function isNativeIdentitySnapshotError(error) {
+    const text = String(error?.message || error || '');
+    return /Нативное представление TESSA вернуло|MatrixRowID|скрытые MatrixRowID\/MatrixVersionID/i.test(text);
+  }
+
+  async function buildTargetedReconciliationSnapshot(bridge, receiptContext, structure) {
+    const receipts = receiptContext?.receipts || [];
+    const rawLinks = typeof bridge?.rawMatrixSectionLinks === 'function' ? bridge.rawMatrixSectionLinks() : [];
+    const membershipVersions = new Set();
+    const rememberVersion = value => {
+      const key = canonicalValue(value || '');
+      if (key) membershipVersions.add(key);
+    };
+    for (const raw of rawLinks) {
+      // RowID/RowRowID are never used as CardID. For reconciliation they are safe only
+      // as membership/version evidence, exactly like resolveMatrixSectionLinks already does.
+      rememberVersion(raw?.rowRowID);
+      rememberVersion(raw?.rowID);
+      rememberVersion(raw?.cardRowId);
+    }
+
+    // The native view may still contain most usable identities even when one unrelated
+    // row has no MatrixRowID. Add those VersionIDs to membership without requiring a
+    // complete view. Known CardID for CardGet always comes from the mutation receipt.
+    if (typeof bridge?.collectNativeMatrixViewLinksAllPages === 'function') {
+      try {
+        const native = await bridge.collectNativeMatrixViewLinksAllPages();
+        for (const link of native?.links || []) rememberVersion(link?.versionId);
+      } catch (error) {
+        log(`Точечная проверка: нативное представление прочитано не полностью: ${error.message || error}.`, 'warn');
+      }
+    }
+
+    if (!rawLinks.length && !membershipVersions.size && receipts.length) {
+      throw new Error('Точечная проверка не получила состав матрицы TESSA.');
+    }
+
+    const rows = [];
+    for (const receipt of receipts) {
+      const versionKey = canonicalValue(receipt?.versionId || '');
+      if (!versionKey) continue;
+      const isMember = membershipVersions.has(versionKey);
+
+      if (receipt?.type === 'delete') {
+        // Existing membership is enough to prove a failed DELETE; absence means the
+        // deleted version is no longer attached to this matrix. No CardGet is needed.
+        if (isMember) rows.push({
+          rowCardId: receipt.rowCardId || null,
+          versionId: receipt.versionId,
+          values: {}, roles: {}, flat: {},
+        });
+        continue;
+      }
+
+      if (!isMember || !receipt?.rowCardId) continue;
+      const card = await bridge.getCard(receipt.rowCardId);
+      rows.push(bridge.readMatrixRowFromCard(card, {
+        index: -1,
+        rowCardId: receipt.rowCardId,
+        versionId: receipt.versionId,
+        rowName: receipt.excelRow ? `Excel ${receipt.excelRow}` : 'Проверяемая строка',
+        source: 'reconcile-targeted-receipts',
+      }, structure));
+    }
+
+    return {
+      matrixId: String(bridge?.mainCard?.id || ''),
+      templateId: structure?.templateId || receiptContext?.templateId || '',
+      rows,
+    };
+  }
+
   async function runReconciliationRead(bridgeFactory, receiptContext, options = {}) {
     const maxAttempts = Math.max(1, Math.min(5, Number(options.attempts) || 3));
     const baseDelayMs = Math.max(0, Number(options.baseDelayMs ?? 450));
@@ -6321,13 +6426,13 @@
       try {
         const bridge = await bridgeFactory();
         const structure = await bridge.requestStructure(receiptContext.templateId);
-        const snapshot = await bridge.loadSnapshot(structure);
         const expectedMatrixId = canonicalValue(receiptContext?.matrixId || '');
-        const actualMatrixId = canonicalValue(snapshot?.matrixId || '');
+        const directMatrixId = canonicalValue(bridge?.mainCard?.id || '');
         const expectedTemplateId = canonicalValue(receiptContext?.templateId || '');
-        const actualTemplateId = canonicalValue(snapshot?.templateId || structure?.templateId || '');
-        if (!expectedMatrixId || actualMatrixId !== expectedMatrixId
-          || !expectedTemplateId || actualTemplateId !== expectedTemplateId) {
+        const directTemplateId = canonicalValue(bridge?.templateId?.() || structure?.templateId || '');
+        if (!expectedMatrixId || !expectedTemplateId
+          || (directMatrixId && directMatrixId !== expectedMatrixId)
+          || (directTemplateId && directTemplateId !== expectedTemplateId)) {
           return {
             status: 'incomplete',
             checkedCount: 0,
@@ -6343,13 +6448,53 @@
             finishedAt: nowIso(),
           };
         }
-        return {
-          ...reconcileMutationReceipts(receiptContext?.receipts || [], snapshot, structure),
-          attempts: attempt,
-          retryable: false,
-          startedAt,
-          finishedAt: nowIso(),
-        };
+
+        try {
+          const snapshot = await bridge.loadSnapshot(structure);
+          const snapshotMatrixId = canonicalValue(snapshot?.matrixId || directMatrixId || '');
+          const snapshotTemplateId = canonicalValue(snapshot?.templateId || directTemplateId || structure?.templateId || '');
+          if (snapshotMatrixId !== expectedMatrixId || snapshotTemplateId !== expectedTemplateId) {
+            return {
+              status: 'incomplete',
+              checkedCount: 0,
+              verifiedCount: 0,
+              divergentCount: 0,
+              missingCount: 0,
+              unknownCount: receiptContext?.receipts?.length || 0,
+              rows: [],
+              attempts: attempt,
+              retryable: false,
+              reasonCode: 'reconcile-context-mismatch',
+              startedAt,
+              finishedAt: nowIso(),
+            };
+          }
+          return {
+            ...reconcileMutationReceipts(receiptContext?.receipts || [], snapshot, structure),
+            mode: 'full-snapshot',
+            attempts: attempt,
+            retryable: false,
+            startedAt,
+            finishedAt: nowIso(),
+          };
+        } catch (error) {
+          if (isWriterLockError(error) || !isNativeIdentitySnapshotError(error)) throw error;
+          // Targeted fallback may bypass full snapshot identity, so the open card itself
+          // must prove the matrix/template context first. Legacy/fake bridges without
+          // direct context keep the old fail-closed full-snapshot behavior.
+          if (!directMatrixId || !directTemplateId) throw error;
+          log(`Полный снимок для проверки результата недоступен: ${error.message || error}. Проверяю только изменённые строки по receipt ID.`, 'warn');
+          const targeted = await buildTargetedReconciliationSnapshot(bridge, receiptContext, structure);
+          return {
+            ...reconcileMutationReceipts(receiptContext?.receipts || [], targeted, structure),
+            mode: 'targeted-receipts',
+            fallbackReasonCode: 'reconcile-full-snapshot-failed',
+            attempts: attempt,
+            retryable: false,
+            startedAt,
+            finishedAt: nowIso(),
+          };
+        }
       } catch (error) {
         lastError = error;
         if (!isWriterLockError(error) || attempt === maxAttempts) break;
@@ -6371,6 +6516,7 @@
       finishedAt: nowIso(),
     };
   }
+
 
   function deletionGuard(plan) {
     const deleteCount = Number(plan?.counts?.delete || 0);
@@ -6580,6 +6726,7 @@
     APP.lastIntervalDiagnostics = null;
     APP.lastStudioDiagnostics = null;
     APP.lastReport = null;
+    APP.lastSupportReport = null;
     const reportButton = document.querySelector?.('#tms-download-report');
     if (reportButton) {
       reportButton.hidden = true;
@@ -7038,6 +7185,28 @@
     return /obtainwriterlock|writeheartbit|cardislockedbywriter|cardlocktimeoutwhileobtainingwriterlock|locked by writer|writer[- ]lock/.test(text);
   }
 
+  async function persistMainMatrixAfterApply(bridge, result) {
+    const acceptedCount = (result?.rows || []).filter(row => row?.status === 'ok').length;
+    if (!acceptedCount) {
+      return { ok: false, skipped: true, reason: 'no-successful-mutations', acceptedCount: 0 };
+    }
+    if (!bridge || typeof bridge.saveMainMatrixAfterApply !== 'function') {
+      return { ok: false, skipped: false, reason: 'matrix-save-unavailable', acceptedCount };
+    }
+    try {
+      const outcome = await bridge.saveMainMatrixAfterApply();
+      return { ...outcome, ok: outcome?.ok !== false, skipped: false, acceptedCount };
+    } catch (error) {
+      return {
+        ok: false,
+        skipped: false,
+        reason: 'matrix-save-failed',
+        acceptedCount,
+        error: friendlyErrorMessage(error),
+      };
+    }
+  }
+
   async function refreshNativeMatrixViewAfterApply(bridge, options = {}) {
     if (!bridge || typeof bridge.refreshNativeMatrixView !== 'function') {
       return { ok: false, attempts: 0, reason: 'native-view-refresh-unavailable', error: 'Нативное отображение матрицы недоступно.' };
@@ -7073,9 +7242,11 @@
   function finalizeApplyResult(result, options = {}) {
     const cancelled = Boolean(options.cancelled ?? result?.cancelled);
     result.acceptedCount = (result.rows || []).filter(row => row.status === 'ok').length;
-    result.appliedCount = result.reconciliation
+    // Apply accounting and post-write verification are deliberately separate facts.
+    result.appliedCount = result.acceptedCount;
+    result.verifiedCount = result.reconciliation
       ? Math.min(result.acceptedCount, Math.max(0, Number(result.reconciliation.verifiedCount || 0)))
-      : result.acceptedCount;
+      : Math.max(0, Number(result.verifiedCount || 0));
     result.storeSkippedCount = (result.rows || []).filter(row => row.status === 'skipped').length;
     result.failedCount = result.storeSkippedCount;
     result.notStartedCount = Math.max(0, Number(result.plannedCount || 0) - Number(result.startedCount || 0));
@@ -7085,10 +7256,12 @@
     result.sourceSkippedCount = Math.max(0, Number(result.sourceSkippedCount ?? inferredSourceSkipped) || 0);
     result.preflightSkippedCount = Math.max(0, Number(result.preflightSkippedCount ?? inferredPreflightSkipped) || 0);
     result.cancelled = cancelled;
+    result.matrixSaveIncomplete = Boolean(result.matrixSave && !result.matrixSave.ok && !result.matrixSave.skipped && result.matrixSave.reason === 'matrix-save-failed');
     result.verificationIncomplete = Boolean(result.refreshError || (result.reconciliation
-      ? result.reconciliation.status !== 'verified' || result.appliedCount !== result.acceptedCount
+      ? result.reconciliation.status !== 'verified' || result.verifiedCount !== result.acceptedCount
       : result.verificationIncomplete));
-    const mutationIncomplete = result.verificationIncomplete
+    const mutationIncomplete = result.matrixSaveIncomplete
+      || result.verificationIncomplete
       || result.preflightSkippedCount > 0
       || result.storeSkippedCount > 0
       || result.failedCount > 0
@@ -7099,41 +7272,44 @@
     return result;
   }
 
+
   function applyResultMessage(result) {
     const applied = Math.max(0, Number(result?.appliedCount || 0));
+    const accepted = Math.max(applied, Number(result?.acceptedCount || 0));
+    const verified = Math.max(0, Number(result?.verifiedCount ?? result?.reconciliation?.verifiedCount ?? 0));
     const requested = Math.max(applied, Number(result?.requestedCount || result?.plannedCount || applied));
     const sourceSkipped = Math.max(0, Number(result?.sourceSkippedCount || 0));
     const preflightSkipped = Math.max(0, Number(result?.preflightSkippedCount || 0));
     const storeSkipped = Math.max(0, Number(result?.storeSkippedCount || 0));
     const notStarted = Math.max(0, Number(result?.notStartedCount || 0));
+    const matrixSaveOk = Boolean(result?.matrixSave?.ok);
+    const matrixSaveFailed = Boolean(result?.matrixSaveIncomplete);
+    const matrixSaveNote = matrixSaveOk
+      ? '\nОсновная карточка матрицы сохранена.'
+      : matrixSaveFailed
+        ? '\nСтроки записаны, но основная карточка матрицы не сохранена автоматически. Нажмите штатную кнопку «Сохранить» в TESSA; повторно Apply по старому Excel не запускайте.'
+        : '';
     if (result?.cancelled || result?.status === 'cancelled') {
-      return `Применение остановлено.
-
-Применено: ${applied}
-Не начато: ${notStarted}
-
-Уже выполненные записи не откатываются. Перед продолжением используйте свежую проверку TESSA.`;
+      return `Применение остановлено.\n\nПрименено: ${applied}\nНе начато: ${notStarted}${matrixSaveNote}\n\nУже выполненные записи не откатываются. Перед продолжением используйте свежую проверку TESSA.`;
     }
     if (result?.status === 'completed') {
-      const sourceNote = sourceSkipped ? `
-Ещё ${sourceSkipped} строк не вошли в Apply и остались без изменений.` : '';
+      const sourceNote = sourceSkipped ? `\nЕщё ${sourceSkipped} строк не вошли в Apply и остались без изменений.` : '';
       const refreshNote = result?.viewRefresh?.ok
-        ? `\nОтображение TESSA обновлено автоматически.`
-        : (result?.viewRefresh && !result.viewRefresh.skipped ? `\nЗапись завершена, но отображение TESSA не удалось обновить автоматически.` : '');
-      return `Готово. Применено: ${applied} из ${requested}.
-Все подготовленные изменения применены.${sourceNote}${result.skippedFields?.length ? `\nНе применено отдельных полей: ${result.skippedFields.length}. Причины указаны в отчёте.` : ''}${refreshNote}
-Перед следующим Apply нужна свежая проверка или свежая выгрузка Excel.`;
+        ? '\nОтображение TESSA обновлено автоматически.'
+        : (result?.viewRefresh && !result.viewRefresh.skipped ? '\nЗапись завершена, но отображение TESSA не удалось обновить автоматически.' : '');
+      const verifyNote = result?.reconciliation ? `\nПовторная проверка: подтверждено ${verified} из ${accepted}.` : '';
+      return `Готово. Применено: ${applied} из ${requested}.\nВсе подготовленные изменения применены.${matrixSaveNote}${verifyNote}${sourceNote}${result.skippedFields?.length ? `\nНе применено отдельных полей: ${result.skippedFields.length}. Причины указаны в отчёте.` : ''}${refreshNote}\nПеред следующим Apply нужна свежая проверка или свежая выгрузка Excel.`;
     }
     const mutationSkipped = preflightSkipped + storeSkipped;
-    return `Применение завершено частично.
-
-Применено: ${applied} из ${requested}
-Не применено после проверки: ${mutationSkipped}
-Не начато: ${notStarted}${sourceSkipped ? `
-Отдельно не вошли в Apply: ${sourceSkipped}` : ''}
-
-Перед следующим Apply выполните свежую проверку.`;
+    if (result?.verificationIncomplete && mutationSkipped === 0 && notStarted === 0 && applied === requested) {
+      const verificationState = result?.reconciliation?.status === 'divergent'
+        ? 'Повторная проверка обнаружила расхождения'
+        : 'Повторная проверка результата не завершена';
+      return `Запись в TESSA завершена: ${applied} из ${requested} операций приняты сервером.${matrixSaveNote}\n\n${verificationState}: подтверждено ${verified} из ${accepted}.\nЭто не означает, что применено 0 строк: Apply и последующая read-only проверка учитываются отдельно.\n\nНе запускайте тот же Apply повторно по старому Excel. Сначала обновите карточку TESSA или выполните свежую проверку.`;
+    }
+    return `Применение завершено частично.\n\nПрименено: ${applied} из ${requested}\nНе применено после проверки: ${mutationSkipped}\nНе начато: ${notStarted}${matrixSaveNote}${sourceSkipped ? `\nОтдельно не вошли в Apply: ${sourceSkipped}` : ''}${result?.reconciliation ? `\nПовторно подтверждено: ${verified} из ${accepted}` : ''}\n\nПеред следующим Apply выполните свежую проверку.`;
   }
+
 
   /**
    * Применяет только заранее построенный и прошедший preflight план.
@@ -7352,6 +7528,13 @@
       tickStoreProgress('Удаляю строки');
     }
 
+    result.matrixSave = await persistMainMatrixAfterApply(bridge, result);
+    if (result.matrixSave.ok) {
+      log('Основная карточка матрицы сохранена после применения.');
+    } else if (!result.matrixSave.skipped) {
+      log(`Строки записаны, но основную карточку матрицы не удалось сохранить автоматически: ${result.matrixSave.error || result.matrixSave.reason}.`, 'warn');
+    }
+
     result.viewRefresh = { ok: false, skipped: true, reason: 'not-attempted' };
     if (!cancelled && result.startedCount > 0) {
       setProgress(96, 'Обновляю отображение TESSA', 'Только представление матрицы · без перезагрузки карточки');
@@ -7387,19 +7570,50 @@
     if (result.sourceSkippedCount) progressParts.push(`не вошли в Apply: ${result.sourceSkippedCount}`);
     if (result.skippedFields?.length) progressParts.push(`не применяются поля: ${result.skippedFields.length}`);
     if (result.notStartedCount) progressParts.push(`не начато: ${result.notStartedCount}`);
+    if (result.matrixSave?.ok) progressParts.push('матрица сохранена');
+    else if (result.matrixSaveIncomplete) progressParts.push('матрица требует сохранения');
     if (result.viewRefresh?.ok) progressParts.push('отображение TESSA обновлено');
     else if (result.viewRefresh && !result.viewRefresh.skipped) progressParts.push('отображение можно обновить кнопкой ниже');
     setProgress(100, progressLabel, progressParts.join(' · ') || 'Готово');
     return result;
   }
 
+  function triggerBlobDownload(blob, name, options = {}) {
+    const doc = options.document || document;
+    const urlApi = options.urlApi || URL;
+    const host = doc?.body || doc?.documentElement;
+    const canAttach = Boolean(host && typeof host.appendChild === 'function');
+    const url = urlApi.createObjectURL(blob);
+    const anchor = doc.createElement('a');
+    anchor.href = url;
+    anchor.download = name;
+    anchor.rel = 'noopener';
+    anchor.hidden = true;
+    if (anchor.style) anchor.style.display = 'none';
+    if (canAttach) host.appendChild(anchor);
+    const cleanup = () => {
+      try {
+        if (typeof anchor.remove === 'function') anchor.remove();
+        else anchor.parentNode?.removeChild?.(anchor);
+      } finally {
+        urlApi.revokeObjectURL(url);
+      }
+    };
+    try {
+      anchor.click();
+    } catch (error) {
+      cleanup();
+      throw error;
+    }
+    setTimeout(cleanup, Math.max(0, Number(options.cleanupDelayMs ?? 1200)));
+    return { ok: true, name };
+  }
+
   function downloadJson(value, name, replacer = jsonReplacer) {
     const blob = new Blob([JSON.stringify(value, replacer, 2)], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = name; a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return triggerBlobDownload(blob, name);
   }
+
 
   // Отчёты храним в памяти вкладки. Файл создаётся только по явному клику пользователя.
   function rememberReport(value, name) {
@@ -8408,8 +8622,21 @@
         status: input.apply.status || null,
         requestedCount: Number(input.apply.requestedCount || 0),
         appliedCount: Number(input.apply.appliedCount || 0),
+        acceptedCount: Number(input.apply.acceptedCount || input.apply.appliedCount || 0),
+        verifiedCount: Number(input.apply.verifiedCount || 0),
         failedCount: Number(input.apply.failedCount || 0),
         notStartedCount: Number(input.apply.notStartedCount || 0),
+      } : null,
+      matrixSave: input.matrixSave ? {
+        ok: Boolean(input.matrixSave.ok),
+        skipped: Boolean(input.matrixSave.skipped),
+        reason: input.matrixSave.reason || null,
+        method: input.matrixSave.method || null,
+      } : null,
+      viewRefresh: input.viewRefresh ? {
+        ok: Boolean(input.viewRefresh.ok),
+        skipped: Boolean(input.viewRefresh.skipped),
+        reason: input.viewRefresh.reason || null,
       } : null,
       reconciliation: {
         status: reconciliation.status || null,
@@ -8422,6 +8649,18 @@
       },
     };
   }
+
+  function buildApplySupportReport(result, capabilities = APP.capabilities, version = APP.version) {
+    return sanitizeSupportReport({
+      version,
+      capabilities,
+      apply: result || null,
+      matrixSave: result?.matrixSave || null,
+      viewRefresh: result?.viewRefresh || null,
+      reconciliation: result?.reconciliation || null,
+    });
+  }
+
 
   function buildPreviewSupportReport(plan, review = null, options = {}) {
     const reviewed = buildReviewedPlan(plan, review);
@@ -9373,7 +9612,7 @@
               <details><summary>Проверка с записью</summary><p>Сначала проверьте Excel и выберите операции в Preview. Кнопка применяет именно эти изменения после обычного подтверждения, затем перечитывает результат. Для испытаний используйте отдельный тестовый черновик. Добавление, изменение и удаление проверяются только если есть в выбранном наборе.</p><button id="tms-test-write" type="button">Применить выбранное и проверить запись</button></details><div id="tms-tests-result" role="status" aria-live="polite">Проверки ещё не запускались.</div>
             </details>
           </div></details>
-          <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-download-report" hidden disabled>Скачать результат</button><button id="tms-download-support-report" hidden disabled>Отчёт для поддержки</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
+          <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-download-report" hidden disabled>Скачать результат</button><button id="tms-download-support-report" hidden disabled>Скачать отчёт для поддержки</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
           <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
         </div>
         <div id="tms-summary"></div><div id="tms-plan"></div>
@@ -9487,9 +9726,15 @@
     });
     panel.querySelector('#tms-download-report').addEventListener('click', () => { downloadLastReport(); });
     panel.querySelector('#tms-download-support-report').addEventListener('click', () => {
-      if (APP.busy || !APP.plan) return;
-      downloadJson(buildPreviewSupportReport(APP.plan, APP.review),
-        `TESSA_Matrix_Support_${new Date().toISOString().replace(/[:.]/g, '-')}.json`, null);
+      if (APP.busy) return;
+      const report = APP.plan ? buildPreviewSupportReport(APP.plan, APP.review) : APP.lastSupportReport;
+      if (!report) {
+        setProgress(100, 'Отчёт пока недоступен', 'Сначала выполните проверку Excel или Apply.');
+        return;
+      }
+      const name = `TESSA_Matrix_Support_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      downloadJson(report, name, null);
+      setProgress(100, 'Отчёт скачан', name);
     });
     panel.querySelector('#tms-run-tests').addEventListener('click', () => runStudioDiagnostics());
     panel.querySelector('#tms-download-diagnostics').addEventListener('click', () => runStudioDiagnostics(true));
@@ -9567,6 +9812,7 @@
           setProgress(100, 'Проверка записи завершена', reconciliationSummary(APP.lastReconciliation));
         }
         if (result) {
+          APP.lastSupportReport = buildApplySupportReport(result, APP.capabilities, APP.version);
           invalidatePlanStateAfterApply(APP, result);
           renderPlanConsumedNotice(result);
           renderReconciliationResult(APP.lastReconciliation);
@@ -9611,11 +9857,11 @@
     createRuntimeMonitor, pickerColumns, pickerEntryKey, searchPickerEntries, pickerSelectionText,
     probeRuntimeEnvironment, inspectNativeViewCapabilitiesReadOnly, inspectMatrixCapabilitiesReadOnly,
     evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,
-    normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport,
+    normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, triggerBlobDownload, downloadJson, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport, buildApplySupportReport,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
-    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, isWriterLockError, refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,
+    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, isWriterLockError, persistMainMatrixAfterApply, refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
