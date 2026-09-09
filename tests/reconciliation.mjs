@@ -125,4 +125,53 @@ function snap(rows) { return { matrixId: 'matrix-1', templateId: structure.templ
   assert(result.status === 'incomplete' && result.verifiedCount === 1 && result.unknownCount === 1, JSON.stringify(result));
 }
 
+// 10. Live regression: full snapshot can fail because one unrelated rendered row lacks
+// MatrixRowID. Reconciliation must then verify only mutation receipts using safe facts:
+// section RowRowID proves membership, while CardGet is called only with known receipt CardID.
+{
+  const updated = row('card-live-u', 'version-live-u', 'org-u');
+  const added = row('card-live-a', 'version-live-a', 'org-a');
+  const deleted1 = row('card-live-d1', 'version-live-d1');
+  const deleted2 = row('card-live-d2', 'version-live-d2');
+  const receipts = [
+    receipt('update', updated, { excelRow: 38 }),
+    receipt('add', added, { excelRow: 39 }),
+    receipt('delete', deleted1, { excelRow: null }),
+    receipt('delete', deleted2, { excelRow: null }),
+  ];
+  const cards = new Map([[updated.rowCardId, updated], [added.rowCardId, added]]);
+  const fakeBridge = {
+    mainCard: { id: 'matrix-1' },
+    templateId: () => structure.templateId,
+    requestStructure: async () => structure,
+    loadSnapshot: async () => { throw new Error('Нативное представление TESSA вернуло 23 из 25 строк. Не удалось получить MatrixRowID для строки 12.'); },
+    rawMatrixSectionLinks: () => [
+      { index: 0, rowRowID: updated.versionId, rowID: 'section-u', cardRowId: 'section-card-u' },
+      { index: 1, rowRowID: added.versionId, rowID: 'section-a', cardRowId: 'section-card-a' },
+      { index: 2, rowRowID: 'version-unrelated-without-native-id', rowID: 'section-x', cardRowId: 'section-card-x' },
+    ],
+    collectNativeMatrixViewLinksAllPages: async () => ({
+      links: [
+        { rowCardId: updated.rowCardId, versionId: updated.versionId },
+        { rowCardId: added.rowCardId, versionId: added.versionId },
+      ],
+    }),
+    getCard: async cardId => {
+      const current = cards.get(cardId);
+      if (!current) throw new Error(`Unexpected CardGet ${cardId}`);
+      return { current };
+    },
+    readMatrixRowFromCard: (card, link) => ({ ...card.current, ...link }),
+  };
+  const result = await E.runReconciliationRead(
+    async () => fakeBridge,
+    { matrixId: 'matrix-1', templateId: structure.templateId, receipts },
+    { attempts: 1, baseDelayMs: 0 },
+  );
+  assert(result.status === 'verified', JSON.stringify(result));
+  assert(result.verifiedCount === 4 && result.checkedCount === 4, JSON.stringify(result));
+  assert(result.mode === 'targeted-receipts', JSON.stringify(result));
+  assert(result.fallbackReasonCode === 'reconcile-full-snapshot-failed', JSON.stringify(result));
+}
+
 console.log('TESSA Matrix Studio strict mutation reconciliation matrix: OK');
