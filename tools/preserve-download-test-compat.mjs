@@ -1,0 +1,20 @@
+import fs from 'node:fs';
+
+const file = new URL('../tessa-matrix-studio.user.js', import.meta.url);
+let code = fs.readFileSync(file, 'utf8');
+const before = `    const host = doc?.body || doc?.documentElement;
+    if (!host || typeof host.appendChild !== 'function') throw new Error('Страница не готова для скачивания файла.');
+    const url = urlApi.createObjectURL(blob);`;
+const after = `    const host = doc?.body || doc?.documentElement;
+    const canAttach = Boolean(host && typeof host.appendChild === 'function');
+    const url = urlApi.createObjectURL(blob);`;
+if (!code.includes(before)) throw new Error('download host guard pattern not found');
+code = code.replace(before, after);
+const appendBefore = `    host.appendChild(anchor);
+    const cleanup = () => {`;
+const appendAfter = `    if (canAttach) host.appendChild(anchor);
+    const cleanup = () => {`;
+if (!code.includes(appendBefore)) throw new Error('download append pattern not found');
+code = code.replace(appendBefore, appendAfter);
+fs.writeFileSync(file, code);
+console.log('Preserved detached-anchor fallback for non-browser synthetic documents');
