@@ -9,6 +9,7 @@ on:
       - 'tests/reconciliation.mjs'
       - 'tools/apply-live-reconciliation-hotfix.mjs'
       - 'tools/apply-reconciliation-context-compat.mjs'
+      - 'tools/remove-reconciliation-technical-error.mjs'
       - '.github/workflows/fix-live-reconciliation.yml'
   workflow_dispatch:
 
@@ -63,6 +64,7 @@ jobs:
         run: |
           node tools/apply-live-reconciliation-hotfix.mjs
           node tools/apply-reconciliation-context-compat.mjs
+          node tools/remove-reconciliation-technical-error.mjs
       - name: GREEN - targeted regressions
         run: |
           node --check tessa-matrix-studio.user.js
