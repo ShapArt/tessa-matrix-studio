@@ -11,6 +11,8 @@ on:
       - 'tests/main-matrix-save-contract.mjs'
       - 'tests/interval-diagnostics-capability.mjs'
       - 'tests/native-runtime-recorder.mjs'
+      - 'tests/post-apply-view-refresh.mjs'
+      - 'package.json'
       - '.github/workflows/v1.12.2-green.yml'
   workflow_dispatch:
 
