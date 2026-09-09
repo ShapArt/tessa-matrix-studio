@@ -8,6 +8,7 @@ const controls = new Map();
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 globalThis.location = { origin: 'https://tessa.cherkizovsky.net' };
+globalThis.Element = class Element {};
 globalThis.document = {
   body: { innerText: '' },
   querySelector: selector => controls.get(selector) || null,
