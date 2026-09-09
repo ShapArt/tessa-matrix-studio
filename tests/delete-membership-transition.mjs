@@ -12,37 +12,52 @@ globalThis.document = { body: { innerText: '' }, querySelector: () => null, quer
 vm.runInThisContext(code, { filename: 'tessa-matrix-studio.user.js' });
 
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
-assert(typeof E.stageMatrixRowDelete === 'function', 'stageMatrixRowDelete export is required');
+const deleteMatrixRow = E.TessaBridge?.prototype?.deleteMatrixRow;
+assert(typeof deleteMatrixRow === 'function', 'deleteMatrixRow must exist');
 
-const Deleted = 3;
-const rows = [
-  {
-    state: 0,
-    rowId: 'section-row-1',
-    fields: { RowID: 'not-a-card-id', RowRowID: 'version-target', RowName: 'Строка 1' },
-  },
-  {
-    state: 0,
-    rowId: 'section-row-2',
-    fields: { RowID: 'other-row-id', RowRowID: 'version-other', RowName: 'Строка 2' },
-  },
-];
+let request = null;
+let sectionTouched = false;
+class CardRequest {
+  constructor() { this.info = {}; }
+}
 const fakeBridge = {
-  CardRowState: { Deleted },
-  section: () => ({ rows }),
-  rowValue: (row, name) => row.fields[name] ?? null,
-  isDeleted: row => row.state === Deleted,
+  cards: { CardRequest },
+  mainCard: { id: 'matrix-id' },
+  TypedField: {
+    createGuid(value) { return { kind: 'Guid', value }; },
+  },
+  cardService: {
+    async request(req) {
+      request = req;
+      return { validationResult: { isSuccessful: true } };
+    },
+  },
+  validationError: () => null,
+  section() { sectionTouched = true; throw new Error('native DELETE must not stage local membership'); },
 };
 
-const outcome = E.stageMatrixRowDelete.call(fakeBridge, 'version-target');
-assert(outcome?.staged === true, `target delete must be staged: ${JSON.stringify(outcome)}`);
-assert(rows[0].state === Deleted, 'authoritative matrix membership row must be marked Deleted');
-assert(rows[1].state === 0, 'unrelated membership row must remain untouched');
-assert(outcome.sectionRowId === 'section-row-1', 'diagnostic identity must be the section row id, not a row CardID guess');
+const outcome = await deleteMatrixRow.call(fakeBridge, 'version-target');
+assert(outcome?.validationResult?.isSuccessful === true, JSON.stringify(outcome));
+assert(sectionTouched === false, 'native DELETE must not mutate MtxRouteMatrixRows locally');
+assert(request instanceof CardRequest, 'native DELETE must use CardRequest');
+assert(request.requestType === 'd090417f-bf4b-45ed-9c82-33ef23acd96f', `unexpected requestType: ${request.requestType}`);
+assert(request.cardId === 'matrix-id', `DELETE must target the matrix card: ${request.cardId}`);
+assert(request.info?.MatrixRowVersionID?.kind === 'Guid', JSON.stringify(request.info));
+assert(request.info?.MatrixRowVersionID?.value === 'version-target', JSON.stringify(request.info));
 
+const failingBridge = {
+  ...fakeBridge,
+  cardService: {
+    async request(req) {
+      request = req;
+      return { validationResult: { isSuccessful: false } };
+    },
+  },
+  validationError: () => new Error('server rejected native delete'),
+};
 let rejected = false;
-try { E.stageMatrixRowDelete.call(fakeBridge, 'version-missing'); }
-catch (error) { rejected = /не найдена|membership|version/i.test(String(error?.message || error)); }
-assert(rejected, 'missing membership must fail closed');
+try { await deleteMatrixRow.call(failingBridge, 'version-target'); }
+catch (error) { rejected = /server rejected native delete/i.test(String(error?.message || error)); }
+assert(rejected, 'failed native DeleteRow request must fail closed');
 
-console.log('DELETE must stage an authoritative MtxRouteMatrixRows membership transition: OK');
+console.log('DELETE must use the native TESSA DeleteRow CardRequest contract: OK');
