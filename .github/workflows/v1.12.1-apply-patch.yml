@@ -15,6 +15,7 @@ on:
       - 'tools/apply-v1.12.1-fix.mjs'
       - 'tools/apply-v1.12.1-release-metadata.mjs'
       - 'tools/restore-preview-support-report.mjs'
+      - 'tools/preserve-legacy-apply-status.mjs'
       - '.github/workflows/v1.12.1-apply-patch.yml'
   workflow_dispatch:
 
@@ -49,6 +50,7 @@ jobs:
         run: |
           node tools/apply-v1.12.1-fix.mjs
           node tools/restore-preview-support-report.mjs
+          node tools/preserve-legacy-apply-status.mjs
           node tools/apply-v1.12.1-release-metadata.mjs
       - name: Install test dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
