@@ -62,7 +62,7 @@ Only site-bound roles are expanded/sliced by site:
 
 - responsible Warehouse Logistics employee for the site;
 - Warehouse Logistics manager for the site;
-- VGO/SГП site-group manager where the source explicitly requires site scope.
+- VGO/СГП site-group manager where the source explicitly requires site scope.
 
 Global Warehouse performers such as Гринкевич, Бутенко, Субботин, Желтоногов and Динер keep the broadest **proven** Warehouse legal-entity/OP scope from the legacy matrix. They must not be exploded into 28 copies just because there are 28 site mappings.
 
@@ -136,7 +136,7 @@ It uses at least:
 
 Responsibilities:
 
-- verify that the active card is a writable/readable route matrix with the expected target slice available;
+- verify that the active card is a readable route matrix and that the expected target slice is present;
 - convert `structure + snapshot` into the plain fact model expected by the kernel;
 - expose a Warehouse v14 diagnostic/preview API under a unique marker such as `window.__TMS_WAREHOUSE_V14__`;
 - return preview/blockers only in the first milestone;
