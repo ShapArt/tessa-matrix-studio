@@ -71,6 +71,7 @@ try {
   await fakeBridge.cardService.request({ requestType: 'technical-request', cardId: 'f5ec6fe5-1111-2222-3333-444444444444', info: { RoleName: 'секрет' } });
   const report = await E.stopNativeOperationRecorder(false);
   assert(report?.records?.length >= 1, 'recorder must return captured calls');
+  assert(report?.restoration?.failed === 0, `recorder restoration must be reported: ${JSON.stringify(report?.restoration)}`);
   assert(fakeBridge.cardService.request === originalRequest, 'request must be restored after stop');
   assert(fakeBridge.cardService.store === originalStore, 'store must be restored after stop');
   assert(controls.get('#tms-native-record-start').disabled === false, 'start control must be re-enabled after stop');
@@ -81,9 +82,19 @@ try {
   E.restoreNativeRecorderMethods(null);
 }
 
-// Source-level guard: lifecycle cleanup belongs to a finally block, so later report
-// formatting/download changes cannot accidentally leave CardService patched.
-assert(/finally\s*\{[\s\S]{0,1200}restoreNativeRecorderMethods\(/.test(code),
+// Source-level guards: cleanup belongs to finally, and restoration evidence must be
+// attached BEFORE downloadJson serializes the report. Otherwise the downloaded JSON
+// can claim nothing about whether CardService was restored even though the returned
+// in-memory report contains that field after finally executes.
+const stopStart = code.indexOf('async function stopNativeOperationRecorder');
+const stopEnd = code.indexOf('function reconciliationSummary', stopStart);
+const stopSource = code.slice(stopStart, stopEnd);
+assert(/finally\s*\{[\s\S]{0,1200}restoreNativeRecorderMethods\(/.test(stopSource),
   'recorder cleanup must be enforced from a finally block');
+const restorationIndex = stopSource.indexOf('report.restoration');
+const downloadIndex = stopSource.indexOf('downloadJson');
+assert(restorationIndex >= 0 && downloadIndex >= 0 && restorationIndex < downloadIndex,
+  'downloaded native evidence must include restoration result before serialization');
+assert(stopSource.includes('RESTORATION_BEFORE_DOWNLOAD_V1'), 'recorder evidence ordering marker is missing');
 
 console.log('Native runtime recorder exposes methods, redacts values, and restores CardService safely: OK');
