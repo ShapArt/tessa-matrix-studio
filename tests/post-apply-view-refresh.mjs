@@ -51,80 +51,53 @@ assert(single?.ok === true && single.attempts === 1, JSON.stringify(single));
 assert(singleRefreshCalls === 1, `native view refresh expected once, got ${singleRefreshCalls}`);
 assert(cardRefreshCalls === 0, `native refresh must never call editor.refreshCard(), got ${cardRefreshCalls}`);
 
-// Live v1.12.1 evidence showed that an empty forceTransaction Store is rejected by
-// CheckRequestStoreExtension. The main matrix must be stored only when it contains
-// actual Studio-owned changed state (for example a staged membership DELETE). The
-// changed markers must survive removeAllButChanged(); clean() must NOT erase them.
-let cloneCalls = 0;
-let trimCalls = 0;
-let cleanCalls = 0;
-let matrixStoreCalls = 0;
-let storedRequest = null;
-const reducedMainCard = {
-  removeAllButChanged() { trimCalls += 1; },
-  clean() { cleanCalls += 1; },
-};
-class FakeCardStoreRequest {
-  constructor() {
-    this.forceTransaction = false;
-    this.affectVersion = false;
-    this.card = null;
-  }
-}
+// Captured live TESSA Save is the editor pipeline: CardService.store followed by get.
+// Studio must invoke the editor method rather than synthesize a partial CardStoreRequest.
+let editorSaveCalls = 0;
+let directStoreCalls = 0;
 const matrixSaveBridge = {
-  cards: { CardStoreRequest: FakeCardStoreRequest },
-  editor: { cardModel: { hasChanges: async () => true } },
-  _ownedMatrixDeleteSectionRowIds: new Set(['section-row-1']),
-  mainCard: {
-    id: 'matrix-1',
-    clone() { cloneCalls += 1; return reducedMainCard; },
+  editor: {
+    cardModel: { hasChanges: async () => false, card: { id: 'matrix-1', version: 17 } },
+    saveCard: async () => { editorSaveCalls += 1; return true; },
   },
+  mainCard: { id: 'matrix-1', version: 16 },
   cardService: {
-    store: async request => {
-      matrixStoreCalls += 1;
-      storedRequest = request;
-      return { validationResult: { isSuccessful: true }, cardId: 'matrix-1', cardVersion: 17 };
-    },
+    store: async () => { directStoreCalls += 1; throw new Error('direct Store is not the native Save pipeline'); },
   },
-  validationError: () => null,
 };
 const matrixSave = await E.TessaBridge.prototype.saveMainMatrixAfterApply.call(matrixSaveBridge);
 assert(matrixSave?.ok === true, JSON.stringify(matrixSave));
-assert(cloneCalls === 1 && trimCalls === 1 && cleanCalls === 0,
-  `main card must be cloned/reduced without clean(): ${cloneCalls}/${trimCalls}/${cleanCalls}`);
-assert(matrixStoreCalls === 1, `main matrix Store expected once, got ${matrixStoreCalls}`);
-assert(storedRequest?.forceTransaction !== true, 'main matrix Store must not fake an empty forceTransaction save');
-assert(storedRequest?.affectVersion === true, 'main matrix changed-card Store should use optimistic version semantics when supported');
-assert(storedRequest?.card === reducedMainCard, 'Store must use the reduced clone, never the live editor card');
-assert(matrixSave.method === 'changed-card-store', JSON.stringify(matrixSave));
+assert(matrixSave?.method === 'native-editor-save', JSON.stringify(matrixSave));
+assert(matrixSave?.editorMethod === 'saveCard', JSON.stringify(matrixSave));
+assert(editorSaveCalls === 1, `editor.saveCard expected once, got ${editorSaveCalls}`);
+assert(directStoreCalls === 0, `Studio wrapper must not call CardService.store directly, got ${directStoreCalls}`);
+assert(matrixSaveBridge.mainCard === matrixSaveBridge.editor.cardModel.card, 'bridge must follow the card reloaded by native Save');
 
-// No dirty main-card state means there is nothing valid to Store. UPDATE/ADD row-card
-// writes do not justify sending an empty matrix-card request.
-let noChangeStoreCalls = 0;
-const noChangeSave = await E.TessaBridge.prototype.saveMainMatrixAfterApply.call({
-  cards: { CardStoreRequest: FakeCardStoreRequest },
-  editor: { cardModel: { hasChanges: async () => false } },
-  mainCard: { id: 'matrix-1', clone: () => reducedMainCard },
-  cardService: { store: async () => { noChangeStoreCalls += 1; return {}; } },
-  validationError: () => null,
+// Native Save is valid even when cardModel reported no local changes before the click;
+// that is exactly what the captured DELETE -> separate Save sequence demonstrated.
+let cleanSaveCalls = 0;
+const cleanSave = await E.TessaBridge.prototype.saveMainMatrixAfterApply.call({
+  editor: {
+    cardModel: { hasChanges: async () => false, card: { id: 'matrix-1' } },
+    saveCard: async () => { cleanSaveCalls += 1; return true; },
+  },
+  mainCard: { id: 'matrix-1' },
 });
-assert(noChangeSave?.skipped === true && noChangeSave.reason === 'no-main-card-changes', JSON.stringify(noChangeSave));
-assert(noChangeStoreCalls === 0, `no-change matrix Store must not run, got ${noChangeStoreCalls}`);
+assert(cleanSave?.ok === true && cleanSaveCalls === 1, JSON.stringify(cleanSave));
 
-// The orchestration helper must save when a real mutation/staged membership change
-// exists. It must not invent a save for a fully skipped Apply, and a save failure is
-// returned as a partial result instead of throwing after irreversible row writes.
+// The orchestration helper saves after accepted native mutations. A staged DELETE is
+// no longer an accepted state: native DeleteRow is accepted only after the request resolves.
 let persistenceCalls = 0;
 const persistenceBridge = {
-  saveMainMatrixAfterApply: async () => { persistenceCalls += 1; return { ok: true, method: 'changed-card-store' }; },
+  saveMainMatrixAfterApply: async () => { persistenceCalls += 1; return { ok: true, method: 'native-editor-save' }; },
 };
 const noWrites = await E.persistMainMatrixAfterApply(persistenceBridge, { rows: [{ status: 'skipped' }] });
 assert(noWrites?.skipped === true && persistenceCalls === 0, JSON.stringify(noWrites));
 const withWrites = await E.persistMainMatrixAfterApply(persistenceBridge, { rows: [{ status: 'ok' }, { status: 'skipped' }] });
 assert(withWrites?.ok === true && persistenceCalls === 1, JSON.stringify(withWrites));
-const withStagedDelete = await E.persistMainMatrixAfterApply(persistenceBridge, { rows: [{ type: 'delete', status: 'staged' }] });
-assert(withStagedDelete?.ok === true && persistenceCalls === 2, JSON.stringify(withStagedDelete));
+const obsoleteStagedDelete = await E.persistMainMatrixAfterApply(persistenceBridge, { rows: [{ type: 'delete', status: 'staged' }] });
+assert(obsoleteStagedDelete?.skipped === true && persistenceCalls === 1, JSON.stringify(obsoleteStagedDelete));
 const failedSave = await E.persistMainMatrixAfterApply({ saveMainMatrixAfterApply: async () => { throw new Error('save failed'); } }, { rows: [{ status: 'ok' }] });
 assert(failedSave?.ok === false && failedSave?.reason === 'matrix-save-failed', JSON.stringify(failedSave));
 
-console.log('TESSA Matrix Studio post-Apply changed-card persistence + native view refresh/backoff: OK');
+console.log('TESSA Matrix Studio post-Apply native editor Save + view refresh/backoff: OK');
