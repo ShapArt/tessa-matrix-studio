@@ -1,0 +1,60 @@
+name: v1.12.2 runtime contract RED
+
+on:
+  push:
+    branches: [fix/v1.12.2-runtime-contract-hardening]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  red-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Live write-check summary must be RED before fix
+        shell: bash
+        run: |
+          set +e
+          node tests/live-write-check-contract.mjs
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+      - name: DELETE membership transition must be RED before fix
+        shell: bash
+        run: |
+          set +e
+          node tests/delete-membership-transition.mjs
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+      - name: Main matrix changed-state Store must be RED before fix
+        shell: bash
+        run: |
+          set +e
+          node tests/main-matrix-save-contract.mjs
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+      - name: Interval diagnostics capability must be RED before fix
+        shell: bash
+        run: |
+          set +e
+          node tests/interval-diagnostics-capability.mjs
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+      - name: Native runtime recorder must be RED before fix
+        shell: bash
+        run: |
+          set +e
+          node tests/native-runtime-recorder.mjs
+          rc=$?
+          set -e
+          test "$rc" -ne 0
