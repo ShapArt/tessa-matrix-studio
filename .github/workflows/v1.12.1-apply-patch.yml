@@ -1,0 +1,74 @@
+name: Apply v1.12.1 verified fix
+
+on:
+  push:
+    branches: [fix/excel-row-sync-1.12.0]
+    paths:
+      - 'tessa-matrix-studio.user.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - '.github/ISSUE_TEMPLATE/bug_report.yml'
+      - 'tests/post-apply-view-refresh.mjs'
+      - 'tests/support-report-sanitization.mjs'
+      - 'tools/apply-v1.12.1-fix.mjs'
+      - 'tools/apply-v1.12.1-release-metadata.mjs'
+      - '.github/workflows/v1.12.1-apply-patch.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/excel-row-sync-1.12.0
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Detect patch state
+        id: state
+        shell: bash
+        run: |
+          if grep -q '^// @version      1.12.1$' tessa-matrix-studio.user.js \
+             && grep -q 'saveMainMatrixAfterApply' tessa-matrix-studio.user.js \
+             && grep -q 'triggerBlobDownload' tessa-matrix-studio.user.js; then
+            echo 'need_patch=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'need_patch=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Apply production and release metadata patches
+        if: steps.state.outputs.need_patch == 'true'
+        run: |
+          node tools/apply-v1.12.1-fix.mjs
+          node tools/apply-v1.12.1-release-metadata.mjs
+      - name: Install test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Targeted live regressions
+        run: |
+          node --check tessa-matrix-studio.user.js
+          node tests/post-apply-view-refresh.mjs
+          node tests/support-report-sanitization.mjs
+          node tests/apply-verification-accounting.mjs
+          node tests/reconciliation.mjs
+      - name: Full regression suite
+        run: npm test
+      - name: Commit verified v1.12.1 files
+        if: steps.state.outputs.need_patch == 'true'
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tessa-matrix-studio.user.js package-lock.json README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml
+          if git diff --cached --quiet; then
+            echo '::error::Expected production patch produced no tracked changes.'
+            exit 1
+          fi
+          git commit -m 'fix: save matrix and preserve support report after Apply (1.12.1)'
+          git push origin HEAD:fix/excel-row-sync-1.12.0
