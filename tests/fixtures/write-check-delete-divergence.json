@@ -1,0 +1,36 @@
+{
+  "studioVersion": "1.12.1",
+  "apply": {
+    "status": "partial",
+    "requestedCount": 4,
+    "appliedCount": 4,
+    "acceptedCount": 4,
+    "verifiedCount": 2,
+    "failedCount": 0,
+    "notStartedCount": 0
+  },
+  "matrixSave": {
+    "ok": false,
+    "skipped": false,
+    "reason": "matrix-save-failed"
+  },
+  "viewRefresh": {
+    "ok": true,
+    "skipped": false,
+    "reason": null
+  },
+  "reconciliation": {
+    "status": "divergent",
+    "checkedCount": 4,
+    "verifiedCount": 2,
+    "divergentCount": 2,
+    "missingCount": 0,
+    "unknownCount": 0,
+    "rows": [
+      { "type": "update", "excelRow": 29, "status": "verified", "reasonCode": "reconcile-match" },
+      { "type": "add", "excelRow": 42, "status": "verified", "reasonCode": "reconcile-match" },
+      { "type": "delete", "excelRow": null, "status": "divergent", "reasonCode": "reconcile-delete-still-member" },
+      { "type": "delete", "excelRow": null, "status": "divergent", "reasonCode": "reconcile-delete-still-member" }
+    ]
+  }
+}
