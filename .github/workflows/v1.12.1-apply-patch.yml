@@ -14,6 +14,7 @@ on:
       - 'tests/support-report-sanitization.mjs'
       - 'tools/apply-v1.12.1-fix.mjs'
       - 'tools/apply-v1.12.1-release-metadata.mjs'
+      - 'tools/restore-preview-support-report.mjs'
       - '.github/workflows/v1.12.1-apply-patch.yml'
   workflow_dispatch:
 
@@ -47,6 +48,7 @@ jobs:
         if: steps.state.outputs.need_patch == 'true'
         run: |
           node tools/apply-v1.12.1-fix.mjs
+          node tools/restore-preview-support-report.mjs
           node tools/apply-v1.12.1-release-metadata.mjs
       - name: Install test dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
