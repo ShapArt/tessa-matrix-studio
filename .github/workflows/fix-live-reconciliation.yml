@@ -8,6 +8,7 @@ on:
       - 'tests/apply-verification-accounting.mjs'
       - 'tests/reconciliation.mjs'
       - 'tools/apply-live-reconciliation-hotfix.mjs'
+      - 'tools/apply-reconciliation-context-compat.mjs'
       - '.github/workflows/fix-live-reconciliation.yml'
   workflow_dispatch:
 
@@ -59,7 +60,9 @@ jobs:
           echo "RED confirmed: accounting=$accounting_rc reconciliation=$reconciliation_rc"
       - name: Apply minimal production fix
         if: steps.state.outputs.need_patch == 'true'
-        run: node tools/apply-live-reconciliation-hotfix.mjs
+        run: |
+          node tools/apply-live-reconciliation-hotfix.mjs
+          node tools/apply-reconciliation-context-compat.mjs
       - name: GREEN - targeted regressions
         run: |
           node --check tessa-matrix-studio.user.js
