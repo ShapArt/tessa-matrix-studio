@@ -32,15 +32,15 @@
       "id": "delete",
       "writeCritical": true,
       "unit": ["tests/overwrite-delete.mjs", "tests/schema-refresh-delete.mjs"],
-      "contract": ["tests/delete-membership-transition.mjs", "tests/apply-delete-target-version.mjs", "tests/apply-delete-race.mjs"],
-      "runtimeEvidence": "native-operation-recorder+membership-before-after"
+      "contract": ["tests/delete-membership-transition.mjs", "tests/apply-delete-target-version.mjs", "tests/apply-delete-race.mjs", "tests/native-evidence-validator.mjs"],
+      "runtimeEvidence": "native-operation-recorder+membership-before-after+evidence-validator"
     },
     {
       "id": "main-matrix-save",
       "writeCritical": true,
       "unit": ["tests/post-apply-view-refresh.mjs"],
-      "contract": ["tests/main-matrix-save-contract.mjs"],
-      "runtimeEvidence": "native-operation-recorder+cardservice-store"
+      "contract": ["tests/main-matrix-save-contract.mjs", "tests/native-evidence-validator.mjs"],
+      "runtimeEvidence": "native-operation-recorder+cardservice-store+evidence-validator"
     },
     {
       "id": "post-apply-refresh",
@@ -72,9 +72,9 @@
     {
       "id": "native-runtime-recorder",
       "writeCritical": true,
-      "unit": ["tests/native-runtime-recorder.mjs"],
-      "contract": ["tests/native-runtime-recorder.mjs"],
-      "runtimeEvidence": "self"
+      "unit": ["tests/native-runtime-recorder.mjs", "tests/native-evidence-validator.mjs"],
+      "contract": ["tests/native-runtime-recorder.mjs", "tests/native-evidence-validator.mjs"],
+      "runtimeEvidence": "recorded-native-action-json+machine-validation"
     }
   ]
 }
