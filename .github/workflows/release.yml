@@ -142,6 +142,19 @@ jobs:
               > SHA256SUMS.txt
           )
 
+      - name: Enforce native TESSA evidence
+        if: steps.changed.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          EVIDENCE="release-evidence/v$VERSION.json"
+          test -f "$EVIDENCE" || {
+            echo "::error::Missing $EVIDENCE. Release is blocked until the exact built userscript has verified live TESSA DELETE + SAVE evidence."
+            exit 1
+          }
+          node tools/release-native-evidence-gate.mjs "$VERSION" dist/tessa-matrix-studio.user.js "$EVIDENCE"
+
       - name: Attest release provenance
         if: steps.changed.outputs.changed == 'true'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
