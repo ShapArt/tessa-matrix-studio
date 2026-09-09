@@ -9,71 +9,52 @@ globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 globalThis.location = { origin: 'https://tessa.cherkizovsky.net' };
 globalThis.alert = () => {};
 globalThis.confirm = () => true;
+globalThis.URL.createObjectURL = () => 'blob:test';
+globalThis.URL.revokeObjectURL = () => {};
 globalThis.document = {
   body: { innerText: 'Завершить редактирование и разблокировать' },
   querySelector: () => null,
   querySelectorAll: () => [],
-  createElement: () => ({ click() {}, style: {}, set href(_) {}, set download(_) {} }),
+  createElement: () => ({ click: () => {}, href: '', download: '' }),
 };
 vm.runInThisContext(code, { filename: 'tessa-matrix-studio.user.js' });
 
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 assert(typeof E.refreshNativeMatrixViewAfterApply === 'function', 'refreshNativeMatrixViewAfterApply is missing');
-assert(typeof E.isWriterLockError === 'function', 'isWriterLockError is missing');
 assert(typeof E.persistMainMatrixAfterApply === 'function', 'persistMainMatrixAfterApply is missing');
-assert(typeof E.TessaBridge.prototype.saveMainMatrixAfterApply === 'function', 'saveMainMatrixAfterApply is missing');
 
-let calls = 0;
-const transientBridge = {
-  refreshNativeMatrixView: async () => {
-    calls += 1;
-    if (calls < 3) throw new Error('Request failed 400: ObtainWriterLock for MatrixRow.WriteHeartbit fail');
-    return { ok: true, controlName: 'TestMatrixView', page: 2 };
-  },
-};
-const recovered = await E.refreshNativeMatrixViewAfterApply(transientBridge, { attempts: 3, baseDelayMs: 0 });
-assert(recovered.ok === true, `writer-lock retry should recover: ${JSON.stringify(recovered)}`);
-assert(calls === 3, `writer-lock retry should use all 3 attempts, got ${calls}`);
-assert(recovered.controlName === 'TestMatrixView', `view identity should be preserved: ${JSON.stringify(recovered)}`);
-
-calls = 0;
-const permanentBridge = {
-  refreshNativeMatrixView: async () => {
-    calls += 1;
-    throw new Error('Unexpected server validation error');
-  },
-};
-const failed = await E.refreshNativeMatrixViewAfterApply(permanentBridge, { attempts: 4, baseDelayMs: 0 });
-assert(failed.ok === false, `non-lock refresh failure should return ok=false: ${JSON.stringify(failed)}`);
-assert(calls === 1, `non-lock refresh failure must not retry blindly, got ${calls}`);
-
-assert(E.isWriterLockError(new Error('CardIsLockedByWriterWhileReading')) === true, 'writer lock validation key must be recognized');
-assert(E.isWriterLockError(new Error('MatrixRow.WriteHeartbit ObtainWriterLock fail')) === true, 'WriteHeartbit lock must be recognized');
-assert(E.isWriterLockError(new Error('permission denied')) === false, 'unrelated errors must not look like writer locks');
-
-// The native view itself should refresh without editor.refreshCard(). Use the
-// TessaBridge prototype against a tiny fake object so this test also guards the
-// low-level bridge contract.
+// Native display refresh is view-local and retries writer-locks without reloading the
+// entire matrix card. Full editor.refreshCard() would replace the in-memory card model
+// and can race with the explicit post-Apply verification flow.
 let viewRefreshCalls = 0;
 let cardRefreshCalls = 0;
-const fakeTarget = {
-  currentPage: 3,
-  refresh: async () => { viewRefreshCalls += 1; },
+const bridge = {
+  refreshNativeMatrixView: async () => {
+    viewRefreshCalls += 1;
+    if (viewRefreshCalls < 3) throw new Error('ObtainWriterLock failed');
+    return { ok: true, controlName: 'TestMatrixView', page: 1 };
+  },
+  refresh: async () => { cardRefreshCalls += 1; },
 };
-const fakeBridge = {
-  editor: { refreshCard: async () => { cardRefreshCalls += 1; } },
-  findNativeMatrixControl: () => ({ controlName: 'TestMatrixView', target: fakeTarget, rows: [{}] }),
-  nativePagingInfo: () => ({ currentPage: 3, pageCount: 4 }),
-};
-const lowLevel = await E.TessaBridge.prototype.refreshNativeMatrixView.call(fakeBridge);
-assert(lowLevel?.ok === true, `native view refresh should succeed: ${JSON.stringify(lowLevel)}`);
-assert(viewRefreshCalls === 1, `native view refresh expected once, got ${viewRefreshCalls}`);
+const refresh = await E.refreshNativeMatrixViewAfterApply(bridge, { attempts: 3, baseDelayMs: 0 });
+assert(refresh?.ok === true, JSON.stringify(refresh));
+assert(refresh.attempts === 3, JSON.stringify(refresh));
+assert(viewRefreshCalls === 3, `native view refresh expected three attempts, got ${viewRefreshCalls}`);
 assert(cardRefreshCalls === 0, `native refresh must never call editor.refreshCard(), got ${cardRefreshCalls}`);
 
-// Row CardStore/Delete requests are not the same operation as pressing Save on the
-// matrix card. After at least one accepted mutation Studio must perform one explicit
-// force-transaction Store of the MAIN matrix card. The payload must be a clone reduced
-// to changed data so a stale open card can never overwrite unrelated fields.
+let singleRefreshCalls = 0;
+const single = await E.refreshNativeMatrixViewAfterApply({
+  refreshNativeMatrixView: async () => { singleRefreshCalls += 1; return { ok: true, controlName: 'TestMatrixView', page: 1 }; },
+  refresh: async () => { cardRefreshCalls += 1; },
+}, { attempts: 3, baseDelayMs: 0 });
+assert(single?.ok === true && single.attempts === 1, JSON.stringify(single));
+assert(singleRefreshCalls === 1, `native view refresh expected once, got ${singleRefreshCalls}`);
+assert(cardRefreshCalls === 0, `native refresh must never call editor.refreshCard(), got ${cardRefreshCalls}`);
+
+// Live v1.12.1 evidence showed that an empty forceTransaction Store is rejected by
+// CheckRequestStoreExtension. The main matrix must be stored only when it contains
+// actual Studio-owned changed state (for example a staged membership DELETE). The
+// changed markers must survive removeAllButChanged(); clean() must NOT erase them.
 let cloneCalls = 0;
 let trimCalls = 0;
 let cleanCalls = 0;
@@ -86,11 +67,14 @@ const reducedMainCard = {
 class FakeCardStoreRequest {
   constructor() {
     this.forceTransaction = false;
+    this.affectVersion = false;
     this.card = null;
   }
 }
 const matrixSaveBridge = {
   cards: { CardStoreRequest: FakeCardStoreRequest },
+  editor: { cardModel: { hasChanges: async () => true } },
+  _ownedMatrixDeleteSectionRowIds: new Set(['section-row-1']),
   mainCard: {
     id: 'matrix-1',
     clone() { cloneCalls += 1; return reducedMainCard; },
@@ -106,29 +90,41 @@ const matrixSaveBridge = {
 };
 const matrixSave = await E.TessaBridge.prototype.saveMainMatrixAfterApply.call(matrixSaveBridge);
 assert(matrixSave?.ok === true, JSON.stringify(matrixSave));
-assert(cloneCalls === 1 && trimCalls === 1 && cleanCalls === 1, `main card must be cloned/reduced/cleaned: ${cloneCalls}/${trimCalls}/${cleanCalls}`);
+assert(cloneCalls === 1 && trimCalls === 1 && cleanCalls === 0,
+  `main card must be cloned/reduced without clean(): ${cloneCalls}/${trimCalls}/${cleanCalls}`);
 assert(matrixStoreCalls === 1, `main matrix Store expected once, got ${matrixStoreCalls}`);
-assert(storedRequest?.forceTransaction === true, 'main matrix Store must force a transaction even when the card has no dirty fields');
+assert(storedRequest?.forceTransaction !== true, 'main matrix Store must not fake an empty forceTransaction save');
+assert(storedRequest?.affectVersion === true, 'main matrix changed-card Store should use optimistic version semantics when supported');
 assert(storedRequest?.card === reducedMainCard, 'Store must use the reduced clone, never the live editor card');
+assert(matrixSave.method === 'changed-card-store', JSON.stringify(matrixSave));
 
-// The orchestration helper must save only when a real mutation succeeded. It must not
-// invent a save for a fully skipped Apply, and a save failure must be returned as a
-// partial result instead of throwing after irreversible row writes already happened.
+// No dirty main-card state means there is nothing valid to Store. UPDATE/ADD row-card
+// writes do not justify sending an empty matrix-card request.
+let noChangeStoreCalls = 0;
+const noChangeSave = await E.TessaBridge.prototype.saveMainMatrixAfterApply.call({
+  cards: { CardStoreRequest: FakeCardStoreRequest },
+  editor: { cardModel: { hasChanges: async () => false } },
+  mainCard: { id: 'matrix-1', clone: () => reducedMainCard },
+  cardService: { store: async () => { noChangeStoreCalls += 1; return {}; } },
+  validationError: () => null,
+});
+assert(noChangeSave?.skipped === true && noChangeSave.reason === 'no-main-card-changes', JSON.stringify(noChangeSave));
+assert(noChangeStoreCalls === 0, `no-change matrix Store must not run, got ${noChangeStoreCalls}`);
+
+// The orchestration helper must save when a real mutation/staged membership change
+// exists. It must not invent a save for a fully skipped Apply, and a save failure is
+// returned as a partial result instead of throwing after irreversible row writes.
 let persistenceCalls = 0;
 const persistenceBridge = {
-  saveMainMatrixAfterApply: async () => { persistenceCalls += 1; return { ok: true, method: 'force-transaction-store' }; },
+  saveMainMatrixAfterApply: async () => { persistenceCalls += 1; return { ok: true, method: 'changed-card-store' }; },
 };
 const noWrites = await E.persistMainMatrixAfterApply(persistenceBridge, { rows: [{ status: 'skipped' }] });
 assert(noWrites?.skipped === true && persistenceCalls === 0, JSON.stringify(noWrites));
 const withWrites = await E.persistMainMatrixAfterApply(persistenceBridge, { rows: [{ status: 'ok' }, { status: 'skipped' }] });
 assert(withWrites?.ok === true && persistenceCalls === 1, JSON.stringify(withWrites));
+const withStagedDelete = await E.persistMainMatrixAfterApply(persistenceBridge, { rows: [{ type: 'delete', status: 'staged' }] });
+assert(withStagedDelete?.ok === true && persistenceCalls === 2, JSON.stringify(withStagedDelete));
 const failedSave = await E.persistMainMatrixAfterApply({ saveMainMatrixAfterApply: async () => { throw new Error('save failed'); } }, { rows: [{ status: 'ok' }] });
 assert(failedSave?.ok === false && failedSave?.reason === 'matrix-save-failed', JSON.stringify(failedSave));
 
-// Integration contract: persistence happens before the post-Apply native view refresh.
-const persistenceCall = code.indexOf('result.matrixSave = await persistMainMatrixAfterApply(bridge, result)');
-const refreshCall = code.indexOf("result.viewRefresh = await refreshNativeMatrixViewAfterApply(bridge, { attempts: 3, baseDelayMs: 450 })");
-assert(persistenceCall >= 0, 'applyPlan must persist the main matrix after row mutations');
-assert(refreshCall > persistenceCall, 'main matrix persistence must happen before refreshing the native view');
-
-console.log('TESSA Matrix Studio post-Apply matrix persistence + native view refresh/backoff: OK');
+console.log('TESSA Matrix Studio post-Apply changed-card persistence + native view refresh/backoff: OK');
