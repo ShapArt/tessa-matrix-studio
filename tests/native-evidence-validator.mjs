@@ -1,48 +1,102 @@
-import { validateNativeEvidence } from '../tools/native-evidence-validator.mjs';
+import { validateNativeEvidencePair } from '../tools/native-evidence-validator.mjs';
 
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const member = id => ({ sectionRowId: `section-${id}`, rowRowID: id, rowID: `section-${id}` });
+const membership = [member('version-a'), member('version-b')];
 
-const member = id => ({ sectionRowId: `section-${id}`, rowRowID: id, rowID: null });
-const base = {
+const deleteReport = {
   format: 'TESSA_NATIVE_OPERATION_RECORD_V1',
   studioVersion: '1.12.2',
-  beforeMembership: [member('version-a'), member('version-b')],
-  afterMembership: [member('version-b')],
+  startedAt: '2026-09-09T09:51:58.090Z',
+  finishedAt: '2026-09-09T09:52:03.433Z',
+  beforeMembership: membership,
+  afterMembership: membership,
+  cardHasChangesAfterAction: false,
+  surface: { matrixId: 'matrix-id', templateId: 'template-id' },
   records: [
-    { method: 'store', outcome: 'resolved', validationSuccessful: true, responseCardId: 'matrix-id', responseCardVersion: 9 },
+    {
+      method: 'request',
+      requestType: 'd090417f-bf4b-45ed-9c82-33ef23acd96f',
+      cardId: 'matrix-id',
+      info: { MatrixRowVersionID: { __class__: '[REDACTED]', $__type: '[REDACTED]', $__value: '[REDACTED]' } },
+      outcome: 'resolved',
+      validationSuccessful: true,
+    },
   ],
-  restoration: { restored: 2, failed: 0 },
+  restoration: { restored: 5, failed: 0 },
   truncatedCount: 0,
 };
 
-const good = validateNativeEvidence(base, { expectedOperation: 'delete-save', expectedRemovedCount: 1 });
+const saveReport = {
+  format: 'TESSA_NATIVE_OPERATION_RECORD_V1',
+  studioVersion: '1.12.2',
+  startedAt: '2026-09-09T09:52:05.186Z',
+  finishedAt: '2026-09-09T09:52:08.853Z',
+  beforeMembership: membership,
+  afterMembership: membership,
+  cardHasChangesAfterAction: false,
+  surface: { matrixId: 'matrix-id', templateId: 'template-id' },
+  records: [
+    {
+      method: 'store', outcome: 'resolved', validationSuccessful: true,
+      cardId: 'matrix-id', responseCardId: 'matrix-id', responseCardVersion: 38,
+    },
+    {
+      method: 'get', outcome: 'resolved', validationSuccessful: true,
+      cardId: 'matrix-id', responseCardId: 'matrix-id', responseCardVersion: null,
+    },
+  ],
+  restoration: { restored: 5, failed: 0 },
+  truncatedCount: 0,
+};
+
+const good = validateNativeEvidencePair(deleteReport, saveReport);
 assert(good.status === 'verified', JSON.stringify(good));
+assert(good.expectedOperation === 'delete-save-native-request', JSON.stringify(good));
 assert(good.deleteVerified === true, JSON.stringify(good));
-assert(good.saveObserved === true, JSON.stringify(good));
-assert(good.removedVersions.length === 1 && good.removedVersions[0] === 'version-a', JSON.stringify(good));
-assert(good.unexpectedAddedVersions.length === 0, JSON.stringify(good));
-assert(good.restorationSafe === true, JSON.stringify(good));
+assert(good.deleteRequestObserved === true, JSON.stringify(good));
+assert(good.deleteRequestType === 'd090417f-bf4b-45ed-9c82-33ef23acd96f', JSON.stringify(good));
+assert(good.deleteInfoHasVersionId === true, JSON.stringify(good));
+assert(good.localMembershipStayedStable === true, JSON.stringify(good));
+assert(good.localCardStayedCleanAfterDelete === true, JSON.stringify(good));
+assert(good.saveObserved === true && good.storeRecordCount === 1, JSON.stringify(good));
+assert(good.refreshGetObserved === true, JSON.stringify(good));
+assert(good.sameMatrix === true, JSON.stringify(good));
+assert(good.operationOrderValid === true, JSON.stringify(good));
+assert(good.restorationSafe === true && good.truncatedCount === 0, JSON.stringify(good));
 
-const noDelete = validateNativeEvidence({ ...base, afterMembership: base.beforeMembership }, { expectedOperation: 'delete-save', expectedRemovedCount: 1 });
-assert(noDelete.status === 'divergent', JSON.stringify(noDelete));
-assert(noDelete.deleteVerified === false, JSON.stringify(noDelete));
-assert(noDelete.reasonCodes.includes('expected-delete-not-observed'), JSON.stringify(noDelete));
+const wrongDeleteType = validateNativeEvidencePair({
+  ...deleteReport,
+  records: [{ ...deleteReport.records[0], requestType: '00000000-0000-0000-0000-000000000000' }],
+}, saveReport);
+assert(wrongDeleteType.status === 'divergent', JSON.stringify(wrongDeleteType));
+assert(wrongDeleteType.reasonCodes.includes('native-delete-request-not-observed'), JSON.stringify(wrongDeleteType));
 
-const noStore = validateNativeEvidence({ ...base, records: [] }, { expectedOperation: 'delete-save', expectedRemovedCount: 1 });
+const missingVersionInfo = validateNativeEvidencePair({
+  ...deleteReport,
+  records: [{ ...deleteReport.records[0], info: {} }],
+}, saveReport);
+assert(missingVersionInfo.status === 'divergent', JSON.stringify(missingVersionInfo));
+assert(missingVersionInfo.reasonCodes.includes('delete-version-id-not-observed'), JSON.stringify(missingVersionInfo));
+
+const noStore = validateNativeEvidencePair(deleteReport, { ...saveReport, records: saveReport.records.filter(item => item.method !== 'store') });
 assert(noStore.status === 'incomplete', JSON.stringify(noStore));
-assert(noStore.saveObserved === false, JSON.stringify(noStore));
 assert(noStore.reasonCodes.includes('store-not-observed'), JSON.stringify(noStore));
 
-const unsafeRestore = validateNativeEvidence({ ...base, restoration: { restored: 1, failed: 1 } }, { expectedOperation: 'delete-save', expectedRemovedCount: 1 });
+const otherMatrix = validateNativeEvidencePair(deleteReport, {
+  ...saveReport,
+  surface: { ...saveReport.surface, matrixId: 'other-matrix' },
+  records: saveReport.records.map(item => ({ ...item, cardId: 'other-matrix', responseCardId: 'other-matrix' })),
+});
+assert(otherMatrix.status === 'divergent', JSON.stringify(otherMatrix));
+assert(otherMatrix.reasonCodes.includes('matrix-mismatch'), JSON.stringify(otherMatrix));
+
+const unsafeRestore = validateNativeEvidencePair({ ...deleteReport, restoration: { restored: 4, failed: 1 } }, saveReport);
 assert(unsafeRestore.status === 'unsafe', JSON.stringify(unsafeRestore));
 assert(unsafeRestore.reasonCodes.includes('recorder-restore-failed'), JSON.stringify(unsafeRestore));
 
-const unexpectedAdd = validateNativeEvidence({ ...base, afterMembership: [member('version-b'), member('version-c')] }, { expectedOperation: 'delete-save', expectedRemovedCount: 1 });
-assert(unexpectedAdd.status === 'divergent', JSON.stringify(unexpectedAdd));
-assert(unexpectedAdd.reasonCodes.includes('unexpected-membership-add'), JSON.stringify(unexpectedAdd));
-
-const truncated = validateNativeEvidence({ ...base, truncatedCount: 3 }, { expectedOperation: 'delete-save', expectedRemovedCount: 1 });
+const truncated = validateNativeEvidencePair({ ...deleteReport, truncatedCount: 1 }, saveReport);
 assert(truncated.status === 'incomplete', JSON.stringify(truncated));
 assert(truncated.reasonCodes.includes('recorder-truncated'), JSON.stringify(truncated));
 
-console.log('Native TESSA evidence validator: DELETE + SAVE proof semantics: OK');
+console.log('Native TESSA evidence validator: split DeleteRow request + Save Store/Get contract: OK');
