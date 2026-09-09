@@ -33,14 +33,14 @@
       "writeCritical": true,
       "unit": ["tests/overwrite-delete.mjs", "tests/schema-refresh-delete.mjs"],
       "contract": ["tests/delete-membership-transition.mjs", "tests/apply-delete-target-version.mjs", "tests/apply-delete-race.mjs", "tests/native-evidence-validator.mjs"],
-      "runtimeEvidence": "native-operation-recorder+membership-before-after+evidence-validator"
+      "runtimeEvidence": "native-operation-recorder+DeleteRow-CardRequest+MatrixRowVersionID+evidence-validator"
     },
     {
       "id": "main-matrix-save",
       "writeCritical": true,
       "unit": ["tests/post-apply-view-refresh.mjs"],
       "contract": ["tests/main-matrix-save-contract.mjs", "tests/native-evidence-validator.mjs"],
-      "runtimeEvidence": "native-operation-recorder+cardservice-store+evidence-validator"
+      "runtimeEvidence": "native-editor-save+cardservice-store-get+evidence-validator"
     },
     {
       "id": "post-apply-refresh",
@@ -54,7 +54,7 @@
       "writeCritical": true,
       "unit": ["tests/reconciliation-invariants.mjs", "tests/reconciliation-identity-ambiguity.mjs"],
       "contract": ["tests/reconciliation.mjs", "tests/live-write-check-contract.mjs", "tests/apply-verification-accounting.mjs"],
-      "runtimeEvidence": "support-report+membership-before-after"
+      "runtimeEvidence": "support-report+mutation-receipts+readback"
     },
     {
       "id": "support-report",
@@ -73,8 +73,8 @@
       "id": "native-runtime-recorder",
       "writeCritical": true,
       "unit": ["tests/native-runtime-recorder.mjs", "tests/native-evidence-validator.mjs"],
-      "contract": ["tests/native-runtime-recorder.mjs", "tests/native-evidence-validator.mjs"],
-      "runtimeEvidence": "recorded-native-action-json+machine-validation"
+      "contract": ["tests/native-runtime-recorder.mjs", "tests/native-evidence-validator.mjs", "tests/release-native-evidence-gate.mjs"],
+      "runtimeEvidence": "recorded-native-delete+recorded-native-save+machine-validation+release-attestation"
     }
   ]
 }
