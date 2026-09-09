@@ -6309,6 +6309,78 @@
     };
   }
 
+  function isNativeIdentitySnapshotError(error) {
+    const text = String(error?.message || error || '');
+    return /Нативное представление TESSA вернуло|MatrixRowID|скрытые MatrixRowID\/MatrixVersionID/i.test(text);
+  }
+
+  async function buildTargetedReconciliationSnapshot(bridge, receiptContext, structure) {
+    const receipts = receiptContext?.receipts || [];
+    const rawLinks = typeof bridge?.rawMatrixSectionLinks === 'function' ? bridge.rawMatrixSectionLinks() : [];
+    const membershipVersions = new Set();
+    const rememberVersion = value => {
+      const key = canonicalValue(value || '');
+      if (key) membershipVersions.add(key);
+    };
+    for (const raw of rawLinks) {
+      // RowID/RowRowID are never used as CardID. For reconciliation they are safe only
+      // as membership/version evidence, exactly like resolveMatrixSectionLinks already does.
+      rememberVersion(raw?.rowRowID);
+      rememberVersion(raw?.rowID);
+      rememberVersion(raw?.cardRowId);
+    }
+
+    // The native view may still contain most usable identities even when one unrelated
+    // row has no MatrixRowID. Add those VersionIDs to membership without requiring a
+    // complete view. Known CardID for CardGet always comes from the mutation receipt.
+    if (typeof bridge?.collectNativeMatrixViewLinksAllPages === 'function') {
+      try {
+        const native = await bridge.collectNativeMatrixViewLinksAllPages();
+        for (const link of native?.links || []) rememberVersion(link?.versionId);
+      } catch (error) {
+        log(`Точечная проверка: нативное представление прочитано не полностью: ${error.message || error}.`, 'warn');
+      }
+    }
+
+    if (!rawLinks.length && !membershipVersions.size && receipts.length) {
+      throw new Error('Точечная проверка не получила состав матрицы TESSA.');
+    }
+
+    const rows = [];
+    for (const receipt of receipts) {
+      const versionKey = canonicalValue(receipt?.versionId || '');
+      if (!versionKey) continue;
+      const isMember = membershipVersions.has(versionKey);
+
+      if (receipt?.type === 'delete') {
+        // Existing membership is enough to prove a failed DELETE; absence means the
+        // deleted version is no longer attached to this matrix. No CardGet is needed.
+        if (isMember) rows.push({
+          rowCardId: receipt.rowCardId || null,
+          versionId: receipt.versionId,
+          values: {}, roles: {}, flat: {},
+        });
+        continue;
+      }
+
+      if (!isMember || !receipt?.rowCardId) continue;
+      const card = await bridge.getCard(receipt.rowCardId);
+      rows.push(bridge.readMatrixRowFromCard(card, {
+        index: -1,
+        rowCardId: receipt.rowCardId,
+        versionId: receipt.versionId,
+        rowName: receipt.excelRow ? `Excel ${receipt.excelRow}` : 'Проверяемая строка',
+        source: 'reconcile-targeted-receipts',
+      }, structure));
+    }
+
+    return {
+      matrixId: String(bridge?.mainCard?.id || ''),
+      templateId: structure?.templateId || receiptContext?.templateId || '',
+      rows,
+    };
+  }
+
   async function runReconciliationRead(bridgeFactory, receiptContext, options = {}) {
     const maxAttempts = Math.max(1, Math.min(5, Number(options.attempts) || 3));
     const baseDelayMs = Math.max(0, Number(options.baseDelayMs ?? 450));
@@ -6321,13 +6393,13 @@
       try {
         const bridge = await bridgeFactory();
         const structure = await bridge.requestStructure(receiptContext.templateId);
-        const snapshot = await bridge.loadSnapshot(structure);
         const expectedMatrixId = canonicalValue(receiptContext?.matrixId || '');
-        const actualMatrixId = canonicalValue(snapshot?.matrixId || '');
+        const directMatrixId = canonicalValue(bridge?.mainCard?.id || '');
         const expectedTemplateId = canonicalValue(receiptContext?.templateId || '');
-        const actualTemplateId = canonicalValue(snapshot?.templateId || structure?.templateId || '');
-        if (!expectedMatrixId || actualMatrixId !== expectedMatrixId
-          || !expectedTemplateId || actualTemplateId !== expectedTemplateId) {
+        const directTemplateId = canonicalValue(bridge?.templateId?.() || structure?.templateId || '');
+        if (!expectedMatrixId || !expectedTemplateId
+          || (directMatrixId && directMatrixId !== expectedMatrixId)
+          || (directTemplateId && directTemplateId !== expectedTemplateId)) {
           return {
             status: 'incomplete',
             checkedCount: 0,
@@ -6343,13 +6415,53 @@
             finishedAt: nowIso(),
           };
         }
-        return {
-          ...reconcileMutationReceipts(receiptContext?.receipts || [], snapshot, structure),
-          attempts: attempt,
-          retryable: false,
-          startedAt,
-          finishedAt: nowIso(),
-        };
+
+        try {
+          const snapshot = await bridge.loadSnapshot(structure);
+          const snapshotMatrixId = canonicalValue(snapshot?.matrixId || directMatrixId || '');
+          const snapshotTemplateId = canonicalValue(snapshot?.templateId || directTemplateId || structure?.templateId || '');
+          if (snapshotMatrixId !== expectedMatrixId || snapshotTemplateId !== expectedTemplateId) {
+            return {
+              status: 'incomplete',
+              checkedCount: 0,
+              verifiedCount: 0,
+              divergentCount: 0,
+              missingCount: 0,
+              unknownCount: receiptContext?.receipts?.length || 0,
+              rows: [],
+              attempts: attempt,
+              retryable: false,
+              reasonCode: 'reconcile-context-mismatch',
+              startedAt,
+              finishedAt: nowIso(),
+            };
+          }
+          return {
+            ...reconcileMutationReceipts(receiptContext?.receipts || [], snapshot, structure),
+            mode: 'full-snapshot',
+            attempts: attempt,
+            retryable: false,
+            startedAt,
+            finishedAt: nowIso(),
+          };
+        } catch (error) {
+          if (isWriterLockError(error) || !isNativeIdentitySnapshotError(error)) throw error;
+          // Targeted fallback may bypass full snapshot identity, so the open card itself
+          // must prove the matrix/template context first. Legacy/fake bridges without
+          // direct context keep the old fail-closed full-snapshot behavior.
+          if (!directMatrixId || !directTemplateId) throw error;
+          log(`Полный снимок для проверки результата недоступен: ${error.message || error}. Проверяю только изменённые строки по receipt ID.`, 'warn');
+          const targeted = await buildTargetedReconciliationSnapshot(bridge, receiptContext, structure);
+          return {
+            ...reconcileMutationReceipts(receiptContext?.receipts || [], targeted, structure),
+            mode: 'targeted-receipts',
+            fallbackReasonCode: 'reconcile-full-snapshot-failed',
+            attempts: attempt,
+            retryable: false,
+            startedAt,
+            finishedAt: nowIso(),
+          };
+        }
       } catch (error) {
         lastError = error;
         if (!isWriterLockError(error) || attempt === maxAttempts) break;
@@ -6371,6 +6483,7 @@
       finishedAt: nowIso(),
     };
   }
+
 
   function deletionGuard(plan) {
     const deleteCount = Number(plan?.counts?.delete || 0);
@@ -7073,9 +7186,12 @@
   function finalizeApplyResult(result, options = {}) {
     const cancelled = Boolean(options.cancelled ?? result?.cancelled);
     result.acceptedCount = (result.rows || []).filter(row => row.status === 'ok').length;
-    result.appliedCount = result.reconciliation
+    // Keep the pre-1.12 Apply contract: appliedCount describes mutations that TESSA
+    // accepted without a validation/store/delete error. Readback is a separate layer.
+    result.appliedCount = result.acceptedCount;
+    result.verifiedCount = result.reconciliation
       ? Math.min(result.acceptedCount, Math.max(0, Number(result.reconciliation.verifiedCount || 0)))
-      : result.acceptedCount;
+      : Math.max(0, Number(result.verifiedCount || 0));
     result.storeSkippedCount = (result.rows || []).filter(row => row.status === 'skipped').length;
     result.failedCount = result.storeSkippedCount;
     result.notStartedCount = Math.max(0, Number(result.plannedCount || 0) - Number(result.startedCount || 0));
@@ -7086,7 +7202,7 @@
     result.preflightSkippedCount = Math.max(0, Number(result.preflightSkippedCount ?? inferredPreflightSkipped) || 0);
     result.cancelled = cancelled;
     result.verificationIncomplete = Boolean(result.refreshError || (result.reconciliation
-      ? result.reconciliation.status !== 'verified' || result.appliedCount !== result.acceptedCount
+      ? result.reconciliation.status !== 'verified' || result.verifiedCount !== result.acceptedCount
       : result.verificationIncomplete));
     const mutationIncomplete = result.verificationIncomplete
       || result.preflightSkippedCount > 0
@@ -7101,6 +7217,8 @@
 
   function applyResultMessage(result) {
     const applied = Math.max(0, Number(result?.appliedCount || 0));
+    const accepted = Math.max(applied, Number(result?.acceptedCount || 0));
+    const verified = Math.max(0, Number(result?.verifiedCount ?? result?.reconciliation?.verifiedCount ?? 0));
     const requested = Math.max(applied, Number(result?.requestedCount || result?.plannedCount || applied));
     const sourceSkipped = Math.max(0, Number(result?.sourceSkippedCount || 0));
     const preflightSkipped = Math.max(0, Number(result?.preflightSkippedCount || 0));
@@ -7118,19 +7236,33 @@
       const sourceNote = sourceSkipped ? `
 Ещё ${sourceSkipped} строк не вошли в Apply и остались без изменений.` : '';
       const refreshNote = result?.viewRefresh?.ok
-        ? `\nОтображение TESSA обновлено автоматически.`
-        : (result?.viewRefresh && !result.viewRefresh.skipped ? `\nЗапись завершена, но отображение TESSA не удалось обновить автоматически.` : '');
+        ? '\nОтображение TESSA обновлено автоматически.'
+        : (result?.viewRefresh && !result.viewRefresh.skipped ? '\nЗапись завершена, но отображение TESSA не удалось обновить автоматически.' : '');
+      const verifyNote = result?.reconciliation ? `
+Повторная проверка: подтверждено ${verified} из ${accepted}.` : '';
       return `Готово. Применено: ${applied} из ${requested}.
-Все подготовленные изменения применены.${sourceNote}${result.skippedFields?.length ? `\nНе применено отдельных полей: ${result.skippedFields.length}. Причины указаны в отчёте.` : ''}${refreshNote}
+Все подготовленные изменения применены.${verifyNote}${sourceNote}${result.skippedFields?.length ? `\nНе применено отдельных полей: ${result.skippedFields.length}. Причины указаны в отчёте.` : ''}${refreshNote}
 Перед следующим Apply нужна свежая проверка или свежая выгрузка Excel.`;
     }
     const mutationSkipped = preflightSkipped + storeSkipped;
+    if (result?.verificationIncomplete && mutationSkipped === 0 && notStarted === 0 && applied === requested) {
+      const verificationState = result?.reconciliation?.status === 'divergent'
+        ? 'Повторная проверка обнаружила расхождения'
+        : 'Повторная проверка результата не завершена';
+      return `Запись в TESSA завершена: ${applied} из ${requested} операций приняты сервером.
+
+${verificationState}: подтверждено ${verified} из ${accepted}.
+Это не означает, что применено 0 строк: Apply и последующая read-only проверка учитываются отдельно.
+
+Не запускайте тот же Apply повторно по старому Excel. Сначала обновите карточку TESSA или выполните свежую проверку.`;
+    }
     return `Применение завершено частично.
 
 Применено: ${applied} из ${requested}
 Не применено после проверки: ${mutationSkipped}
 Не начато: ${notStarted}${sourceSkipped ? `
-Отдельно не вошли в Apply: ${sourceSkipped}` : ''}
+Отдельно не вошли в Apply: ${sourceSkipped}` : ''}${result?.reconciliation ? `
+Повторно подтверждено: ${verified} из ${accepted}` : ''}
 
 Перед следующим Apply выполните свежую проверку.`;
   }
