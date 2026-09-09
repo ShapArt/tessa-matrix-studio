@@ -24,7 +24,7 @@ update('.github/ISSUE_TEMPLATE/bug_report.yml', text => text.replace('placeholde
 
 update('CHANGELOG.md', text => {
   if (text.includes('## 1.12.2 —')) return text;
-  const heading = '# Changelog';
+  const heading = '# История изменений';
   const entry = [
     '',
     '',
