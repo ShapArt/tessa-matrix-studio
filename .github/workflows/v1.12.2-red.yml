@@ -1,8 +1,6 @@
-name: v1.12.2 runtime contract RED
+name: v1.12.2 runtime contract RED (historical proof)
 
 on:
-  push:
-    branches: [fix/v1.12.2-runtime-contract-hardening]
   workflow_dispatch:
 
 permissions:
@@ -18,43 +16,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Live write-check summary must be RED before fix
-        shell: bash
+      - name: Historical RED proof only
         run: |
-          set +e
-          node tests/live-write-check-contract.mjs
-          rc=$?
-          set -e
-          test "$rc" -ne 0
-      - name: DELETE membership transition must be RED before fix
-        shell: bash
-        run: |
-          set +e
-          node tests/delete-membership-transition.mjs
-          rc=$?
-          set -e
-          test "$rc" -ne 0
-      - name: Main matrix changed-state Store must be RED before fix
-        shell: bash
-        run: |
-          set +e
-          node tests/main-matrix-save-contract.mjs
-          rc=$?
-          set -e
-          test "$rc" -ne 0
-      - name: Interval diagnostics capability must be RED before fix
-        shell: bash
-        run: |
-          set +e
-          node tests/interval-diagnostics-capability.mjs
-          rc=$?
-          set -e
-          test "$rc" -ne 0
-      - name: Native runtime recorder must be RED before fix
-        shell: bash
-        run: |
-          set +e
-          node tests/native-runtime-recorder.mjs
-          rc=$?
-          set -e
-          test "$rc" -ne 0
+          echo 'The original pre-fix RED run was 34332645407.'
+          echo 'Do not run this workflow after the production fix: these tests are expected to be GREEN now.'
