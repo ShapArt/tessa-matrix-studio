@@ -4718,49 +4718,46 @@
       return response;
     }
 
-    async saveMainMatrixAfterApply(options = {}) {
-      const hasEditorChanges = typeof this.editor?.cardModel?.hasChanges === 'function'
-        ? await this.editor.cardModel.hasChanges()
-        : Boolean(this._ownedMatrixDeleteSectionRowIds?.size);
-      const ownedChanges = Boolean(this._ownedMatrixDeleteSectionRowIds?.size || options.allowOwnedChanges);
-      if (!hasEditorChanges) {
-        return { ok: false, skipped: true, reason: 'no-main-card-changes', method: null };
+    async saveMainMatrixAfterApply() {
+      // NATIVE_EDITOR_SAVE_CONTRACT_V1
+      // Live TESSA evidence shows that the ordinary Save action goes through the
+      // card editor pipeline and then produces CardService.store -> CardService.get.
+      // Do not synthesize a partial CardStoreRequest here: client/server extensions
+      // attached by the editor are part of the platform save contract.
+      const methodName = typeof this.editor?.saveCard === 'function'
+        ? 'saveCard'
+        : typeof this.editor?.trySaveCard === 'function'
+          ? 'trySaveCard'
+          : null;
+      if (!methodName) {
+        throw new Error('Текущая версия TESSA не предоставляет штатный метод сохранения карточки editor.saveCard/trySaveCard.');
       }
-      if (!ownedChanges) {
-        throw new Error('Основная карточка матрицы получила несохранённые изменения, не созданные текущим Apply. Автосохранение остановлено, чтобы не перезаписать параллельную правку.');
-      }
-      if (!this.mainCard || typeof this.mainCard.clone !== 'function') {
-        throw new Error('Не удалось подготовить основную карточку матрицы к сохранению.');
-      }
-      const card = this.mainCard.clone();
-      if (typeof card.removeAllButChanged !== 'function') {
-        throw new Error('Текущая версия TESSA не поддерживает безопасную подготовку карточки к сохранению.');
-      }
-      // Preserve row .state/.changed markers. Calling clean() here destroys the
-      // very membership transition the Store request must persist.
-      card.removeAllButChanged();
-
-      const req = new this.cards.CardStoreRequest();
-      req.card = card;
-      if ('affectVersion' in req) req.affectVersion = true;
-      const response = await this.cardService.store(req);
-      const error = this.validationError(response, 'Не удалось сохранить основную карточку матрицы');
-      if (error) throw error;
-      this._ownedMatrixDeleteSectionRowIds?.clear?.();
+      const outcome = await this.editor[methodName]();
+      if (outcome === false) throw new Error('Штатное сохранение основной карточки TESSA было отклонено.');
+      this.mainCard = this.editor?.cardModel?.card || this.mainCard;
       return {
         ok: true,
         skipped: false,
-        method: 'changed-card-store',
-        cardId: String(response?.cardId || this.mainCard.id || ''),
-        cardVersion: response?.cardVersion ?? null,
+        method: 'native-editor-save',
+        editorMethod: methodName,
+        cardId: String(this.mainCard?.id || ''),
+        cardVersion: this.mainCard?.version ?? null,
       };
     }
 
     async deleteMatrixRow(versionId) {
-      // Native matrix membership is a collection row on the main card. Stage that
-      // row as Deleted and let the ordinary changed-card Store persist the deletion.
-      // RowID/RowRowID are never treated as CardID.
-      return stageMatrixRowDelete.call(this, versionId);
+      // NATIVE_DELETE_REQUEST_CONTRACT_V1
+      // Captured from the live Cherkizovo TESSA client: native row deletion is a
+      // custom CardRequest against the matrix card. Local MtxRouteMatrixRows stays
+      // unchanged/clean while this request runs; the following native Save is separate.
+      const req = new this.cards.CardRequest();
+      req.requestType = REQUEST.DeleteRow;
+      req.cardId = this.mainCard.id;
+      req.info.MatrixRowVersionID = this.TypedField.createGuid(versionId);
+      const response = await this.cardService.request(req);
+      const error = this.validationError(response, `Не удалось удалить строку ${versionId}`);
+      if (error) throw error;
+      return response;
     }
 
     async refreshNativeMatrixView() {
@@ -7309,7 +7306,7 @@
   }
 
   async function persistMainMatrixAfterApply(bridge, result) {
-    const acceptedCount = (result?.rows || []).filter(row => row?.status === 'ok' || row?.status === 'staged').length;
+    const acceptedCount = (result?.rows || []).filter(row => row?.status === 'ok').length;
     if (!acceptedCount) {
       return { ok: false, skipped: true, reason: 'no-successful-mutations', acceptedCount: 0 };
     }
@@ -7642,7 +7639,7 @@
           versionId: prepared.current.versionId,
           expectedRow: null, structure,
         }));
-        result.rows.push({ type: 'delete', versionId: action.currentRow.versionId, status: 'staged' });
+        result.rows.push({ type: 'delete', versionId: action.currentRow.versionId, status: 'ok' });
       } catch (error) {
         const skipped = runtimeSkip(action, error, 'store-delete');
         result.skipped.push(skipped);
@@ -7652,21 +7649,6 @@
     }
 
     result.matrixSave = await persistMainMatrixAfterApply(bridge, result);
-    const stagedDeletes = result.rows.filter(row => row.type === 'delete' && row.status === 'staged');
-    if (stagedDeletes.length) {
-      if (result.matrixSave.ok) {
-        stagedDeletes.forEach(row => { row.status = 'ok'; });
-      } else {
-        const reason = result.matrixSave.error || result.matrixSave.reason || 'Основная карточка матрицы не сохранена.';
-        stagedDeletes.forEach(row => { row.status = 'skipped'; row.reason = reason; });
-        for (let index = receipts.length - 1; index >= 0; index -= 1) {
-          if (receipts[index]?.type === 'delete') receipts.splice(index, 1);
-        }
-        for (const prepared of readyDeletes) {
-          result.skipped.push(makeSkippedRow(null, reason, 'store-delete-membership', 'delete'));
-        }
-      }
-    }
     if (result.matrixSave.ok) {
       log('Основная карточка матрицы сохранена после применения.');
     } else if (!result.matrixSave.skipped) {
