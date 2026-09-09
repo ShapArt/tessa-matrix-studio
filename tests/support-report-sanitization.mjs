@@ -19,6 +19,7 @@ vm.runInThisContext(code, { filename: 'tessa-matrix-studio.user.js' });
 
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 assert(typeof E.sanitizeSupportReport === 'function', 'sanitizeSupportReport is missing');
+assert(typeof E.buildApplySupportReport === 'function', 'buildApplySupportReport is missing');
 assert(typeof E.triggerBlobDownload === 'function', 'triggerBlobDownload is missing');
 assert(typeof E.downloadJson === 'function', 'downloadJson is missing');
 
@@ -58,6 +59,21 @@ assert(safe.reconciliation?.reasonCodes?.includes('reconcile-semantic-divergence
 const withIds = E.sanitizeSupportReport(unsafe, { includeIds: true });
 assert(withIds.matrixId === 'matrix-id' && withIds.templateId === 'template-id', JSON.stringify(withIds));
 assert(!JSON.stringify(withIds).includes('PRIVATE-HASH'), JSON.stringify(withIds));
+
+// After Apply the live preview is deliberately invalidated (APP.plan=null). Support
+// output must therefore be built from the immutable Apply result, not depend on the old
+// preview. It stays privacy-safe and includes matrix-save/view-refresh outcomes.
+const applySupport = E.buildApplySupportReport({
+  status: 'partial', requestedCount: 4, appliedCount: 4, failedCount: 0, notStartedCount: 0,
+  matrixSave: { ok: true, method: 'force-transaction-store', internal: 'SECRET' },
+  viewRefresh: { ok: true, controlName: 'TestMatrixView', private: 'SECRET' },
+  reconciliation: { status: 'incomplete', checkedCount: 0, verifiedCount: 0, unknownCount: 4, reasonCode: 'reconcile-read-failed' },
+}, { overall: 'ready', blockers: [], warnings: [] }, '1.12.1');
+const applySupportText = JSON.stringify(applySupport);
+assert(applySupport.apply?.appliedCount === 4, applySupportText);
+assert(applySupport.matrixSave?.ok === true && applySupport.matrixSave?.method === 'force-transaction-store', applySupportText);
+assert(applySupport.viewRefresh?.ok === true, applySupportText);
+assert(!applySupportText.includes('SECRET'), `support report leaked implementation/private fields: ${applySupportText}`);
 
 // Browser regression: clicking a detached <a> is ignored in the live TESSA shell in
 // some Chromium policies. The download helper must attach the anchor to the document,
@@ -104,7 +120,10 @@ await new Promise(resolve => setTimeout(resolve, 5));
 assert(events.some(event => event[0] === 'remove'), `anchor cleanup missing: ${JSON.stringify(events)}`);
 assert(events.some(event => event[0] === 'revoke' && event[1] === 'blob:tessa-support'), `object URL cleanup missing: ${JSON.stringify(events)}`);
 
-// The support button is a download action, not a dead link. Keep the wording explicit.
+// The support button is a download action, not a dead link. It must remain usable after
+// invalidatePlanStateAfterApply clears APP.plan by falling back to APP.lastSupportReport.
 assert(code.includes('Скачать отчёт для поддержки'), 'support-report button must say that it downloads a file');
+assert(code.includes('APP.lastSupportReport'), 'support report must survive preview invalidation after Apply');
+assert(!code.includes("if (APP.busy || !APP.plan) return;\n      downloadJson(buildPreviewSupportReport"), 'support download must not be gated by APP.plan after Apply');
 
-console.log('TESSA Matrix Studio privacy-safe support report + browser download: OK');
+console.log('TESSA Matrix Studio privacy-safe support report + persistent browser download: OK');
