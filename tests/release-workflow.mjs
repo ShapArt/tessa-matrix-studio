@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import './release-native-evidence-workflow-enforcement.mjs';
 
 const workflow = fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
 const canary = fs.readFileSync(new URL('../.github/workflows/delivery-canary.yml', import.meta.url), 'utf8');
