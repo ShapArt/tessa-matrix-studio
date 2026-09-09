@@ -1,0 +1,88 @@
+name: UAT Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to package for live TESSA UAT
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build exact UAT artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify candidate source
+        run: npm test
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build exact public userscript candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p dist
+
+          cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
+          node hotfixes/malformed-range-diagnostic-transform.mjs dist/tessa-matrix-studio.user.js
+          sed -i -E "0,/^\/\/ @version[[:space:]]+[0-9.]+$/s//\/\/ @version      $VERSION/" dist/tessa-matrix-studio.user.js
+          sed -i -E "0,/^[[:space:]]+version: '[0-9.]+'[,]$/s//    version: '$VERSION',/" dist/tessa-matrix-studio.user.js
+          printf '\n' >> dist/tessa-matrix-studio.user.js
+          cat hotfixes/interval-add-valid-fallback.js >> dist/tessa-matrix-studio.user.js
+
+          node --check dist/tessa-matrix-studio.user.js
+          grep -Fqx "// @version      $VERSION" dist/tessa-matrix-studio.user.js
+          grep -Fq "version: '$VERSION'," dist/tessa-matrix-studio.user.js
+          grep -Fq "__TMS_INSTALL_INTERVAL_ADD_VALID_FALLBACK__" dist/tessa-matrix-studio.user.js
+          grep -Fq "Numeric ranges have an exact grammar" dist/tessa-matrix-studio.user.js
+
+          awk 'BEGIN { emit=0 } /^\/\/ ==UserScript==/ { emit=1 } emit { print } /^\/\/ ==\/UserScript==/ { exit }' \
+            dist/tessa-matrix-studio.user.js > dist/tessa-matrix-studio.meta.js
+          test -s dist/tessa-matrix-studio.meta.js
+
+          (
+            cd dist
+            sha256sum tessa-matrix-studio.meta.js tessa-matrix-studio.user.js > SHA256SUMS.txt
+          )
+
+          USER_SHA="$(sha256sum dist/tessa-matrix-studio.user.js | awk '{print $1}')"
+          COMMIT_SHA="$(git rev-parse HEAD)"
+          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "live-tessa-uat-before-release"\n}\n' \
+            "$VERSION" "$COMMIT_SHA" "$USER_SHA" > dist/candidate-manifest.json
+
+      - name: Upload exact UAT candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tessa-matrix-studio-uat-v${{ steps.version.outputs.version }}-${{ github.run_id }}
+          path: |
+            dist/tessa-matrix-studio.user.js
+            dist/tessa-matrix-studio.meta.js
+            dist/SHA256SUMS.txt
+            dist/candidate-manifest.json
+          if-no-files-found: error
+          retention-days: 14
