@@ -8751,93 +8751,136 @@
     } finally { setBusy(false); }
   }
 
-  async function startNativeOperationRecorder() {
-    if (APP.busy || APP.nativeRecorder?.active) return;
-    const bridge = await TessaBridge.create();
-    const service = bridge.cardService;
-    const methods = ['request', 'store', 'get', 'new', 'create', 'delete'].filter(name => typeof service?.[name] === 'function');
-    const recorder = {
-      active: true,
-      startedAt: nowIso(),
-      bridge,
-      records: [],
-      originals: new Map(),
-      beforeMembership: nativeMembershipSnapshot(bridge),
-      surface: buildNativeRuntimeSurfaceReport(bridge),
-    };
-    for (const name of methods) {
-      const original = service[name];
+  function restoreNativeRecorderMethods(recorder) {
+    if (!recorder) return { restored: 0, failed: 0 };
+    const service = recorder.bridge?.cardService;
+    let restored = 0;
+    let failed = 0;
+    for (const [name, original] of recorder.originals || []) {
       try {
-        recorder.originals.set(name, original);
-        service[name] = async function (...args) {
-          const request = args[0];
-          const entry = sanitizeNativeOperationRecord({
-            at: nowIso(), method: name,
-            requestType: request?.requestType || null,
-            cardId: request?.cardId || request?.card?.id || null,
-            info: safePlain(request?.info || {}, { maxDepth: 4, maxKeys: 200, maxArray: 100 }),
-          });
-          recorder.records.push(entry);
-          try {
-            const response = await original.apply(this, args);
-            entry.outcome = 'resolved';
-            entry.validationSuccessful = response?.validationResult?.isSuccessful ?? null;
-            entry.responseCardId = response?.cardId || response?.card?.id || null;
-            entry.responseCardVersion = response?.cardVersion ?? null;
-            return response;
-          } catch (error) {
-            entry.outcome = 'rejected';
-            entry.error = String(error?.message || error).slice(0, 1000);
-            throw error;
-          }
-        };
-        if (service[name] === original) throw new Error('method-not-writable');
-      } catch (error) {
-        try { service[name] = original; } catch (_) { /* best effort */ }
-        recorder.records.push({ method: name, outcome: 'not-wrapped', error: String(error?.message || error).slice(0, 300) });
+        if (service) service[name] = original;
+        if (!service || service[name] !== original) throw new Error('restore-verification-failed');
+        restored++;
+      } catch (_) {
+        failed++;
       }
     }
-    APP.nativeRecorder = recorder;
-    setProgress(100, 'Запись нативного действия включена', 'Выполните одно действие штатным интерфейсом TESSA, затем нажмите «Остановить и скачать».');
+    recorder.originals?.clear?.();
+    return { restored, failed };
+  }
+
+  function resetNativeRecorderControls() {
     const start = document.querySelector?.('#tms-native-record-start');
     const stop = document.querySelector?.('#tms-native-record-stop');
-    if (start) start.disabled = true;
-    if (stop) stop.disabled = false;
+    if (start) start.disabled = false;
+    if (stop) stop.disabled = true;
+  }
+
+  async function startNativeOperationRecorder() {
+    if (APP.busy || APP.nativeRecorder?.active) return;
+    let recorder = null;
+    try {
+      const bridge = await TessaBridge.create();
+      const service = bridge.cardService;
+      const methods = ['request', 'store', 'get', 'new', 'create', 'delete'].filter(name => typeof service?.[name] === 'function');
+      recorder = {
+        active: true,
+        startedAt: nowIso(),
+        bridge,
+        records: [],
+        truncatedCount: 0,
+        maxRecords: 500,
+        originals: new Map(),
+        beforeMembership: nativeMembershipSnapshot(bridge),
+        surface: buildNativeRuntimeSurfaceReport(bridge),
+      };
+      for (const name of methods) {
+        const original = service[name];
+        try {
+          recorder.originals.set(name, original);
+          service[name] = async function (...args) {
+            const canCapture = recorder.records.length < recorder.maxRecords;
+            const request = args[0];
+            const entry = canCapture ? sanitizeNativeOperationRecord({
+              at: nowIso(), method: name,
+              requestType: request?.requestType || null,
+              cardId: request?.cardId || request?.card?.id || null,
+              info: safePlain(request?.info || {}, { maxDepth: 4, maxKeys: 200, maxArray: 100 }),
+            }) : null;
+            if (entry) recorder.records.push(entry);
+            else recorder.truncatedCount++;
+            try {
+              const response = await original.apply(this, args);
+              if (entry) {
+                entry.outcome = 'resolved';
+                entry.validationSuccessful = response?.validationResult?.isSuccessful ?? null;
+                entry.responseCardId = response?.cardId || response?.card?.id || null;
+                entry.responseCardVersion = response?.cardVersion ?? null;
+              }
+              return response;
+            } catch (error) {
+              if (entry) {
+                entry.outcome = 'rejected';
+                entry.error = String(error?.message || error).slice(0, 1000);
+              }
+              throw error;
+            }
+          };
+          if (service[name] === original) throw new Error('method-not-writable');
+        } catch (error) {
+          try { service[name] = original; } catch (_) { /* best effort */ }
+          recorder.originals.delete(name);
+          recorder.records.push({ method: name, outcome: 'not-wrapped', error: String(error?.message || error).slice(0, 300) });
+        }
+      }
+      APP.nativeRecorder = recorder;
+      setProgress(100, 'Запись нативного действия включена', 'Выполните одно действие штатным интерфейсом TESSA, затем нажмите «Остановить и скачать».');
+      const start = document.querySelector?.('#tms-native-record-start');
+      const stop = document.querySelector?.('#tms-native-record-stop');
+      if (start) start.disabled = true;
+      if (stop) stop.disabled = false;
+    } catch (error) {
+      restoreNativeRecorderMethods(recorder);
+      if (APP.nativeRecorder === recorder) APP.nativeRecorder = null;
+      resetNativeRecorderControls();
+      throw error;
+    }
   }
 
   async function stopNativeOperationRecorder(download = true) {
     const recorder = APP.nativeRecorder;
     if (!recorder?.active) return null;
     recorder.active = false;
-    const service = recorder.bridge?.cardService;
-    for (const [name, original] of recorder.originals || []) {
-      try { service[name] = original; } catch (_) { /* restore best effort */ }
-    }
-    let afterMembership = [];
-    let hasChanges = null;
+    let report = null;
     try {
-      afterMembership = nativeMembershipSnapshot(recorder.bridge);
-      hasChanges = await recorder.bridge?.editor?.cardModel?.hasChanges?.();
-    } catch (_) { /* keep partial report */ }
-    const report = {
-      format: 'TESSA_NATIVE_OPERATION_RECORD_V1',
-      studioVersion: APP.version,
-      startedAt: recorder.startedAt,
-      finishedAt: nowIso(),
-      beforeMembership: recorder.beforeMembership,
-      afterMembership,
-      cardHasChangesAfterAction: hasChanges,
-      surface: recorder.surface,
-      records: recorder.records,
-    };
-    APP.nativeRecorder = null;
-    const start = document.querySelector?.('#tms-native-record-start');
-    const stop = document.querySelector?.('#tms-native-record-stop');
-    if (start) start.disabled = false;
-    if (stop) stop.disabled = true;
-    if (download) downloadJson(report, `TESSA_Native_Action_${report.finishedAt.replace(/[:.]/g, '-')}.json`, null);
-    setProgress(100, 'Нативное действие записано', download ? 'Диагностический JSON скачан.' : 'Запись остановлена.');
-    return report;
+      let afterMembership = [];
+      let hasChanges = null;
+      try {
+        afterMembership = nativeMembershipSnapshot(recorder.bridge);
+        hasChanges = await recorder.bridge?.editor?.cardModel?.hasChanges?.();
+      } catch (_) { /* keep partial report */ }
+      report = {
+        format: 'TESSA_NATIVE_OPERATION_RECORD_V1',
+        studioVersion: APP.version,
+        startedAt: recorder.startedAt,
+        finishedAt: nowIso(),
+        beforeMembership: recorder.beforeMembership,
+        afterMembership,
+        cardHasChangesAfterAction: hasChanges,
+        surface: recorder.surface,
+        records: recorder.records,
+        truncatedCount: Number(recorder.truncatedCount || 0),
+        maxRecords: Number(recorder.maxRecords || 500),
+      };
+      if (download) downloadJson(report, `TESSA_Native_Action_${report.finishedAt.replace(/[:.]/g, '-')}.json`, null);
+      setProgress(100, 'Нативное действие записано', download ? 'Диагностический JSON скачан.' : 'Запись остановлена.');
+      return report;
+    } finally {
+      const restoration = restoreNativeRecorderMethods(recorder);
+      if (report) report.restoration = restoration;
+      if (APP.nativeRecorder === recorder) APP.nativeRecorder = null;
+      resetNativeRecorderControls();
+    }
   }
 
   function reconciliationSummary(result) {
@@ -10109,7 +10152,11 @@
       check: () => refreshRuntimeCapabilities(),
     });
     APP.runtimeMonitor.start();
-    window.addEventListener('pagehide', () => APP.runtimeMonitor?.stop());
+    window.addEventListener('pagehide', () => {
+      restoreNativeRecorderMethods(APP.nativeRecorder);
+      APP.nativeRecorder = null;
+      APP.runtimeMonitor?.stop();
+    });
     window.addEventListener('pageshow', () => APP.runtimeMonitor?.start());
     document.addEventListener('visibilitychange', () => APP.runtimeMonitor?.tick());
   }
@@ -10130,7 +10177,7 @@
 
   window.__TESSA_MATRIX_SYNC_EXPORTS__ = {
     applyIntervalStructuralProbe, applyCardNewTopologyProbe, applyCardNewEnvelopeProbe, summarizeCardIdentityTopology, collectIntervalDiagnostics, buildIntervalDiagnosticSummary, resolveStudioIntervalDiagnostics, collectStudioDiagnostics, makeStudioDiagnosticPackage,
-    classifyIntervalDiagnosticError, collectNativeRuntimeSurface, sanitizeNativeOperationRecord, stageMatrixRowDelete, applyResultSummary, buildNativeRuntimeSurfaceReport, startNativeOperationRecorder, stopNativeOperationRecorder,
+    classifyIntervalDiagnosticError, collectNativeRuntimeSurface, sanitizeNativeOperationRecord, stageMatrixRowDelete, applyResultSummary, buildNativeRuntimeSurfaceReport, restoreNativeRecorderMethods, startNativeOperationRecorder, stopNativeOperationRecorder,
     createRuntimeMonitor, pickerColumns, pickerEntryKey, searchPickerEntries, pickerSelectionText,
     probeRuntimeEnvironment, inspectNativeViewCapabilitiesReadOnly, inspectMatrixCapabilitiesReadOnly,
     evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,

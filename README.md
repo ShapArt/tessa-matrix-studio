@@ -57,6 +57,7 @@ Studio проверяет файл fail-closed: повреждённые слу�
 | Понять устройство и найти функцию | [Карта кода](docs/CODE-MAP.md), [архитектура](docs/ARCHITECTURE.md) |
 | Разобраться с ошибкой или выпуском | [Runbook](docs/PRODUCTION-RUNBOOK.md) |
 | Проверки и диагностический пакет | [Studio Diagnostics](docs/STUDIO-DIAGNOSTICS.md) |
+| Стратегия тестирования и релизные ворота | [Test Strategy](docs/TEST-STRATEGY.md) |
 | Посмотреть изменения по версиям | [Changelog](CHANGELOG.md) |
 
 <details>
