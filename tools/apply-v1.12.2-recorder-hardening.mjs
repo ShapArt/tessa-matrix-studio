@@ -3,9 +3,11 @@ import fs from 'node:fs';
 const file = new URL('../tessa-matrix-studio.user.js', import.meta.url);
 let code = fs.readFileSync(file, 'utf8');
 
-const startMarker = '  async function startNativeOperationRecorder() {';
+const startMarker = '  function restoreNativeRecorderMethods(recorder) {';
+const legacyStartMarker = '  async function startNativeOperationRecorder() {';
 const endMarker = '  function reconciliationSummary(result) {';
-const start = code.indexOf(startMarker);
+let start = code.indexOf(startMarker);
+if (start < 0) start = code.indexOf(legacyStartMarker);
 const end = code.indexOf(endMarker, start);
 if (start < 0 || end < 0) throw new Error('native recorder block not found');
 
@@ -130,31 +132,34 @@ const replacement = `  function restoreNativeRecorderMethods(recorder) {
         truncatedCount: Number(recorder.truncatedCount || 0),
         maxRecords: Number(recorder.maxRecords || 500),
       };
-      if (download) downloadJson(report, \`TESSA_Native_Action_\${report.finishedAt.replace(/[:.]/g, '-')}.json\`, null);
-      setProgress(100, 'Нативное действие записано', download ? 'Диагностический JSON скачан.' : 'Запись остановлена.');
-      return report;
     } finally {
       const restoration = restoreNativeRecorderMethods(recorder);
       if (report) report.restoration = restoration;
       if (APP.nativeRecorder === recorder) APP.nativeRecorder = null;
       resetNativeRecorderControls();
     }
+    // RESTORATION_BEFORE_DOWNLOAD_V1: the serialized evidence must contain cleanup status.
+    if (download) downloadJson(report, \`TESSA_Native_Action_\${report.finishedAt.replace(/[:.]/g, '-')}.json\`, null);
+    setProgress(100, 'Нативное действие записано', download ? 'Диагностический JSON скачан.' : 'Запись остановлена.');
+    return report;
   }
 
 `;
 code = code.slice(0, start) + replacement + code.slice(end);
 
-const exportNeedle = 'buildNativeRuntimeSurfaceReport, startNativeOperationRecorder, stopNativeOperationRecorder,';
-if (!code.includes(exportNeedle)) throw new Error('native recorder export line not found');
-code = code.replace(exportNeedle, 'buildNativeRuntimeSurfaceReport, restoreNativeRecorderMethods, startNativeOperationRecorder, stopNativeOperationRecorder,');
+const oldExport = 'buildNativeRuntimeSurfaceReport, startNativeOperationRecorder, stopNativeOperationRecorder,';
+const newExport = 'buildNativeRuntimeSurfaceReport, restoreNativeRecorderMethods, startNativeOperationRecorder, stopNativeOperationRecorder,';
+if (code.includes(oldExport)) code = code.replace(oldExport, newExport);
+else if (!code.includes(newExport)) throw new Error('native recorder export line not found');
 
-const pagehideNeedle = "    window.addEventListener('pagehide', () => APP.runtimeMonitor?.stop());";
-if (!code.includes(pagehideNeedle)) throw new Error('pagehide cleanup hook not found');
-code = code.replace(pagehideNeedle, `    window.addEventListener('pagehide', () => {
+const oldPagehide = "    window.addEventListener('pagehide', () => APP.runtimeMonitor?.stop());";
+const newPagehide = `    window.addEventListener('pagehide', () => {
       restoreNativeRecorderMethods(APP.nativeRecorder);
       APP.nativeRecorder = null;
       APP.runtimeMonitor?.stop();
-    });`);
+    });`;
+if (code.includes(oldPagehide)) code = code.replace(oldPagehide, newPagehide);
+else if (!code.includes(newPagehide)) throw new Error('pagehide cleanup hook not found');
 
 fs.writeFileSync(file, code);
-console.log('Applied v1.12.2 native recorder lifecycle hardening');
+console.log('Applied v1.12.2 native recorder lifecycle hardening v2');
