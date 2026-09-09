@@ -8872,15 +8872,16 @@
         truncatedCount: Number(recorder.truncatedCount || 0),
         maxRecords: Number(recorder.maxRecords || 500),
       };
-      if (download) downloadJson(report, `TESSA_Native_Action_${report.finishedAt.replace(/[:.]/g, '-')}.json`, null);
-      setProgress(100, 'Нативное действие записано', download ? 'Диагностический JSON скачан.' : 'Запись остановлена.');
-      return report;
     } finally {
       const restoration = restoreNativeRecorderMethods(recorder);
       if (report) report.restoration = restoration;
       if (APP.nativeRecorder === recorder) APP.nativeRecorder = null;
       resetNativeRecorderControls();
     }
+    // RESTORATION_BEFORE_DOWNLOAD_V1: the serialized evidence must contain cleanup status.
+    if (download) downloadJson(report, `TESSA_Native_Action_${report.finishedAt.replace(/[:.]/g, '-')}.json`, null);
+    setProgress(100, 'Нативное действие записано', download ? 'Диагностический JSON скачан.' : 'Запись остановлена.');
+    return report;
   }
 
   function reconciliationSummary(result) {
