@@ -10,6 +10,7 @@ on:
       - 'tools/apply-v1.12.2-test-contracts.mjs'
       - 'tools/apply-v1.12.2-recorder-hardening.mjs'
       - 'tools/apply-v1.12.2-readme-test-strategy.mjs'
+      - 'tools/apply-v1.12.2-live-native-contract.mjs'
       - 'tools/native-evidence-validator.mjs'
       - 'tools/release-native-evidence-gate.mjs'
       - 'tests/live-write-check-contract.mjs'
@@ -76,6 +77,12 @@ jobs:
           else
             echo 'need_recorder=true' >> "$GITHUB_OUTPUT"
           fi
+          if grep -q 'NATIVE_DELETE_REQUEST_CONTRACT_V1' tessa-matrix-studio.user.js \
+             && grep -q 'NATIVE_EDITOR_SAVE_CONTRACT_V1' tessa-matrix-studio.user.js; then
+            echo 'need_live_native=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'need_live_native=true' >> "$GITHUB_OUTPUT"
+          fi
           if grep -q '\[Test Strategy\](docs/TEST-STRATEGY.md)' README.md; then
             echo 'need_readme_strategy=false' >> "$GITHUB_OUTPUT"
           else
@@ -93,6 +100,9 @@ jobs:
       - name: Harden native recorder lifecycle
         if: steps.state.outputs.need_recorder == 'true'
         run: node tools/apply-v1.12.2-recorder-hardening.mjs
+      - name: Apply captured native DELETE/SAVE contract
+        if: steps.state.outputs.need_live_native == 'true'
+        run: node tools/apply-v1.12.2-live-native-contract.mjs
       - name: Link test strategy from README
         if: steps.state.outputs.need_readme_strategy == 'true'
         run: node tools/apply-v1.12.2-readme-test-strategy.mjs
@@ -118,7 +128,7 @@ jobs:
       - name: Full regression suite
         run: npm test
       - name: Commit verified generated files
-        if: steps.state.outputs.need_runtime == 'true' || steps.state.outputs.need_metadata == 'true' || steps.state.outputs.need_test_contracts == 'true' || steps.state.outputs.need_recorder == 'true' || steps.state.outputs.need_readme_strategy == 'true'
+        if: steps.state.outputs.need_runtime == 'true' || steps.state.outputs.need_metadata == 'true' || steps.state.outputs.need_test_contracts == 'true' || steps.state.outputs.need_recorder == 'true' || steps.state.outputs.need_live_native == 'true' || steps.state.outputs.need_readme_strategy == 'true'
         shell: bash
         run: |
           git config user.name 'github-actions[bot]'
@@ -128,5 +138,5 @@ jobs:
             echo '::error::Expected runtime/metadata/test/docs patch produced no tracked changes.'
             exit 1
           fi
-          git commit -m 'fix: harden runtime delete/save contracts (1.12.2)'
+          git commit -m 'fix: align DELETE and Save with captured native TESSA contract'
           git push origin HEAD:fix/v1.12.2-runtime-contract-hardening
