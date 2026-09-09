@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "releaseRule": "Write-critical features require unit coverage, stateful contract coverage, and native-runtime evidence capability before an external release.",
+  "features": [
+    {
+      "id": "xlsx-roundtrip",
+      "writeCritical": false,
+      "unit": ["tests/xlsx-load.mjs", "tests/xlsx-self-roundtrip-limit.mjs"],
+      "contract": ["tests/empty-matrix-roundtrip.mjs", "tests/multi-template-roundtrip.mjs"]
+    },
+    {
+      "id": "dictionary-lookup",
+      "writeCritical": false,
+      "unit": ["tests/dictionary-projection-refresh.mjs", "tests/column-dictionary-routing.mjs"],
+      "contract": ["tests/dictionary-high-cardinality.mjs", "tests/dictionary-native-captions.mjs"]
+    },
+    {
+      "id": "add",
+      "writeCritical": true,
+      "unit": ["tests/planner.mjs", "tests/native-row-payload.mjs"],
+      "contract": ["tests/apply-add-race.mjs", "tests/empty-matrix-roundtrip.mjs"],
+      "runtimeEvidence": "native-operation-recorder"
+    },
+    {
+      "id": "update",
+      "writeCritical": true,
+      "unit": ["tests/field-update-regressions.mjs", "tests/native-row-payload.mjs"],
+      "contract": ["tests/apply-version-race.mjs", "tests/live-write-check-contract.mjs"],
+      "runtimeEvidence": "native-operation-recorder"
+    },
+    {
+      "id": "delete",
+      "writeCritical": true,
+      "unit": ["tests/overwrite-delete.mjs", "tests/schema-refresh-delete.mjs"],
+      "contract": ["tests/delete-membership-transition.mjs", "tests/apply-delete-target-version.mjs", "tests/apply-delete-race.mjs"],
+      "runtimeEvidence": "native-operation-recorder+membership-before-after"
+    },
+    {
+      "id": "main-matrix-save",
+      "writeCritical": true,
+      "unit": ["tests/post-apply-view-refresh.mjs"],
+      "contract": ["tests/main-matrix-save-contract.mjs"],
+      "runtimeEvidence": "native-operation-recorder+cardservice-store"
+    },
+    {
+      "id": "post-apply-refresh",
+      "writeCritical": true,
+      "unit": ["tests/post-apply-view-refresh.mjs"],
+      "contract": ["tests/reconciliation-writer-lock.mjs", "tests/apply-refresh-failure-result.mjs"],
+      "runtimeEvidence": "runtime-surface+native-view-control"
+    },
+    {
+      "id": "reconciliation",
+      "writeCritical": true,
+      "unit": ["tests/reconciliation-invariants.mjs", "tests/reconciliation-identity-ambiguity.mjs"],
+      "contract": ["tests/reconciliation.mjs", "tests/live-write-check-contract.mjs", "tests/apply-verification-accounting.mjs"],
+      "runtimeEvidence": "support-report+membership-before-after"
+    },
+    {
+      "id": "support-report",
+      "writeCritical": false,
+      "unit": ["tests/support-report-sanitization.mjs"],
+      "contract": ["tests/apply-report-opt-in.mjs", "tests/preview-support-ux.mjs"]
+    },
+    {
+      "id": "interval-diagnostics",
+      "writeCritical": true,
+      "unit": ["tests/interval-diagnostics-capability.mjs", "tests/interval-structural-probes.mjs"],
+      "contract": ["tests/studio-diagnostics.mjs", "tests/interval-proposed-add-probes.mjs"],
+      "runtimeEvidence": "diagnostic-request-capture"
+    },
+    {
+      "id": "native-runtime-recorder",
+      "writeCritical": true,
+      "unit": ["tests/native-runtime-recorder.mjs"],
+      "contract": ["tests/native-runtime-recorder.mjs"],
+      "runtimeEvidence": "self"
+    }
+  ]
+}
