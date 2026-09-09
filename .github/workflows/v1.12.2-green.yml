@@ -6,6 +6,7 @@ on:
     paths:
       - 'tessa-matrix-studio.user.js'
       - 'tools/apply-v1.12.2-runtime-hardening.mjs'
+      - 'tools/apply-v1.12.2-metadata.mjs'
       - 'tests/live-write-check-contract.mjs'
       - 'tests/delete-membership-transition.mjs'
       - 'tests/main-matrix-save-contract.mjs'
@@ -13,6 +14,9 @@ on:
       - 'tests/native-runtime-recorder.mjs'
       - 'tests/post-apply-view-refresh.mjs'
       - 'package.json'
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - '.github/ISSUE_TEMPLATE/bug_report.yml'
       - '.github/workflows/v1.12.2-green.yml'
   workflow_dispatch:
 
@@ -31,20 +35,30 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Detect production patch state
+      - name: Detect patch state
         id: state
         shell: bash
         run: |
           if grep -q '^// @version      1.12.2$' tessa-matrix-studio.user.js \
              && grep -q 'function stageMatrixRowDelete' tessa-matrix-studio.user.js \
              && grep -q 'function collectNativeRuntimeSurface' tessa-matrix-studio.user.js; then
-            echo 'need_patch=false' >> "$GITHUB_OUTPUT"
+            echo 'need_runtime=false' >> "$GITHUB_OUTPUT"
           else
-            echo 'need_patch=true' >> "$GITHUB_OUTPUT"
+            echo 'need_runtime=true' >> "$GITHUB_OUTPUT"
           fi
-      - name: Apply production patch
-        if: steps.state.outputs.need_patch == 'true'
+          if grep -q 'version-1.12.2-' README.md \
+             && grep -q '^## 1.12.2 —' CHANGELOG.md \
+             && grep -q '"version": "1.12.2"' package-lock.json; then
+            echo 'need_metadata=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'need_metadata=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Apply runtime patch
+        if: steps.state.outputs.need_runtime == 'true'
         run: node tools/apply-v1.12.2-runtime-hardening.mjs
+      - name: Apply release metadata
+        if: steps.state.outputs.need_metadata == 'true'
+        run: node tools/apply-v1.12.2-metadata.mjs
       - name: Install dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Targeted runtime contracts
@@ -62,16 +76,16 @@ jobs:
           node tests/post-apply-view-refresh.mjs
       - name: Full regression suite
         run: npm test
-      - name: Commit verified production patch
-        if: steps.state.outputs.need_patch == 'true'
+      - name: Commit verified generated files
+        if: steps.state.outputs.need_runtime == 'true' || steps.state.outputs.need_metadata == 'true'
         shell: bash
         run: |
-          if git diff --quiet -- tessa-matrix-studio.user.js; then
-            echo '::error::Patcher produced no userscript change.'
-            exit 1
-          fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add tessa-matrix-studio.user.js
+          git add tessa-matrix-studio.user.js package-lock.json README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml
+          if git diff --cached --quiet; then
+            echo '::error::Expected runtime/metadata patch produced no tracked changes.'
+            exit 1
+          fi
           git commit -m 'fix: harden runtime delete/save contracts (1.12.2)'
           git push origin HEAD:fix/v1.12.2-runtime-contract-hardening
