@@ -1,4 +1,4 @@
-name: native evidence RED
+name: native evidence VERIFY
 
 on:
   push:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  red:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -16,7 +16,9 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: |
           node tests/release-native-evidence-workflow-enforcement.mjs
           node tests/uat-candidate-workflow.mjs
           node tests/native-evidence-attestation-cli.mjs
+      - run: npm test
