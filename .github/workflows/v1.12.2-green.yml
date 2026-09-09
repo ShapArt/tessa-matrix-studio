@@ -10,11 +10,13 @@ on:
       - 'tools/apply-v1.12.2-test-contracts.mjs'
       - 'tools/apply-v1.12.2-recorder-hardening.mjs'
       - 'tools/apply-v1.12.2-readme-test-strategy.mjs'
+      - 'tools/native-evidence-validator.mjs'
       - 'tests/live-write-check-contract.mjs'
       - 'tests/delete-membership-transition.mjs'
       - 'tests/main-matrix-save-contract.mjs'
       - 'tests/interval-diagnostics-capability.mjs'
       - 'tests/native-runtime-recorder.mjs'
+      - 'tests/native-evidence-validator.mjs'
       - 'tests/post-apply-view-refresh.mjs'
       - 'tests/studio-diagnostics.mjs'
       - 'tests/test-coverage-contract.mjs'
@@ -102,6 +104,7 @@ jobs:
           node tests/main-matrix-save-contract.mjs
           node tests/interval-diagnostics-capability.mjs
           node tests/native-runtime-recorder.mjs
+          node tests/native-evidence-validator.mjs
           node tests/test-coverage-contract.mjs
           node tests/apply-delete-race.mjs
           node tests/apply-delete-target-version.mjs
