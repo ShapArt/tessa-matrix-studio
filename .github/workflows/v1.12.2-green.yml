@@ -9,6 +9,7 @@ on:
       - 'tools/apply-v1.12.2-metadata.mjs'
       - 'tools/apply-v1.12.2-test-contracts.mjs'
       - 'tools/apply-v1.12.2-recorder-hardening.mjs'
+      - 'tools/apply-v1.12.2-readme-test-strategy.mjs'
       - 'tests/live-write-check-contract.mjs'
       - 'tests/delete-membership-transition.mjs'
       - 'tests/main-matrix-save-contract.mjs'
@@ -70,6 +71,11 @@ jobs:
           else
             echo 'need_recorder=true' >> "$GITHUB_OUTPUT"
           fi
+          if grep -q '\[Test Strategy\](docs/TEST-STRATEGY.md)' README.md; then
+            echo 'need_readme_strategy=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'need_readme_strategy=true' >> "$GITHUB_OUTPUT"
+          fi
       - name: Apply runtime patch
         if: steps.state.outputs.need_runtime == 'true'
         run: node tools/apply-v1.12.2-runtime-hardening.mjs
@@ -82,6 +88,9 @@ jobs:
       - name: Harden native recorder lifecycle
         if: steps.state.outputs.need_recorder == 'true'
         run: node tools/apply-v1.12.2-recorder-hardening.mjs
+      - name: Link test strategy from README
+        if: steps.state.outputs.need_readme_strategy == 'true'
+        run: node tools/apply-v1.12.2-readme-test-strategy.mjs
       - name: Install dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Targeted runtime contracts
@@ -102,14 +111,14 @@ jobs:
       - name: Full regression suite
         run: npm test
       - name: Commit verified generated files
-        if: steps.state.outputs.need_runtime == 'true' || steps.state.outputs.need_metadata == 'true' || steps.state.outputs.need_test_contracts == 'true' || steps.state.outputs.need_recorder == 'true'
+        if: steps.state.outputs.need_runtime == 'true' || steps.state.outputs.need_metadata == 'true' || steps.state.outputs.need_test_contracts == 'true' || steps.state.outputs.need_recorder == 'true' || steps.state.outputs.need_readme_strategy == 'true'
         shell: bash
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add tessa-matrix-studio.user.js package-lock.json README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml tests/studio-diagnostics.mjs
           if git diff --cached --quiet; then
-            echo '::error::Expected runtime/metadata/test patch produced no tracked changes.'
+            echo '::error::Expected runtime/metadata/test/docs patch produced no tracked changes.'
             exit 1
           fi
           git commit -m 'fix: harden runtime delete/save contracts (1.12.2)'
