@@ -21,5 +21,5 @@ jobs:
         with:
           node-version: 24
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Run confirmation contract before implementation
+      - name: Run clean confirmation contract before implementation
         run: node tests/cross-matrix-confirmation.mjs
