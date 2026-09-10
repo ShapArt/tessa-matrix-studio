@@ -115,14 +115,12 @@
     MaxCompressionRatio: 100,
   });
 
-  // SpreadsheetML itself is untrusted even after the ZIP package passes archive guards.
-  // These ceilings prevent tiny XML from materializing pathological sparse arrays or
-  // forcing the browser to parse an unreasonable number of physical row/cell nodes.
+  // SpreadsheetML coordinates are bounded by the actual Excel worksheet address space.
+  // Do not impose arbitrary physical row/cell-count ceilings here: TESSA roundtrip books
+  // may legitimately contain very large service sheets (especially «Словари»).
   const SPREADSHEETML_LIMITS = Object.freeze({
     MaxRowNumber: 1048576,
     MaxColumnNumber: 16384, // Excel XFD
-    MaxParsedRows: 1048576,
-    MaxParsedCells: 1500000,
   });
 
 
@@ -1308,16 +1306,10 @@
     const seenRows = new Set();
     const seenCells = new Set();
     let maxCol = 0;
-    let parsedRowCount = 0;
-    let parsedCellCount = 0;
     let nextImplicitRow = 1;
 
     const rowRegex = /<(?:[A-Za-z_][\w.-]*:)?row\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?row>)/gi;
     for (const rowMatch of xml.matchAll(rowRegex)) {
-      parsedRowCount += 1;
-      if (parsedRowCount > limits.MaxParsedRows) {
-        throw xlsxArchiveError(`слишком много строк SpreadsheetML (${parsedRowCount} > ${limits.MaxParsedRows}).`);
-      }
       const explicitRow = attr(rowMatch[1], 'r');
       const rowNumber = spreadsheetRowNumber(explicitRow, nextImplicitRow, limits);
       nextImplicitRow = Math.max(nextImplicitRow, rowNumber + 1);
@@ -1332,10 +1324,6 @@
       // self-closing и обычную формы одинаково, но координаты проверяем до записи.
       const cellRegex = /<(?:[A-Za-z_][\w.-]*:)?c\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?c>)/gi;
       for (const cellMatch of body.matchAll(cellRegex)) {
-        parsedCellCount += 1;
-        if (parsedCellCount > limits.MaxParsedCells) {
-          throw xlsxArchiveError(`слишком много ячеек SpreadsheetML (${parsedCellCount} > ${limits.MaxParsedCells}).`);
-        }
         const attrs = cellMatch[1] || '';
         const cellBody = cellMatch[2] || '';
         const coordinate = spreadsheetCellCoordinate(attr(attrs, 'r'), rowNumber, nextImplicitCol, limits);
