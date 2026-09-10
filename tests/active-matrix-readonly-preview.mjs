@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
+// Live 1.13.0 RC regression: an Active target must expose the calculated diff for review
+// while preserving the hard write block until the matrix is opened as a draft.
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 globalThis.location = { origin: 'https://tessa.example.test' };
