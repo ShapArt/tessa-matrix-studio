@@ -7709,6 +7709,8 @@
     const successfulCrossMatrixAdds = [];
     let crossMatrixAddFailed = false;
     let blockCrossMatrixDeletes = crossMatrixPreflightBlocked;
+    let crossMatrixDeleteFailed = false;
+    let crossMatrixTargetDeletesSucceeded = 0;
     const totalToStore = preparedUpdates.size + preparedAdds.size + readyDeletes.length;
     let storedCount = 0;
     const tickStoreProgress = label => {
@@ -7926,6 +7928,7 @@
         }
         log(`Удаляю строку TESSA ${action.currentRow.index + 1}`);
         await bridge.deleteMatrixRow(action.currentRow.versionId);
+        if (isCrossMatrixTransfer) crossMatrixTargetDeletesSucceeded += 1;
         receipts.push(createMutationReceipt({
           type: 'delete', action,
           rowCardId: prepared.current.rowCardId,
@@ -7937,8 +7940,22 @@
         const skipped = runtimeSkip(action, error, 'store-delete');
         result.skipped.push(skipped);
         result.rows.push({ type: 'delete', versionId: action.currentRow.versionId, status: 'skipped', reason: skipped.reason });
+        if (isCrossMatrixTransfer) {
+          crossMatrixDeleteFailed = true;
+          result.crossMatrixTransfer = {
+            status: 'unsafe',
+            phase: 'delete',
+            targetDeletesStarted: true,
+            successfulTargetDeleteCount: crossMatrixTargetDeletesSucceeded,
+            failedVersionId: action.currentRow.versionId,
+            reason: skipped.reason,
+          };
+          result.verificationIncomplete = true;
+          log('Перенос остановлен на удалении старых строк. Дальнейшие DELETE не выполняются; требуется проверка фактического состояния TESSA.', 'error');
+        }
       }
       tickStoreProgress('Удаляю строки');
+      if (crossMatrixDeleteFailed) break;
     }
 
     result.matrixSave = await persistMainMatrixAfterApply(bridge, result);
