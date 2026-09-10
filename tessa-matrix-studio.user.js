@@ -7666,9 +7666,10 @@
     }
     const { bridge, structure, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips } = preflight;
     const isCrossMatrixTransfer = Boolean(plan.crossMatrixReplacement?.enabled);
+    const crossMatrixPreflightBlocked = isCrossMatrixTransfer && runtimeSkips.length > 0;
     const successfulCrossMatrixAdds = [];
     let crossMatrixAddFailed = false;
-    let blockCrossMatrixDeletes = false;
+    let blockCrossMatrixDeletes = crossMatrixPreflightBlocked;
     const totalToStore = preparedUpdates.size + preparedAdds.size + readyDeletes.length;
     let storedCount = 0;
     const tickStoreProgress = label => {
@@ -7703,6 +7704,15 @@
       verificationIncomplete: false,
       refreshError: null,
     };
+    if (crossMatrixPreflightBlocked) {
+      result.crossMatrixTransfer = {
+        status: 'preflight-blocked',
+        phase: 'preflight',
+        rejectedCount: runtimeSkips.length,
+        targetDeletesStarted: false,
+      };
+      log('Перенос остановлен на предварительной проверке. Запись и удаление строк TESSA не начинались.', 'warn');
+    }
     let cancelled = false;
     const shouldStopBeforeNextMutation = () => {
       if (!APP.abortRequested) return false;
@@ -7711,7 +7721,7 @@
       return true;
     };
 
-    for (const prepared of preparedUpdates.values()) {
+    if (!crossMatrixPreflightBlocked) for (const prepared of preparedUpdates.values()) {
       if (shouldStopBeforeNextMutation()) break;
       result.startedCount += 1;
       const action = prepared.action;
@@ -7743,7 +7753,7 @@
       tickStoreProgress(isOverwriteMatch(action.match) ? 'Заменяю строки' : 'Обновляю строки');
     }
 
-    if (!cancelled) for (const created of preparedAdds.values()) {
+    if (!cancelled && !crossMatrixPreflightBlocked) for (const created of preparedAdds.values()) {
       if (shouldStopBeforeNextMutation()) break;
       result.startedCount += 1;
       const action = created.action;
