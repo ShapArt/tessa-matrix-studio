@@ -5822,11 +5822,97 @@
     };
   }
 
-  function buildPlan(workbook, structure, snapshot) {
+  function foreignDesiredRow(row) {
+    return {
+      ...row,
+      system: {
+        ...(row?.system || {}),
+        action: 'keep',
+        rowCardId: '',
+        versionId: '',
+        baseFingerprint: '',
+      },
+    };
+  }
+
+  function buildCrossMatrixReplacementPlan(workbook, structure, snapshot, columnMap, desired) {
+    const actions = [];
+    const issues = [];
+    const warnings = [];
+    const usedCurrent = new Set();
+    const desiredRows = (desired || []).filter(row => row?.hasData).map(foreignDesiredRow);
+    const currentBySemanticKey = new Map();
+    for (const currentRow of snapshot?.rows || []) {
+      const key = duplicateRowKey(currentRow, null, structure);
+      if (!currentBySemanticKey.has(key)) currentBySemanticKey.set(key, []);
+      currentBySemanticKey.get(key).push(currentRow);
+    }
+  
+    const desiredBySemanticKey = new Map();
+    for (const excelRow of desiredRows) {
+      const key = duplicateRowKey(null, excelRow, structure);
+      if (!desiredBySemanticKey.has(key)) desiredBySemanticKey.set(key, []);
+      desiredBySemanticKey.get(key).push(excelRow);
+    }
+    const duplicateDesired = [...desiredBySemanticKey.values()].filter(rows => rows.length > 1);
+    if (duplicateDesired.length) {
+      issues.push(`Перенос заблокирован: в Excel есть ${duplicateDesired.length} групп полностью одинаковых строк. Итоговая матрица должна содержать уникальные строки.`);
+      return { actions: [], issues, warnings, skippedRows: [], usedCurrent, desiredRows };
+    }
+  
+    for (const excelRow of desiredRows) {
+      const key = duplicateRowKey(null, excelRow, structure);
+      const matches = (currentBySemanticKey.get(key) || []).filter(currentRow => {
+        const identity = canonicalValue(currentRow.versionId || currentRow.rowCardId || '');
+        return identity && !usedCurrent.has(identity);
+      });
+      if (matches.length > 1) {
+        issues.push('Перенос заблокирован: текущая матрица содержит несколько семантически одинаковых строк для одной строки Excel. Нельзя выбрать строку для сохранения без догадки.');
+        continue;
+      }
+      if (matches.length === 1) {
+        const currentRow = matches[0];
+        const identity = canonicalValue(currentRow.versionId || currentRow.rowCardId || '');
+        if (identity) usedCurrent.add(identity);
+        actions.push({
+          type: 'noop', excelRow, currentRow, changes: [],
+          match: { matchedBy: 'cross-matrix-replace-keep', lowConfidence: false },
+          expectedFingerprint: currentRow.fingerprint,
+        });
+        continue;
+      }
+      actions.push({
+        type: 'add', excelRow, currentRow: null, changes: [],
+        match: { matchedBy: 'cross-matrix-replace-add', lowConfidence: false },
+        expectedFingerprint: null,
+      });
+    }
+  
+    if (issues.length) return { actions: [], issues, warnings, skippedRows: [], usedCurrent, desiredRows };
+  
+    for (const currentRow of snapshot?.rows || []) {
+      const identity = canonicalValue(currentRow.versionId || currentRow.rowCardId || '');
+      if (identity && usedCurrent.has(identity)) continue;
+      actions.push({
+        type: 'delete', excelRow: null, currentRow, changes: [],
+        match: { matchedBy: 'cross-matrix-replace-delete', lowConfidence: false },
+        expectedFingerprint: currentRow.fingerprint,
+      });
+    }
+    return { actions, issues, warnings, skippedRows: [], usedCurrent, desiredRows };
+  }
+
+  function buildPlan(workbook, structure, snapshot, matrixInfo = null) {
     const columnMap = buildColumnMap(workbook, structure);
     const desired = workbookRowsToDesired(workbook, columnMap);
+    const workbookContext = columnMap.mode === 'roundtrip' && matrixInfo
+      ? classifyWorkbookContext(workbook, matrixInfo)
+      : null;
+    const isCrossMatrixReplacement = workbookContext?.kind === 'same-template-foreign-matrix';
     const built = columnMap.mode === 'roundtrip'
-      ? buildRoundtripPlan(workbook, structure, snapshot, columnMap, desired)
+      ? (isCrossMatrixReplacement
+          ? buildCrossMatrixReplacementPlan(workbook, structure, snapshot, columnMap, desired)
+          : buildRoundtripPlan(workbook, structure, snapshot, columnMap, desired))
       : buildLegacyPlan(workbook, structure, snapshot, columnMap, desired);
 
     // An unambiguous UPDATE can preserve a bad cell without discarding unrelated
@@ -5924,7 +6010,13 @@
       fatalIssues.push('В Excel нет ни одной заполненной строки. Пустые строки старого шаблона игнорируются. Скачайте актуальный Excel из открытой матрицы и добавляйте строки в него.');
     }
 
-    const warnings = [...columnMap.warnings, ...(built.warnings || [])];
+    const rawWarnings = [...columnMap.warnings, ...(built.warnings || [])];
+    const warnings = isCrossMatrixReplacement
+      ? rawWarnings.map(text => String(text).replace(
+          'Они сохранят текущие значения; для редактирования нажмите «Обновить Excel-схему».',
+          'При переносе для новых строк эти поля останутся пустыми или получат значение TESSA по умолчанию; перед применением они будут проверены.'
+        ))
+      : rawWarnings;
     if (idempotentExistingAdds.excelRows.length) {
       warnings.push(`Уже существуют в TESSA и считаются без изменений: Excel ${idempotentExistingAdds.excelRows.join(', ')}. Повторная запись не выполняется.`);
     }
@@ -5956,6 +6048,14 @@
       skippedFields,
       warnings,
       counts: countActions(actions, skippedRows),
+      workbookContext,
+      crossMatrixReplacement: isCrossMatrixReplacement ? {
+        enabled: true,
+        sourceMatrixId: workbook?.roundtrip?.matrixId || null,
+        targetMatrixId: snapshot?.matrixId || null,
+        sourceMatrixName: normalizeSpace(workbook?.metadata?.['Наименование матрицы'] || workbook?.metadata?.['Тип матрицы'] || ''),
+        targetMatrixName: normalizeSpace(matrixInfo?.Name || matrixInfo?.TemplateName || ''),
+      } : null,
     };
 
     // Защита от случайного массового удаления теперь не блокирует полезные UPDATE/ADD:
@@ -6781,7 +6881,7 @@
     const snapshot = canReuseSnapshot ? cachedSnapshot : await bridge.loadSnapshot(structure);
     setProgress(55, '4/6 · Сопоставляю Excel и TESSA', `${snapshot.rows.length} строк в TESSA`);
     log(`Текущее состояние TESSA: ${snapshot.rows.length} строк${canReuseSnapshot ? ' (из текущей сессии)' : ''}.`);
-    const plan = buildPlan(workbook, structure, snapshot);
+    const plan = buildPlan(workbook, structure, snapshot, bridge.matrixInfo());
     setProgress(62, '5/6 · Проверяю безопасность', 'Дубли, права, удаления и неоднозначности');
     plan.safety = evaluatePlanSafety(plan, bridge);
     plan.matrixInfo = plan.safety.matrixInfo;
@@ -10164,7 +10264,7 @@
     evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, triggerBlobDownload, downloadJson, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport, buildApplySupportReport,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
-    readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
+    readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, isWriterLockError, persistMainMatrixAfterApply, refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
