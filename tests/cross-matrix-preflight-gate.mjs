@@ -85,6 +85,59 @@ try {
     `preflight rejection must be explicit: ${JSON.stringify(result.crossMatrixTransfer)}`);
   assert(result.startedCount === 0 && result.appliedCount === 0,
     `preflight-blocked transfer must have zero started/applied writes: ${JSON.stringify({ started: result.startedCount, applied: result.appliedCount })}`);
+
+  // Live 1.13.0 regression: Preview preflight removed 470 rejected ADDs from the
+  // replacement plan but left 5 ADD + 19 DELETE executable. A replacement is a
+  // desired-final-state operation; any source-row/preflight rejection must make the
+  // whole transfer non-applicable instead of silently shrinking the desired state.
+  const addAction = plan.actions.find(action => action.type === 'add');
+  const sourceSkip = E.makeSkippedRow(488, 'Excel 488: после изменений не останется исполнителей.', 'role-validation', 'add');
+  const runtimeSkip = E.makeSkippedRow(addAction.excelRow.excelRow,
+    'Роль «Иванов И.И.» недоступна в актуальном MtxRoles текущей TESSA.', 'preflight-add', 'add');
+  const previewSource = {
+    ...plan,
+    safety: { blocked: false, blockedReasons: [], suppressUnsafePreview: false },
+    skippedRows: [sourceSkip],
+  };
+  previewSource.counts = E.countActions(previewSource.actions, previewSource.skippedRows);
+  const preview = E.applyPreflightPreview(previewSource, {
+    runtimeSkippedActions: new Set([addAction]),
+    runtimeSkips: [runtimeSkip],
+    previewPolicy: { applyBlocked: false, skipServerAddValidation: false, reason: null },
+  });
+  assert(preview.crossMatrixReplacement?.enabled, 'fixture must remain a cross-matrix replacement');
+  assert(preview.safety?.blocked === true,
+    `incomplete replacement preview must be blocked: ${JSON.stringify(preview.safety)}`);
+  assert(preview.preflightPreview?.atomicReplacementBlocked === true,
+    `preview must expose atomic replacement blocker: ${JSON.stringify(preview.preflightPreview)}`);
+  assert(E.applyAvailability(preview).canApply === false,
+    `blocked replacement must not expose Apply: ${JSON.stringify(E.applyAvailability(preview))}`);
+  assert((preview.safety?.blockedReasons || []).some(reason => /перенос.*непол|строк.*не.*перенес/i.test(reason)),
+    `blocker must explain incomplete transfer: ${JSON.stringify(preview.safety?.blockedReasons)}`);
+
+  // Defense in depth: even if a caller bypasses Preview and sends a replacement plan
+  // that already contains source skips, applyPlan itself must refuse before CardStore
+  // or DeleteRow. This prevents future UI refactors from reopening the same class of bug.
+  stores = 0;
+  deletes.length = 0;
+  bridge.validateDuplicate = async () => {};
+  const incompleteDirectPlan = {
+    ...plan,
+    safety: { blocked: false, blockedReasons: [], suppressUnsafePreview: false },
+    skippedRows: [sourceSkip],
+  };
+  incompleteDirectPlan.counts = E.countActions(incompleteDirectPlan.actions, incompleteDirectPlan.skippedRows);
+  let directError = null;
+  try {
+    await E.applyPlan(incompleteDirectPlan);
+  } catch (error) {
+    directError = error;
+  }
+  assert(directError, 'incomplete replacement must be rejected before write');
+  assert(/перенос|замен/i.test(String(directError?.message || directError)),
+    `direct blocker must explain replacement integrity: ${directError?.message || directError}`);
+  assert(stores === 0, `source skip must prevent all Store calls, got ${stores}`);
+  assert(deletes.length === 0, `source skip must prevent all DeleteRow calls, got ${JSON.stringify(deletes)}`);
 } finally {
   E.TessaBridge.create = originalCreate;
 }
