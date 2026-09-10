@@ -69,6 +69,33 @@ const exportNeedle = `    safePlain, suppressPlanForUnsafeContext, evaluatePlanS
 const exportReplacement = `    safePlain, classifyWorkbookContext, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,`;
 if (!code.includes(exportNeedle)) throw new Error('exports marker not found');
 code = code.replace(exportNeedle, exportReplacement);
-
 fs.writeFileSync(path, code);
-console.log('Task 1 production patch applied');
+
+const acceptancePath = 'tests/acceptance.mjs';
+let acceptance = fs.readFileSync(acceptancePath, 'utf8');
+const oldAcceptance = `// 8. Safety — активная матрица и Excel от другой карточки блокируются целиком.
+plan = E.buildPlan(patch, structure, snapshot);
+let safety = E.evaluatePlanSafety(plan, makeBridge(snapshot, { matrixInfo: { StateName: 'Активная' } }));
+assert(safety.blocked && safety.suppressUnsafePreview, 'active matrix must be blocked');
+const foreignWorkbook = { ...baseline, roundtrip: { ...baseline.roundtrip, matrixId: 'foreign-matrix' } };
+plan = E.buildPlan(foreignWorkbook, structure, snapshot);
+safety = E.evaluatePlanSafety(plan, makeBridge(snapshot));
+assert(safety.blocked && safety.blockedReasons.some(reason => /другой карточк/i.test(reason)),
+  'foreign matrix workbook must be blocked');
+`;
+const newAcceptance = `// 8. Safety — активная матрица блокируется, а другая карточка того же шаблона
+// классифицируется как явный кандидат на перенос. Сам replacement-plan проверяется отдельно.
+plan = E.buildPlan(patch, structure, snapshot);
+let safety = E.evaluatePlanSafety(plan, makeBridge(snapshot, { matrixInfo: { StateName: 'Активная' } }));
+assert(safety.blocked && safety.suppressUnsafePreview, 'active matrix must be blocked');
+const foreignWorkbook = { ...baseline, roundtrip: { ...baseline.roundtrip, matrixId: 'foreign-matrix' } };
+plan = E.buildPlan(foreignWorkbook, structure, snapshot);
+safety = E.evaluatePlanSafety(plan, makeBridge(snapshot));
+assert(!safety.blocked && safety.crossMatrixReplacement === true,
+  'same-template foreign matrix workbook must become an explicit transfer candidate');
+`;
+if (!acceptance.includes(oldAcceptance)) throw new Error('legacy acceptance context block not found');
+acceptance = acceptance.replace(oldAcceptance, newAcceptance);
+fs.writeFileSync(acceptancePath, acceptance);
+
+console.log('Task 1 production + acceptance patch applied');
