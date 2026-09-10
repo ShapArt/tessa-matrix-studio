@@ -1703,6 +1703,19 @@
   // точный ID, затем однозначное название. Неоднозначные значения не угадываются.
   // ---------------------------------------------------------------------------
 
+  function partnerRecordKeepingColumnIndex(columns) {
+    // Live Черкизово GchPartners exposes this as IsRecordKeeping (Boolean).
+    // Russian captions are accepted for compatible installations, but only by exact
+    // normalized field name: never guess from unrelated partner flags.
+    const accepted = new Set([
+      'isrecordkeeping',
+      'ведение делопроизводства',
+      'ведение дела производства',
+      'ведение дел производства',
+    ]);
+    return Array.from(columns || []).findIndex(column => accepted.has(searchCanonical(column)));
+  }
+
   function finalizeDictionaryEntries(entries) {
     const byIdentity = new Map();
     for (const source of entries || []) {
@@ -1781,7 +1794,7 @@
   }
 
   function normalizeDictionaryCatalog(catalog) {
-    if (!catalog) return { catalogs: {}, columnCatalogIds: {}, stats: { catalogs: 0, entries: 0, errors: [] } };
+    if (!catalog) return { catalogs: {}, columnCatalogIds: {}, stats: { catalogs: 0, entries: 0, errors: [], warnings: [] } };
     if (NORMALIZED_DICTIONARY_CATALOGS.has(catalog)) return catalog;
     for (const item of Object.values(catalog.catalogs || {})) { item.entries = finalizeDictionaryEntries(item.entries || []); DICTIONARY_LOOKUP_CACHE.delete(item); }
     const entries = Object.values(catalog.catalogs || {}).reduce((sum, item) => sum + item.entries.length, 0);
@@ -1789,6 +1802,7 @@
     catalog.stats.catalogs = Object.keys(catalog.catalogs || {}).length;
     catalog.stats.entries = entries;
     catalog.stats.errors = catalog.stats.errors || [];
+    catalog.stats.warnings = catalog.stats.warnings || [];
     NORMALIZED_DICTIONARY_CATALOGS.add(catalog);
     return catalog;
   }
@@ -1963,7 +1977,7 @@
       ...base,
       catalogs: { ...(base.catalogs || {}) },
       columnCatalogIds: { ...(base.columnCatalogIds || {}) },
-      stats: { ...(base.stats || {}), errors: [...(base.stats?.errors || [])] },
+      stats: { ...(base.stats || {}), errors: [...(base.stats?.errors || [])], warnings: [...(base.stats?.warnings || [])] },
     };
     for (const [catalogId, changes] of changesByCatalog.entries()) {
       const source = base.catalogs[catalogId];
@@ -4044,6 +4058,7 @@
       if (roleMode && roleTypeIndex < 0 && rows.some(row => row.length > columns.length && Number.isFinite(Number(row[row.length - 1])))) roleTypeIndex = Math.max(...rows.map(row => row.length)) - 1;
       const hiddenIndex = columns.findIndex(alias => /(?:^|Is)Hidden$|Disabled$/i.test(String(alias)));
       const activeIndex = columns.findIndex(alias => /(?:^|Is)Active$/i.test(String(alias)));
+      const recordKeepingIndex = options.recordKeepingOnly ? partnerRecordKeepingColumnIndex(columns) : -1;
       const entries = [];
       for (const row of rows) {
         const id = row[idIndex];
@@ -4053,6 +4068,7 @@
         const hidden = hiddenIndex >= 0 && [true, 1, '1', 'true'].includes(row[hiddenIndex]);
         const inactive = activeIndex >= 0 && [false, 0, '0', 'false'].includes(row[activeIndex]);
         if (hidden || inactive) continue;
+        if (options.recordKeepingOnly && recordKeepingIndex >= 0 && booleanSemantic(row[recordKeepingIndex]) !== true) continue;
         const roleTypeId = roleTypeIndex >= 0 && row[roleTypeIndex] !== null && row[roleTypeIndex] !== undefined && row[roleTypeIndex] !== '' ? Number(row[roleTypeIndex]) : '';
         const details = columns.map((alias, index) => {
           if (index === idIndex || index === displayIndex || index === roleTypeIndex) return '';
@@ -4090,7 +4106,7 @@
         await deleteDictionaryCache(cacheKey);
       }
 
-      const catalog = { catalogs: {}, columnCatalogIds: {}, stats: { catalogs: 0, entries: 0, errors: [] } };
+      const catalog = { catalogs: {}, columnCatalogIds: {}, stats: { catalogs: 0, entries: 0, errors: [], warnings: [] } };
       const criterionGroups = new Map();
       for (const condition of structure.conditions) {
         const operand = canonicalValue(condition.operandTypeId);
@@ -4121,7 +4137,20 @@
           const result = await query(group.alias);
           if (result.error) catalog.stats.errors.push(`${group.alias}: ${String(result.error).split('\n')[0]}`);
           else {
-            try { projection = this.dictionaryProjection(result, { refSection: group.conditions[0].refSection }); entries = this.extractDictionaryEntries(result, { wantedKind: group.wantedKind, refSection: group.conditions[0].refSection }); sourceCount = entries.length; }
+            try {
+              projection = this.dictionaryProjection(result, { refSection: group.conditions[0].refSection });
+              const recordKeepingPartner = canonicalValue(group.alias) === 'gchpartners';
+              const recordKeepingIndex = recordKeepingPartner ? partnerRecordKeepingColumnIndex(result.columns) : -1;
+              if (recordKeepingPartner && recordKeepingIndex < 0) {
+                catalog.stats.warnings.push(`${label}: в GchPartners не найден Boolean-флаг IsRecordKeeping (Ведение делопроизводства). Справочник оставлен без фильтра, чтобы не потерять допустимые ЮЛ.`);
+              }
+              entries = this.extractDictionaryEntries(result, {
+                wantedKind: group.wantedKind,
+                refSection: group.conditions[0].refSection,
+                recordKeepingOnly: recordKeepingPartner && recordKeepingIndex >= 0,
+              });
+              sourceCount = entries.length;
+            }
             catch (error) { catalog.stats.errors.push(`${label}: ${error.message}`); }
             if (result.truncated) catalog.stats.errors.push(`${group.alias}: получено ${result.rows.length} из ${result.rowCount}; словарь неполный`);
           }
@@ -4297,7 +4326,10 @@
         }
       }
 
-      return { ...link, card, values, roles, flat, fingerprint: fingerprintFlat(flat) };
+      // Snapshot rows cross the bridge into planner/Excel/cache code. Keep them plain:
+      // a live TESSA Card contains EventHandler back-references (fieldChanged._sender)
+      // and must never enter serializable application state.
+      return { ...link, values, roles, flat, fingerprint: fingerprintFlat(flat) };
     }
 
     async loadSnapshot(structure) {
@@ -8865,11 +8897,22 @@
     }, Boolean(generated && snapshotOk));
 
     const control = snapshotOk ? snapshot.rows.find(row => Object.values(row.values || {}).some(items => items.some(v => v.to != null))) || snapshot.rows[0] : null;
+    // Diagnostics is the exceptional path that needs a native Card. Load it on demand
+    // by the real row CardID instead of retaining runtime objects in snapshot rows.
+    let controlNativeCard = null;
+    const getControlNativeCard = async () => {
+      if (!control?.rowCardId) throw new Error('У контрольной строки отсутствует CardID.');
+      if (!controlNativeCard) controlNativeCard = await bridge.getCard(control.rowCardId);
+      return controlNativeCard;
+    };
     await run('saved-validation', 'Сервер: сохранённая строка', async () => {
-      await bridge.validateDuplicate(control.card, control.versionId); return { detail: 'Сервер разрешил проверку существующей версии.' };
+      const nativeCard = await getControlNativeCard();
+      await bridge.validateDuplicate(nativeCard, control.versionId); return { detail: 'Сервер разрешил проверку существующей версии.' };
     }, Boolean(control));
     await run('rebuilt-validation', 'Сервер: та же строка после перестройки', async () => {
-      const card = control.card.clone(); bridge.rebuildRowCard(card, control.versionId, desiredFromRow(control), structure, snapshot);
+      const nativeCard = await getControlNativeCard();
+      if (typeof nativeCard?.clone !== 'function') throw new Error('Нативная карточка контрольной строки не поддерживает clone().');
+      const card = nativeCard.clone(); bridge.rebuildRowCard(card, control.versionId, desiredFromRow(control), structure, snapshot);
       const after = bridge.readMatrixRowFromCard(card, control, structure);
       if (reconciliationSemanticKey(after, structure) !== reconciliationSemanticKey(control, structure)) throw new Error('Перестройка изменила значения контрольной строки. Запрос не отправлен.');
       await bridge.validateDuplicate(card, control.versionId); return { detail: 'Значения совпадают; сервер разрешил проверку.' };
@@ -9432,6 +9475,7 @@
       '5': 'Метароль',
       '6': 'Задача',
       '7': 'SmartRole',
+      '9': 'Группа',
     };
     return known[key] || `RoleTypeID: ${String(roleTypeId ?? '').trim() || '—'}`;
   }
@@ -9981,30 +10025,133 @@
     });
   }
 
-  function pickerEntryKey(item) { return `${canonicalValue(item.id)}|${canonicalValue(item.roleTypeId || '')}`; }
+  function pickerEntryKey(item) { return `${canonicalValue(item.id)}|${canonicalValue(item.roleTypeId ?? '')}`; }
 
-  // Reuse the dictionary search index; bound rendered results, keep total count.
-  function searchPickerEntries(catalog, query = '', limit = 80) {
+  function pickerRoleTypeOptions(column) {
+    if (column?.kind !== 'function') return [];
+    const present = new Set((column.catalog?.entries || []).map(item => canonicalValue(item.roleTypeId)).filter(Boolean));
+    if (!present.size) return [];
+    const preferred = ['1', '2', '0', '4', '5', '9', '3', '6', '7'];
+    const ordered = [...preferred.filter(id => present.has(id)), ...[...present].filter(id => !preferred.includes(id)).sort()];
+    return [{ value: 'all', label: 'Все типы' }, ...ordered.map(value => ({ value, label: previewRoleTypeLabel(value) }))];
+  }
+
+  function pickerDefaultRoleFilter(column) {
+    const options = pickerRoleTypeOptions(column);
+    return options.some(item => item.value === '1') ? '1' : 'all';
+  }
+
+  function pickerSearchMatch(row, terms, roleType) {
+    if (roleType && roleType !== 'all' && canonicalValue(row?.item?.roleTypeId) !== canonicalValue(roleType)) return false;
+    return terms.every(term => row.haystack.includes(term));
+  }
+
+  // Pagination is computed over the in-memory search index. Only one bounded page is
+  // returned to the DOM; changing a page never discards the selection Map.
+  function searchPickerPage(catalog, options = {}) {
+    const query = options?.query ?? '';
     const terms = searchCanonical(query).split(/\s+/).filter(Boolean);
-    const items = []; let total = 0;
+    const roleType = canonicalValue(options?.roleType || 'all') || 'all';
+    const pageSize = Math.max(1, Math.min(200, Math.trunc(Number(options?.pageSize) || 80)));
+    const requestedPage = Math.max(1, Math.trunc(Number(options?.page) || 1));
+    const offset = (requestedPage - 1) * pageSize;
+    const items = [];
+    let total = 0;
     for (const row of dictionaryLookup(catalog)?.searchRows || []) {
-      if (!terms.every(term => row.haystack.includes(term))) continue;
+      if (!pickerSearchMatch(row, terms, roleType)) continue;
       total++;
-      if (items.length < Math.max(1, Math.min(200, limit))) items.push(row.item);
+      if (total > offset && items.length < pageSize) items.push(row.item);
     }
-    return { items, total };
+    const pageCount = Math.max(1, Math.ceil(total / pageSize));
+    if (requestedPage > pageCount && total) return searchPickerPage(catalog, { ...options, page: pageCount, pageSize });
+    return {
+      items, total, page: Math.min(requestedPage, pageCount), pageSize, pageCount,
+      start: total ? offset + 1 : 0,
+      end: total ? offset + items.length : 0,
+      query: normalizeSpace(query), roleType,
+    };
+  }
+
+  // Backward-compatible one-page helper used by older tests and integrations.
+  function searchPickerEntries(catalog, query = '', limit = 80) {
+    const page = searchPickerPage(catalog, { query, roleType: 'all', page: 1, pageSize: limit });
+    return { items: page.items, total: page.total };
+  }
+
+  function pickerDetailValue(item, aliases) {
+    const wanted = new Set((aliases || []).map(searchCanonical));
+    for (const part of String(item?.details || '').split(/\s+\|\s+/)) {
+      const at = part.indexOf(':');
+      if (at <= 0) continue;
+      if (!wanted.has(searchCanonical(part.slice(0, at)))) continue;
+      return normalizeSpace(part.slice(at + 1));
+    }
+    return '';
+  }
+
+  function pickerCompactList(value, limit = 180) {
+    const unique = [...new Set(String(value || '').split(/\s*;\s*/).map(normalizeSpace).filter(Boolean))];
+    const text = unique.join(', ');
+    return text.length > limit ? `${text.slice(0, Math.max(1, limit - 1))}…` : text;
+  }
+
+  function pickerEntryPresentation(item) {
+    const value = String(item?.selector || item?.display || '').trim();
+    const roleType = canonicalValue(item?.roleTypeId);
+    const roleFullName = pickerDetailValue(item, ['RoleFullName', 'UserFullName']);
+    const position = pickerCompactList(pickerDetailValue(item, ['RolePositionName', 'UserPosition', 'PositionName', 'Position']));
+    const department = pickerCompactList(pickerDetailValue(item, ['Departments', 'UserDepartment', 'Department', 'Info']));
+    const isPerson = roleType === '1' || Boolean(roleFullName);
+    const title = isPerson ? (roleFullName || normalizeSpace(item?.qualifier) || normalizeSpace(item?.display) || value) : (normalizeSpace(item?.display) || value);
+    const typeLabel = roleType ? previewRoleTypeLabel(roleType) : '';
+    const subtitle = [...new Set([position, department, typeLabel].filter(Boolean))].join(' · ');
+    return { title, subtitle, typeLabel, value };
+  }
+
+  function pickerSelectionValue(item) {
+    const value = String(item?.selector || item?.display || '').trim();
+    if (/[\n\r;\t]/.test(value)) throw new Error('В названии есть разделитель. Такое значение нельзя собрать автоматически. Выберите его в штатном редакторе TESSA.');
+    if (/^[=+@-]/.test(value)) throw new Error('Название начинается со знака формулы. Выберите его в штатном редакторе TESSA.');
+    return value;
   }
 
   // Clipboard payload is plain text for Excel edit mode. Do not silently split
   // a selector containing delimiters or allow a pasted formula prefix.
   function pickerSelectionText(items) {
-    const unique = [...new Map(items.map(item => [pickerEntryKey(item), item])).values()];
-    const values = unique.map(item => String(item.selector || item.display || '').trim());
-    if (values.some(value => /[\n\r;\t]/.test(value))) throw new Error('В названии есть разделитель. Такое значение нельзя собрать автоматически. Выберите его в штатном редакторе TESSA.');
-    if (values.some(value => /^[=+@-]/.test(value))) throw new Error('Название начинается со знака формулы. Выберите его в штатном редакторе TESSA.');
-    const result = values.join('\n');
+    const unique = [...new Map((items || []).map(item => [pickerEntryKey(item), item])).values()];
+    const result = unique.map(pickerSelectionValue).join('\n');
     if (result.length > 32767) throw new Error('В ячейке Excel может быть не больше 32767 символов. Уменьшите выбор.');
     return result;
+  }
+
+  function bulkSelectPickerItems(selected, candidates, maxChars = 32767) {
+    const output = new Map(selected instanceof Map ? selected : []);
+    let currentText = pickerSelectionText([...output.values()]);
+    let currentLength = currentText.length;
+    let added = 0, skippedUnsafe = 0, capacityReached = false;
+    for (const item of candidates || []) {
+      const key = pickerEntryKey(item);
+      if (output.has(key)) continue;
+      let value;
+      try { value = pickerSelectionValue(item); }
+      catch (_) { skippedUnsafe++; continue; }
+      const nextLength = currentLength + (currentLength ? 1 : 0) + value.length;
+      if (nextLength > maxChars) { capacityReached = true; break; }
+      output.set(key, item);
+      currentLength = nextLength;
+      added++;
+    }
+    return { selected: output, added, skippedUnsafe, capacityReached, length: currentLength };
+  }
+
+  function bulkSelectPickerMatches(selected, catalog, options = {}) {
+    const terms = searchCanonical(options?.query || '').split(/\s+/).filter(Boolean);
+    const roleType = canonicalValue(options?.roleType || 'all') || 'all';
+    const matches = [];
+    for (const row of dictionaryLookup(catalog)?.searchRows || []) {
+      if (pickerSearchMatch(row, terms, roleType)) matches.push(row.item);
+    }
+    return bulkSelectPickerItems(selected, matches, options?.maxChars ?? 32767);
   }
 
   function closeValuePicker() {
@@ -10015,20 +10162,87 @@
     document.querySelector('#tms-open-picker')?.setAttribute('aria-expanded', 'false');
   }
 
+  function pickerColumnView(state, columnIndex = state?.columnIndex || 0) {
+    if (!state) return { query: '', roleType: 'all', page: 1, pageSize: 60 };
+    state.views = state.views || new Map();
+    if (!state.views.has(columnIndex)) {
+      const column = state.columns?.[columnIndex];
+      state.views.set(columnIndex, {
+        query: '',
+        roleType: pickerDefaultRoleFilter(column),
+        page: 1,
+        pageSize: 60,
+      });
+    }
+    return state.views.get(columnIndex);
+  }
+
   function renderPickerResults() {
     const state = APP.picker;
     const host = document.querySelector('#tms-value-picker');
     if (!state || !host) return;
     const column = state.columns[state.columnIndex];
-    const found = searchPickerEntries(column.catalog, host.querySelector('#tms-picker-query').value);
+    const view = pickerColumnView(state);
+    const queryInput = host.querySelector('#tms-picker-query');
+    if (queryInput && queryInput.value !== view.query) queryInput.value = view.query;
+
+    const roleOptions = pickerRoleTypeOptions(column);
+    const roleWrap = host.querySelector('#tms-picker-role-type-wrap');
+    const roleSelect = host.querySelector('#tms-picker-role-type');
+    if (roleWrap && roleSelect) {
+      roleWrap.hidden = roleOptions.length === 0;
+      roleSelect.innerHTML = roleOptions.map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join('');
+      if (roleOptions.length) {
+        if (!roleOptions.some(item => item.value === view.roleType)) view.roleType = pickerDefaultRoleFilter(column);
+        roleSelect.value = view.roleType;
+      }
+    }
+
+    const found = searchPickerPage(column.catalog, {
+      query: view.query,
+      roleType: roleOptions.length ? view.roleType : 'all',
+      page: view.page,
+      pageSize: view.pageSize,
+    });
+    view.page = found.page;
     state.visibleItems = found.items;
-    host.querySelector('#tms-picker-results').innerHTML = found.items.map((item, i) => `<label class="tms-picker-option"><input type="checkbox" data-picker-index="${i}" ${state.selected.has(pickerEntryKey(item)) ? 'checked' : ''}><span>${escapeHtml(item.selector || item.display)}</span></label>`).join('') || '<p class="tms-muted">Ничего не найдено. Измените поиск.</p>';
-    host.querySelector('#tms-picker-count').textContent = `Найдено: ${found.total} · показано: ${found.items.length} · выбрано: ${state.selected.size}`;
-    host.querySelector('#tms-picker-selected').innerHTML = [...state.selected.values()].map((item, i) => `<button type="button" data-picker-remove="${i}" aria-label="Убрать ${escapeHtml(item.selector || item.display)}">${escapeHtml(item.selector || item.display)} ×</button>`).join('');
+    state.lastSearch = found;
+
+    const results = host.querySelector('#tms-picker-results');
+    results.innerHTML = found.items.map((item, i) => {
+      const presentation = pickerEntryPresentation(item);
+      const meta = presentation.subtitle ? `<small class="tms-picker-option-meta">${escapeHtml(presentation.subtitle)}</small>` : '';
+      return `<label class="tms-picker-option"><input type="checkbox" data-picker-index="${i}" ${state.selected.has(pickerEntryKey(item)) ? 'checked' : ''}><span class="tms-picker-option-copy"><span class="tms-picker-option-title">${escapeHtml(presentation.title)}</span>${meta}</span></label>`;
+    }).join('') || '<p class="tms-muted">Ничего не найдено. Измените поиск или тип роли.</p>';
+
+    const shown = found.total ? `${found.start}–${found.end}` : '0';
+    host.querySelector('#tms-picker-count').textContent = `Найдено: ${found.total} · показано: ${shown} · выбрано: ${state.selected.size}`;
+    host.querySelector('#tms-picker-page-status').textContent = `Страница ${found.page} / ${found.pageCount}`;
+    const prev = host.querySelector('#tms-picker-prev');
+    const next = host.querySelector('#tms-picker-next');
+    if (prev) prev.disabled = found.page <= 1;
+    if (next) next.disabled = found.page >= found.pageCount;
+    const selectPage = host.querySelector('#tms-picker-select-page');
+    const selectAll = host.querySelector('#tms-picker-select-all');
+    if (selectPage) selectPage.disabled = found.items.length === 0;
+    if (selectAll) selectAll.disabled = found.total === 0;
+
+    host.querySelector('#tms-picker-selected').innerHTML = [...state.selected.values()].map((item, i) => {
+      const presentation = pickerEntryPresentation(item);
+      return `<button type="button" data-picker-remove="${i}" aria-label="Убрать ${escapeHtml(presentation.title)}">${escapeHtml(presentation.title)} ×</button>`;
+    }).join('');
+
     const output = host.querySelector('#tms-picker-output');
     const copy = host.querySelector('#tms-picker-copy');
-    try { output.value = pickerSelectionText([...state.selected.values()]); copy.disabled = !output.value; host.querySelector('#tms-picker-message').textContent = ''; }
-    catch (error) { output.value = ''; copy.disabled = true; host.querySelector('#tms-picker-message').textContent = error.message; }
+    try {
+      output.value = pickerSelectionText([...state.selected.values()]);
+      copy.disabled = !output.value;
+      host.querySelector('#tms-picker-message').textContent = '';
+    } catch (error) {
+      output.value = '';
+      copy.disabled = true;
+      host.querySelector('#tms-picker-message').textContent = error.message;
+    }
   }
 
   // Only read a local workbook or the already downloaded dictionary. This picker
@@ -10045,72 +10259,167 @@
     const columns = pickerColumns(source);
     if (!columns.length) throw new Error('В книге нет справочников для выбора. Скачайте Excel со справочниками.');
     closeValuePicker();
-    APP.picker = { columns, columnIndex: 0, selected: new Map(), visibleItems: [], searchTimer: null };
+    APP.picker = {
+      columns,
+      columnIndex: 0,
+      selected: new Map(),
+      selections: new Map(),
+      views: new Map(),
+      visibleItems: [],
+      lastSearch: null,
+      searchTimer: null,
+    };
     const host = document.querySelector('#tms-value-picker');
     host.hidden = false;
     document.querySelector('#tms-open-picker')?.setAttribute('aria-expanded', 'true');
-    host.innerHTML = `<div class="tms-picker-head"><b>Несколько значений в ячейке</b><button type="button" id="tms-picker-close" aria-label="Закрыть выбор значений">×</button></div>
+    host.innerHTML = `<div class="tms-picker-head"><b>Собрать значения для одной ячейки</b><button type="button" id="tms-picker-close" aria-label="Закрыть выбор значений">×</button></div>
       <label for="tms-picker-column">Поле Excel</label><select id="tms-picker-column">${columns.map((c, i) => `<option value="${i}">${escapeHtml(c.label)}</option>`).join('')}</select>
-      <p class="tms-muted">Поиск по текущему полю. Enter выбирает единственный результат; Esc закрывает окно.</p><details><summary>Продолжить набор из ячейки Excel</summary><textarea id="tms-picker-paste" rows="2" aria-label="Значения из Excel"></textarea><button id="tms-picker-import" type="button">Добавить в набор</button></details><input id="tms-picker-query" type="search" aria-label="Поиск по справочнику" placeholder="Найти значение" maxlength="200">
-      <div id="tms-picker-count" class="tms-muted" aria-live="polite"></div><div id="tms-picker-results" class="tms-picker-results"></div>
+      <div id="tms-picker-role-type-wrap" class="tms-picker-filter"><label for="tms-picker-role-type">Тип роли</label><select id="tms-picker-role-type"></select></div>
+      <p class="tms-muted">Ищите по названию, ФИО, должности или подразделению. Выбор сохраняется при поиске, фильтрации и переходе между страницами.</p>
+      <details><summary>Продолжить набор из ячейки Excel</summary><textarea id="tms-picker-paste" rows="2" aria-label="Значения из Excel"></textarea><button id="tms-picker-import" type="button">Добавить в набор</button></details>
+      <input id="tms-picker-query" type="search" aria-label="Поиск по справочнику" placeholder="Например: Иванов, инженер, отдел" maxlength="200">
+      <div id="tms-picker-count" class="tms-muted" aria-live="polite"></div>
+      <div class="tms-picker-bulk"><button type="button" id="tms-picker-select-page">Выбрать страницу</button><button type="button" id="tms-picker-select-all">Выбрать всё найденное</button></div>
+      <div id="tms-picker-results" class="tms-picker-results"></div>
+      <div class="tms-picker-pager"><button type="button" id="tms-picker-prev" aria-label="Предыдущая страница">← Назад</button><span id="tms-picker-page-status" class="tms-muted"></span><button type="button" id="tms-picker-next" aria-label="Следующая страница">Вперёд →</button></div>
       <div id="tms-picker-selected" class="tms-picker-selected"></div><label for="tms-picker-output">Готовое содержимое ячейки</label><textarea id="tms-picker-output" readonly rows="3"></textarea>
       <p class="tms-muted">Скопируйте набор. В Excel нажмите F2 в нужной ячейке и вставьте: все значения останутся внутри неё.</p>
-      <div class="tms-row"><button type="button" id="tms-picker-copy" class="tms-primary" disabled>Скопировать</button><button type="button" id="tms-picker-clear">Очистить выбор</button></div><div id="tms-picker-message" role="status"></div>`;
+      <div class="tms-row"><button type="button" id="tms-picker-copy" class="tms-primary" disabled>Скопировать</button><button type="button" id="tms-picker-clear">Очистить выбор</button></div><div id="tms-picker-message" role="status" aria-live="polite"></div>`;
+
     host.onchange = event => {
-      const state = APP.picker; if (!state || APP.busy) return;
+      const state = APP.picker;
+      if (!state || APP.busy) return;
       if (event.target.id === 'tms-picker-column') {
-        state.selections = state.selections || new Map(); state.selections.set(state.columnIndex, state.selected); state.columnIndex = Number(event.target.value); state.selected = state.selections.get(state.columnIndex) || new Map(); host.querySelector('#tms-picker-query').value = '';
+        state.selections.set(state.columnIndex, state.selected);
+        state.columnIndex = Number(event.target.value);
+        state.selected = state.selections.get(state.columnIndex) || new Map();
+        const view = pickerColumnView(state);
+        host.querySelector('#tms-picker-query').value = view.query;
+      } else if (event.target.id === 'tms-picker-role-type') {
+        const view = pickerColumnView(state);
+        view.roleType = event.target.value || 'all';
+        view.page = 1;
       } else if (event.target.dataset.pickerIndex !== undefined) {
-        const item = state.visibleItems[Number(event.target.dataset.pickerIndex)]; if (!item) return;
-        if (event.target.checked) state.selected.set(pickerEntryKey(item), item); else state.selected.delete(pickerEntryKey(item));
+        const item = state.visibleItems[Number(event.target.dataset.pickerIndex)];
+        if (!item) return;
+        if (event.target.checked) state.selected.set(pickerEntryKey(item), item);
+        else state.selected.delete(pickerEntryKey(item));
       } else return;
       renderPickerResults();
     };
+
     host.oninput = event => {
       if (event.target.id !== 'tms-picker-query' || !APP.picker) return;
+      const view = pickerColumnView(APP.picker);
+      view.query = event.target.value;
+      view.page = 1;
       clearTimeout(APP.picker.searchTimer);
       APP.picker.searchTimer = setTimeout(renderPickerResults, 120);
     };
+
     host.onclick = async event => {
-      const button = event.target.closest('button'); const state = APP.picker;
+      const button = event.target.closest('button');
+      const state = APP.picker;
       if (!button || !state || APP.busy) return;
-      if (button.id === 'tms-picker-close') { closeValuePicker(); document.querySelector('#tms-open-picker')?.focus(); return; }
+      const view = pickerColumnView(state);
+      const message = () => host.querySelector('#tms-picker-message');
+
+      if (button.id === 'tms-picker-close') {
+        closeValuePicker();
+        document.querySelector('#tms-open-picker')?.focus();
+        return;
+      }
+      if (button.id === 'tms-picker-prev' || button.id === 'tms-picker-next') {
+        const direction = button.id === 'tms-picker-prev' ? -1 : 1;
+        view.page = Math.max(1, view.page + direction);
+        renderPickerResults();
+        return;
+      }
+      if (button.id === 'tms-picker-select-page') {
+        const bulk = bulkSelectPickerItems(state.selected, state.visibleItems);
+        state.selected = bulk.selected;
+        renderPickerResults();
+        message().textContent = bulk.capacityReached
+          ? `Добавлено ${bulk.added}. Достигнут лимит одной ячейки Excel; остальные значения не выбраны.`
+          : `Добавлено со страницы: ${bulk.added}. Всего выбрано: ${state.selected.size}.`;
+        return;
+      }
+      if (button.id === 'tms-picker-select-all') {
+        const column = state.columns[state.columnIndex];
+        const bulk = bulkSelectPickerMatches(state.selected, column.catalog, {
+          query: view.query,
+          roleType: pickerRoleTypeOptions(column).length ? view.roleType : 'all',
+        });
+        state.selected = bulk.selected;
+        renderPickerResults();
+        message().textContent = bulk.capacityReached
+          ? `Добавлено ${bulk.added}. Достигнут лимит одной ячейки Excel; остальные найденные значения не выбраны.`
+          : `Добавлено найденных значений: ${bulk.added}. Всего выбрано: ${state.selected.size}.`;
+        return;
+      }
       if (button.id === 'tms-picker-import') {
-        const column = state.columns[state.columnIndex], dictionary = { catalogs: { selected: column.catalog }, columnCatalogIds: { [column.key]: 'selected' } };
+        const column = state.columns[state.columnIndex];
+        const dictionary = { catalogs: { selected: column.catalog }, columnCatalogIds: { [column.key]: 'selected' } };
         const unknown = [];
         for (const value of splitCell(host.querySelector('#tms-picker-paste').value)) {
           const result = resolveEmbeddedDictionaryValue({ dictionaryCatalog: dictionary }, { key: column.key, kind: column.kind, excelHeader: column.label }, value, '');
           const entry = result.resolved ? column.catalog.entries.find(e => (column.kind === 'function' ? `${e.id}|${e.roleTypeId}` : String(e.id)) === result.explicit) : null;
-          if (entry) state.selected.set(pickerEntryKey(entry), entry); else unknown.push(value);
+          if (entry) state.selected.set(pickerEntryKey(entry), entry);
+          else unknown.push(value);
         }
         renderPickerResults();
-        if (unknown.length) host.querySelector('#tms-picker-message').textContent = `Не найдены или неоднозначны: ${unknown.join('; ')}`;
+        if (unknown.length) message().textContent = `Не найдены или неоднозначны: ${unknown.join('; ')}`;
+        return;
       }
-      if (button.id === 'tms-picker-clear') { state.selected.clear(); renderPickerResults(); }
+      if (button.id === 'tms-picker-clear') {
+        state.selected.clear();
+        renderPickerResults();
+        return;
+      }
       if (button.dataset.pickerRemove !== undefined) {
         const item = [...state.selected.values()][Number(button.dataset.pickerRemove)];
-        if (item) state.selected.delete(pickerEntryKey(item)); renderPickerResults();
+        if (item) state.selected.delete(pickerEntryKey(item));
+        renderPickerResults();
+        return;
       }
       if (button.id === 'tms-picker-copy') {
         const output = host.querySelector('#tms-picker-output');
-        const message = host.querySelector('#tms-picker-message');
-        output.focus(); output.select();
-        try { await navigator.clipboard.writeText(output.value); if (APP.picker === state) message.textContent = 'Скопировано. Вставьте в Excel через F2 → Ctrl+V.'; }
-        catch (_) { if (APP.picker === state) message.textContent = 'Текст выделен. Нажмите Ctrl+C, затем F2 → Ctrl+V в Excel.'; }
+        output.focus();
+        output.select();
+        try {
+          await navigator.clipboard.writeText(output.value);
+          if (APP.picker === state) message().textContent = 'Скопировано. Вставьте в Excel через F2 → Ctrl+V.';
+        } catch (_) {
+          if (APP.picker === state) message().textContent = 'Текст выделен. Нажмите Ctrl+C, затем F2 → Ctrl+V в Excel.';
+        }
       }
     };
+
     host.onkeydown = event => {
-      if (event.key === 'Escape') { closeValuePicker(); document.querySelector('#tms-open-picker')?.focus(); }
+      if (event.key === 'Escape') {
+        closeValuePicker();
+        document.querySelector('#tms-open-picker')?.focus();
+        return;
+      }
       if (event.key === 'Enter' && event.target.id === 'tms-picker-query' && APP.picker) {
         event.preventDefault();
-        clearTimeout(APP.picker.searchTimer); renderPickerResults();
-        if (APP.picker.visibleItems.length === 1) { const item = APP.picker.visibleItems[0]; APP.picker.selected.set(pickerEntryKey(item), item); renderPickerResults(); }
-        else host.querySelector('#tms-picker-results input')?.focus();
+        const view = pickerColumnView(APP.picker);
+        view.query = event.target.value;
+        view.page = 1;
+        clearTimeout(APP.picker.searchTimer);
+        renderPickerResults();
+        if (APP.picker.lastSearch?.total === 1) {
+          const item = APP.picker.visibleItems[0];
+          if (item) APP.picker.selected.set(pickerEntryKey(item), item);
+          renderPickerResults();
+        } else host.querySelector('#tms-picker-results input')?.focus();
       }
     };
+
     renderPickerResults();
     host.querySelector('#tms-picker-query').focus();
   }
+
 
   function mountUi() {
     if (document.querySelector('#tms-launch')) return;
@@ -10234,6 +10543,12 @@
       #tms-panel .tms-picker-option{display:flex;gap:8px;align-items:flex-start;padding:8px;cursor:pointer;border-bottom:1px solid var(--tms-line);overflow-wrap:anywhere}
       #tms-panel .tms-picker-option:last-child{border-bottom:0}
       #tms-panel .tms-picker-option:hover{background:var(--tms-soft)}
+      #tms-panel .tms-picker-filter{display:grid;grid-template-columns:minmax(120px,.45fr) minmax(0,1fr);gap:8px;align-items:center}
+      #tms-panel .tms-picker-bulk,#tms-panel .tms-picker-pager{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+      #tms-panel .tms-picker-pager{justify-content:space-between}
+      #tms-panel .tms-picker-option-copy{display:grid;gap:2px;min-width:0}
+      #tms-panel .tms-picker-option-title{font-weight:600;overflow-wrap:anywhere}
+      #tms-panel .tms-picker-option-meta{font-size:11px;line-height:1.4;color:var(--tms-muted);overflow-wrap:anywhere}
       #tms-panel .tms-picker-selected{display:flex;flex-wrap:wrap;gap:4px;max-height:140px;overflow:auto}
       #tms-panel .tms-picker-selected button{font-weight:400}
       #tms-panel .tms-reconciliation-result[data-status=verified]{color:var(--tms-success)}
@@ -10553,7 +10868,7 @@
   window.__TESSA_MATRIX_SYNC_EXPORTS__ = {
     applyIntervalStructuralProbe, applyCardNewTopologyProbe, applyCardNewEnvelopeProbe, summarizeCardIdentityTopology, collectIntervalDiagnostics, buildIntervalDiagnosticSummary, resolveStudioIntervalDiagnostics, collectStudioDiagnostics, makeStudioDiagnosticPackage,
     classifyIntervalDiagnosticError, collectNativeRuntimeSurface, sanitizeNativeOperationRecord, stageMatrixRowDelete, applyResultSummary, buildNativeRuntimeSurfaceReport, restoreNativeRecorderMethods, startNativeOperationRecorder, stopNativeOperationRecorder,
-    createRuntimeMonitor, pickerColumns, pickerEntryKey, searchPickerEntries, pickerSelectionText,
+    createRuntimeMonitor, pickerColumns, pickerEntryKey, pickerRoleTypeOptions, pickerDefaultRoleFilter, searchPickerPage, searchPickerEntries, pickerEntryPresentation, bulkSelectPickerItems, bulkSelectPickerMatches, pickerSelectionText,
     probeRuntimeEnvironment, inspectNativeViewCapabilitiesReadOnly, inspectMatrixCapabilitiesReadOnly,
     evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, triggerBlobDownload, downloadJson, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport, buildApplySupportReport,
@@ -10565,7 +10880,7 @@
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, classifyWorkbookContext, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
     preflightPlan, applyPreflightPreview, verifyCrossMatrixRollback, finalizeCrossMatrixTransferVerification, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
-    finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, detectPlanDuplicateConflicts, friendlyErrorMessage,
+    finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, partnerRecordKeepingColumnIndex, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport,
     TessaBridge,
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },
