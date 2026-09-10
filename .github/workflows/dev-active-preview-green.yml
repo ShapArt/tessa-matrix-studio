@@ -1,0 +1,39 @@
+name: Dev Active Preview Green
+
+on:
+  push:
+    branches:
+      - feat/cross-matrix-replacement
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/cross-matrix-replacement
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Apply minimal production patch
+        run: node tools/dev-active-preview-patch.mjs
+      - name: Targeted regression
+        run: node tests/active-matrix-readonly-preview.mjs
+      - name: Full regression
+        run: npm test
+      - name: Commit verified patch and remove scaffolding
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm tools/dev-active-preview-patch.mjs .github/workflows/dev-active-preview-green.yml
+          git add tessa-matrix-studio.user.js package.json tests/active-matrix-readonly-preview.mjs
+          git commit -m "fix: keep read-only preview visible on active matrices"
+          git push origin HEAD:feat/cross-matrix-replacement
