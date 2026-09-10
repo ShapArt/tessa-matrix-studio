@@ -1,0 +1,42 @@
+name: Cross-matrix Task 4 GREEN
+
+on:
+  push:
+    branches:
+      - feat/cross-matrix-replacement
+    paths:
+      - tools/dev-cross-matrix-task4.mjs
+      - .github/workflows/dev-cross-matrix-task4.yml
+
+permissions:
+  contents: write
+
+jobs:
+  green:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/cross-matrix-replacement
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Apply Task 4 production patch
+        run: node tools/dev-cross-matrix-task4.mjs
+      - name: Focused atomic transfer contract
+        run: node tests/cross-matrix-atomic-apply.mjs && node tests/cross-matrix-confirmation.mjs && node tests/cross-matrix-replace.mjs
+      - name: Full regression suite
+        run: npm test
+      - name: Commit verified Task 4 patch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js package.json
+          if git diff --cached --quiet; then
+            echo "No verified patch to commit"
+            exit 0
+          fi
+          git commit -m "fix: make cross-matrix ADD phase fail closed"
+          git push origin HEAD:feat/cross-matrix-replacement
