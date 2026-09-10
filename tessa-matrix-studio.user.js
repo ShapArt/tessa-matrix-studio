@@ -119,9 +119,9 @@
   // These ceilings prevent tiny XML from materializing pathological sparse arrays or
   // forcing the browser to parse an unreasonable number of physical row/cell nodes.
   const SPREADSHEETML_LIMITS = Object.freeze({
-    MaxRowNumber: 200000,
+    MaxRowNumber: 1048576,
     MaxColumnNumber: 16384, // Excel XFD
-    MaxParsedRows: 200000,
+    MaxParsedRows: 1048576,
     MaxParsedCells: 1500000,
   });
 
