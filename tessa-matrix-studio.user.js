@@ -6375,6 +6375,11 @@
       safety.blocked = true;
       safety.blockedReasons = [...new Set([...safety.blockedReasons, ...localizedDuplicates.unresolvedIssues])];
     }
+    const replacementIntegrity = crossMatrixReplacementIntegrity(reviewed);
+    if (replacementIntegrity.blocked) {
+      safety.blocked = true;
+      safety.blockedReasons = [...new Set([...safety.blockedReasons, replacementIntegrity.reason])];
+    }
     reviewed.safety = safety;
     reviewed.reviewIssues = [...new Set([...localizedDuplicates.localizedIssues, ...localizedDuplicates.unresolvedIssues])];
     return reviewed;
@@ -6965,7 +6970,8 @@
     const detail = visible
       ? `Корректных изменений: ${visible}${skipped ? ` · пропустить строк: ${skipped}` : ''}${previewPlan.skippedFields?.length ? ` · не применяются поля: ${previewPlan.skippedFields.length}` : ''}`
       : (skipped ? `Нет изменений для применения · пропущено строк: ${skipped}` : 'Изменений нет');
-    setProgress(100, 'Проверка завершена', detail);
+    const atomicReplacementReason = previewPlan.preflightPreview?.atomicReplacementReason || null;
+    setProgress(100, atomicReplacementReason ? 'Перенос заблокирован' : 'Проверка завершена', atomicReplacementReason || detail);
     return previewPlan;
   }
 
@@ -7075,6 +7081,28 @@
     return skipped;
   }
 
+  // ATOMIC_CROSS_MATRIX_REPLACEMENT_PREVIEW_V1
+  function crossMatrixReplacementIntegrity(plan, extraSkippedRows = []) {
+    if (!plan?.crossMatrixReplacement?.enabled) return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0, reviewExcludedCount: 0 };
+    const skippedRows = [...(plan.skippedRows || []), ...(extraSkippedRows || [])];
+    const skippedFieldCount = (plan.skippedFields || []).length;
+    const reviewExcludedCount = (plan.actions || []).filter(action => Boolean(action?.reviewExcluded)).length;
+    if (!skippedRows.length && !skippedFieldCount && !reviewExcludedCount) {
+      return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0, reviewExcludedCount: 0 };
+    }
+    const pieces = [];
+    if (skippedRows.length) pieces.push(`${skippedRows.length} строк не могут быть перенесены`);
+    if (skippedFieldCount) pieces.push(`${skippedFieldCount} полей нельзя применить`);
+    if (reviewExcludedCount) pieces.push(`${reviewExcludedCount} операций исключены вручную`);
+    return {
+      blocked: true,
+      skippedCount: skippedRows.length,
+      skippedFieldCount,
+      reviewExcludedCount,
+      reason: `Перенос из другой матрицы неполный: ${pieces.join(' и ')}. Для полного переноса частичное применение запрещено: ни добавление, ни удаление строк TESSA не начнётся. Исправьте все ошибки исходного Excel и верните все операции в выбранный набор, затем повторите проверку.`,
+    };
+  }
+
   function applyPreflightPreview(plan, preflight) {
     if (!plan) return plan;
     const skippedActions = preflight?.runtimeSkippedActions instanceof Set
@@ -7097,11 +7125,21 @@
     }
     const serverAddValidationSkipped = Boolean(preflight?.previewPolicy?.skipServerAddValidation);
     if (serverAddValidationSkipped && preflight?.previewPolicy?.reason) warnings.push(preflight.previewPolicy.reason);
+    const replacementIntegrity = crossMatrixReplacementIntegrity({ ...plan, skippedRows });
+    const safety = plan.safety
+      ? { ...plan.safety, blockedReasons: [...(plan.safety.blockedReasons || [])] }
+      : { blocked: false, blockedReasons: [], suppressUnsafePreview: false };
+    if (replacementIntegrity.blocked) {
+      safety.blocked = true;
+      safety.blockedReasons = [...new Set([...safety.blockedReasons, replacementIntegrity.reason])];
+      if (!warnings.includes(replacementIntegrity.reason)) warnings.push(replacementIntegrity.reason);
+    }
     return {
       ...plan,
       actions,
       skippedRows,
       warnings,
+      safety,
       counts: countActions(actions, skippedRows),
       preflightPreview: {
         validated: true,
@@ -7110,6 +7148,8 @@
         executableCount: actions.filter(action => action.type !== 'noop').length,
         serverAddValidationSkipped,
         applyBlockedByBatch: Boolean(preflight?.previewPolicy?.applyBlocked),
+        atomicReplacementBlocked: replacementIntegrity.blocked,
+        atomicReplacementReason: replacementIntegrity.reason,
         validatedAt: nowIso(),
       },
     };
@@ -7787,6 +7827,8 @@
 
   async function applyPlan(plan) {
     if (!plan) throw new Error('Сначала проверьте Excel.');
+    const replacementIntegrity = crossMatrixReplacementIntegrity(plan);
+    if (replacementIntegrity.blocked) throw new Error(replacementIntegrity.reason);
     if (plan?.safety?.blocked) throw new Error(`Файл нельзя применить: ${plan.safety.blockedReasons.join(' ')}`);
     const executable = (plan.actions || []).filter(action => action.type !== 'noop');
     if (!executable.length) throw new Error(plan.skippedRows?.length ? 'Нет корректных изменений для применения: все изменяемые строки будут пропущены.' : 'Изменений для применения нет.');
@@ -10164,22 +10206,35 @@
     return '';
   }
 
+  function pickerCompactValues(value) {
+    return [...new Set(String(value || '').split(/\s*;\s*|[\r\n]+/).map(normalizeSpace).filter(Boolean))];
+  }
+
   function pickerCompactList(value, limit = 180) {
-    const unique = [...new Set(String(value || '').split(/\s*;\s*/).map(normalizeSpace).filter(Boolean))];
+    const unique = pickerCompactValues(value);
     const text = unique.join(', ');
     return text.length > limit ? `${text.slice(0, Math.max(1, limit - 1))}…` : text;
+  }
+
+  function pickerPrimaryValue(value) {
+    const unique = pickerCompactValues(value);
+    if (!unique.length) return '';
+    return `${unique[0]}${unique.length > 1 ? ` (+${unique.length - 1})` : ''}`;
   }
 
   function pickerEntryPresentation(item) {
     const value = String(item?.selector || item?.display || '').trim();
     const roleType = canonicalValue(item?.roleTypeId);
+    const display = normalizeSpace(item?.display);
     const roleFullName = pickerDetailValue(item, ['RoleFullName', 'UserFullName']);
-    const position = pickerCompactList(pickerDetailValue(item, ['RolePositionName', 'UserPosition', 'PositionName', 'Position']));
+    const positionRaw = pickerDetailValue(item, ['RolePositionName', 'UserPosition', 'PositionName', 'Position']);
+    const position = pickerPrimaryValue(positionRaw);
     const department = pickerCompactList(pickerDetailValue(item, ['Departments', 'UserDepartment', 'Department', 'Info']));
     const isPerson = roleType === '1' || Boolean(roleFullName);
-    const title = isPerson ? (roleFullName || normalizeSpace(item?.qualifier) || normalizeSpace(item?.display) || value) : (normalizeSpace(item?.display) || value);
+    const titleBase = display || roleFullName || normalizeSpace(item?.qualifier) || value;
+    const title = isPerson && position ? `${titleBase} — ${position}` : titleBase;
     const typeLabel = roleType ? previewRoleTypeLabel(roleType) : '';
-    const subtitle = [...new Set([position, department, typeLabel].filter(Boolean))].join(' · ');
+    const subtitle = [...new Set([isPerson && roleFullName && canonicalValue(roleFullName) !== canonicalValue(titleBase) ? roleFullName : '', department, typeLabel].filter(Boolean))].join(' · ');
     return { title, subtitle, typeLabel, value };
   }
 
@@ -10954,7 +11009,7 @@
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, classifyWorkbookContext, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
-    preflightPlan, applyPreflightPreview, verifyCrossMatrixRollback, finalizeCrossMatrixTransferVerification, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
+    preflightPlan, applyPreflightPreview, crossMatrixReplacementIntegrity, verifyCrossMatrixRollback, finalizeCrossMatrixTransferVerification, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, partnerRecordKeepingColumnIndex, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport,
     TessaBridge,
