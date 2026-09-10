@@ -6753,6 +6753,9 @@
     const previousMatrixId = canonicalValue(matrixInfo?.PreviousVersionID || matrixInfo?.previousVersionId || '');
     const details = { workbookMatrixId, currentMatrixId, workbookTemplateId, currentTemplateId, previousMatrixId };
     if (!workbook?.roundtrip?.enabled) return { kind: 'invalid-roundtrip', ...details };
+    // Cross-matrix replacement is destructive. Template equality alone is never
+    // sufficient evidence of source/target identity: both matrix IDs must exist.
+    if (!workbookMatrixId || !currentMatrixId) return { kind: 'invalid-roundtrip', ...details };
     if (!workbookTemplateId || !currentTemplateId || workbookTemplateId !== currentTemplateId) {
       return { kind: 'foreign-template', ...details };
     }
