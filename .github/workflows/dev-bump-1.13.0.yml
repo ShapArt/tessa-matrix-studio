@@ -22,7 +22,7 @@ jobs:
         with:
           node-version: 24
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Apply version bump
+      - name: Apply version and docs bump
         run: node tools/dev-bump-1.13.0.mjs
       - name: Verify metadata consistency
         run: |
@@ -33,11 +33,22 @@ jobs:
           const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
           const user = fs.readFileSync('tessa-matrix-studio.user.js', 'utf8');
           const readme = fs.readFileSync('README.md', 'utf8');
+          const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
+          const bug = fs.readFileSync('.github/ISSUE_TEMPLATE/bug_report.yml', 'utf8');
           if (pkg.version !== '1.13.0') throw new Error('package version mismatch');
           if (lock.version !== '1.13.0' || lock.packages?.['']?.version !== '1.13.0') throw new Error('lock version mismatch');
           if (!/^\/\/ @version\s+1\.13\.0$/m.test(user)) throw new Error('userscript header mismatch');
           if (!/version:\s*'1\.13\.0'/.test(user)) throw new Error('APP version mismatch');
-          if (!readme.includes('version-1.13.0-') || !readme.includes('**v1.13.0 · Автор:')) throw new Error('README version mismatch');
+          for (const marker of [
+            'version-1.13.0-',
+            '**v1.13.0 · Автор: Шаповалов Артём**',
+            'Подтвердите установку версии **1.13.0**',
+            'Текущая версия: **1.13.0**',
+            '- **Версия:** `1.13.0`',
+            'другой карточки с тем же TemplateID',
+          ]) if (!readme.includes(marker)) throw new Error(`README marker missing: ${marker}`);
+          if (!changelog.includes('## 1.13.0 — 2026-09-10')) throw new Error('CHANGELOG 1.13.0 entry missing');
+          if (!bug.includes('placeholder: 1.13.0')) throw new Error('bug template version mismatch');
           NODE
       - name: Full regression suite
         run: npm test
@@ -46,6 +57,10 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tessa-matrix-studio.user.js package.json package-lock.json README.md
+          git add tessa-matrix-studio.user.js package.json package-lock.json README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml
+          if git diff --cached --quiet; then
+            echo "No version/docs changes to commit"
+            exit 0
+          fi
           git commit -m "chore: prepare 1.13.0 release candidate"
           git push origin HEAD:feat/cross-matrix-replacement
