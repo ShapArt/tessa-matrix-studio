@@ -7115,6 +7115,59 @@
     };
   }
 
+  // LIVE_ASSIGNABLE_ROLE_PREFLIGHT_V1
+  // A roundtrip workbook may legitimately preserve historical role identities from its
+  // source matrix. Those identities are safe to keep on an existing row, but a NEW row
+  // must reference a RoleID that exists in the current target TESSA Roles domain.
+  // Snapshot overlays are therefore not sufficient evidence for ADD eligibility.
+  function assertAddRoleIdentitiesAvailable(action, structure, dictionaryCatalog) {
+    if (!action || !dictionaryCatalog) return;
+    for (const fn of structure.functions || []) {
+      const column = action.excelRow?.columns?.get?.(fn.id);
+      if (!column) continue;
+      const displays = action.excelRow.flat?.[column.key] || [];
+      const ids = action.excelRow.ids?.[column.key] || [];
+      if (!displays.length) continue;
+
+      const catalogId = dictionaryCatalog.columnCatalogIds?.[definitionKey('function', fn.id)];
+      const roleCatalog = catalogId ? dictionaryCatalog.catalogs?.[catalogId] : null;
+      if (!roleCatalog) {
+        throw new Error(`Не удалось подтвердить актуальный справочник ролей для функции «${fn.name}». Запись новой строки остановлена до Store.`);
+      }
+
+      // loadDictionaryCatalog() merges current matrix snapshot values into the catalog
+      // to preserve historical selectors. For ADD they are deliberately excluded here:
+      // only identities actually returned by the current MtxRoles view are assignable.
+      const liveEntries = (roleCatalog.entries || []).filter(entry =>
+        canonicalValue(entry?.source || roleCatalog.sourceView || '') === 'mtxroles'
+        && canonicalValue(entry?.status || '') !== canonicalValue('Текущее значение'));
+      if (!liveEntries.length) {
+        throw new Error(`Актуальный MtxRoles для функции «${fn.name}» пуст или недоступен. Запись новой строки остановлена до Store.`);
+      }
+
+      const byId = new Map();
+      for (const entry of liveEntries) {
+        const id = canonicalValue(entry?.id || '');
+        if (!id) continue;
+        if (!byId.has(id)) byId.set(id, []);
+        byId.get(id).push(entry);
+      }
+
+      displays.forEach((display, index) => {
+        const explicit = String(ids[index] || '').trim();
+        if (!explicit) return; // hydrateMissingIdsForAction handles genuinely missing IDs.
+        const [rawId = '', rawType = ''] = explicit.split('|').map(value => value.trim());
+        const id = canonicalValue(rawId);
+        const roleTypeId = canonicalValue(rawType);
+        const candidates = byId.get(id) || [];
+        const exact = candidates.find(entry => !roleTypeId || canonicalValue(entry.roleTypeId) === roleTypeId);
+        if (exact) return;
+        const typeSuffix = rawType ? `, RoleTypeID=${rawType}` : '';
+        throw new Error(`Роль «${display}» (RoleID=${rawId}${typeSuffix}) недоступна в актуальном MtxRoles текущей TESSA. Старый/чужой ID нельзя вставить в новую строку. Обновите справочники и выберите актуального исполнителя.`);
+      });
+    }
+  }
+
   async function preflightPlan(plan, options = {}) {
     const previewOnly = Boolean(options.previewOnly);
     const preflightProgress = typeof options.onProgress === 'function'
@@ -7138,6 +7191,19 @@
     if (plan.templateId && canonicalValue(plan.templateId) !== canonicalValue(fresh.templateId || structure.templateId)) {
       throw new Error('Шаблон матрицы изменился. Нажмите «Проверить изменения» ещё раз.');
     }
+    let liveAddRoleCatalog = options.liveAddRoleCatalog || null;
+    let liveAddRoleCatalogError = null;
+    const needsAddRoleValidation = (plan.actions || []).some(action => action.type === 'add');
+    if (needsAddRoleValidation && !liveAddRoleCatalog && typeof bridge.loadDictionaryCatalog === 'function') {
+      try {
+        preflightProgress(20, 'Проверяю актуальные роли', 'Сверяю RoleID новых строк с текущим MtxRoles');
+        liveAddRoleCatalog = await awaitPreflightAbortable(bridge.loadDictionaryCatalog(structure, fresh, { forceRefresh: true, transient: true }));
+      } catch (error) {
+        if (isPreflightAbortError(error)) throw error;
+        liveAddRoleCatalogError = error;
+      }
+    }
+
     const freshByVersion = new Map(fresh.rows.map(row => [canonicalValue(row.versionId), row]));
     const freshByCard = new Map(fresh.rows.map(row => [canonicalValue(row.rowCardId), row]));
     const runtimeSkips = [];
@@ -7261,6 +7327,10 @@
           }
         }
         await awaitPreflightAbortable(hydrateMissingIdsForAction(action, structure, fresh, bridge));
+        if (liveAddRoleCatalogError) {
+          throw new Error(`Не удалось перечитать актуальный MtxRoles перед добавлением строки: ${liveAddRoleCatalogError.message || liveAddRoleCatalogError}`);
+        }
+        if (liveAddRoleCatalog) assertAddRoleIdentitiesAvailable(action, structure, liveAddRoleCatalog);
         for (const condition of structure.conditions) {
           const column = action.excelRow.columns.get(condition.criterionRowId);
           if (!column) continue;
