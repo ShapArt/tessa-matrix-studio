@@ -8,4 +8,12 @@ if (!source.includes(before)) throw new Error('active matrix safety block not fo
 if (source.split(before).length !== 2) throw new Error('active matrix safety block is not unique');
 source = source.replace(before, after);
 fs.writeFileSync(path, source);
+
+const acceptancePath = 'tests/acceptance.mjs';
+let acceptance = fs.readFileSync(acceptancePath, 'utf8');
+const acceptanceBefore = `assert(safety.blocked && safety.suppressUnsafePreview, 'active matrix must be blocked');`;
+const acceptanceAfter = `assert(safety.blocked, 'active matrix must remain blocked for writes');\nassert(!safety.suppressUnsafePreview, 'active matrix must keep read-only preview visible');`;
+if (!acceptance.includes(acceptanceBefore)) throw new Error('legacy active acceptance assertion not found');
+acceptance = acceptance.replace(acceptanceBefore, acceptanceAfter);
+fs.writeFileSync(acceptancePath, acceptance);
 console.log('active read-only preview patch applied');
