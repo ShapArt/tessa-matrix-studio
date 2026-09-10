@@ -6,6 +6,7 @@ on:
       - feat/cross-matrix-replacement
     paths:
       - tools/dev-cross-matrix-task4e.mjs
+      - tests/apply-verification-accounting.mjs
       - .github/workflows/dev-cross-matrix-task4e.yml
 
 permissions:
@@ -25,7 +26,7 @@ jobs:
       - name: Apply Task 4e production patch
         run: node tools/dev-cross-matrix-task4e.mjs
       - name: Focused transfer verification contracts
-        run: node tests/cross-matrix-success-verification.mjs && node tests/cross-matrix-delete-phase-failure.mjs && node tests/cross-matrix-rollback-verification.mjs && node tests/cross-matrix-atomic-apply.mjs && node tests/cross-matrix-preflight-gate.mjs
+        run: node tests/cross-matrix-success-verification.mjs && node tests/cross-matrix-delete-phase-failure.mjs && node tests/cross-matrix-rollback-verification.mjs && node tests/cross-matrix-atomic-apply.mjs && node tests/cross-matrix-preflight-gate.mjs && node tests/apply-verification-accounting.mjs
       - name: Full regression suite
         run: npm test
       - name: Commit verified Task 4e patch
