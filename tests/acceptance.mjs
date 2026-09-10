@@ -171,15 +171,16 @@ function makeBridge(fresh = snapshot, options = {}) {
   };
 }
 
-// 8. Safety — активная матрица и Excel от другой карточки блокируются целиком.
+// 8. Safety — активная матрица блокируется, а другая карточка того же шаблона
+// классифицируется как явный кандидат на перенос. Сам replacement-plan проверяется отдельно.
 plan = E.buildPlan(patch, structure, snapshot);
 let safety = E.evaluatePlanSafety(plan, makeBridge(snapshot, { matrixInfo: { StateName: 'Активная' } }));
 assert(safety.blocked && safety.suppressUnsafePreview, 'active matrix must be blocked');
 const foreignWorkbook = { ...baseline, roundtrip: { ...baseline.roundtrip, matrixId: 'foreign-matrix' } };
 plan = E.buildPlan(foreignWorkbook, structure, snapshot);
 safety = E.evaluatePlanSafety(plan, makeBridge(snapshot));
-assert(safety.blocked && safety.blockedReasons.some(reason => /другой карточк/i.test(reason)),
-  'foreign matrix workbook must be blocked');
+assert(!safety.blocked && safety.crossMatrixReplacement === true,
+  'same-template foreign matrix workbook must become an explicit transfer candidate');
 
 // 9. Stale preview — изменение строки в TESSA после preview превращает UPDATE в runtime SKIP.
 plan = E.buildPlan(patch, structure, snapshot);

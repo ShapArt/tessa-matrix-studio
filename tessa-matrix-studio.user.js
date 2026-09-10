@@ -6645,6 +6645,22 @@
     return plan;
   }
 
+  function classifyWorkbookContext(workbook, matrixInfo) {
+    const workbookMatrixId = canonicalValue(workbook?.roundtrip?.matrixId || '');
+    const currentMatrixId = canonicalValue(matrixInfo?.matrixId || '');
+    const workbookTemplateId = canonicalValue(workbook?.roundtrip?.templateId || '');
+    const currentTemplateId = canonicalValue(matrixInfo?.TemplateID || matrixInfo?.templateId || '');
+    const previousMatrixId = canonicalValue(matrixInfo?.PreviousVersionID || matrixInfo?.previousVersionId || '');
+    const details = { workbookMatrixId, currentMatrixId, workbookTemplateId, currentTemplateId, previousMatrixId };
+    if (!workbook?.roundtrip?.enabled) return { kind: 'invalid-roundtrip', ...details };
+    if (!workbookTemplateId || !currentTemplateId || workbookTemplateId !== currentTemplateId) {
+      return { kind: 'foreign-template', ...details };
+    }
+    if (workbookMatrixId && workbookMatrixId === currentMatrixId) return { kind: 'same-matrix', ...details };
+    if (workbookMatrixId && workbookMatrixId === previousMatrixId) return { kind: 'previous-version', ...details };
+    return { kind: 'same-template-foreign-matrix', ...details };
+  }
+
   function evaluatePlanSafety(plan, bridge) {
     const matrixInfo = bridge.matrixInfo();
     const stateLocalizer = typeof bridge?.localizeValue === 'function' ? bridge.localizeValue.bind(bridge) : null;
@@ -6670,20 +6686,12 @@
         blockedReasons.push('Не удалось распознать формат Excel. Скачайте новый файл из открытой матрицы и перенесите изменения в него.');
         suppressUnsafePreview = true;
       }
-      const workbookTemplateId = canonicalValue(plan.workbook.roundtrip?.templateId);
-      const currentTemplateId = canonicalValue(matrixInfo.TemplateID);
-      if (!workbookTemplateId || workbookTemplateId !== currentTemplateId) {
+      const workbookContext = classifyWorkbookContext(plan.workbook, matrixInfo);
+      if (workbookContext.kind === 'foreign-template') {
         blockedReasons.push('Файл выгружен из другого шаблона матрицы TESSA.');
         suppressUnsafePreview = true;
-      }
-
-      const workbookMatrixId = canonicalValue(plan.workbook.roundtrip?.matrixId);
-      const currentMatrixId = canonicalValue(matrixInfo.matrixId);
-      const currentPreviousId = canonicalValue(matrixInfo.PreviousVersionID);
-      const sameMatrix = Boolean(workbookMatrixId && workbookMatrixId === currentMatrixId);
-      const exportedFromPreviousVersion = Boolean(workbookMatrixId && workbookMatrixId === currentPreviousId);
-      if (!sameMatrix && !exportedFromPreviousVersion) {
-        blockedReasons.push('Excel относится к другой карточке матрицы. Скачайте свежий Excel из открытой матрицы.');
+      } else if (workbookContext.kind === 'invalid-roundtrip') {
+        blockedReasons.push('Не удалось определить контекст выгрузки Excel. Скачайте новый файл из TESSA.');
         suppressUnsafePreview = true;
       }
 
@@ -6731,6 +6739,8 @@
       deleteGuard: deletionGuard(plan),
       roundtripMatrixId: plan.workbook.roundtrip?.matrixId || null,
       roundtripTemplateId: plan.workbook.roundtrip?.templateId || null,
+      workbookContext: plan.mode === 'roundtrip' ? classifyWorkbookContext(plan.workbook, matrixInfo) : null,
+      crossMatrixReplacement: plan.mode === 'roundtrip' && classifyWorkbookContext(plan.workbook, matrixInfo).kind === 'same-template-foreign-matrix',
     };
   }
 
@@ -10159,7 +10169,7 @@
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, isWriterLockError, persistMainMatrixAfterApply, refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
-    safePlain, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
+    safePlain, classifyWorkbookContext, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
     preflightPlan, applyPreflightPreview, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport,
