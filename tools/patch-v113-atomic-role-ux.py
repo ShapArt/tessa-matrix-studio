@@ -10,18 +10,23 @@ if marker in s:
 needle = "  function applyPreflightPreview(plan, preflight) {\n"
 helper = """  // ATOMIC_CROSS_MATRIX_REPLACEMENT_PREVIEW_V1
   function crossMatrixReplacementIntegrity(plan, extraSkippedRows = []) {
-    if (!plan?.crossMatrixReplacement?.enabled) return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0 };
+    if (!plan?.crossMatrixReplacement?.enabled) return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0, reviewExcludedCount: 0 };
     const skippedRows = [...(plan.skippedRows || []), ...(extraSkippedRows || [])];
     const skippedFieldCount = (plan.skippedFields || []).length;
-    if (!skippedRows.length && !skippedFieldCount) return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0 };
+    const reviewExcludedCount = (plan.actions || []).filter(action => Boolean(action?.reviewExcluded)).length;
+    if (!skippedRows.length && !skippedFieldCount && !reviewExcludedCount) {
+      return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0, reviewExcludedCount: 0 };
+    }
     const pieces = [];
     if (skippedRows.length) pieces.push(`${skippedRows.length} строк не могут быть перенесены`);
     if (skippedFieldCount) pieces.push(`${skippedFieldCount} полей нельзя применить`);
+    if (reviewExcludedCount) pieces.push(`${reviewExcludedCount} операций исключены вручную`);
     return {
       blocked: true,
       skippedCount: skippedRows.length,
       skippedFieldCount,
-      reason: `Перенос из другой матрицы неполный: ${pieces.join(' и ')}. Для полного переноса частичное применение запрещено: ни добавление, ни удаление строк TESSA не начнётся. Исправьте все ошибки исходного Excel и повторите проверку.`,
+      reviewExcludedCount,
+      reason: `Перенос из другой матрицы неполный: ${pieces.join(' и ')}. Для полного переноса частичное применение запрещено: ни добавление, ни удаление строк TESSA не начнётся. Исправьте все ошибки исходного Excel и верните все операции в выбранный набор, затем повторите проверку.`,
     };
   }
 
@@ -82,6 +87,23 @@ new = """    const serverAddValidationSkipped = Boolean(preflight?.previewPolicy
 """
 if old not in s:
     raise RuntimeError('applyPreflightPreview return block missing')
+s = s.replace(old, new, 1)
+
+old = """    reviewed.safety = safety;
+    reviewed.reviewIssues = [...new Set([...localizedDuplicates.localizedIssues, ...localizedDuplicates.unresolvedIssues])];
+    return reviewed;
+"""
+new = """    const replacementIntegrity = crossMatrixReplacementIntegrity(reviewed);
+    if (replacementIntegrity.blocked) {
+      safety.blocked = true;
+      safety.blockedReasons = [...new Set([...safety.blockedReasons, replacementIntegrity.reason])];
+    }
+    reviewed.safety = safety;
+    reviewed.reviewIssues = [...new Set([...localizedDuplicates.localizedIssues, ...localizedDuplicates.unresolvedIssues])];
+    return reviewed;
+"""
+if old not in s:
+    raise RuntimeError('buildReviewedPlan safety block missing')
 s = s.replace(old, new, 1)
 
 old = """  async function applyPlan(plan) {
