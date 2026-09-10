@@ -79,8 +79,8 @@ w.eval(source);
   assert.equal(host.querySelectorAll('#tms-picker-results .tms-picker-option').length, 60, 'DOM must render only one bounded page');
 
   const firstRow = host.querySelector('#tms-picker-results .tms-picker-option');
-  assert.match(firstRow.querySelector('.tms-picker-option-title').textContent, /Иванов Иван 1/);
-  assert.match(firstRow.querySelector('.tms-picker-option-meta').textContent, /Инженер/);
+  assert.match(firstRow.querySelector('.tms-picker-option-title').textContent, /Иванов И\.1\.\s+—\s+Инженер/);
+  assert.match(firstRow.querySelector('.tms-picker-option-meta').textContent, /Иванов Иван 1/);
   assert.match(firstRow.querySelector('.tms-picker-option-meta').textContent, /Отдел инфраструктуры/);
   assert.match(firstRow.querySelector('.tms-picker-option-meta').textContent, /Сотрудник/);
 
@@ -125,7 +125,7 @@ w.eval(source);
   assert.equal(roleWrap.hidden, true);
   assert.equal(host.querySelectorAll('#tms-picker-results .tms-picker-option').length, 2);
 
-  console.log('DOM production picker: role filter, rich rows, paging, page/all bulk selection and per-field state OK');
+  console.log('DOM production picker: short FIO + position, full FIO metadata, paging and bulk selection OK');
   dom.window.close();
 })().catch(error => {
   console.error(error);
