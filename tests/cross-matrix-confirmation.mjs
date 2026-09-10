@@ -7,7 +7,6 @@ const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https
 globalThis.window = dom.window;
 globalThis.document = dom.window.document;
 globalThis.location = dom.window.location;
-globalThis.navigator = dom.window.navigator;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 dom.window.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 vm.runInThisContext(fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8'), { filename: 'tessa-matrix-studio.user.js' });
