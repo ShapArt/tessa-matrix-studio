@@ -7665,6 +7665,10 @@
       return result;
     }
     const { bridge, structure, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips } = preflight;
+    const isCrossMatrixTransfer = Boolean(plan.crossMatrixReplacement?.enabled);
+    const successfulCrossMatrixAdds = [];
+    let crossMatrixAddFailed = false;
+    let blockCrossMatrixDeletes = false;
     const totalToStore = preparedUpdates.size + preparedAdds.size + readyDeletes.length;
     let storedCount = 0;
     const tickStoreProgress = label => {
@@ -7769,15 +7773,80 @@
         }));
         successfulMutationRows.add(Number(action.excelRow.excelRow));
         result.rows.push({ type: 'add', excelRow: action.excelRow.excelRow, rowCardId: storedCardId, versionId: created.versionId, newMethod: created.newMethod, verifiedByCardGet: true, status: 'ok' });
+        if (isCrossMatrixTransfer) {
+          successfulCrossMatrixAdds.push({
+            action,
+            rowCardId: storedCardId,
+            versionId: created.versionId,
+          });
+        }
       } catch (error) {
         const skipped = runtimeSkip(action, error, 'store-add');
         result.skipped.push(skipped);
         result.rows.push({ type: 'add', excelRow: action.excelRow.excelRow, status: 'skipped', reason: skipped.reason });
+        if (isCrossMatrixTransfer) crossMatrixAddFailed = true;
       }
       tickStoreProgress('Добавляю строки');
+      if (crossMatrixAddFailed) break;
     }
 
-    if (!cancelled) for (const prepared of readyDeletes) {
+    if (isCrossMatrixTransfer && crossMatrixAddFailed) {
+      blockCrossMatrixDeletes = true;
+      const cleanupRows = [];
+      for (const added of [...successfulCrossMatrixAdds].reverse()) {
+        try {
+          await bridge.deleteMatrixRow(added.versionId);
+          const appliedRow = result.rows.find(row => row.type === 'add'
+            && canonicalValue(row.versionId || '') === canonicalValue(added.versionId));
+          if (appliedRow) appliedRow.status = 'rolled-back';
+          successfulMutationRows.delete(Number(added.action?.excelRow?.excelRow));
+          cleanupRows.push({
+            excelRow: added.action?.excelRow?.excelRow ?? null,
+            rowCardId: added.rowCardId,
+            versionId: added.versionId,
+            status: 'deleted',
+          });
+        } catch (error) {
+          cleanupRows.push({
+            excelRow: added.action?.excelRow?.excelRow ?? null,
+            rowCardId: added.rowCardId,
+            versionId: added.versionId,
+            status: 'failed',
+            reason: friendlyErrorMessage(error),
+          });
+        }
+      }
+
+      let cleanupSave = { ok: true, skipped: true, reason: 'no-created-rows' };
+      if (successfulCrossMatrixAdds.length) {
+        if (typeof bridge.saveMainMatrixAfterApply !== 'function') {
+          cleanupSave = { ok: false, skipped: false, reason: 'matrix-save-unavailable' };
+        } else {
+          try {
+            const saved = await bridge.saveMainMatrixAfterApply();
+            cleanupSave = { ...(saved || {}), ok: saved?.ok !== false, skipped: false };
+          } catch (error) {
+            cleanupSave = { ok: false, skipped: false, reason: 'matrix-save-failed', error: friendlyErrorMessage(error) };
+          }
+        }
+      }
+      const cleanupFailed = cleanupRows.some(row => row.status !== 'deleted') || !cleanupSave.ok;
+      result.crossMatrixTransfer = {
+        status: cleanupFailed ? 'unsafe' : 'rolled-back',
+        phase: 'add',
+        cleanupRows,
+        cleanupSave,
+        targetDeletesStarted: false,
+      };
+      result.verificationIncomplete = cleanupFailed;
+      receipts.length = 0;
+      log(cleanupFailed
+        ? 'Перенос остановлен на ADD. Не все созданные строки удалось откатить; старые строки целевой матрицы не удалялись.'
+        : 'Перенос остановлен на ADD. Созданные строки откатились; старые строки целевой матрицы не удалялись.',
+        cleanupFailed ? 'error' : 'warn');
+    }
+
+    if (!cancelled && !blockCrossMatrixDeletes) for (const prepared of readyDeletes) {
       if (shouldStopBeforeNextMutation()) break;
       result.startedCount += 1;
       const action = prepared.action;
