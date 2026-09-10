@@ -119,4 +119,56 @@ try {
   E.TessaBridge.create = originalCreate;
 }
 
+// A Store exception does not prove the server rejected the mutation. The request may
+// have committed before the client lost the response. Cross-matrix transfer must treat
+// that attempted VersionID as uncertain, compensate it as well, and prove absence by
+// matrix membership read-back before it can claim a rollback.
+let uncertainLoadCalls = 0;
+const uncertainDeleteCalls = [];
+const lingeringUncertainRow = matrixRow(1, 'new-card-1', 'new-version-1', 'org-a', 'Компания А', 'person-a', 'Иванов И.И.');
+const uncertainBridge = {
+  matrixInfo: () => targetInfo,
+  templateId: () => structure.templateId,
+  requestStructure: async () => structure,
+  loadSnapshot: async () => {
+    uncertainLoadCalls += 1;
+    if (uncertainLoadCalls === 1) return targetSnapshot;
+    return { ...targetSnapshot, rows: [targetRow, lingeringUncertainRow] };
+  },
+  resolveReferenceOnline: async () => null,
+  resolveCriterion: (condition, display, id) => ({ id, display }),
+  resolveRole: (fn, display, id) => ({ id, display, roleTypeId: 'role-type' }),
+  assertCanCreateRows: () => {},
+  createRowCard: async () => ({ card: { id: 'new-card-1', version: 0 }, cardId: 'new-card-1', versionId: 'new-version-1', newMethod: 'CardNew' }),
+  rebuildRowCard: () => {},
+  validateDuplicate: async () => {},
+  storeRowCard: async () => { throw new Error('simulated transport failure after possible server commit'); },
+  tryGetCard: async cardId => ({ card: { id: cardId, version: 1 } }),
+  getCard: async cardId => ({ id: cardId, version: 1 }),
+  readMatrixRowFromCard: (_card, current) => current?.source === 'targeted-delete-recheck' ? targetRow : null,
+  deleteMatrixRow: async versionId => {
+    uncertainDeleteCalls.push(versionId);
+    throw new Error('simulated uncertain cleanup response');
+  },
+  saveMainMatrixAfterApply: async () => ({ ok: true, method: 'test-save' }),
+  refreshNativeMatrixView: async () => ({ ok: true, controlName: 'test-view' }),
+};
+
+E.TessaBridge.create = async () => uncertainBridge;
+try {
+  const result = await E.applyPlan(plan);
+  assert(!uncertainDeleteCalls.includes('target-version-old'),
+    `uncertain ADD failure must never start target DELETE: ${JSON.stringify(uncertainDeleteCalls)}`);
+  assert(uncertainDeleteCalls.includes('new-version-1'),
+    `failed Store VersionID must also be a compensation target: ${JSON.stringify(uncertainDeleteCalls)}`);
+  assert(uncertainLoadCalls >= 2,
+    `uncertain ADD outcome must be checked by matrix membership read-back, calls=${uncertainLoadCalls}`);
+  assert(result.crossMatrixTransfer?.status === 'unsafe',
+    `lingering uncertain ADD membership must be UNSAFE, got ${JSON.stringify(result.crossMatrixTransfer)}`);
+  assert(result.crossMatrixTransfer?.rollbackVerification?.status === 'divergent',
+    `uncertain ADD read-back must expose divergence: ${JSON.stringify(result.crossMatrixTransfer?.rollbackVerification)}`);
+} finally {
+  E.TessaBridge.create = originalCreate;
+}
+
 console.log('TESSA Matrix Studio atomic cross-matrix Apply rollback contract: OK');
