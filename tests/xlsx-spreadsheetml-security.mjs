@@ -14,9 +14,9 @@ assert(atLeast1934, `self-closing row support requires userscript >=1.9.34, got 
 assert(code.includes("const body = rowMatch[2] || '';"), 'self-closing row body must fall back to an empty string');
 // Keep the documented production ceilings under regression control. Runtime tests below
 // use tiny Node-only overrides so pathological cases stay fast in CI.
-assert(code.includes('MaxRowNumber: 200000'), 'production SpreadsheetML row ceiling drifted from 200000');
+assert(code.includes('MaxRowNumber: 1048576'), 'production SpreadsheetML row ceiling must match Excel worksheet limit / 1048576');
 assert(code.includes('MaxColumnNumber: 16384'), 'production SpreadsheetML column ceiling drifted from Excel XFD / 16384');
-assert(code.includes('MaxParsedRows: 200000'), 'production parsed-row ceiling drifted from 200000');
+assert(code.includes('MaxParsedRows: 1048576'), 'production parsed-row ceiling must not stop valid Excel sheets before row 1048576');
 assert(code.includes('MaxParsedCells: 1500000'), 'production parsed-cell ceiling drifted from 1500000');
 
 globalThis.window = globalThis;
