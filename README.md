@@ -6,12 +6,12 @@
 
 `TESSA → XLSX → массовая правка → точный diff → review → controlled apply`
 
-[![Version](https://img.shields.io/badge/version-1.12.2-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.13.0-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 
 ### [УСТАНОВИТЬ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js) · [РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [ISSUES](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.12.2 · Автор: Шаповалов Артём**
+**v1.13.0 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -86,7 +86,7 @@ Studio проверяет файл fail-closed: повреждённые слу�
 
 ## Другие матрицы
 
-Структура, типы полей, функции и справочники читаются из шаблона открытой матрицы. Привязки к названиям «ОРД», конкретным организациям или одному MatrixID нет. Для каждой матрицы скачивайте её собственный Excel: перенос книги между карточками блокируется. Смена карточки или TemplateID сбрасывает предыдущий Preview и выбор значений.
+Структура, типы полей, функции и справочники читаются из шаблона открытой матрицы. Привязки к названиям «ОРД» или конкретным организациям нет. Обычная работа по-прежнему использует Excel своей матрицы. Если книга была выгружена из **другой карточки с тем же TemplateID**, Studio распознаёт это как отдельный перенос желаемого итогового состояния: исходные RowID/VersionID не используются как target, Preview показывает ADD/KEEP/DELETE относительно открытой матрицы, а перед Apply требуется отдельное подтверждение. Книга другого TemplateID и файл без надёжных MatrixID блокируются fail-closed. Смена карточки или TemplateID сбрасывает предыдущий Preview и выбор значений.
 
 Автоматические проверки покрывают три разных шаблона, все восемь поддерживаемых типов, перестановку и переименование полей, пустую матрицу и чужой файл. Это не подтверждает каждую корпоративную настройку TESSA: новый шаблон сначала проходит один небольшой UPDATE с проверкой результата.
 
@@ -107,7 +107,7 @@ Studio автоматически подключается к открытой �
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.12.2** в Tampermonkey.
+2. Подтвердите установку версии **1.13.0** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -169,7 +169,7 @@ Studio автоматически подключается к открытой �
 Перед подтверждением проверьте:
 
 - **Название:** `TESSA Matrix Studio — Черкизово`
-- **Версия:** `1.12.0`
+- **Версия:** `1.13.0`
 - **Автор:** `Шаповалов Артём`
 - **Разрешения:** `@grant none`
 - **Область запуска:** только домены TESSA Черкизово
@@ -456,7 +456,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.12.2**
+Текущая версия: **1.13.0**
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)
