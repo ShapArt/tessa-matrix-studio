@@ -95,11 +95,14 @@ w.eval(source);
 
   const query = host.querySelector('#tms-picker-query');
   query.value = 'needle-position';
+  query.dispatchEvent(new w.Event('input', { bubbles: true }));
   U.renderPickerResults();
   assert.equal(host.querySelectorAll('#tms-picker-results .tms-picker-option').length, 1);
   assert.match(host.querySelector('#tms-picker-results').textContent, /Главный инженер needle-position/);
 
   query.value = '';
+  query.dispatchEvent(new w.Event('input', { bubbles: true }));
+  U.renderPickerResults();
   roleType.value = '2';
   roleType.dispatchEvent(new w.Event('change', { bubbles: true }));
   assert.equal(host.querySelectorAll('#tms-picker-results .tms-picker-option').length, 1);
@@ -110,6 +113,7 @@ w.eval(source);
   roleType.dispatchEvent(new w.Event('change', { bubbles: true }));
   host.querySelector('#tms-picker-clear').click();
   query.value = 'инженер';
+  query.dispatchEvent(new w.Event('input', { bubbles: true }));
   U.renderPickerResults();
   host.querySelector('#tms-picker-select-all').click();
   assert.equal(host.querySelector('#tms-picker-output').value.split('\n').length, 65);
