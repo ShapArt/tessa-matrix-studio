@@ -26,17 +26,17 @@ jobs:
       - name: Apply Task 1 production patch
         run: node tools/dev-cross-matrix-task1.mjs
       - name: Focused Task 1 regression
-        run: node tests/cross-matrix-context.mjs && node tests/global-context-suppression.mjs
+        run: node tests/cross-matrix-context.mjs && node tests/global-context-suppression.mjs && node tests/acceptance.mjs
       - name: Full regression suite
         run: npm test
-      - name: Commit verified production patch
+      - name: Commit verified Task 1 patch
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tessa-matrix-studio.user.js
+          git add tessa-matrix-studio.user.js tests/acceptance.mjs
           if git diff --cached --quiet; then
-            echo "No production patch to commit"
+            echo "No verified patch to commit"
             exit 0
           fi
           git commit -m "feat: classify same-template cross-matrix imports"
