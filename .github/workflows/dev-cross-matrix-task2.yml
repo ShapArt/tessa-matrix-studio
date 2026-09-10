@@ -1,0 +1,43 @@
+name: Cross-matrix Task 2 GREEN
+
+on:
+  push:
+    branches:
+      - feat/cross-matrix-replacement
+    paths:
+      - tools/dev-cross-matrix-task2.mjs
+      - .github/workflows/dev-cross-matrix-task2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  green:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/cross-matrix-replacement
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - name: Install test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Apply Task 2 production patch
+        run: node tools/dev-cross-matrix-task2.mjs
+      - name: Focused replacement contracts
+        run: node tests/cross-matrix-context.mjs && node tests/cross-matrix-replace.mjs && node tests/cross-matrix-schema-drift.mjs && node tests/acceptance.mjs
+      - name: Full regression suite
+        run: npm test
+      - name: Commit verified Task 2 patch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js package.json
+          if git diff --cached --quiet; then
+            echo "No verified patch to commit"
+            exit 0
+          fi
+          git commit -m "feat: build safe same-template replacement plans"
+          git push origin HEAD:feat/cross-matrix-replacement
