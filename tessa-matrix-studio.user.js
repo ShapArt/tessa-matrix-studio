@@ -6780,8 +6780,9 @@
     // Только ошибки уровня файла/контекста блокируют весь пакет. Ошибки отдельных строк
     // уже вынесены в plan.skippedRows и не мешают корректным операциям.
     if (!isWritableMatrixDraft(matrixInfo, stateLocalizer)) {
+      // Non-draft state blocks every write, but it is still safe and useful to show
+      // the calculated read-only diff. Only file/context integrity failures suppress Preview.
       blockedReasons.push(`Открыта матрица в состоянии «${matrixStateCaption(matrixInfo, stateLocalizer)}». Изменения возможны только в черновике.`);
-      suppressUnsafePreview = true;
     }
 
     if (plan.mode === 'roundtrip') {

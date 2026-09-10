@@ -175,7 +175,8 @@ function makeBridge(fresh = snapshot, options = {}) {
 // классифицируется как явный кандидат на перенос. Сам replacement-plan проверяется отдельно.
 plan = E.buildPlan(patch, structure, snapshot);
 let safety = E.evaluatePlanSafety(plan, makeBridge(snapshot, { matrixInfo: { StateName: 'Активная' } }));
-assert(safety.blocked && safety.suppressUnsafePreview, 'active matrix must be blocked');
+assert(safety.blocked, 'active matrix must remain blocked for writes');
+assert(!safety.suppressUnsafePreview, 'active matrix must keep read-only preview visible');
 const foreignWorkbook = { ...baseline, roundtrip: { ...baseline.roundtrip, matrixId: 'foreign-matrix' } };
 plan = E.buildPlan(foreignWorkbook, structure, snapshot);
 safety = E.evaluatePlanSafety(plan, makeBridge(snapshot));
