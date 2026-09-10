@@ -7115,6 +7115,9 @@
     };
   }
 
+  // LIVE_ASSIGNABLE_ROLE_INDEX_CACHE_V1
+  const LIVE_ASSIGNABLE_ROLE_INDEX_CACHE = new WeakMap();
+
   // LIVE_ASSIGNABLE_ROLE_PREFLIGHT_V1
   // A roundtrip workbook may legitimately preserve historical role identities from its
   // source matrix. Those identities are safe to keep on an existing row, but a NEW row
@@ -7138,19 +7141,21 @@
       // loadDictionaryCatalog() merges current matrix snapshot values into the catalog
       // to preserve historical selectors. For ADD they are deliberately excluded here:
       // only identities actually returned by the current MtxRoles view are assignable.
-      const liveEntries = (roleCatalog.entries || []).filter(entry =>
-        canonicalValue(entry?.source || roleCatalog.sourceView || '') === 'mtxroles'
-        && canonicalValue(entry?.status || '') !== canonicalValue('Текущее значение'));
-      if (!liveEntries.length) {
-        throw new Error(`Актуальный MtxRoles для функции «${fn.name}» пуст или недоступен. Запись новой строки остановлена до Store.`);
+      let byId = LIVE_ASSIGNABLE_ROLE_INDEX_CACHE.get(roleCatalog);
+      if (!byId) {
+        byId = new Map();
+        for (const entry of roleCatalog.entries || []) {
+          if (canonicalValue(entry?.source || roleCatalog.sourceView || '') !== 'mtxroles') continue;
+          if (canonicalValue(entry?.status || '') === canonicalValue('Текущее значение')) continue;
+          const id = canonicalValue(entry?.id || '');
+          if (!id) continue;
+          if (!byId.has(id)) byId.set(id, []);
+          byId.get(id).push(entry);
+        }
+        LIVE_ASSIGNABLE_ROLE_INDEX_CACHE.set(roleCatalog, byId);
       }
-
-      const byId = new Map();
-      for (const entry of liveEntries) {
-        const id = canonicalValue(entry?.id || '');
-        if (!id) continue;
-        if (!byId.has(id)) byId.set(id, []);
-        byId.get(id).push(entry);
+      if (!byId.size) {
+        throw new Error(`Актуальный MtxRoles для функции «${fn.name}» пуст или недоступен. Запись новой строки остановлена до Store.`);
       }
 
       displays.forEach((display, index) => {
