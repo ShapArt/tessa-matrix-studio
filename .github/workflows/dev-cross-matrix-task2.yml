@@ -5,7 +5,7 @@ on:
     branches:
       - feat/cross-matrix-replacement
     paths:
-      - tools/dev-cross-matrix-task2.mjs
+      - tools/dev-cross-matrix-task2-fixed.mjs
       - .github/workflows/dev-cross-matrix-task2.yml
 
 permissions:
@@ -24,7 +24,7 @@ jobs:
       - name: Install test dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Apply Task 2 production patch
-        run: node tools/dev-cross-matrix-task2.mjs
+        run: node tools/dev-cross-matrix-task2-fixed.mjs
       - name: Focused replacement contracts
         run: node tests/cross-matrix-context.mjs && node tests/cross-matrix-replace.mjs && node tests/cross-matrix-schema-drift.mjs && node tests/acceptance.mjs
       - name: Full regression suite
