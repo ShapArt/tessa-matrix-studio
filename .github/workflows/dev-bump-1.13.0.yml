@@ -32,10 +32,12 @@ jobs:
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
           const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
           const user = fs.readFileSync('tessa-matrix-studio.user.js', 'utf8');
+          const readme = fs.readFileSync('README.md', 'utf8');
           if (pkg.version !== '1.13.0') throw new Error('package version mismatch');
           if (lock.version !== '1.13.0' || lock.packages?.['']?.version !== '1.13.0') throw new Error('lock version mismatch');
           if (!/^\/\/ @version\s+1\.13\.0$/m.test(user)) throw new Error('userscript header mismatch');
           if (!/version:\s*'1\.13\.0'/.test(user)) throw new Error('APP version mismatch');
+          if (!readme.includes('version-1.13.0-') || !readme.includes('**v1.13.0 · Автор:')) throw new Error('README version mismatch');
           NODE
       - name: Full regression suite
         run: npm test
@@ -44,6 +46,6 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tessa-matrix-studio.user.js package.json package-lock.json
+          git add tessa-matrix-studio.user.js package.json package-lock.json README.md
           git commit -m "chore: prepare 1.13.0 release candidate"
           git push origin HEAD:feat/cross-matrix-replacement
