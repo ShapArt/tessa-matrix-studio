@@ -4297,7 +4297,10 @@
         }
       }
 
-      return { ...link, card, values, roles, flat, fingerprint: fingerprintFlat(flat) };
+      // Snapshot rows cross the bridge into planner/Excel/cache code. Keep them plain:
+      // a live TESSA Card contains EventHandler back-references (fieldChanged._sender)
+      // and must never enter serializable application state.
+      return { ...link, values, roles, flat, fingerprint: fingerprintFlat(flat) };
     }
 
     async loadSnapshot(structure) {
@@ -8865,11 +8868,22 @@
     }, Boolean(generated && snapshotOk));
 
     const control = snapshotOk ? snapshot.rows.find(row => Object.values(row.values || {}).some(items => items.some(v => v.to != null))) || snapshot.rows[0] : null;
+    // Diagnostics is the exceptional path that needs a native Card. Load it on demand
+    // by the real row CardID instead of retaining runtime objects in snapshot rows.
+    let controlNativeCard = null;
+    const getControlNativeCard = async () => {
+      if (!control?.rowCardId) throw new Error('У контрольной строки отсутствует CardID.');
+      if (!controlNativeCard) controlNativeCard = await bridge.getCard(control.rowCardId);
+      return controlNativeCard;
+    };
     await run('saved-validation', 'Сервер: сохранённая строка', async () => {
-      await bridge.validateDuplicate(control.card, control.versionId); return { detail: 'Сервер разрешил проверку существующей версии.' };
+      const nativeCard = await getControlNativeCard();
+      await bridge.validateDuplicate(nativeCard, control.versionId); return { detail: 'Сервер разрешил проверку существующей версии.' };
     }, Boolean(control));
     await run('rebuilt-validation', 'Сервер: та же строка после перестройки', async () => {
-      const card = control.card.clone(); bridge.rebuildRowCard(card, control.versionId, desiredFromRow(control), structure, snapshot);
+      const nativeCard = await getControlNativeCard();
+      if (typeof nativeCard?.clone !== 'function') throw new Error('Нативная карточка контрольной строки не поддерживает clone().');
+      const card = nativeCard.clone(); bridge.rebuildRowCard(card, control.versionId, desiredFromRow(control), structure, snapshot);
       const after = bridge.readMatrixRowFromCard(card, control, structure);
       if (reconciliationSemanticKey(after, structure) !== reconciliationSemanticKey(control, structure)) throw new Error('Перестройка изменила значения контрольной строки. Запрос не отправлен.');
       await bridge.validateDuplicate(card, control.versionId); return { detail: 'Значения совпадают; сервер разрешил проверку.' };
