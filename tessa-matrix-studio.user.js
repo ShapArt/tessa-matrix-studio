@@ -7741,6 +7741,7 @@
     const isCrossMatrixTransfer = Boolean(plan.crossMatrixReplacement?.enabled);
     const crossMatrixPreflightBlocked = isCrossMatrixTransfer && runtimeSkips.length > 0;
     const successfulCrossMatrixAdds = [];
+    const attemptedCrossMatrixAdds = [];
     let crossMatrixAddFailed = false;
     let blockCrossMatrixDeletes = crossMatrixPreflightBlocked;
     let crossMatrixDeleteFailed = false;
@@ -7832,6 +7833,7 @@
       if (shouldStopBeforeNextMutation()) break;
       result.startedCount += 1;
       const action = created.action;
+      let crossMatrixAddAttempt = null;
       try {
         log(`Добавляю строку Excel ${action.excelRow.excelRow}`);
         const expectedRow = typeof bridge.readMatrixRowFromCard === 'function'
@@ -7846,8 +7848,21 @@
         // Re-check immediately before Store: another session may have created the
         // same matrix row after preflight completed.
         await bridge.validateDuplicate(created.card, created.versionId);
+        if (isCrossMatrixTransfer) {
+          crossMatrixAddAttempt = {
+            action,
+            rowCardId: created.cardId,
+            versionId: created.versionId,
+            storeState: 'attempted',
+          };
+          attemptedCrossMatrixAdds.push(crossMatrixAddAttempt);
+        }
         const storeResponse = await bridge.storeRowCard(created.card);
         const storedCardId = String(storeResponse?.cardId || created.cardId);
+        if (crossMatrixAddAttempt) {
+          crossMatrixAddAttempt.rowCardId = storedCardId;
+          crossMatrixAddAttempt.storeState = 'accepted';
+        }
         const verification = await bridge.tryGetCard(storedCardId);
         if (verification.error || !verification.card) throw new Error(`Новая карточка строки ${storedCardId} не открывается после сохранения.`);
         if (expectedRow) receipts.push(createMutationReceipt({
@@ -7869,7 +7884,12 @@
         const skipped = runtimeSkip(action, error, 'store-add');
         result.skipped.push(skipped);
         result.rows.push({ type: 'add', excelRow: action.excelRow.excelRow, status: 'skipped', reason: skipped.reason });
-        if (isCrossMatrixTransfer) crossMatrixAddFailed = true;
+        if (isCrossMatrixTransfer) {
+          if (crossMatrixAddAttempt && crossMatrixAddAttempt.storeState !== 'accepted') {
+            crossMatrixAddAttempt.storeState = 'uncertain';
+          }
+          crossMatrixAddFailed = true;
+        }
       }
       tickStoreProgress('Добавляю строки');
       if (crossMatrixAddFailed) break;
@@ -7878,7 +7898,7 @@
     if (isCrossMatrixTransfer && crossMatrixAddFailed) {
       blockCrossMatrixDeletes = true;
       const cleanupRows = [];
-      for (const added of [...successfulCrossMatrixAdds].reverse()) {
+      for (const added of [...attemptedCrossMatrixAdds].reverse()) {
         try {
           await bridge.deleteMatrixRow(added.versionId);
           const appliedRow = result.rows.find(row => row.type === 'add'
@@ -7889,6 +7909,7 @@
             excelRow: added.action?.excelRow?.excelRow ?? null,
             rowCardId: added.rowCardId,
             versionId: added.versionId,
+            storeState: added.storeState,
             status: 'deleted',
           });
         } catch (error) {
@@ -7896,6 +7917,7 @@
             excelRow: added.action?.excelRow?.excelRow ?? null,
             rowCardId: added.rowCardId,
             versionId: added.versionId,
+            storeState: added.storeState,
             status: 'failed',
             reason: friendlyErrorMessage(error),
           });
@@ -7903,7 +7925,7 @@
       }
 
       let cleanupSave = { ok: true, skipped: true, reason: 'no-created-rows' };
-      if (successfulCrossMatrixAdds.length) {
+      if (attemptedCrossMatrixAdds.length) {
         if (typeof bridge.saveMainMatrixAfterApply !== 'function') {
           cleanupSave = { ok: false, skipped: false, reason: 'matrix-save-unavailable' };
         } else {
@@ -7915,16 +7937,21 @@
           }
         }
       }
-      const cleanupWriteFailed = cleanupRows.some(row => row.status !== 'deleted') || !cleanupSave.ok;
-      const rollbackVerification = cleanupWriteFailed
-        ? { status: 'incomplete', checkedCount: successfulCrossMatrixAdds.length, lingeringCount: null, attempts: 0, reason: 'cleanup-write-incomplete' }
-        : await verifyCrossMatrixRollback(bridge, structure, successfulCrossMatrixAdds, { attempts: 3, baseDelayMs: 100 });
-      const cleanupFailed = cleanupWriteFailed || rollbackVerification.status !== 'verified';
+      // DeleteRow response is not the source of truth: a request may have committed even
+      // if the client saw an error (or vice versa). Always reconcile every VersionID whose
+      // Store was attempted against matrix membership. Never CardGet a VersionID.
+      const cleanupDeleteResponseFailed = cleanupRows.some(row => row.status !== 'deleted');
+      const rollbackVerification = await verifyCrossMatrixRollback(
+        bridge, structure, attemptedCrossMatrixAdds, { attempts: 3, baseDelayMs: 100 });
+      const cleanupFailed = !cleanupSave.ok || rollbackVerification.status !== 'verified';
       result.crossMatrixTransfer = {
         status: cleanupFailed ? 'unsafe' : 'rolled-back',
         phase: 'add',
         cleanupRows,
         cleanupSave,
+        cleanupDeleteResponseFailed,
+        attemptedAddCount: attemptedCrossMatrixAdds.length,
+        uncertainAddCount: attemptedCrossMatrixAdds.filter(row => row.storeState === 'uncertain').length,
         rollbackVerification,
         targetDeletesStarted: false,
       };
