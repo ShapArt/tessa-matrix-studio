@@ -7601,6 +7601,45 @@
    * Каждая операция верифицируется отдельно; при частичной ошибке остальные строки
    * не маскируются как успешные, а результат сохраняется в JSON-отчёт.
    */
+  async function verifyCrossMatrixRollback(bridge, structure, createdRows, options = {}) {
+    const versionIds = new Set((createdRows || [])
+      .map(row => canonicalValue(row?.versionId || ''))
+      .filter(Boolean));
+    if (!versionIds.size) {
+      return { status: 'verified', checkedCount: 0, lingeringCount: 0, attempts: 0 };
+    }
+
+    const maxAttempts = Math.max(1, Math.min(5, Number(options.attempts) || 3));
+    const baseDelayMs = Math.max(0, Number(options.baseDelayMs ?? 100));
+    let last = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      if (attempt > 1 && baseDelayMs) await sleep(baseDelayMs * (2 ** (attempt - 2)));
+      try {
+        const snapshot = await bridge.loadSnapshot(structure);
+        const lingering = (snapshot?.rows || []).filter(row =>
+          versionIds.has(canonicalValue(row?.versionId || '')));
+        last = {
+          status: lingering.length ? 'divergent' : 'verified',
+          checkedCount: versionIds.size,
+          lingeringCount: lingering.length,
+          attempts: attempt,
+        };
+        if (!lingering.length) return last;
+      } catch (error) {
+        last = {
+          status: 'incomplete',
+          checkedCount: versionIds.size,
+          lingeringCount: null,
+          attempts: attempt,
+          reason: friendlyErrorMessage(error),
+          retryable: isWriterLockError(error),
+        };
+        if (!last.retryable) return last;
+      }
+    }
+    return last || { status: 'incomplete', checkedCount: versionIds.size, lingeringCount: null, attempts: 0, reason: 'rollback-readback-unavailable' };
+  }
+
   async function applyPlan(plan) {
     if (!plan) throw new Error('Сначала проверьте Excel.');
     if (plan?.safety?.blocked) throw new Error(`Файл нельзя применить: ${plan.safety.blockedReasons.join(' ')}`);
@@ -7840,12 +7879,17 @@
           }
         }
       }
-      const cleanupFailed = cleanupRows.some(row => row.status !== 'deleted') || !cleanupSave.ok;
+      const cleanupWriteFailed = cleanupRows.some(row => row.status !== 'deleted') || !cleanupSave.ok;
+      const rollbackVerification = cleanupWriteFailed
+        ? { status: 'incomplete', checkedCount: successfulCrossMatrixAdds.length, lingeringCount: null, attempts: 0, reason: 'cleanup-write-incomplete' }
+        : await verifyCrossMatrixRollback(bridge, structure, successfulCrossMatrixAdds, { attempts: 3, baseDelayMs: 100 });
+      const cleanupFailed = cleanupWriteFailed || rollbackVerification.status !== 'verified';
       result.crossMatrixTransfer = {
         status: cleanupFailed ? 'unsafe' : 'rolled-back',
         phase: 'add',
         cleanupRows,
         cleanupSave,
+        rollbackVerification,
         targetDeletesStarted: false,
       };
       result.verificationIncomplete = cleanupFailed;
@@ -10421,7 +10465,7 @@
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, classifyWorkbookContext, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
-    preflightPlan, applyPreflightPreview, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
+    preflightPlan, applyPreflightPreview, verifyCrossMatrixRollback, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport,
     TessaBridge,
