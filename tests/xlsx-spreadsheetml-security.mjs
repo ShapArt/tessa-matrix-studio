@@ -12,15 +12,17 @@ const atLeast1934 = versionTuple[0] > 1
   || (versionTuple[0] === 1 && versionTuple[1] === 9 && versionTuple[2] >= 34);
 assert(atLeast1934, `self-closing row support requires userscript >=1.9.34, got ${versionMatch[0]}`);
 assert(code.includes("const body = rowMatch[2] || '';"), 'self-closing row body must fall back to an empty string');
-// Keep the documented production ceilings under regression control. Runtime tests below
-// use tiny Node-only overrides so pathological cases stay fast in CI.
-assert(code.includes('MaxRowNumber: 200000'), 'production SpreadsheetML row ceiling drifted from 200000');
+
+// Only the real Excel coordinate space is a hard SpreadsheetML boundary.
+// TESSA roundtrip books can legitimately contain very large service/dictionary sheets,
+// so physical row/cell counts must not be rejected by arbitrary parser ceilings.
+assert(code.includes('MaxRowNumber: 1048576'), 'production SpreadsheetML row ceiling must match Excel worksheet limit / 1048576');
 assert(code.includes('MaxColumnNumber: 16384'), 'production SpreadsheetML column ceiling drifted from Excel XFD / 16384');
-assert(code.includes('MaxParsedRows: 200000'), 'production parsed-row ceiling drifted from 200000');
-assert(code.includes('MaxParsedCells: 1500000'), 'production parsed-cell ceiling drifted from 1500000');
 
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
+// These legacy count limits are intentionally tiny. Production parsing must ignore them;
+// only MaxRowNumber/MaxColumnNumber remain meaningful after the regression fix.
 globalThis.__TESSA_MATRIX_SYNC_TEST_SPREADSHEET_LIMITS__ = {
   MaxRowNumber: 10,
   MaxParsedRows: 8,
@@ -49,8 +51,8 @@ function expectRejected(xml, expected, label) {
 }
 
 expectRejected(
-  worksheet('<row r="100001"><c r="A100001" t="str"><v>x</v></c></row>'),
-  /XLSX отклонён.*строк|номер строки|100.?000/i,
+  worksheet('<row r="11"><c r="A11" t="str"><v>x</v></c></row>'),
+  /XLSX отклонён.*строк|номер строки|10/i,
   'row-number-ceiling',
 );
 
@@ -80,24 +82,21 @@ expectRejected(
   'column-ceiling',
 );
 
+// A service sheet is allowed to contain more physical rows than an old parser budget.
 const repeatedRows = Array.from({ length: 9 }, (_, index) => `<row r="${index + 1}"><c r="A${index + 1}" t="str"><v>x</v></c></row>`).join('');
-expectRejected(
-  worksheet(repeatedRows),
-  /XLSX отклонён.*слишком много.*строк|лимит.*строк/i,
-  'parsed-row-count',
-);
+const manyRows = E.parseSheetXml(worksheet(repeatedRows), []);
+assert(manyRows.rows.length === 9, `arbitrary parsed-row ceiling still blocks valid SpreadsheetML: ${manyRows.rows.length}`);
 
-globalThis.__TESSA_MATRIX_SYNC_TEST_SPREADSHEET_LIMITS__.MaxRowNumber = 100;
-globalThis.__TESSA_MATRIX_SYNC_TEST_SPREADSHEET_LIMITS__.MaxParsedRows = 100;
+// Likewise, physical cell count is not a validity rule. Coordinate validity is checked separately.
 const excessiveCells = Array.from({ length: 17 }, (_, index) => {
   const col = String.fromCharCode(65 + index);
   return `<c r="${col}1" t="str"><v>${index}</v></c>`;
 }).join('');
-expectRejected(
-  worksheet(`<row r="1">${excessiveCells}</row>`),
-  /XLSX отклонён.*слишком много.*яче|лимит.*яче/i,
-  'parsed-cell-count',
-);
+const manyCells = E.parseSheetXml(worksheet(`<row r="1">${excessiveCells}</row>`), []);
+assert(manyCells.rows[0]?.length === 17, `arbitrary parsed-cell ceiling still blocks valid SpreadsheetML: ${manyCells.rows[0]?.length}`);
+
+assert(!code.includes('MaxParsedRows:'), 'production must not have an arbitrary parsed-row count ceiling');
+assert(!code.includes('MaxParsedCells:'), 'production must not have an arbitrary parsed-cell count ceiling');
 
 expectRejected(
   worksheet('<row r="1"><c r="A1" t="str"><v>a</v></c><c r="A1" t="str"><v>b</v></c></row>'),
@@ -110,7 +109,7 @@ expectRejected(
   'duplicate-row-number',
 );
 
-// A genuine mismatch must still fail closed after adding self-closing-row support.
+// A genuine mismatch must still fail closed after removing arbitrary count ceilings.
 expectRejected(
   worksheet('<row r="2"><c r="A3" t="str"><v>x</v></c></row>'),
   /XLSX отклонён.*координат.*строк|A3.*2/i,
