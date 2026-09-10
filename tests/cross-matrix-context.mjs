@@ -42,4 +42,18 @@ assert.equal(foreignTemplate.kind, 'foreign-template');
 const invalid = E.classifyWorkbookContext({}, { matrixId: 'm-target', TemplateID: 't' });
 assert.equal(invalid.kind, 'invalid-roundtrip');
 
+const missingSourceMatrixId = E.classifyWorkbookContext(
+  { roundtrip: { enabled: true, matrixId: '', templateId: 't' } },
+  { matrixId: 'm-target', PreviousVersionID: 'm-prev', TemplateID: 't' },
+);
+assert.equal(missingSourceMatrixId.kind, 'invalid-roundtrip',
+  'same-template transfer must never be inferred when Excel has no source MatrixID');
+
+const missingTargetMatrixId = E.classifyWorkbookContext(
+  { roundtrip: { enabled: true, matrixId: 'm-source', templateId: 't' } },
+  { matrixId: '', PreviousVersionID: 'm-prev', TemplateID: 't' },
+);
+assert.equal(missingTargetMatrixId.kind, 'invalid-roundtrip',
+  'same-template transfer must never be inferred when the open matrix has no MatrixID');
+
 console.log('TESSA Matrix Studio workbook context classification: OK');
