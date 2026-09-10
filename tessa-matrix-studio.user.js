@@ -7640,6 +7640,40 @@
     return last || { status: 'incomplete', checkedCount: versionIds.size, lingeringCount: null, attempts: 0, reason: 'rollback-readback-unavailable' };
   }
 
+  function finalizeCrossMatrixTransferVerification(result) {
+    const transfer = result?.crossMatrixTransfer;
+    if (!transfer) return result;
+    const terminal = new Set(['verified', 'unsafe', 'rolled-back', 'preflight-blocked']);
+    if (terminal.has(transfer.status)) return result;
+    if (transfer.status !== 'awaiting-verification') return result;
+
+    const reconciliation = result?.reconciliation || null;
+    const expected = Math.max(0, Number(transfer.acceptedMutationCount || 0));
+    const verified = Math.max(0, Number(reconciliation?.verifiedCount || 0));
+    const divergent = Math.max(0, Number(reconciliation?.divergentCount || 0));
+    const missing = Math.max(0, Number(reconciliation?.missingCount || 0));
+    const unknown = Math.max(0, Number(reconciliation?.unknownCount || 0));
+    transfer.verification = {
+      status: reconciliation?.status || 'incomplete',
+      expectedCount: expected,
+      verifiedCount: verified,
+      divergentCount: divergent,
+      missingCount: missing,
+      unknownCount: unknown,
+    };
+    if (reconciliation?.status === 'verified' && verified === expected && divergent === 0 && missing === 0 && unknown === 0) {
+      transfer.status = 'verified';
+      result.verificationIncomplete = false;
+    } else if (reconciliation?.status === 'divergent' || divergent > 0 || missing > 0) {
+      transfer.status = 'unsafe';
+      result.verificationIncomplete = true;
+    } else {
+      transfer.status = 'incomplete';
+      result.verificationIncomplete = true;
+    }
+    return result;
+  }
+
   async function applyPlan(plan) {
     if (!plan) throw new Error('Сначала проверьте Excel.');
     if (plan?.safety?.blocked) throw new Error(`Файл нельзя применить: ${plan.safety.blockedReasons.join(' ')}`);
@@ -7956,6 +7990,22 @@
       }
       tickStoreProgress('Удаляю строки');
       if (crossMatrixDeleteFailed) break;
+    }
+
+    if (isCrossMatrixTransfer
+      && !crossMatrixPreflightBlocked
+      && !crossMatrixAddFailed
+      && !crossMatrixDeleteFailed) {
+      const acceptedMutationCount = result.rows.filter(row => row?.status === 'ok').length;
+      result.crossMatrixTransfer = {
+        status: 'awaiting-verification',
+        phase: 'verification',
+        targetDeletesStarted: readyDeletes.length > 0,
+        successfulTargetDeleteCount: crossMatrixTargetDeletesSucceeded,
+        acceptedMutationCount,
+        receiptCount: receipts.length,
+      };
+      result.verificationIncomplete = true;
     }
 
     result.matrixSave = await persistMainMatrixAfterApply(bridge, result);
@@ -10419,6 +10469,7 @@
             result.reconciliation = APP.lastReconciliation;
           } catch (error) { result.reconciliation = { status: 'incomplete', reason: friendlyErrorMessage(error) }; }
           APP.lastReconciliation = result.reconciliation;
+          finalizeCrossMatrixTransferVerification(result);
           finalizeApplyResult(result);
           rememberReport(result, `TESSA_Write_Check_${Date.now()}.json`);
           setProgress(100, 'Проверка записи завершена', reconciliationSummary(APP.lastReconciliation));
@@ -10482,7 +10533,7 @@
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, classifyWorkbookContext, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
-    preflightPlan, applyPreflightPreview, verifyCrossMatrixRollback, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
+    preflightPlan, applyPreflightPreview, verifyCrossMatrixRollback, finalizeCrossMatrixTransferVerification, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport,
     TessaBridge,
