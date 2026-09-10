@@ -1,0 +1,42 @@
+name: Cross-matrix context identity GREEN
+
+on:
+  push:
+    branches:
+      - feat/cross-matrix-replacement
+    paths:
+      - tools/dev-cross-matrix-context-identity.mjs
+      - .github/workflows/dev-cross-matrix-context-identity.yml
+
+permissions:
+  contents: write
+
+jobs:
+  green:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/cross-matrix-replacement
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Apply matrix identity production patch
+        run: node tools/dev-cross-matrix-context-identity.mjs
+      - name: Focused context and replacement contracts
+        run: node tests/cross-matrix-context.mjs && node tests/cross-matrix-replace.mjs && node tests/acceptance.mjs
+      - name: Full regression suite
+        run: npm test
+      - name: Commit verified production patch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js
+          if git diff --cached --quiet; then
+            echo "No production patch to commit"
+            exit 0
+          fi
+          git commit -m "fix: require matrix identity for cross-matrix transfer"
+          git push origin HEAD:feat/cross-matrix-replacement
