@@ -173,7 +173,7 @@ Full UAT проверяет, среди прочего:
 > [!WARNING]
 > Full UAT запускайте только на отдельном тестовом черновике. Runner удаляет свои временные строки и проверяет восстановление baseline, но это всё равно реальная write-проверка TESSA.
 
-Подробнее: [Studio Diagnostics](docs/STUDIO-DIAGNOSTICS.md), [Test Strategy](docs/TEST-STRATEGY.md), [Production Runbook](docs/PRODUCTION-RUNBOOK.md).
+Подробнее: [Studio Diagnostics](docs/STUDIO-DIAGNOSTICS.md), [Test Strategy](docs/TEST-STRATEGY.md) и production runbook: [docs/PRODUCTION-RUNBOOK.md](docs/PRODUCTION-RUNBOOK.md).
 
 ---
 
@@ -228,7 +228,11 @@ Studio настроена на корпоративные адреса TESSA и�
 
 ---
 
-# Если что-то пошло не так
+# Если что-то не работает
+
+**Ссылка .user.js открылась как текст или установка не стартовала**
+
+Если браузер показывает исходный код вместо окна Tampermonkey, сначала убедитесь, что Tampermonkey установлен и включён, затем повторно откройте ссылку установки. В Chromium-браузерах также проверьте разрешение userscript'ов / режим разработчика.
 
 **Панель Studio не появилась**
 
@@ -251,7 +255,7 @@ Studio настроена на корпоративные адреса TESSA и�
 
 ---
 
-# Безопасность записи
+# Права и безопасность
 
 Studio придерживается fail-closed поведения:
 
