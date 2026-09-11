@@ -33,6 +33,22 @@ assert.match(source, /await bridge\.getCard\(row\.rowCardId\)/,
 assert.doesNotMatch(source, /if \(!controlRow\.card\?\.clone\) return \{ status: 'not-run', detail: 'Карточка для проверки перестройки недоступна\.'/,
   'field diagnostics must not mark every field NOT RUN merely because snapshot DTOs contain no Card object');
 
+// PR review regressions: schema refresh must use a locally-defined semantic change scorer,
+// UAT must reject truthy-but-partial Apply results, and every temporary ADD must have a
+// cleanup path even when a scenario becomes NOT_RUN or post-ADD read-back fails.
+assert.match(source, /MERGE_COPY_IDENTITY_SCORING_V1/,
+  'merge-with-current must define copied-identity change scoring in its own scope');
+assert.match(source, /FULL_UAT_STRICT_APPLY_RESULT_V1/,
+  'Full UAT must reject partial, skipped or incomplete Apply results');
+assert.match(source, /FULL_UAT_CLEAR_NOT_RUN_CLEANUP_V1/,
+  'Full UAT must cleanup a temporary row before returning NOT_RUN from clear-field scenario');
+assert.match(source, /FULL_UAT_ADD_RECEIPT_RECOVERY_V1/,
+  'Full UAT must retain the exact ADD receipt ID and cleanup it if read-back fails');
+assert.match(source, /Number\(result\.appliedCount \|\| 0\) !== 1/,
+  'Full UAT write helper must require exactly one applied mutation');
+assert.match(source, /cleanupCreatedRow\(receiptRowCardId, `\$\{scenarioId\}-add-readback-recovery`\)/,
+  'post-ADD failure must cleanup by the exact stored RowCardID from the Apply receipt');
+
 // Load the candidate too: this catches syntax/runtime export regressions in the same file
 // that the browser will execute.
 globalThis.window = globalThis;
@@ -47,4 +63,4 @@ vm.runInThisContext(source);
 assert.ok(globalThis.__TESSA_MATRIX_SYNC_EXPORTS__?.applyPlan);
 assert.ok(globalThis.__TMS_FULL_UAT_V1__?.runFullUat);
 
-console.log('Live UAT regressions: archive ceiling, pre-approved writes and native field diagnostics: OK');
+console.log('Live UAT regressions: archive ceiling, pre-approved writes, native diagnostics and cleanup invariants: OK');
