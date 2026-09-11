@@ -1850,6 +1850,64 @@
     return Array.from(columns || []).findIndex(column => accepted.has(searchCanonical(column)));
   }
 
+  // EMPLOYEE_ROLE_PROJECTION_V1
+  // RoleID/RoleTypeID remain the identity. Employee fields below are presentation/search
+  // metadata read from explicit MtxRoles projection columns; position is never guessed
+  // from RoleName or free-form details.
+  const PERSONAL_ROLE_TYPE_ID = 1;
+
+  function exactProjectionColumnIndex(columns, aliases) {
+    const accepted = new Set((aliases || []).map(searchCanonical));
+    return Array.from(columns || []).findIndex(column => accepted.has(searchCanonical(column)));
+  }
+
+  function projectionText(row, columns, aliases, localize = value => value) {
+    const index = exactProjectionColumnIndex(columns, aliases);
+    if (index < 0) return '';
+    const raw = row?.[index];
+    if (raw === null || raw === undefined || typeof raw === 'object') return '';
+    return normalizeSpace(localize(raw));
+  }
+
+  function employeeProjectionFields(row, columns, roleTypeId, nativeDisplay, localize = value => value) {
+    if (Number(roleTypeId) !== PERSONAL_ROLE_TYPE_ID) return null;
+    const explicitShort = projectionText(row, columns, [
+      'ShortName', 'RoleShortName', 'UserShortName', 'EmployeeShortName', 'PersonalRoleShortName',
+    ], localize);
+    const shortName = explicitShort || normalizeSpace(nativeDisplay);
+    const fullName = projectionText(row, columns, [
+      'FullName', 'RoleFullName', 'UserFullName', 'EmployeeFullName', 'PersonalRoleFullName', 'PersonFullName',
+    ], localize);
+    const position = projectionText(row, columns, [
+      'PositionName', 'Position', 'RolePositionName', 'UserPositionName', 'EmployeePositionName',
+      'PersonalRolePositionName', 'JobTitle', 'JobTitleName', 'PostName',
+    ], localize);
+    const department = projectionText(row, columns, [
+      'DepartmentName', 'Department', 'RoleDepartmentName', 'UserDepartmentName', 'EmployeeDepartmentName',
+      'PersonalRoleDepartmentName', 'SubdivisionName', 'UnitName',
+    ], localize);
+    const displayName = position && shortName ? `${shortName} — ${position}` : (shortName || fullName || normalizeSpace(nativeDisplay));
+    return { shortName, fullName, position, department, displayName, nativeDisplay: normalizeSpace(nativeDisplay) };
+  }
+
+  function employeeResolvableAliases(item) {
+    if (!item || Number(item.roleTypeId) !== PERSONAL_ROLE_TYPE_ID) return [];
+    return [...new Set([
+      item.displayName, item.shortName, item.fullName, item.nativeDisplay,
+      ...(item.previousSelectors || []),
+    ].map(normalizeSpace).filter(Boolean))];
+  }
+
+  function dictionaryRoleDisplay(catalog, item) {
+    if (!catalog || !item) return item?.display || '';
+    const lookup = dictionaryLookup(catalog);
+    const id = canonicalValue(item.id);
+    const roleType = canonicalValue(item.roleTypeId);
+    const candidates = lookup?.byId?.get(`${id}|${roleType}`) || lookup?.byId?.get(`${id}|`) || [];
+    const found = candidates.find(entry => !roleType || canonicalValue(entry.roleTypeId) === roleType) || candidates[0];
+    return found?.displayName || found?.display || item.display || '';
+  }
+
   function finalizeDictionaryEntries(entries) {
     const byIdentity = new Map();
     for (const source of entries || []) {
@@ -1869,7 +1927,11 @@
       if (!display || !id) continue;
       const identity = `${canonicalValue(id)}|${canonicalValue(roleTypeId)}`;
       const qualifier = normalizeSpace(source.qualifier || humanQualifierFromDetails(source.details, display));
-      if (!byIdentity.has(identity)) byIdentity.set(identity, { ...source, id, display, roleTypeId, qualifier });
+      const previousSelectors = [...new Set([
+        ...(source.previousSelectors || []),
+        ...(Number(roleTypeId) === PERSONAL_ROLE_TYPE_ID && source.nativeDisplay && canonicalValue(source.nativeDisplay) !== canonicalValue(display) ? [source.nativeDisplay] : []),
+      ].map(normalizeSpace).filter(Boolean))];
+      if (!byIdentity.has(identity)) byIdentity.set(identity, { ...source, id, display, roleTypeId, qualifier, previousSelectors });
       else if (!byIdentity.get(identity).qualifier && qualifier) byIdentity.get(identity).qualifier = qualifier;
     }
     const values = [...byIdentity.values()];
@@ -1943,7 +2005,7 @@
 
   function dictionaryStructureSignature(structure) {
     const compact = {
-      projectionVersion: 4,
+      projectionVersion: 5,
       templateId: canonicalValue(structure?.templateId),
       conditions: (structure?.conditions || []).map(item => [
         canonicalValue(item.criterionRowId), canonicalValue(item.operandTypeId),
@@ -2052,6 +2114,15 @@
       const firstDisplay = captions.get(identity);
       if (!firstDisplay) captions.set(identity, display);
       if (current?.display === display || (firstDisplay && (current?.previousSelectors || []).includes(display))) return;
+      const employeeAliasMatch = current && Number(current.roleTypeId) === PERSONAL_ROLE_TYPE_ID
+        && employeeResolvableAliases(current).some(alias => canonicalValue(alias) === canonicalValue(display));
+      if (employeeAliasMatch) {
+        const aliases = [...new Set([...(current.previousSelectors || []), display].map(normalizeSpace).filter(Boolean))];
+        if ((current.previousSelectors || []).map(canonicalValue).includes(canonicalValue(display))) return;
+        if (!changesByCatalog.has(catalogId)) changesByCatalog.set(catalogId, new Map());
+        changesByCatalog.get(catalogId).set(identity, { ...current, previousSelectors: aliases });
+        return;
+      }
       if (!changesByCatalog.has(catalogId)) changesByCatalog.set(catalogId, new Map());
       // Every caption emitted into a matrix cell must survive XLSX serialization;
       // truncating this list makes an untouched row fail its ID-and-text check.
@@ -2141,6 +2212,7 @@
     const byId = new Map();
     const bySelector = new Map();
     const byDisplay = new Map();
+    const byEmployeeAlias = new Map();
     const searchRows = [];
     const append = (map, key, item) => {
       if (!key) return;
@@ -2157,6 +2229,7 @@
       }
       append(bySelector, canonicalValue(item.selector), item);
       append(byDisplay, canonicalValue(item.display), item);
+      for (const alias of employeeResolvableAliases(item)) append(byEmployeeAlias, canonicalValue(alias), item);
       searchRows.push({
         item,
         haystack: searchCanonical(`${item.selector || ''} ${item.display || ''} ${item.qualifier || ''} ${item.searchText || ''} ${item.details || ''} ${(item.previousSelectors || []).join(' ')}`),
@@ -2165,7 +2238,7 @@
 
     const isBoolean = canonicalValue(catalog.sourceView || '') === 'boolean'
       || (items.length > 0 && items.every(item => item.kind === 'Boolean' || ['true', 'false'].includes(canonicalValue(item.id))));
-    const lookup = { items, byId, bySelector, byDisplay, searchRows, isBoolean, resolutionCache: new Map() };
+    const lookup = { items, byId, bySelector, byDisplay, byEmployeeAlias, searchRows, isBoolean, resolutionCache: new Map() };
     DICTIONARY_LOOKUP_CACHE.set(catalog, lookup);
     return lookup;
   }
@@ -2211,12 +2284,16 @@
         || [];
       explicitMatch = candidates.find(item => !explicitRoleType || canonicalValue(item.roleTypeId) === explicitRoleType) || null;
     }
-    if (explicitMatch && [explicitMatch.selector, explicitMatch.display, ...(explicitMatch.previousSelectors || [])].map(canonicalValue).includes(visibleCanonical)) {
+    if (explicitMatch && [
+      explicitMatch.selector, explicitMatch.display, ...(explicitMatch.previousSelectors || []),
+      ...employeeResolvableAliases(explicitMatch),
+    ].map(canonicalValue).includes(visibleCanonical)) {
       return resolvedItem(explicitMatch, 'id-and-text');
     }
 
     let matches = lookup.bySelector.get(visibleCanonical) || [];
     if (!matches.length) matches = lookup.byDisplay.get(visibleCanonical) || [];
+    if (!matches.length) matches = lookup.byEmployeeAlias.get(visibleCanonical) || [];
     if (matches.length === 1) return resolvedItem(matches[0], 'exact');
     if (matches.length > 1) {
       const variants = matches.slice(0, 8).map(item => item.selector).join('; ');
@@ -2325,7 +2402,7 @@
         const key = definitionKey('function', fn.id);
         const dict = catalog.catalogs?.[catalog.columnCatalogIds?.[key]];
         const items = snapshotRow.roles?.[fn.id] || [];
-        values.push(items.map(item => item.display || dictionarySelector(dict, item.id, item.roleTypeId, '')).join('\n'));
+        values.push(items.map(item => dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, '')).join('\n'));
         values.push(items.map(item => `${item.id}|${item.roleTypeId}`).join('\n'));
       }
       for (let customIndex = 0; customIndex < customColumns.length; customIndex += 1) {
@@ -4205,6 +4282,9 @@
         if (hidden || inactive) continue;
         if (options.recordKeepingOnly && recordKeepingIndex >= 0 && booleanSemantic(row[recordKeepingIndex]) !== true) continue;
         const roleTypeId = roleTypeIndex >= 0 && row[roleTypeIndex] !== null && row[roleTypeIndex] !== undefined && row[roleTypeIndex] !== '' ? Number(row[roleTypeIndex]) : '';
+        const nativeDisplay = display;
+        const employee = roleMode ? employeeProjectionFields(row, columns, roleTypeId, nativeDisplay, value => this.localizeValue(value)) : null;
+        if (employee?.displayName) display = employee.displayName;
         const details = columns.map((alias, index) => {
           if (index === idIndex || index === displayIndex || index === roleTypeIndex) return '';
           const value = this.localizeValue(row[index]);
@@ -4214,7 +4294,11 @@
         }).filter(Boolean).join(' | ').slice(0, 4000);
         const qualifier = humanQualifierFromDetails(details, display);
         const searchText = searchCanonical(`${display} ${qualifier} ${details} ${row.map(value => typeof value === 'object' ? '' : normalizeSpace(this.localizeValue(value))).join(' ')}`);
-        entries.push({ id: String(id), display, qualifier, roleTypeId: Number.isFinite(roleTypeId) ? roleTypeId : '', source: result.alias, status: 'Доступно', details, searchText });
+        entries.push({
+          id: String(id), display, qualifier, roleTypeId: Number.isFinite(roleTypeId) ? roleTypeId : '',
+          source: result.alias, status: 'Доступно', details, searchText,
+          ...(employee || {}),
+        });
       }
       return entries;
     }
