@@ -1,0 +1,64 @@
+name: UAT Row Lifecycle RED-GREEN
+
+on:
+  push:
+    branches: [fix/uat-row-lifecycle-1.13.0]
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Full base regression suite
+        run: npm test
+      - name: Build exact v1.13 runtime in-place
+        run: |
+          node hotfixes/malformed-range-diagnostic-transform.mjs tessa-matrix-studio.user.js
+          node hotfixes/v1.13.0-user-row-lifecycle-transform.mjs tessa-matrix-studio.user.js
+          printf '\n' >> tessa-matrix-studio.user.js
+          cat hotfixes/interval-add-valid-fallback.js >> tessa-matrix-studio.user.js
+          printf '\n' >> tessa-matrix-studio.user.js
+          cat hotfixes/full-uat-runner-v1.js >> tessa-matrix-studio.user.js
+          node hotfixes/v1.13.0-full-uat-live-finalize.mjs tessa-matrix-studio.user.js
+      - name: Copied identity lifecycle regression on exact runtime
+        run: node tests/user-copied-identity-regression.mjs
+      - name: Full UAT runner contract on exact runtime
+        run: node tests/full-uat-runner-contract.mjs
+      - name: Live UAT regressions on exact runtime
+        run: node tests/live-uat-regressions.mjs
+      - name: Source sanity
+        run: |
+          node --check tessa-matrix-studio.user.js
+          grep -Fq "DUPLICATE_IDENTITY_COPY_AS_ADD_V1" tessa-matrix-studio.user.js
+          grep -Fq "LIVE_UAT_2026_09_11" tessa-matrix-studio.user.js
+          grep -Fq "diagnosticNativeCardCache" tessa-matrix-studio.user.js
+          grep -Fq "source: 'full-uat'" tessa-matrix-studio.user.js
+          grep -Fq "tms-picker-import-block" tessa-matrix-studio.user.js
+          grep -Fq "__TMS_INSTALL_INTERVAL_ADD_VALID_FALLBACK__" tessa-matrix-studio.user.js
+          grep -Fq "__TMS_FULL_UAT_V1__" tessa-matrix-studio.user.js
+          grep -Fq "Numeric ranges have an exact grammar" tessa-matrix-studio.user.js
+      - name: Package exact candidate
+        run: |
+          mkdir -p dist
+          cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
+          sha256sum dist/tessa-matrix-studio.user.js > dist/SHA256SUMS.txt
+          printf '{\n  "version": "1.13.0",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "exact-v1.13-live-uat-candidate"\n}\n' \
+            "$(git rev-parse HEAD)" "$(sha256sum dist/tessa-matrix-studio.user.js | awk '{print $1}')" > dist/candidate-manifest.json
+      - name: Upload exact candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tessa-matrix-studio-v1.13.0-final-candidate-${{ github.run_id }}
+          path: |
+            dist/tessa-matrix-studio.user.js
+            dist/SHA256SUMS.txt
+            dist/candidate-manifest.json
+          if-no-files-found: error
+          retention-days: 14

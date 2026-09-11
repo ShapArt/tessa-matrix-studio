@@ -17,7 +17,6 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
-      # Pin every external Action to an immutable commit SHA. Dependabot keeps the pins current.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
@@ -48,7 +47,14 @@ jobs:
           fi
 
           echo "Comparing latest published release $PREVIOUS_TAG with verified HEAD $(git rev-parse HEAD)."
-          if git diff --name-only "$PREVIOUS_TAG"..HEAD -- tessa-matrix-studio.user.js hotfixes/interval-add-valid-fallback.js hotfixes/malformed-range-diagnostic-transform.mjs package.json | grep -Eq '^(tessa-matrix-studio\.user\.js|hotfixes/interval-add-valid-fallback\.js|hotfixes/malformed-range-diagnostic-transform\.mjs|package\.json)$'; then
+          if git diff --name-only "$PREVIOUS_TAG"..HEAD -- \
+              tessa-matrix-studio.user.js \
+              hotfixes/interval-add-valid-fallback.js \
+              hotfixes/malformed-range-diagnostic-transform.mjs \
+              hotfixes/v1.13.0-user-row-lifecycle-transform.mjs \
+              hotfixes/full-uat-runner-v1.js \
+              hotfixes/v1.13.0-full-uat-live-finalize.mjs \
+              package.json | grep -Eq '^(tessa-matrix-studio\.user\.js|hotfixes/interval-add-valid-fallback\.js|hotfixes/malformed-range-diagnostic-transform\.mjs|hotfixes/v1\.13\.0-user-row-lifecycle-transform\.mjs|hotfixes/full-uat-runner-v1\.js|hotfixes/v1\.13\.0-full-uat-live-finalize\.mjs|package\.json)$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -105,21 +111,31 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           mkdir -p dist
 
-          # Compose the public userscript from the heavily-tested base source plus small,
-          # independently-tested production hotfixes. The numeric-range transform is a
-          # deterministic source rewrite; the interval recovery remains a runtime overlay.
           cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
           node hotfixes/malformed-range-diagnostic-transform.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.13.0-user-row-lifecycle-transform.mjs dist/tessa-matrix-studio.user.js
           sed -i -E "0,/^\/\/ @version[[:space:]]+[0-9.]+$/s//\/\/ @version      $VERSION/" dist/tessa-matrix-studio.user.js
           sed -i -E "0,/^[[:space:]]+version: '[0-9.]+'[,]$/s//    version: '$VERSION',/" dist/tessa-matrix-studio.user.js
           printf '\n' >> dist/tessa-matrix-studio.user.js
           cat hotfixes/interval-add-valid-fallback.js >> dist/tessa-matrix-studio.user.js
+          printf '\n' >> dist/tessa-matrix-studio.user.js
+          cat hotfixes/full-uat-runner-v1.js >> dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.13.0-full-uat-live-finalize.mjs dist/tessa-matrix-studio.user.js
 
           node --check dist/tessa-matrix-studio.user.js
           grep -Fqx "// @version      $VERSION" dist/tessa-matrix-studio.user.js
           grep -Fq "version: '$VERSION'," dist/tessa-matrix-studio.user.js
           grep -Fq "__TMS_INSTALL_INTERVAL_ADD_VALID_FALLBACK__" dist/tessa-matrix-studio.user.js
+          grep -Fq "__TMS_FULL_UAT_V1__" dist/tessa-matrix-studio.user.js
+          grep -Fq "DUPLICATE_IDENTITY_COPY_AS_ADD_V1" dist/tessa-matrix-studio.user.js
+          grep -Fq "LIVE_UAT_2026_09_11" dist/tessa-matrix-studio.user.js
+          grep -Fq "diagnosticNativeCardCache" dist/tessa-matrix-studio.user.js
+          grep -Fq "source: 'full-uat'" dist/tessa-matrix-studio.user.js
           grep -Fq "Numeric ranges have an exact grammar" dist/tessa-matrix-studio.user.js
+
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/user-copied-identity-regression.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/full-uat-runner-contract.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/live-uat-regressions.mjs
 
           awk 'BEGIN { emit=0 } /^\/\/ ==UserScript==/ { emit=1 } emit { print } /^\/\/ ==\/UserScript==/ { exit }' \
             dist/tessa-matrix-studio.user.js > dist/tessa-matrix-studio.meta.js
@@ -132,7 +148,13 @@ jobs:
             cd dist
             zip "tessa-matrix-studio-v$VERSION.zip" tessa-matrix-studio.user.js
           )
-          zip -g "dist/tessa-matrix-studio-v$VERSION.zip" README.md CHANGELOG.md SECURITY.md hotfixes/interval-add-valid-fallback.js hotfixes/malformed-range-diagnostic-transform.mjs
+          zip -g "dist/tessa-matrix-studio-v$VERSION.zip" \
+            README.md CHANGELOG.md SECURITY.md \
+            hotfixes/interval-add-valid-fallback.js \
+            hotfixes/malformed-range-diagnostic-transform.mjs \
+            hotfixes/v1.13.0-user-row-lifecycle-transform.mjs \
+            hotfixes/full-uat-runner-v1.js \
+            hotfixes/v1.13.0-full-uat-live-finalize.mjs
           (
             cd dist
             sha256sum \
@@ -222,6 +244,9 @@ jobs:
           grep -Fqx "// @downloadURL  $USER_URL" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
           grep -Fq "version: '$EXPECTED_VERSION'," "$PUBLIC_DIR/tessa-matrix-studio.user.js"
           grep -Fq "__TMS_INSTALL_INTERVAL_ADD_VALID_FALLBACK__" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "__TMS_FULL_UAT_V1__" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "DUPLICATE_IDENTITY_COPY_AS_ADD_V1" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "LIVE_UAT_2026_09_11" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
           grep -Fq "Numeric ranges have an exact grammar" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
           (
             cd "$PUBLIC_DIR"

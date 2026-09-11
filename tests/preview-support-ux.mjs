@@ -26,7 +26,7 @@ assert.equal(E.previewRoleTypeLabel(4), 'Контекстная');
 assert.equal(E.previewRoleTypeLabel(5), 'Метароль');
 assert.equal(E.previewRoleTypeLabel(6), 'Задача');
 assert.equal(E.previewRoleTypeLabel(7), 'SmartRole');
-assert.equal(E.previewRoleTypeLabel(9), 'RoleTypeID: 9', 'unknown/custom role types must not be guessed');
+assert.equal(E.previewRoleTypeLabel(9), 'Группа', 'live MtxRoles TypeName identifies RoleTypeID 9 as a group');
 assert.equal(E.previewRoleTypeLabel('custom'), 'RoleTypeID: custom');
 
 const plan = {

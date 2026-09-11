@@ -79,5 +79,5 @@ assert.match(liveMessage, /провер/i);
 assert.doesNotMatch(liveMessage, /Применено:\s*0/);
 
 assert.ok(code.includes("panel.querySelector('#tms-apply').addEventListener('click', () => applySelected(true))"), 'ordinary Apply must also verify writes');
-assert.ok(code.includes('APP.lastReconciliation = result.reconciliation;\n          finalizeApplyResult(result);'), 'UI must account for readback before reporting success');
+assert.ok(code.includes('APP.lastReconciliation = result.reconciliation;\n          finalizeCrossMatrixTransferVerification(result);\n          finalizeApplyResult(result);'), 'UI must apply transfer readback state before reporting final Apply success');
 console.log('Apply accounting separates accepted writes from post-write verification: OK');

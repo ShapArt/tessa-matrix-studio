@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.12.2
+// @version      1.13.0
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.12.2',
+    version: '1.13.0',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -1703,6 +1703,19 @@
   // точный ID, затем однозначное название. Неоднозначные значения не угадываются.
   // ---------------------------------------------------------------------------
 
+  function partnerRecordKeepingColumnIndex(columns) {
+    // Live Черкизово GchPartners exposes this as IsRecordKeeping (Boolean).
+    // Russian captions are accepted for compatible installations, but only by exact
+    // normalized field name: never guess from unrelated partner flags.
+    const accepted = new Set([
+      'isrecordkeeping',
+      'ведение делопроизводства',
+      'ведение дела производства',
+      'ведение дел производства',
+    ]);
+    return Array.from(columns || []).findIndex(column => accepted.has(searchCanonical(column)));
+  }
+
   function finalizeDictionaryEntries(entries) {
     const byIdentity = new Map();
     for (const source of entries || []) {
@@ -1781,7 +1794,7 @@
   }
 
   function normalizeDictionaryCatalog(catalog) {
-    if (!catalog) return { catalogs: {}, columnCatalogIds: {}, stats: { catalogs: 0, entries: 0, errors: [] } };
+    if (!catalog) return { catalogs: {}, columnCatalogIds: {}, stats: { catalogs: 0, entries: 0, errors: [], warnings: [] } };
     if (NORMALIZED_DICTIONARY_CATALOGS.has(catalog)) return catalog;
     for (const item of Object.values(catalog.catalogs || {})) { item.entries = finalizeDictionaryEntries(item.entries || []); DICTIONARY_LOOKUP_CACHE.delete(item); }
     const entries = Object.values(catalog.catalogs || {}).reduce((sum, item) => sum + item.entries.length, 0);
@@ -1789,6 +1802,7 @@
     catalog.stats.catalogs = Object.keys(catalog.catalogs || {}).length;
     catalog.stats.entries = entries;
     catalog.stats.errors = catalog.stats.errors || [];
+    catalog.stats.warnings = catalog.stats.warnings || [];
     NORMALIZED_DICTIONARY_CATALOGS.add(catalog);
     return catalog;
   }
@@ -1963,7 +1977,7 @@
       ...base,
       catalogs: { ...(base.catalogs || {}) },
       columnCatalogIds: { ...(base.columnCatalogIds || {}) },
-      stats: { ...(base.stats || {}), errors: [...(base.stats?.errors || [])] },
+      stats: { ...(base.stats || {}), errors: [...(base.stats?.errors || [])], warnings: [...(base.stats?.warnings || [])] },
     };
     for (const [catalogId, changes] of changesByCatalog.entries()) {
       const source = base.catalogs[catalogId];
@@ -4044,6 +4058,7 @@
       if (roleMode && roleTypeIndex < 0 && rows.some(row => row.length > columns.length && Number.isFinite(Number(row[row.length - 1])))) roleTypeIndex = Math.max(...rows.map(row => row.length)) - 1;
       const hiddenIndex = columns.findIndex(alias => /(?:^|Is)Hidden$|Disabled$/i.test(String(alias)));
       const activeIndex = columns.findIndex(alias => /(?:^|Is)Active$/i.test(String(alias)));
+      const recordKeepingIndex = options.recordKeepingOnly ? partnerRecordKeepingColumnIndex(columns) : -1;
       const entries = [];
       for (const row of rows) {
         const id = row[idIndex];
@@ -4053,6 +4068,7 @@
         const hidden = hiddenIndex >= 0 && [true, 1, '1', 'true'].includes(row[hiddenIndex]);
         const inactive = activeIndex >= 0 && [false, 0, '0', 'false'].includes(row[activeIndex]);
         if (hidden || inactive) continue;
+        if (options.recordKeepingOnly && recordKeepingIndex >= 0 && booleanSemantic(row[recordKeepingIndex]) !== true) continue;
         const roleTypeId = roleTypeIndex >= 0 && row[roleTypeIndex] !== null && row[roleTypeIndex] !== undefined && row[roleTypeIndex] !== '' ? Number(row[roleTypeIndex]) : '';
         const details = columns.map((alias, index) => {
           if (index === idIndex || index === displayIndex || index === roleTypeIndex) return '';
@@ -4090,7 +4106,7 @@
         await deleteDictionaryCache(cacheKey);
       }
 
-      const catalog = { catalogs: {}, columnCatalogIds: {}, stats: { catalogs: 0, entries: 0, errors: [] } };
+      const catalog = { catalogs: {}, columnCatalogIds: {}, stats: { catalogs: 0, entries: 0, errors: [], warnings: [] } };
       const criterionGroups = new Map();
       for (const condition of structure.conditions) {
         const operand = canonicalValue(condition.operandTypeId);
@@ -4121,7 +4137,20 @@
           const result = await query(group.alias);
           if (result.error) catalog.stats.errors.push(`${group.alias}: ${String(result.error).split('\n')[0]}`);
           else {
-            try { projection = this.dictionaryProjection(result, { refSection: group.conditions[0].refSection }); entries = this.extractDictionaryEntries(result, { wantedKind: group.wantedKind, refSection: group.conditions[0].refSection }); sourceCount = entries.length; }
+            try {
+              projection = this.dictionaryProjection(result, { refSection: group.conditions[0].refSection });
+              const recordKeepingPartner = canonicalValue(group.alias) === 'gchpartners';
+              const recordKeepingIndex = recordKeepingPartner ? partnerRecordKeepingColumnIndex(result.columns) : -1;
+              if (recordKeepingPartner && recordKeepingIndex < 0) {
+                catalog.stats.warnings.push(`${label}: в GchPartners не найден Boolean-флаг IsRecordKeeping (Ведение делопроизводства). Справочник оставлен без фильтра, чтобы не потерять допустимые ЮЛ.`);
+              }
+              entries = this.extractDictionaryEntries(result, {
+                wantedKind: group.wantedKind,
+                refSection: group.conditions[0].refSection,
+                recordKeepingOnly: recordKeepingPartner && recordKeepingIndex >= 0,
+              });
+              sourceCount = entries.length;
+            }
             catch (error) { catalog.stats.errors.push(`${label}: ${error.message}`); }
             if (result.truncated) catalog.stats.errors.push(`${group.alias}: получено ${result.rows.length} из ${result.rowCount}; словарь неполный`);
           }
@@ -4297,7 +4326,10 @@
         }
       }
 
-      return { ...link, card, values, roles, flat, fingerprint: fingerprintFlat(flat) };
+      // Snapshot rows cross the bridge into planner/Excel/cache code. Keep them plain:
+      // a live TESSA Card contains EventHandler back-references (fieldChanged._sender)
+      // and must never enter serializable application state.
+      return { ...link, values, roles, flat, fingerprint: fingerprintFlat(flat) };
     }
 
     async loadSnapshot(structure) {
@@ -5822,11 +5854,97 @@
     };
   }
 
-  function buildPlan(workbook, structure, snapshot) {
+  function foreignDesiredRow(row) {
+    return {
+      ...row,
+      system: {
+        ...(row?.system || {}),
+        action: 'keep',
+        rowCardId: '',
+        versionId: '',
+        baseFingerprint: '',
+      },
+    };
+  }
+
+  function buildCrossMatrixReplacementPlan(workbook, structure, snapshot, columnMap, desired) {
+    const actions = [];
+    const issues = [];
+    const warnings = [];
+    const usedCurrent = new Set();
+    const desiredRows = (desired || []).filter(row => row?.hasData).map(foreignDesiredRow);
+    const currentBySemanticKey = new Map();
+    for (const currentRow of snapshot?.rows || []) {
+      const key = duplicateRowKey(currentRow, null, structure);
+      if (!currentBySemanticKey.has(key)) currentBySemanticKey.set(key, []);
+      currentBySemanticKey.get(key).push(currentRow);
+    }
+  
+    const desiredBySemanticKey = new Map();
+    for (const excelRow of desiredRows) {
+      const key = duplicateRowKey(null, excelRow, structure);
+      if (!desiredBySemanticKey.has(key)) desiredBySemanticKey.set(key, []);
+      desiredBySemanticKey.get(key).push(excelRow);
+    }
+    const duplicateDesired = [...desiredBySemanticKey.values()].filter(rows => rows.length > 1);
+    if (duplicateDesired.length) {
+      issues.push(`Перенос заблокирован: в Excel есть ${duplicateDesired.length} групп полностью одинаковых строк. Итоговая матрица должна содержать уникальные строки.`);
+      return { actions: [], issues, warnings, skippedRows: [], usedCurrent, desiredRows };
+    }
+  
+    for (const excelRow of desiredRows) {
+      const key = duplicateRowKey(null, excelRow, structure);
+      const matches = (currentBySemanticKey.get(key) || []).filter(currentRow => {
+        const identity = canonicalValue(currentRow.versionId || currentRow.rowCardId || '');
+        return identity && !usedCurrent.has(identity);
+      });
+      if (matches.length > 1) {
+        issues.push('Перенос заблокирован: текущая матрица содержит несколько семантически одинаковых строк для одной строки Excel. Нельзя выбрать строку для сохранения без догадки.');
+        continue;
+      }
+      if (matches.length === 1) {
+        const currentRow = matches[0];
+        const identity = canonicalValue(currentRow.versionId || currentRow.rowCardId || '');
+        if (identity) usedCurrent.add(identity);
+        actions.push({
+          type: 'noop', excelRow, currentRow, changes: [],
+          match: { matchedBy: 'cross-matrix-replace-keep', lowConfidence: false },
+          expectedFingerprint: currentRow.fingerprint,
+        });
+        continue;
+      }
+      actions.push({
+        type: 'add', excelRow, currentRow: null, changes: [],
+        match: { matchedBy: 'cross-matrix-replace-add', lowConfidence: false },
+        expectedFingerprint: null,
+      });
+    }
+  
+    if (issues.length) return { actions: [], issues, warnings, skippedRows: [], usedCurrent, desiredRows };
+  
+    for (const currentRow of snapshot?.rows || []) {
+      const identity = canonicalValue(currentRow.versionId || currentRow.rowCardId || '');
+      if (identity && usedCurrent.has(identity)) continue;
+      actions.push({
+        type: 'delete', excelRow: null, currentRow, changes: [],
+        match: { matchedBy: 'cross-matrix-replace-delete', lowConfidence: false },
+        expectedFingerprint: currentRow.fingerprint,
+      });
+    }
+    return { actions, issues, warnings, skippedRows: [], usedCurrent, desiredRows };
+  }
+
+  function buildPlan(workbook, structure, snapshot, matrixInfo = null) {
     const columnMap = buildColumnMap(workbook, structure);
     const desired = workbookRowsToDesired(workbook, columnMap);
+    const workbookContext = columnMap.mode === 'roundtrip' && matrixInfo
+      ? classifyWorkbookContext(workbook, matrixInfo)
+      : null;
+    const isCrossMatrixReplacement = workbookContext?.kind === 'same-template-foreign-matrix';
     const built = columnMap.mode === 'roundtrip'
-      ? buildRoundtripPlan(workbook, structure, snapshot, columnMap, desired)
+      ? (isCrossMatrixReplacement
+          ? buildCrossMatrixReplacementPlan(workbook, structure, snapshot, columnMap, desired)
+          : buildRoundtripPlan(workbook, structure, snapshot, columnMap, desired))
       : buildLegacyPlan(workbook, structure, snapshot, columnMap, desired);
 
     // An unambiguous UPDATE can preserve a bad cell without discarding unrelated
@@ -5924,7 +6042,13 @@
       fatalIssues.push('В Excel нет ни одной заполненной строки. Пустые строки старого шаблона игнорируются. Скачайте актуальный Excel из открытой матрицы и добавляйте строки в него.');
     }
 
-    const warnings = [...columnMap.warnings, ...(built.warnings || [])];
+    const rawWarnings = [...columnMap.warnings, ...(built.warnings || [])];
+    const warnings = isCrossMatrixReplacement
+      ? rawWarnings.map(text => String(text).replace(
+          'Они сохранят текущие значения; для редактирования нажмите «Обновить Excel-схему».',
+          'При переносе для новых строк эти поля останутся пустыми или получат значение TESSA по умолчанию; перед применением они будут проверены.'
+        ))
+      : rawWarnings;
     if (idempotentExistingAdds.excelRows.length) {
       warnings.push(`Уже существуют в TESSA и считаются без изменений: Excel ${idempotentExistingAdds.excelRows.join(', ')}. Повторная запись не выполняется.`);
     }
@@ -5956,6 +6080,14 @@
       skippedFields,
       warnings,
       counts: countActions(actions, skippedRows),
+      workbookContext,
+      crossMatrixReplacement: isCrossMatrixReplacement ? {
+        enabled: true,
+        sourceMatrixId: workbook?.roundtrip?.matrixId || null,
+        targetMatrixId: snapshot?.matrixId || null,
+        sourceMatrixName: normalizeSpace(workbook?.metadata?.['Наименование матрицы'] || workbook?.metadata?.['Тип матрицы'] || ''),
+        targetMatrixName: normalizeSpace(matrixInfo?.Name || matrixInfo?.TemplateName || ''),
+      } : null,
     };
 
     // Защита от случайного массового удаления теперь не блокирует полезные UPDATE/ADD:
@@ -6242,6 +6374,11 @@
     if (localizedDuplicates.unresolvedIssues.length) {
       safety.blocked = true;
       safety.blockedReasons = [...new Set([...safety.blockedReasons, ...localizedDuplicates.unresolvedIssues])];
+    }
+    const replacementIntegrity = crossMatrixReplacementIntegrity(reviewed);
+    if (replacementIntegrity.blocked) {
+      safety.blocked = true;
+      safety.blockedReasons = [...new Set([...safety.blockedReasons, replacementIntegrity.reason])];
     }
     reviewed.safety = safety;
     reviewed.reviewIssues = [...new Set([...localizedDuplicates.localizedIssues, ...localizedDuplicates.unresolvedIssues])];
@@ -6645,6 +6782,25 @@
     return plan;
   }
 
+  function classifyWorkbookContext(workbook, matrixInfo) {
+    const workbookMatrixId = canonicalValue(workbook?.roundtrip?.matrixId || '');
+    const currentMatrixId = canonicalValue(matrixInfo?.matrixId || '');
+    const workbookTemplateId = canonicalValue(workbook?.roundtrip?.templateId || '');
+    const currentTemplateId = canonicalValue(matrixInfo?.TemplateID || matrixInfo?.templateId || '');
+    const previousMatrixId = canonicalValue(matrixInfo?.PreviousVersionID || matrixInfo?.previousVersionId || '');
+    const details = { workbookMatrixId, currentMatrixId, workbookTemplateId, currentTemplateId, previousMatrixId };
+    if (!workbook?.roundtrip?.enabled) return { kind: 'invalid-roundtrip', ...details };
+    // Cross-matrix replacement is destructive. Template equality alone is never
+    // sufficient evidence of source/target identity: both matrix IDs must exist.
+    if (!workbookMatrixId || !currentMatrixId) return { kind: 'invalid-roundtrip', ...details };
+    if (!workbookTemplateId || !currentTemplateId || workbookTemplateId !== currentTemplateId) {
+      return { kind: 'foreign-template', ...details };
+    }
+    if (workbookMatrixId && workbookMatrixId === currentMatrixId) return { kind: 'same-matrix', ...details };
+    if (workbookMatrixId && workbookMatrixId === previousMatrixId) return { kind: 'previous-version', ...details };
+    return { kind: 'same-template-foreign-matrix', ...details };
+  }
+
   function evaluatePlanSafety(plan, bridge) {
     const matrixInfo = bridge.matrixInfo();
     const stateLocalizer = typeof bridge?.localizeValue === 'function' ? bridge.localizeValue.bind(bridge) : null;
@@ -6661,8 +6817,9 @@
     // Только ошибки уровня файла/контекста блокируют весь пакет. Ошибки отдельных строк
     // уже вынесены в plan.skippedRows и не мешают корректным операциям.
     if (!isWritableMatrixDraft(matrixInfo, stateLocalizer)) {
+      // Non-draft state blocks every write, but it is still safe and useful to show
+      // the calculated read-only diff. Only file/context integrity failures suppress Preview.
       blockedReasons.push(`Открыта матрица в состоянии «${matrixStateCaption(matrixInfo, stateLocalizer)}». Изменения возможны только в черновике.`);
-      suppressUnsafePreview = true;
     }
 
     if (plan.mode === 'roundtrip') {
@@ -6670,20 +6827,12 @@
         blockedReasons.push('Не удалось распознать формат Excel. Скачайте новый файл из открытой матрицы и перенесите изменения в него.');
         suppressUnsafePreview = true;
       }
-      const workbookTemplateId = canonicalValue(plan.workbook.roundtrip?.templateId);
-      const currentTemplateId = canonicalValue(matrixInfo.TemplateID);
-      if (!workbookTemplateId || workbookTemplateId !== currentTemplateId) {
+      const workbookContext = classifyWorkbookContext(plan.workbook, matrixInfo);
+      if (workbookContext.kind === 'foreign-template') {
         blockedReasons.push('Файл выгружен из другого шаблона матрицы TESSA.');
         suppressUnsafePreview = true;
-      }
-
-      const workbookMatrixId = canonicalValue(plan.workbook.roundtrip?.matrixId);
-      const currentMatrixId = canonicalValue(matrixInfo.matrixId);
-      const currentPreviousId = canonicalValue(matrixInfo.PreviousVersionID);
-      const sameMatrix = Boolean(workbookMatrixId && workbookMatrixId === currentMatrixId);
-      const exportedFromPreviousVersion = Boolean(workbookMatrixId && workbookMatrixId === currentPreviousId);
-      if (!sameMatrix && !exportedFromPreviousVersion) {
-        blockedReasons.push('Excel относится к другой карточке матрицы. Скачайте свежий Excel из открытой матрицы.');
+      } else if (workbookContext.kind === 'invalid-roundtrip') {
+        blockedReasons.push('Не удалось определить контекст выгрузки Excel. Скачайте новый файл из TESSA.');
         suppressUnsafePreview = true;
       }
 
@@ -6731,6 +6880,8 @@
       deleteGuard: deletionGuard(plan),
       roundtripMatrixId: plan.workbook.roundtrip?.matrixId || null,
       roundtripTemplateId: plan.workbook.roundtrip?.templateId || null,
+      workbookContext: plan.mode === 'roundtrip' ? classifyWorkbookContext(plan.workbook, matrixInfo) : null,
+      crossMatrixReplacement: plan.mode === 'roundtrip' && classifyWorkbookContext(plan.workbook, matrixInfo).kind === 'same-template-foreign-matrix',
     };
   }
 
@@ -6771,7 +6922,7 @@
     const snapshot = canReuseSnapshot ? cachedSnapshot : await bridge.loadSnapshot(structure);
     setProgress(55, '4/6 · Сопоставляю Excel и TESSA', `${snapshot.rows.length} строк в TESSA`);
     log(`Текущее состояние TESSA: ${snapshot.rows.length} строк${canReuseSnapshot ? ' (из текущей сессии)' : ''}.`);
-    const plan = buildPlan(workbook, structure, snapshot);
+    const plan = buildPlan(workbook, structure, snapshot, bridge.matrixInfo());
     setProgress(62, '5/6 · Проверяю безопасность', 'Дубли, права, удаления и неоднозначности');
     plan.safety = evaluatePlanSafety(plan, bridge);
     plan.matrixInfo = plan.safety.matrixInfo;
@@ -6819,7 +6970,8 @@
     const detail = visible
       ? `Корректных изменений: ${visible}${skipped ? ` · пропустить строк: ${skipped}` : ''}${previewPlan.skippedFields?.length ? ` · не применяются поля: ${previewPlan.skippedFields.length}` : ''}`
       : (skipped ? `Нет изменений для применения · пропущено строк: ${skipped}` : 'Изменений нет');
-    setProgress(100, 'Проверка завершена', detail);
+    const atomicReplacementReason = previewPlan.preflightPreview?.atomicReplacementReason || null;
+    setProgress(100, atomicReplacementReason ? 'Перенос заблокирован' : 'Проверка завершена', atomicReplacementReason || detail);
     return previewPlan;
   }
 
@@ -6929,6 +7081,28 @@
     return skipped;
   }
 
+  // ATOMIC_CROSS_MATRIX_REPLACEMENT_PREVIEW_V1
+  function crossMatrixReplacementIntegrity(plan, extraSkippedRows = []) {
+    if (!plan?.crossMatrixReplacement?.enabled) return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0, reviewExcludedCount: 0 };
+    const skippedRows = [...(plan.skippedRows || []), ...(extraSkippedRows || [])];
+    const skippedFieldCount = (plan.skippedFields || []).length;
+    const reviewExcludedCount = (plan.actions || []).filter(action => Boolean(action?.reviewExcluded)).length;
+    if (!skippedRows.length && !skippedFieldCount && !reviewExcludedCount) {
+      return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0, reviewExcludedCount: 0 };
+    }
+    const pieces = [];
+    if (skippedRows.length) pieces.push(`${skippedRows.length} строк не могут быть перенесены`);
+    if (skippedFieldCount) pieces.push(`${skippedFieldCount} полей нельзя применить`);
+    if (reviewExcludedCount) pieces.push(`${reviewExcludedCount} операций исключены вручную`);
+    return {
+      blocked: true,
+      skippedCount: skippedRows.length,
+      skippedFieldCount,
+      reviewExcludedCount,
+      reason: `Перенос из другой матрицы неполный: ${pieces.join(' и ')}. Для полного переноса частичное применение запрещено: ни добавление, ни удаление строк TESSA не начнётся. Исправьте все ошибки исходного Excel и верните все операции в выбранный набор, затем повторите проверку.`,
+    };
+  }
+
   function applyPreflightPreview(plan, preflight) {
     if (!plan) return plan;
     const skippedActions = preflight?.runtimeSkippedActions instanceof Set
@@ -6951,11 +7125,21 @@
     }
     const serverAddValidationSkipped = Boolean(preflight?.previewPolicy?.skipServerAddValidation);
     if (serverAddValidationSkipped && preflight?.previewPolicy?.reason) warnings.push(preflight.previewPolicy.reason);
+    const replacementIntegrity = crossMatrixReplacementIntegrity({ ...plan, skippedRows });
+    const safety = plan.safety
+      ? { ...plan.safety, blockedReasons: [...(plan.safety.blockedReasons || [])] }
+      : { blocked: false, blockedReasons: [], suppressUnsafePreview: false };
+    if (replacementIntegrity.blocked) {
+      safety.blocked = true;
+      safety.blockedReasons = [...new Set([...safety.blockedReasons, replacementIntegrity.reason])];
+      if (!warnings.includes(replacementIntegrity.reason)) warnings.push(replacementIntegrity.reason);
+    }
     return {
       ...plan,
       actions,
       skippedRows,
       warnings,
+      safety,
       counts: countActions(actions, skippedRows),
       preflightPreview: {
         validated: true,
@@ -6964,9 +7148,69 @@
         executableCount: actions.filter(action => action.type !== 'noop').length,
         serverAddValidationSkipped,
         applyBlockedByBatch: Boolean(preflight?.previewPolicy?.applyBlocked),
+        atomicReplacementBlocked: replacementIntegrity.blocked,
+        atomicReplacementReason: replacementIntegrity.reason,
         validatedAt: nowIso(),
       },
     };
+  }
+
+  // LIVE_ASSIGNABLE_ROLE_INDEX_CACHE_V1
+  const LIVE_ASSIGNABLE_ROLE_INDEX_CACHE = new WeakMap();
+
+  // LIVE_ASSIGNABLE_ROLE_PREFLIGHT_V1
+  // A roundtrip workbook may legitimately preserve historical role identities from its
+  // source matrix. Those identities are safe to keep on an existing row, but a NEW row
+  // must reference a RoleID that exists in the current target TESSA Roles domain.
+  // Snapshot overlays are therefore not sufficient evidence for ADD eligibility.
+  function assertAddRoleIdentitiesAvailable(action, structure, dictionaryCatalog) {
+    if (!action || !dictionaryCatalog) return;
+    for (const fn of structure.functions || []) {
+      const column = action.excelRow?.columns?.get?.(fn.id);
+      if (!column) continue;
+      const displays = action.excelRow.flat?.[column.key] || [];
+      const ids = action.excelRow.ids?.[column.key] || [];
+      if (!displays.length) continue;
+
+      const catalogId = dictionaryCatalog.columnCatalogIds?.[definitionKey('function', fn.id)];
+      const roleCatalog = catalogId ? dictionaryCatalog.catalogs?.[catalogId] : null;
+      if (!roleCatalog) {
+        throw new Error(`Не удалось подтвердить актуальный справочник ролей для функции «${fn.name}». Запись новой строки остановлена до Store.`);
+      }
+
+      // loadDictionaryCatalog() merges current matrix snapshot values into the catalog
+      // to preserve historical selectors. For ADD they are deliberately excluded here:
+      // only identities actually returned by the current MtxRoles view are assignable.
+      let byId = LIVE_ASSIGNABLE_ROLE_INDEX_CACHE.get(roleCatalog);
+      if (!byId) {
+        byId = new Map();
+        for (const entry of roleCatalog.entries || []) {
+          if (canonicalValue(entry?.source || roleCatalog.sourceView || '') !== 'mtxroles') continue;
+          if (canonicalValue(entry?.status || '') === canonicalValue('Текущее значение')) continue;
+          const id = canonicalValue(entry?.id || '');
+          if (!id) continue;
+          if (!byId.has(id)) byId.set(id, []);
+          byId.get(id).push(entry);
+        }
+        LIVE_ASSIGNABLE_ROLE_INDEX_CACHE.set(roleCatalog, byId);
+      }
+      if (!byId.size) {
+        throw new Error(`Актуальный MtxRoles для функции «${fn.name}» пуст или недоступен. Запись новой строки остановлена до Store.`);
+      }
+
+      displays.forEach((display, index) => {
+        const explicit = String(ids[index] || '').trim();
+        if (!explicit) return; // hydrateMissingIdsForAction handles genuinely missing IDs.
+        const [rawId = '', rawType = ''] = explicit.split('|').map(value => value.trim());
+        const id = canonicalValue(rawId);
+        const roleTypeId = canonicalValue(rawType);
+        const candidates = byId.get(id) || [];
+        const exact = candidates.find(entry => !roleTypeId || canonicalValue(entry.roleTypeId) === roleTypeId);
+        if (exact) return;
+        const typeSuffix = rawType ? `, RoleTypeID=${rawType}` : '';
+        throw new Error(`Роль «${display}» (RoleID=${rawId}${typeSuffix}) недоступна в актуальном MtxRoles текущей TESSA. Старый/чужой ID нельзя вставить в новую строку. Обновите справочники и выберите актуального исполнителя.`);
+      });
+    }
   }
 
   async function preflightPlan(plan, options = {}) {
@@ -6992,6 +7236,19 @@
     if (plan.templateId && canonicalValue(plan.templateId) !== canonicalValue(fresh.templateId || structure.templateId)) {
       throw new Error('Шаблон матрицы изменился. Нажмите «Проверить изменения» ещё раз.');
     }
+    let liveAddRoleCatalog = options.liveAddRoleCatalog || null;
+    let liveAddRoleCatalogError = null;
+    const needsAddRoleValidation = (plan.actions || []).some(action => action.type === 'add');
+    if (needsAddRoleValidation && !liveAddRoleCatalog && typeof bridge.loadDictionaryCatalog === 'function') {
+      try {
+        preflightProgress(20, 'Проверяю актуальные роли', 'Сверяю RoleID новых строк с текущим MtxRoles');
+        liveAddRoleCatalog = await awaitPreflightAbortable(bridge.loadDictionaryCatalog(structure, fresh, { forceRefresh: true, transient: true }));
+      } catch (error) {
+        if (isPreflightAbortError(error)) throw error;
+        liveAddRoleCatalogError = error;
+      }
+    }
+
     const freshByVersion = new Map(fresh.rows.map(row => [canonicalValue(row.versionId), row]));
     const freshByCard = new Map(fresh.rows.map(row => [canonicalValue(row.rowCardId), row]));
     const runtimeSkips = [];
@@ -7115,6 +7372,10 @@
           }
         }
         await awaitPreflightAbortable(hydrateMissingIdsForAction(action, structure, fresh, bridge));
+        if (liveAddRoleCatalogError) {
+          throw new Error(`Не удалось перечитать актуальный MtxRoles перед добавлением строки: ${liveAddRoleCatalogError.message || liveAddRoleCatalogError}`);
+        }
+        if (liveAddRoleCatalog) assertAddRoleIdentitiesAvailable(action, structure, liveAddRoleCatalog);
         for (const condition of structure.conditions) {
           const column = action.excelRow.columns.get(condition.criterionRowId);
           if (!column) continue;
@@ -7419,13 +7680,155 @@
   }
 
 
+  function replacementConfirmationModel(plan) {
+    if (!plan?.crossMatrixReplacement?.enabled) return null;
+    const counts = countActions(plan.actions || [], plan.skippedRows || []);
+    const source = plan.crossMatrixReplacement || {};
+    return {
+      title: 'Перенос из другой матрицы',
+      sourceMatrixId: source.sourceMatrixId || null,
+      targetMatrixId: source.targetMatrixId || plan.matrixId || null,
+      sourceMatrixName: normalizeSpace(source.sourceMatrixName || '') || 'Исходная матрица',
+      targetMatrixName: normalizeSpace(source.targetMatrixName || '') || 'Открытая матрица',
+      keepCount: counts.noop || 0,
+      addCount: counts.add || 0,
+      deleteCount: counts.delete || 0,
+      skipCount: counts.skip || 0,
+      retiredColumnCount: plan.columnMap?.retiredColumns?.length || 0,
+      missingCurrentColumnCount: plan.columnMap?.missingCurrentColumns?.length || 0,
+      warning: 'Excel относится к другой карточке того же шаблона. После проверки Studio перенесёт желаемые строки в открытую матрицу; лишние строки открытой матрицы будут удалены. Чужие служебные ID из Excel не используются как цели записи.',
+    };
+  }
+
+  function confirmCrossMatrixReplacement(plan, doc = document) {
+    const model = replacementConfirmationModel(plan);
+    if (!model) return Promise.resolve(true);
+    if (!doc?.createElement || !(doc.body || doc.documentElement)) {
+      return Promise.resolve(Boolean(window.confirm(`${model.title}\n\n${model.warning}\n\nДобавить ${model.addCount}\nУдалить ${model.deleteCount}\nСохранить без изменений ${model.keepCount}`)));
+    }
+    doc.querySelector?.('#tms-replacement-confirm')?.remove?.();
+    return new Promise(resolve => {
+      const overlay = doc.createElement('div');
+      overlay.id = 'tms-replacement-confirm';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-labelledby', 'tms-replacement-confirm-title');
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.46);display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box';
+      const card = doc.createElement('div');
+      card.style.cssText = 'width:min(560px,100%);max-height:90vh;overflow:auto;background:#fff;color:#242424;border-radius:10px;box-shadow:0 18px 60px rgba(0,0,0,.3);padding:20px;font:13px/1.45 Arial,sans-serif';
+      card.innerHTML = `<h2 id="tms-replacement-confirm-title" style="margin:0 0 12px;font-size:18px">${escapeHtml(model.title)}</h2>
+        <p style="margin:0 0 14px">${escapeHtml(model.warning)}</p>
+        <div style="display:grid;gap:6px;padding:12px;background:#f5f6f7;border-radius:7px;margin-bottom:12px">
+          <div><b>Источник:</b> ${escapeHtml(model.sourceMatrixName)}</div>
+          <div><b>Цель:</b> ${escapeHtml(model.targetMatrixName)}</div>
+          <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:5px"><b>Сохранить ${model.keepCount}</b><b>Добавить ${model.addCount}</b><b>Удалить ${model.deleteCount}</b>${model.skipCount ? `<b>Пропустить ${model.skipCount}</b>` : ''}</div>
+        </div>
+        ${(model.retiredColumnCount || model.missingCurrentColumnCount) ? `<p style="margin:0 0 14px"><b>Изменения структуры:</b> архивных колонок ${model.retiredColumnCount}; новых/отсутствующих в Excel ${model.missingCurrentColumnCount}.</p>` : ''}
+        <p style="margin:0 0 16px"><b>Это замена содержимого открытой матрицы.</b> Перед удалением старых строк новый набор должен пройти проверки и сохранение.</p>
+        <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap"><button type="button" id="tms-replacement-confirm-cancel">Отмена</button><button type="button" id="tms-replacement-confirm-yes"><b>Да, выполнить перенос</b></button></div>`;
+      overlay.appendChild(card);
+      (doc.body || doc.documentElement).appendChild(overlay);
+      let settled = false;
+      const finish = value => {
+        if (settled) return;
+        settled = true;
+        doc.removeEventListener?.('keydown', onKeyDown, true);
+        overlay.remove?.();
+        resolve(Boolean(value));
+      };
+      const onKeyDown = event => {
+        if (event?.key === 'Escape') finish(false);
+      };
+      doc.addEventListener?.('keydown', onKeyDown, true);
+      card.querySelector('#tms-replacement-confirm-cancel')?.addEventListener('click', () => finish(false));
+      card.querySelector('#tms-replacement-confirm-yes')?.addEventListener('click', () => finish(true));
+      overlay.addEventListener('click', event => { if (event.target === overlay) finish(false); });
+      card.querySelector('#tms-replacement-confirm-cancel')?.focus?.();
+    });
+  }
+
   /**
    * Применяет только заранее построенный и прошедший preflight план.
    * Каждая операция верифицируется отдельно; при частичной ошибке остальные строки
    * не маскируются как успешные, а результат сохраняется в JSON-отчёт.
    */
+  async function verifyCrossMatrixRollback(bridge, structure, createdRows, options = {}) {
+    const versionIds = new Set((createdRows || [])
+      .map(row => canonicalValue(row?.versionId || ''))
+      .filter(Boolean));
+    if (!versionIds.size) {
+      return { status: 'verified', checkedCount: 0, lingeringCount: 0, attempts: 0 };
+    }
+
+    const maxAttempts = Math.max(1, Math.min(5, Number(options.attempts) || 3));
+    const baseDelayMs = Math.max(0, Number(options.baseDelayMs ?? 100));
+    let last = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      if (attempt > 1 && baseDelayMs) await sleep(baseDelayMs * (2 ** (attempt - 2)));
+      try {
+        const snapshot = await bridge.loadSnapshot(structure);
+        const lingering = (snapshot?.rows || []).filter(row =>
+          versionIds.has(canonicalValue(row?.versionId || '')));
+        last = {
+          status: lingering.length ? 'divergent' : 'verified',
+          checkedCount: versionIds.size,
+          lingeringCount: lingering.length,
+          attempts: attempt,
+        };
+        if (!lingering.length) return last;
+      } catch (error) {
+        last = {
+          status: 'incomplete',
+          checkedCount: versionIds.size,
+          lingeringCount: null,
+          attempts: attempt,
+          reason: friendlyErrorMessage(error),
+          retryable: isWriterLockError(error),
+        };
+        if (!last.retryable) return last;
+      }
+    }
+    return last || { status: 'incomplete', checkedCount: versionIds.size, lingeringCount: null, attempts: 0, reason: 'rollback-readback-unavailable' };
+  }
+
+  function finalizeCrossMatrixTransferVerification(result) {
+    const transfer = result?.crossMatrixTransfer;
+    if (!transfer) return result;
+    const terminal = new Set(['verified', 'unsafe', 'rolled-back', 'preflight-blocked']);
+    if (terminal.has(transfer.status)) return result;
+    if (transfer.status !== 'awaiting-verification') return result;
+
+    const reconciliation = result?.reconciliation || null;
+    const expected = Math.max(0, Number(transfer.acceptedMutationCount || 0));
+    const verified = Math.max(0, Number(reconciliation?.verifiedCount || 0));
+    const divergent = Math.max(0, Number(reconciliation?.divergentCount || 0));
+    const missing = Math.max(0, Number(reconciliation?.missingCount || 0));
+    const unknown = Math.max(0, Number(reconciliation?.unknownCount || 0));
+    transfer.verification = {
+      status: reconciliation?.status || 'incomplete',
+      expectedCount: expected,
+      verifiedCount: verified,
+      divergentCount: divergent,
+      missingCount: missing,
+      unknownCount: unknown,
+    };
+    if (reconciliation?.status === 'verified' && verified === expected && divergent === 0 && missing === 0 && unknown === 0) {
+      transfer.status = 'verified';
+      result.verificationIncomplete = false;
+    } else if (reconciliation?.status === 'divergent' || divergent > 0 || missing > 0) {
+      transfer.status = 'unsafe';
+      result.verificationIncomplete = true;
+    } else {
+      transfer.status = 'incomplete';
+      result.verificationIncomplete = true;
+    }
+    return result;
+  }
+
   async function applyPlan(plan) {
     if (!plan) throw new Error('Сначала проверьте Excel.');
+    const replacementIntegrity = crossMatrixReplacementIntegrity(plan);
+    if (replacementIntegrity.blocked) throw new Error(replacementIntegrity.reason);
     if (plan?.safety?.blocked) throw new Error(`Файл нельзя применить: ${plan.safety.blockedReasons.join(' ')}`);
     const executable = (plan.actions || []).filter(action => action.type !== 'noop');
     if (!executable.length) throw new Error(plan.skippedRows?.length ? 'Нет корректных изменений для применения: все изменяемые строки будут пропущены.' : 'Изменений для применения нет.');
@@ -7442,8 +7845,13 @@
       if (!okLow) return null;
     }
     const c = plan.counts;
-    const ok = window.confirm(`Применить корректные изменения к TESSA?\n\nИзменить: ${c.update}\nДобавить: ${c.add}\nУдалить: ${c.delete}\nПропустить: ${c.skip || 0}${plan.skippedFields?.length ? `\nОставить без изменения отдельных полей: ${plan.skippedFields.length}` : ''}\n\nОшибочные строки и указанные в Preview поля не будут применены.`);
-    if (!ok) return null;
+    if (plan.crossMatrixReplacement?.enabled) {
+      const transferConfirmed = await confirmCrossMatrixReplacement(plan);
+      if (!transferConfirmed) return null;
+    } else {
+      const ok = window.confirm(`Применить корректные изменения к TESSA?\n\nИзменить: ${c.update}\nДобавить: ${c.add}\nУдалить: ${c.delete}\nПропустить: ${c.skip || 0}${plan.skippedFields?.length ? `\nОставить без изменения отдельных полей: ${plan.skippedFields.length}` : ''}\n\nОшибочные строки и указанные в Preview поля не будут применены.`);
+      if (!ok) return null;
+    }
     APP.abortRequested = false;
     APP.lastMutationReceipts = null;
     APP.lastReconciliation = null;
@@ -7483,6 +7891,14 @@
       return result;
     }
     const { bridge, structure, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips } = preflight;
+    const isCrossMatrixTransfer = Boolean(plan.crossMatrixReplacement?.enabled);
+    const crossMatrixPreflightBlocked = isCrossMatrixTransfer && runtimeSkips.length > 0;
+    const successfulCrossMatrixAdds = [];
+    const attemptedCrossMatrixAdds = [];
+    let crossMatrixAddFailed = false;
+    let blockCrossMatrixDeletes = crossMatrixPreflightBlocked;
+    let crossMatrixDeleteFailed = false;
+    let crossMatrixTargetDeletesSucceeded = 0;
     const totalToStore = preparedUpdates.size + preparedAdds.size + readyDeletes.length;
     let storedCount = 0;
     const tickStoreProgress = label => {
@@ -7517,6 +7933,15 @@
       verificationIncomplete: false,
       refreshError: null,
     };
+    if (crossMatrixPreflightBlocked) {
+      result.crossMatrixTransfer = {
+        status: 'preflight-blocked',
+        phase: 'preflight',
+        rejectedCount: runtimeSkips.length,
+        targetDeletesStarted: false,
+      };
+      log('Перенос остановлен на предварительной проверке. Запись и удаление строк TESSA не начинались.', 'warn');
+    }
     let cancelled = false;
     const shouldStopBeforeNextMutation = () => {
       if (!APP.abortRequested) return false;
@@ -7525,7 +7950,7 @@
       return true;
     };
 
-    for (const prepared of preparedUpdates.values()) {
+    if (!crossMatrixPreflightBlocked) for (const prepared of preparedUpdates.values()) {
       if (shouldStopBeforeNextMutation()) break;
       result.startedCount += 1;
       const action = prepared.action;
@@ -7557,10 +7982,11 @@
       tickStoreProgress(isOverwriteMatch(action.match) ? 'Заменяю строки' : 'Обновляю строки');
     }
 
-    if (!cancelled) for (const created of preparedAdds.values()) {
+    if (!cancelled && !crossMatrixPreflightBlocked) for (const created of preparedAdds.values()) {
       if (shouldStopBeforeNextMutation()) break;
       result.startedCount += 1;
       const action = created.action;
+      let crossMatrixAddAttempt = null;
       try {
         log(`Добавляю строку Excel ${action.excelRow.excelRow}`);
         const expectedRow = typeof bridge.readMatrixRowFromCard === 'function'
@@ -7575,8 +8001,21 @@
         // Re-check immediately before Store: another session may have created the
         // same matrix row after preflight completed.
         await bridge.validateDuplicate(created.card, created.versionId);
+        if (isCrossMatrixTransfer) {
+          crossMatrixAddAttempt = {
+            action,
+            rowCardId: created.cardId,
+            versionId: created.versionId,
+            storeState: 'attempted',
+          };
+          attemptedCrossMatrixAdds.push(crossMatrixAddAttempt);
+        }
         const storeResponse = await bridge.storeRowCard(created.card);
         const storedCardId = String(storeResponse?.cardId || created.cardId);
+        if (crossMatrixAddAttempt) {
+          crossMatrixAddAttempt.rowCardId = storedCardId;
+          crossMatrixAddAttempt.storeState = 'accepted';
+        }
         const verification = await bridge.tryGetCard(storedCardId);
         if (verification.error || !verification.card) throw new Error(`Новая карточка строки ${storedCardId} не открывается после сохранения.`);
         if (expectedRow) receipts.push(createMutationReceipt({
@@ -7587,15 +8026,97 @@
         }));
         successfulMutationRows.add(Number(action.excelRow.excelRow));
         result.rows.push({ type: 'add', excelRow: action.excelRow.excelRow, rowCardId: storedCardId, versionId: created.versionId, newMethod: created.newMethod, verifiedByCardGet: true, status: 'ok' });
+        if (isCrossMatrixTransfer) {
+          successfulCrossMatrixAdds.push({
+            action,
+            rowCardId: storedCardId,
+            versionId: created.versionId,
+          });
+        }
       } catch (error) {
         const skipped = runtimeSkip(action, error, 'store-add');
         result.skipped.push(skipped);
         result.rows.push({ type: 'add', excelRow: action.excelRow.excelRow, status: 'skipped', reason: skipped.reason });
+        if (isCrossMatrixTransfer) {
+          if (crossMatrixAddAttempt && crossMatrixAddAttempt.storeState !== 'accepted') {
+            crossMatrixAddAttempt.storeState = 'uncertain';
+          }
+          crossMatrixAddFailed = true;
+        }
       }
       tickStoreProgress('Добавляю строки');
+      if (crossMatrixAddFailed) break;
     }
 
-    if (!cancelled) for (const prepared of readyDeletes) {
+    if (isCrossMatrixTransfer && crossMatrixAddFailed) {
+      blockCrossMatrixDeletes = true;
+      const cleanupRows = [];
+      for (const added of [...attemptedCrossMatrixAdds].reverse()) {
+        try {
+          await bridge.deleteMatrixRow(added.versionId);
+          const appliedRow = result.rows.find(row => row.type === 'add'
+            && canonicalValue(row.versionId || '') === canonicalValue(added.versionId));
+          if (appliedRow) appliedRow.status = 'rolled-back';
+          successfulMutationRows.delete(Number(added.action?.excelRow?.excelRow));
+          cleanupRows.push({
+            excelRow: added.action?.excelRow?.excelRow ?? null,
+            rowCardId: added.rowCardId,
+            versionId: added.versionId,
+            storeState: added.storeState,
+            status: 'deleted',
+          });
+        } catch (error) {
+          cleanupRows.push({
+            excelRow: added.action?.excelRow?.excelRow ?? null,
+            rowCardId: added.rowCardId,
+            versionId: added.versionId,
+            storeState: added.storeState,
+            status: 'failed',
+            reason: friendlyErrorMessage(error),
+          });
+        }
+      }
+
+      let cleanupSave = { ok: true, skipped: true, reason: 'no-created-rows' };
+      if (attemptedCrossMatrixAdds.length) {
+        if (typeof bridge.saveMainMatrixAfterApply !== 'function') {
+          cleanupSave = { ok: false, skipped: false, reason: 'matrix-save-unavailable' };
+        } else {
+          try {
+            const saved = await bridge.saveMainMatrixAfterApply();
+            cleanupSave = { ...(saved || {}), ok: saved?.ok !== false, skipped: false };
+          } catch (error) {
+            cleanupSave = { ok: false, skipped: false, reason: 'matrix-save-failed', error: friendlyErrorMessage(error) };
+          }
+        }
+      }
+      // DeleteRow response is not the source of truth: a request may have committed even
+      // if the client saw an error (or vice versa). Always reconcile every VersionID whose
+      // Store was attempted against matrix membership. Never CardGet a VersionID.
+      const cleanupDeleteResponseFailed = cleanupRows.some(row => row.status !== 'deleted');
+      const rollbackVerification = await verifyCrossMatrixRollback(
+        bridge, structure, attemptedCrossMatrixAdds, { attempts: 3, baseDelayMs: 100 });
+      const cleanupFailed = !cleanupSave.ok || rollbackVerification.status !== 'verified';
+      result.crossMatrixTransfer = {
+        status: cleanupFailed ? 'unsafe' : 'rolled-back',
+        phase: 'add',
+        cleanupRows,
+        cleanupSave,
+        cleanupDeleteResponseFailed,
+        attemptedAddCount: attemptedCrossMatrixAdds.length,
+        uncertainAddCount: attemptedCrossMatrixAdds.filter(row => row.storeState === 'uncertain').length,
+        rollbackVerification,
+        targetDeletesStarted: false,
+      };
+      result.verificationIncomplete = cleanupFailed;
+      receipts.length = 0;
+      log(cleanupFailed
+        ? 'Перенос остановлен на ADD. Не все созданные строки удалось откатить; старые строки целевой матрицы не удалялись.'
+        : 'Перенос остановлен на ADD. Созданные строки откатились; старые строки целевой матрицы не удалялись.',
+        cleanupFailed ? 'error' : 'warn');
+    }
+
+    if (!cancelled && !blockCrossMatrixDeletes) for (const prepared of readyDeletes) {
       if (shouldStopBeforeNextMutation()) break;
       result.startedCount += 1;
       const action = prepared.action;
@@ -7621,6 +8142,7 @@
         }
         log(`Удаляю строку TESSA ${action.currentRow.index + 1}`);
         await bridge.deleteMatrixRow(action.currentRow.versionId);
+        if (isCrossMatrixTransfer) crossMatrixTargetDeletesSucceeded += 1;
         receipts.push(createMutationReceipt({
           type: 'delete', action,
           rowCardId: prepared.current.rowCardId,
@@ -7632,8 +8154,38 @@
         const skipped = runtimeSkip(action, error, 'store-delete');
         result.skipped.push(skipped);
         result.rows.push({ type: 'delete', versionId: action.currentRow.versionId, status: 'skipped', reason: skipped.reason });
+        if (isCrossMatrixTransfer) {
+          crossMatrixDeleteFailed = true;
+          result.crossMatrixTransfer = {
+            status: 'unsafe',
+            phase: 'delete',
+            targetDeletesStarted: true,
+            successfulTargetDeleteCount: crossMatrixTargetDeletesSucceeded,
+            failedVersionId: action.currentRow.versionId,
+            reason: skipped.reason,
+          };
+          result.verificationIncomplete = true;
+          log('Перенос остановлен на удалении старых строк. Дальнейшие DELETE не выполняются; требуется проверка фактического состояния TESSA.', 'error');
+        }
       }
       tickStoreProgress('Удаляю строки');
+      if (crossMatrixDeleteFailed) break;
+    }
+
+    if (isCrossMatrixTransfer
+      && !crossMatrixPreflightBlocked
+      && !crossMatrixAddFailed
+      && !crossMatrixDeleteFailed) {
+      const acceptedMutationCount = result.rows.filter(row => row?.status === 'ok').length;
+      result.crossMatrixTransfer = {
+        status: 'awaiting-verification',
+        phase: 'verification',
+        targetDeletesStarted: readyDeletes.length > 0,
+        successfulTargetDeleteCount: crossMatrixTargetDeletesSucceeded,
+        acceptedMutationCount,
+        receiptCount: receipts.length,
+      };
+      result.verificationIncomplete = true;
     }
 
     result.matrixSave = await persistMainMatrixAfterApply(bridge, result);
@@ -8462,11 +9014,22 @@
     }, Boolean(generated && snapshotOk));
 
     const control = snapshotOk ? snapshot.rows.find(row => Object.values(row.values || {}).some(items => items.some(v => v.to != null))) || snapshot.rows[0] : null;
+    // Diagnostics is the exceptional path that needs a native Card. Load it on demand
+    // by the real row CardID instead of retaining runtime objects in snapshot rows.
+    let controlNativeCard = null;
+    const getControlNativeCard = async () => {
+      if (!control?.rowCardId) throw new Error('У контрольной строки отсутствует CardID.');
+      if (!controlNativeCard) controlNativeCard = await bridge.getCard(control.rowCardId);
+      return controlNativeCard;
+    };
     await run('saved-validation', 'Сервер: сохранённая строка', async () => {
-      await bridge.validateDuplicate(control.card, control.versionId); return { detail: 'Сервер разрешил проверку существующей версии.' };
+      const nativeCard = await getControlNativeCard();
+      await bridge.validateDuplicate(nativeCard, control.versionId); return { detail: 'Сервер разрешил проверку существующей версии.' };
     }, Boolean(control));
     await run('rebuilt-validation', 'Сервер: та же строка после перестройки', async () => {
-      const card = control.card.clone(); bridge.rebuildRowCard(card, control.versionId, desiredFromRow(control), structure, snapshot);
+      const nativeCard = await getControlNativeCard();
+      if (typeof nativeCard?.clone !== 'function') throw new Error('Нативная карточка контрольной строки не поддерживает clone().');
+      const card = nativeCard.clone(); bridge.rebuildRowCard(card, control.versionId, desiredFromRow(control), structure, snapshot);
       const after = bridge.readMatrixRowFromCard(card, control, structure);
       if (reconciliationSemanticKey(after, structure) !== reconciliationSemanticKey(control, structure)) throw new Error('Перестройка изменила значения контрольной строки. Запрос не отправлен.');
       await bridge.validateDuplicate(card, control.versionId); return { detail: 'Значения совпадают; сервер разрешил проверку.' };
@@ -9029,6 +9592,7 @@
       '5': 'Метароль',
       '6': 'Задача',
       '7': 'SmartRole',
+      '9': 'Группа',
     };
     return known[key] || `RoleTypeID: ${String(roleTypeId ?? '').trim() || '—'}`;
   }
@@ -9578,30 +10142,146 @@
     });
   }
 
-  function pickerEntryKey(item) { return `${canonicalValue(item.id)}|${canonicalValue(item.roleTypeId || '')}`; }
+  function pickerEntryKey(item) { return `${canonicalValue(item.id)}|${canonicalValue(item.roleTypeId ?? '')}`; }
 
-  // Reuse the dictionary search index; bound rendered results, keep total count.
-  function searchPickerEntries(catalog, query = '', limit = 80) {
+  function pickerRoleTypeOptions(column) {
+    if (column?.kind !== 'function') return [];
+    const present = new Set((column.catalog?.entries || []).map(item => canonicalValue(item.roleTypeId)).filter(Boolean));
+    if (!present.size) return [];
+    const preferred = ['1', '2', '0', '4', '5', '9', '3', '6', '7'];
+    const ordered = [...preferred.filter(id => present.has(id)), ...[...present].filter(id => !preferred.includes(id)).sort()];
+    return [{ value: 'all', label: 'Все типы' }, ...ordered.map(value => ({ value, label: previewRoleTypeLabel(value) }))];
+  }
+
+  function pickerDefaultRoleFilter(column) {
+    const options = pickerRoleTypeOptions(column);
+    return options.some(item => item.value === '1') ? '1' : 'all';
+  }
+
+  function pickerSearchMatch(row, terms, roleType) {
+    if (roleType && roleType !== 'all' && canonicalValue(row?.item?.roleTypeId) !== canonicalValue(roleType)) return false;
+    return terms.every(term => row.haystack.includes(term));
+  }
+
+  // Pagination is computed over the in-memory search index. Only one bounded page is
+  // returned to the DOM; changing a page never discards the selection Map.
+  function searchPickerPage(catalog, options = {}) {
+    const query = options?.query ?? '';
     const terms = searchCanonical(query).split(/\s+/).filter(Boolean);
-    const items = []; let total = 0;
+    const roleType = canonicalValue(options?.roleType || 'all') || 'all';
+    const pageSize = Math.max(1, Math.min(200, Math.trunc(Number(options?.pageSize) || 80)));
+    const requestedPage = Math.max(1, Math.trunc(Number(options?.page) || 1));
+    const offset = (requestedPage - 1) * pageSize;
+    const items = [];
+    let total = 0;
     for (const row of dictionaryLookup(catalog)?.searchRows || []) {
-      if (!terms.every(term => row.haystack.includes(term))) continue;
+      if (!pickerSearchMatch(row, terms, roleType)) continue;
       total++;
-      if (items.length < Math.max(1, Math.min(200, limit))) items.push(row.item);
+      if (total > offset && items.length < pageSize) items.push(row.item);
     }
-    return { items, total };
+    const pageCount = Math.max(1, Math.ceil(total / pageSize));
+    if (requestedPage > pageCount && total) return searchPickerPage(catalog, { ...options, page: pageCount, pageSize });
+    return {
+      items, total, page: Math.min(requestedPage, pageCount), pageSize, pageCount,
+      start: total ? offset + 1 : 0,
+      end: total ? offset + items.length : 0,
+      query: normalizeSpace(query), roleType,
+    };
+  }
+
+  // Backward-compatible one-page helper used by older tests and integrations.
+  function searchPickerEntries(catalog, query = '', limit = 80) {
+    const page = searchPickerPage(catalog, { query, roleType: 'all', page: 1, pageSize: limit });
+    return { items: page.items, total: page.total };
+  }
+
+  function pickerDetailValue(item, aliases) {
+    const wanted = new Set((aliases || []).map(searchCanonical));
+    for (const part of String(item?.details || '').split(/\s+\|\s+/)) {
+      const at = part.indexOf(':');
+      if (at <= 0) continue;
+      if (!wanted.has(searchCanonical(part.slice(0, at)))) continue;
+      return normalizeSpace(part.slice(at + 1));
+    }
+    return '';
+  }
+
+  function pickerCompactValues(value) {
+    return [...new Set(String(value || '').split(/\s*;\s*|[\r\n]+/).map(normalizeSpace).filter(Boolean))];
+  }
+
+  function pickerCompactList(value, limit = 180) {
+    const unique = pickerCompactValues(value);
+    const text = unique.join(', ');
+    return text.length > limit ? `${text.slice(0, Math.max(1, limit - 1))}…` : text;
+  }
+
+  function pickerPrimaryValue(value) {
+    const unique = pickerCompactValues(value);
+    if (!unique.length) return '';
+    return `${unique[0]}${unique.length > 1 ? ` (+${unique.length - 1})` : ''}`;
+  }
+
+  function pickerEntryPresentation(item) {
+    const value = String(item?.selector || item?.display || '').trim();
+    const roleType = canonicalValue(item?.roleTypeId);
+    const display = normalizeSpace(item?.display);
+    const roleFullName = pickerDetailValue(item, ['RoleFullName', 'UserFullName']);
+    const positionRaw = pickerDetailValue(item, ['RolePositionName', 'UserPosition', 'PositionName', 'Position']);
+    const position = pickerPrimaryValue(positionRaw);
+    const department = pickerCompactList(pickerDetailValue(item, ['Departments', 'UserDepartment', 'Department', 'Info']));
+    const isPerson = roleType === '1' || Boolean(roleFullName);
+    const titleBase = display || roleFullName || normalizeSpace(item?.qualifier) || value;
+    const title = isPerson && position ? `${titleBase} — ${position}` : titleBase;
+    const typeLabel = roleType ? previewRoleTypeLabel(roleType) : '';
+    const subtitle = [...new Set([isPerson && roleFullName && canonicalValue(roleFullName) !== canonicalValue(titleBase) ? roleFullName : '', department, typeLabel].filter(Boolean))].join(' · ');
+    return { title, subtitle, typeLabel, value };
+  }
+
+  function pickerSelectionValue(item) {
+    const value = String(item?.selector || item?.display || '').trim();
+    if (/[\n\r;\t]/.test(value)) throw new Error('В названии есть разделитель. Такое значение нельзя собрать автоматически. Выберите его в штатном редакторе TESSA.');
+    if (/^[=+@-]/.test(value)) throw new Error('Название начинается со знака формулы. Выберите его в штатном редакторе TESSA.');
+    return value;
   }
 
   // Clipboard payload is plain text for Excel edit mode. Do not silently split
   // a selector containing delimiters or allow a pasted formula prefix.
   function pickerSelectionText(items) {
-    const unique = [...new Map(items.map(item => [pickerEntryKey(item), item])).values()];
-    const values = unique.map(item => String(item.selector || item.display || '').trim());
-    if (values.some(value => /[\n\r;\t]/.test(value))) throw new Error('В названии есть разделитель. Такое значение нельзя собрать автоматически. Выберите его в штатном редакторе TESSA.');
-    if (values.some(value => /^[=+@-]/.test(value))) throw new Error('Название начинается со знака формулы. Выберите его в штатном редакторе TESSA.');
-    const result = values.join('\n');
+    const unique = [...new Map((items || []).map(item => [pickerEntryKey(item), item])).values()];
+    const result = unique.map(pickerSelectionValue).join('\n');
     if (result.length > 32767) throw new Error('В ячейке Excel может быть не больше 32767 символов. Уменьшите выбор.');
     return result;
+  }
+
+  function bulkSelectPickerItems(selected, candidates, maxChars = 32767) {
+    const output = new Map(selected instanceof Map ? selected : []);
+    let currentText = pickerSelectionText([...output.values()]);
+    let currentLength = currentText.length;
+    let added = 0, skippedUnsafe = 0, capacityReached = false;
+    for (const item of candidates || []) {
+      const key = pickerEntryKey(item);
+      if (output.has(key)) continue;
+      let value;
+      try { value = pickerSelectionValue(item); }
+      catch (_) { skippedUnsafe++; continue; }
+      const nextLength = currentLength + (currentLength ? 1 : 0) + value.length;
+      if (nextLength > maxChars) { capacityReached = true; break; }
+      output.set(key, item);
+      currentLength = nextLength;
+      added++;
+    }
+    return { selected: output, added, skippedUnsafe, capacityReached, length: currentLength };
+  }
+
+  function bulkSelectPickerMatches(selected, catalog, options = {}) {
+    const terms = searchCanonical(options?.query || '').split(/\s+/).filter(Boolean);
+    const roleType = canonicalValue(options?.roleType || 'all') || 'all';
+    const matches = [];
+    for (const row of dictionaryLookup(catalog)?.searchRows || []) {
+      if (pickerSearchMatch(row, terms, roleType)) matches.push(row.item);
+    }
+    return bulkSelectPickerItems(selected, matches, options?.maxChars ?? 32767);
   }
 
   function closeValuePicker() {
@@ -9612,20 +10292,87 @@
     document.querySelector('#tms-open-picker')?.setAttribute('aria-expanded', 'false');
   }
 
+  function pickerColumnView(state, columnIndex = state?.columnIndex || 0) {
+    if (!state) return { query: '', roleType: 'all', page: 1, pageSize: 60 };
+    state.views = state.views || new Map();
+    if (!state.views.has(columnIndex)) {
+      const column = state.columns?.[columnIndex];
+      state.views.set(columnIndex, {
+        query: '',
+        roleType: pickerDefaultRoleFilter(column),
+        page: 1,
+        pageSize: 60,
+      });
+    }
+    return state.views.get(columnIndex);
+  }
+
   function renderPickerResults() {
     const state = APP.picker;
     const host = document.querySelector('#tms-value-picker');
     if (!state || !host) return;
     const column = state.columns[state.columnIndex];
-    const found = searchPickerEntries(column.catalog, host.querySelector('#tms-picker-query').value);
+    const view = pickerColumnView(state);
+    const queryInput = host.querySelector('#tms-picker-query');
+    if (queryInput && queryInput.value !== view.query) queryInput.value = view.query;
+
+    const roleOptions = pickerRoleTypeOptions(column);
+    const roleWrap = host.querySelector('#tms-picker-role-type-wrap');
+    const roleSelect = host.querySelector('#tms-picker-role-type');
+    if (roleWrap && roleSelect) {
+      roleWrap.hidden = roleOptions.length === 0;
+      roleSelect.innerHTML = roleOptions.map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join('');
+      if (roleOptions.length) {
+        if (!roleOptions.some(item => item.value === view.roleType)) view.roleType = pickerDefaultRoleFilter(column);
+        roleSelect.value = view.roleType;
+      }
+    }
+
+    const found = searchPickerPage(column.catalog, {
+      query: view.query,
+      roleType: roleOptions.length ? view.roleType : 'all',
+      page: view.page,
+      pageSize: view.pageSize,
+    });
+    view.page = found.page;
     state.visibleItems = found.items;
-    host.querySelector('#tms-picker-results').innerHTML = found.items.map((item, i) => `<label class="tms-picker-option"><input type="checkbox" data-picker-index="${i}" ${state.selected.has(pickerEntryKey(item)) ? 'checked' : ''}><span>${escapeHtml(item.selector || item.display)}</span></label>`).join('') || '<p class="tms-muted">Ничего не найдено. Измените поиск.</p>';
-    host.querySelector('#tms-picker-count').textContent = `Найдено: ${found.total} · показано: ${found.items.length} · выбрано: ${state.selected.size}`;
-    host.querySelector('#tms-picker-selected').innerHTML = [...state.selected.values()].map((item, i) => `<button type="button" data-picker-remove="${i}" aria-label="Убрать ${escapeHtml(item.selector || item.display)}">${escapeHtml(item.selector || item.display)} ×</button>`).join('');
+    state.lastSearch = found;
+
+    const results = host.querySelector('#tms-picker-results');
+    results.innerHTML = found.items.map((item, i) => {
+      const presentation = pickerEntryPresentation(item);
+      const meta = presentation.subtitle ? `<small class="tms-picker-option-meta">${escapeHtml(presentation.subtitle)}</small>` : '';
+      return `<label class="tms-picker-option"><input type="checkbox" data-picker-index="${i}" ${state.selected.has(pickerEntryKey(item)) ? 'checked' : ''}><span class="tms-picker-option-copy"><span class="tms-picker-option-title">${escapeHtml(presentation.title)}</span>${meta}</span></label>`;
+    }).join('') || '<p class="tms-muted">Ничего не найдено. Измените поиск или тип роли.</p>';
+
+    const shown = found.total ? `${found.start}–${found.end}` : '0';
+    host.querySelector('#tms-picker-count').textContent = `Найдено: ${found.total} · показано: ${shown} · выбрано: ${state.selected.size}`;
+    host.querySelector('#tms-picker-page-status').textContent = `Страница ${found.page} / ${found.pageCount}`;
+    const prev = host.querySelector('#tms-picker-prev');
+    const next = host.querySelector('#tms-picker-next');
+    if (prev) prev.disabled = found.page <= 1;
+    if (next) next.disabled = found.page >= found.pageCount;
+    const selectPage = host.querySelector('#tms-picker-select-page');
+    const selectAll = host.querySelector('#tms-picker-select-all');
+    if (selectPage) selectPage.disabled = found.items.length === 0;
+    if (selectAll) selectAll.disabled = found.total === 0;
+
+    host.querySelector('#tms-picker-selected').innerHTML = [...state.selected.values()].map((item, i) => {
+      const presentation = pickerEntryPresentation(item);
+      return `<button type="button" data-picker-remove="${i}" aria-label="Убрать ${escapeHtml(presentation.title)}">${escapeHtml(presentation.title)} ×</button>`;
+    }).join('');
+
     const output = host.querySelector('#tms-picker-output');
     const copy = host.querySelector('#tms-picker-copy');
-    try { output.value = pickerSelectionText([...state.selected.values()]); copy.disabled = !output.value; host.querySelector('#tms-picker-message').textContent = ''; }
-    catch (error) { output.value = ''; copy.disabled = true; host.querySelector('#tms-picker-message').textContent = error.message; }
+    try {
+      output.value = pickerSelectionText([...state.selected.values()]);
+      copy.disabled = !output.value;
+      host.querySelector('#tms-picker-message').textContent = '';
+    } catch (error) {
+      output.value = '';
+      copy.disabled = true;
+      host.querySelector('#tms-picker-message').textContent = error.message;
+    }
   }
 
   // Only read a local workbook or the already downloaded dictionary. This picker
@@ -9642,72 +10389,167 @@
     const columns = pickerColumns(source);
     if (!columns.length) throw new Error('В книге нет справочников для выбора. Скачайте Excel со справочниками.');
     closeValuePicker();
-    APP.picker = { columns, columnIndex: 0, selected: new Map(), visibleItems: [], searchTimer: null };
+    APP.picker = {
+      columns,
+      columnIndex: 0,
+      selected: new Map(),
+      selections: new Map(),
+      views: new Map(),
+      visibleItems: [],
+      lastSearch: null,
+      searchTimer: null,
+    };
     const host = document.querySelector('#tms-value-picker');
     host.hidden = false;
     document.querySelector('#tms-open-picker')?.setAttribute('aria-expanded', 'true');
-    host.innerHTML = `<div class="tms-picker-head"><b>Несколько значений в ячейке</b><button type="button" id="tms-picker-close" aria-label="Закрыть выбор значений">×</button></div>
+    host.innerHTML = `<div class="tms-picker-head"><b>Собрать значения для одной ячейки</b><button type="button" id="tms-picker-close" aria-label="Закрыть выбор значений">×</button></div>
       <label for="tms-picker-column">Поле Excel</label><select id="tms-picker-column">${columns.map((c, i) => `<option value="${i}">${escapeHtml(c.label)}</option>`).join('')}</select>
-      <p class="tms-muted">Поиск по текущему полю. Enter выбирает единственный результат; Esc закрывает окно.</p><details><summary>Продолжить набор из ячейки Excel</summary><textarea id="tms-picker-paste" rows="2" aria-label="Значения из Excel"></textarea><button id="tms-picker-import" type="button">Добавить в набор</button></details><input id="tms-picker-query" type="search" aria-label="Поиск по справочнику" placeholder="Найти значение" maxlength="200">
-      <div id="tms-picker-count" class="tms-muted" aria-live="polite"></div><div id="tms-picker-results" class="tms-picker-results"></div>
+      <div id="tms-picker-role-type-wrap" class="tms-picker-filter"><label for="tms-picker-role-type">Тип роли</label><select id="tms-picker-role-type"></select></div>
+      <p class="tms-muted">Ищите по названию, ФИО, должности или подразделению. Выбор сохраняется при поиске, фильтрации и переходе между страницами.</p>
+      <details><summary>Продолжить набор из ячейки Excel</summary><textarea id="tms-picker-paste" rows="2" aria-label="Значения из Excel"></textarea><button id="tms-picker-import" type="button">Добавить в набор</button></details>
+      <input id="tms-picker-query" type="search" aria-label="Поиск по справочнику" placeholder="Например: Иванов, инженер, отдел" maxlength="200">
+      <div id="tms-picker-count" class="tms-muted" aria-live="polite"></div>
+      <div class="tms-picker-bulk"><button type="button" id="tms-picker-select-page">Выбрать страницу</button><button type="button" id="tms-picker-select-all">Выбрать всё найденное</button></div>
+      <div id="tms-picker-results" class="tms-picker-results"></div>
+      <div class="tms-picker-pager"><button type="button" id="tms-picker-prev" aria-label="Предыдущая страница">← Назад</button><span id="tms-picker-page-status" class="tms-muted"></span><button type="button" id="tms-picker-next" aria-label="Следующая страница">Вперёд →</button></div>
       <div id="tms-picker-selected" class="tms-picker-selected"></div><label for="tms-picker-output">Готовое содержимое ячейки</label><textarea id="tms-picker-output" readonly rows="3"></textarea>
       <p class="tms-muted">Скопируйте набор. В Excel нажмите F2 в нужной ячейке и вставьте: все значения останутся внутри неё.</p>
-      <div class="tms-row"><button type="button" id="tms-picker-copy" class="tms-primary" disabled>Скопировать</button><button type="button" id="tms-picker-clear">Очистить выбор</button></div><div id="tms-picker-message" role="status"></div>`;
+      <div class="tms-row"><button type="button" id="tms-picker-copy" class="tms-primary" disabled>Скопировать</button><button type="button" id="tms-picker-clear">Очистить выбор</button></div><div id="tms-picker-message" role="status" aria-live="polite"></div>`;
+
     host.onchange = event => {
-      const state = APP.picker; if (!state || APP.busy) return;
+      const state = APP.picker;
+      if (!state || APP.busy) return;
       if (event.target.id === 'tms-picker-column') {
-        state.selections = state.selections || new Map(); state.selections.set(state.columnIndex, state.selected); state.columnIndex = Number(event.target.value); state.selected = state.selections.get(state.columnIndex) || new Map(); host.querySelector('#tms-picker-query').value = '';
+        state.selections.set(state.columnIndex, state.selected);
+        state.columnIndex = Number(event.target.value);
+        state.selected = state.selections.get(state.columnIndex) || new Map();
+        const view = pickerColumnView(state);
+        host.querySelector('#tms-picker-query').value = view.query;
+      } else if (event.target.id === 'tms-picker-role-type') {
+        const view = pickerColumnView(state);
+        view.roleType = event.target.value || 'all';
+        view.page = 1;
       } else if (event.target.dataset.pickerIndex !== undefined) {
-        const item = state.visibleItems[Number(event.target.dataset.pickerIndex)]; if (!item) return;
-        if (event.target.checked) state.selected.set(pickerEntryKey(item), item); else state.selected.delete(pickerEntryKey(item));
+        const item = state.visibleItems[Number(event.target.dataset.pickerIndex)];
+        if (!item) return;
+        if (event.target.checked) state.selected.set(pickerEntryKey(item), item);
+        else state.selected.delete(pickerEntryKey(item));
       } else return;
       renderPickerResults();
     };
+
     host.oninput = event => {
       if (event.target.id !== 'tms-picker-query' || !APP.picker) return;
+      const view = pickerColumnView(APP.picker);
+      view.query = event.target.value;
+      view.page = 1;
       clearTimeout(APP.picker.searchTimer);
       APP.picker.searchTimer = setTimeout(renderPickerResults, 120);
     };
+
     host.onclick = async event => {
-      const button = event.target.closest('button'); const state = APP.picker;
+      const button = event.target.closest('button');
+      const state = APP.picker;
       if (!button || !state || APP.busy) return;
-      if (button.id === 'tms-picker-close') { closeValuePicker(); document.querySelector('#tms-open-picker')?.focus(); return; }
+      const view = pickerColumnView(state);
+      const message = () => host.querySelector('#tms-picker-message');
+
+      if (button.id === 'tms-picker-close') {
+        closeValuePicker();
+        document.querySelector('#tms-open-picker')?.focus();
+        return;
+      }
+      if (button.id === 'tms-picker-prev' || button.id === 'tms-picker-next') {
+        const direction = button.id === 'tms-picker-prev' ? -1 : 1;
+        view.page = Math.max(1, view.page + direction);
+        renderPickerResults();
+        return;
+      }
+      if (button.id === 'tms-picker-select-page') {
+        const bulk = bulkSelectPickerItems(state.selected, state.visibleItems);
+        state.selected = bulk.selected;
+        renderPickerResults();
+        message().textContent = bulk.capacityReached
+          ? `Добавлено ${bulk.added}. Достигнут лимит одной ячейки Excel; остальные значения не выбраны.`
+          : `Добавлено со страницы: ${bulk.added}. Всего выбрано: ${state.selected.size}.`;
+        return;
+      }
+      if (button.id === 'tms-picker-select-all') {
+        const column = state.columns[state.columnIndex];
+        const bulk = bulkSelectPickerMatches(state.selected, column.catalog, {
+          query: view.query,
+          roleType: pickerRoleTypeOptions(column).length ? view.roleType : 'all',
+        });
+        state.selected = bulk.selected;
+        renderPickerResults();
+        message().textContent = bulk.capacityReached
+          ? `Добавлено ${bulk.added}. Достигнут лимит одной ячейки Excel; остальные найденные значения не выбраны.`
+          : `Добавлено найденных значений: ${bulk.added}. Всего выбрано: ${state.selected.size}.`;
+        return;
+      }
       if (button.id === 'tms-picker-import') {
-        const column = state.columns[state.columnIndex], dictionary = { catalogs: { selected: column.catalog }, columnCatalogIds: { [column.key]: 'selected' } };
+        const column = state.columns[state.columnIndex];
+        const dictionary = { catalogs: { selected: column.catalog }, columnCatalogIds: { [column.key]: 'selected' } };
         const unknown = [];
         for (const value of splitCell(host.querySelector('#tms-picker-paste').value)) {
           const result = resolveEmbeddedDictionaryValue({ dictionaryCatalog: dictionary }, { key: column.key, kind: column.kind, excelHeader: column.label }, value, '');
           const entry = result.resolved ? column.catalog.entries.find(e => (column.kind === 'function' ? `${e.id}|${e.roleTypeId}` : String(e.id)) === result.explicit) : null;
-          if (entry) state.selected.set(pickerEntryKey(entry), entry); else unknown.push(value);
+          if (entry) state.selected.set(pickerEntryKey(entry), entry);
+          else unknown.push(value);
         }
         renderPickerResults();
-        if (unknown.length) host.querySelector('#tms-picker-message').textContent = `Не найдены или неоднозначны: ${unknown.join('; ')}`;
+        if (unknown.length) message().textContent = `Не найдены или неоднозначны: ${unknown.join('; ')}`;
+        return;
       }
-      if (button.id === 'tms-picker-clear') { state.selected.clear(); renderPickerResults(); }
+      if (button.id === 'tms-picker-clear') {
+        state.selected.clear();
+        renderPickerResults();
+        return;
+      }
       if (button.dataset.pickerRemove !== undefined) {
         const item = [...state.selected.values()][Number(button.dataset.pickerRemove)];
-        if (item) state.selected.delete(pickerEntryKey(item)); renderPickerResults();
+        if (item) state.selected.delete(pickerEntryKey(item));
+        renderPickerResults();
+        return;
       }
       if (button.id === 'tms-picker-copy') {
         const output = host.querySelector('#tms-picker-output');
-        const message = host.querySelector('#tms-picker-message');
-        output.focus(); output.select();
-        try { await navigator.clipboard.writeText(output.value); if (APP.picker === state) message.textContent = 'Скопировано. Вставьте в Excel через F2 → Ctrl+V.'; }
-        catch (_) { if (APP.picker === state) message.textContent = 'Текст выделен. Нажмите Ctrl+C, затем F2 → Ctrl+V в Excel.'; }
+        output.focus();
+        output.select();
+        try {
+          await navigator.clipboard.writeText(output.value);
+          if (APP.picker === state) message().textContent = 'Скопировано. Вставьте в Excel через F2 → Ctrl+V.';
+        } catch (_) {
+          if (APP.picker === state) message().textContent = 'Текст выделен. Нажмите Ctrl+C, затем F2 → Ctrl+V в Excel.';
+        }
       }
     };
+
     host.onkeydown = event => {
-      if (event.key === 'Escape') { closeValuePicker(); document.querySelector('#tms-open-picker')?.focus(); }
+      if (event.key === 'Escape') {
+        closeValuePicker();
+        document.querySelector('#tms-open-picker')?.focus();
+        return;
+      }
       if (event.key === 'Enter' && event.target.id === 'tms-picker-query' && APP.picker) {
         event.preventDefault();
-        clearTimeout(APP.picker.searchTimer); renderPickerResults();
-        if (APP.picker.visibleItems.length === 1) { const item = APP.picker.visibleItems[0]; APP.picker.selected.set(pickerEntryKey(item), item); renderPickerResults(); }
-        else host.querySelector('#tms-picker-results input')?.focus();
+        const view = pickerColumnView(APP.picker);
+        view.query = event.target.value;
+        view.page = 1;
+        clearTimeout(APP.picker.searchTimer);
+        renderPickerResults();
+        if (APP.picker.lastSearch?.total === 1) {
+          const item = APP.picker.visibleItems[0];
+          if (item) APP.picker.selected.set(pickerEntryKey(item), item);
+          renderPickerResults();
+        } else host.querySelector('#tms-picker-results input')?.focus();
       }
     };
+
     renderPickerResults();
     host.querySelector('#tms-picker-query').focus();
   }
+
 
   function mountUi() {
     if (document.querySelector('#tms-launch')) return;
@@ -9831,6 +10673,12 @@
       #tms-panel .tms-picker-option{display:flex;gap:8px;align-items:flex-start;padding:8px;cursor:pointer;border-bottom:1px solid var(--tms-line);overflow-wrap:anywhere}
       #tms-panel .tms-picker-option:last-child{border-bottom:0}
       #tms-panel .tms-picker-option:hover{background:var(--tms-soft)}
+      #tms-panel .tms-picker-filter{display:grid;grid-template-columns:minmax(120px,.45fr) minmax(0,1fr);gap:8px;align-items:center}
+      #tms-panel .tms-picker-bulk,#tms-panel .tms-picker-pager{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+      #tms-panel .tms-picker-pager{justify-content:space-between}
+      #tms-panel .tms-picker-option-copy{display:grid;gap:2px;min-width:0}
+      #tms-panel .tms-picker-option-title{font-weight:600;overflow-wrap:anywhere}
+      #tms-panel .tms-picker-option-meta{font-size:11px;line-height:1.4;color:var(--tms-muted);overflow-wrap:anywhere}
       #tms-panel .tms-picker-selected{display:flex;flex-wrap:wrap;gap:4px;max-height:140px;overflow:auto}
       #tms-panel .tms-picker-selected button{font-weight:400}
       #tms-panel .tms-reconciliation-result[data-status=verified]{color:var(--tms-success)}
@@ -10097,6 +10945,7 @@
             result.reconciliation = APP.lastReconciliation;
           } catch (error) { result.reconciliation = { status: 'incomplete', reason: friendlyErrorMessage(error) }; }
           APP.lastReconciliation = result.reconciliation;
+          finalizeCrossMatrixTransferVerification(result);
           finalizeApplyResult(result);
           rememberReport(result, `TESSA_Write_Check_${Date.now()}.json`);
           setProgress(100, 'Проверка записи завершена', reconciliationSummary(APP.lastReconciliation));
@@ -10149,19 +10998,19 @@
   window.__TESSA_MATRIX_SYNC_EXPORTS__ = {
     applyIntervalStructuralProbe, applyCardNewTopologyProbe, applyCardNewEnvelopeProbe, summarizeCardIdentityTopology, collectIntervalDiagnostics, buildIntervalDiagnosticSummary, resolveStudioIntervalDiagnostics, collectStudioDiagnostics, makeStudioDiagnosticPackage,
     classifyIntervalDiagnosticError, collectNativeRuntimeSurface, sanitizeNativeOperationRecord, stageMatrixRowDelete, applyResultSummary, buildNativeRuntimeSurfaceReport, restoreNativeRecorderMethods, startNativeOperationRecorder, stopNativeOperationRecorder,
-    createRuntimeMonitor, pickerColumns, pickerEntryKey, searchPickerEntries, pickerSelectionText,
+    createRuntimeMonitor, pickerColumns, pickerEntryKey, pickerRoleTypeOptions, pickerDefaultRoleFilter, searchPickerPage, searchPickerEntries, pickerEntryPresentation, bulkSelectPickerItems, bulkSelectPickerMatches, pickerSelectionText,
     probeRuntimeEnvironment, inspectNativeViewCapabilitiesReadOnly, inspectMatrixCapabilitiesReadOnly,
     evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, triggerBlobDownload, downloadJson, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport, buildApplySupportReport,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
-    readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, buildPlan,
+    readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
-    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, isWriterLockError, persistMainMatrixAfterApply, refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,
+    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, replacementConfirmationModel, confirmCrossMatrixReplacement, isWriterLockError, persistMainMatrixAfterApply, refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
-    safePlain, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
-    preflightPlan, applyPreflightPreview, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
-    finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, detectPlanDuplicateConflicts, friendlyErrorMessage,
+    safePlain, classifyWorkbookContext, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
+    preflightPlan, applyPreflightPreview, crossMatrixReplacementIntegrity, verifyCrossMatrixRollback, finalizeCrossMatrixTransferVerification, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
+    finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, partnerRecordKeepingColumnIndex, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport,
     TessaBridge,
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },
