@@ -22,6 +22,7 @@ jobs:
           node hotfixes/v1.13.0-user-row-lifecycle-transform.mjs tessa-matrix-studio.user.js
           printf '\n' >> tessa-matrix-studio.user.js
           cat hotfixes/full-uat-runner-v1.js >> tessa-matrix-studio.user.js
+          node hotfixes/v1.13.0-full-uat-live-finalize.mjs tessa-matrix-studio.user.js
       - name: Copied identity lifecycle regression
         run: node tests/user-copied-identity-regression.mjs
       - name: Full UAT runner contract
@@ -34,5 +35,8 @@ jobs:
         run: |
           node --check tessa-matrix-studio.user.js
           grep -Fq "DUPLICATE_IDENTITY_COPY_AS_ADD_V1" tessa-matrix-studio.user.js
+          grep -Fq "LIVE_UAT_2026_09_11" tessa-matrix-studio.user.js
+          grep -Fq "diagnosticNativeCardCache" tessa-matrix-studio.user.js
+          grep -Fq "source: 'full-uat'" tessa-matrix-studio.user.js
           grep -Fq "tms-picker-import-block" tessa-matrix-studio.user.js
           grep -Fq "__TMS_FULL_UAT_V1__" tessa-matrix-studio.user.js
