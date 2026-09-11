@@ -24,9 +24,9 @@ const newBlock = `      const partial = lookup.searchRows
 
       ${marker}
       // For personal roles, position/department are searchable hints, never identity.
-      // A fragment may auto-resolve only when the typed text carries a name signal.
-      // This prevents values such as "Руководитель управления" from silently becoming
-      // whichever employee currently happens to hold that position.
+      // A fragment may auto-resolve only when the typed text carries a real name signal.
+      // Do NOT use displayName here: it deliberately contains the position for UX and
+      // would make a position-only query look like a person-name match.
       const personalPartial = column.kind === 'function'
         ? partial.filter(item => Number(item?.roleTypeId) === PERSONAL_ROLE_TYPE_ID)
         : [];
@@ -42,7 +42,11 @@ const newBlock = `      const partial = lookup.searchRows
           department: item.department || '',
         });
         const hasNameSignal = item => {
-          const nameText = searchCanonical(employeeResolvableAliases(item).join(' '));
+          const nameText = searchCanonical([
+            item.shortName,
+            item.fullName,
+            item.nativeDisplay,
+          ].filter(Boolean).join(' '));
           if (!nameText) return false;
           return tokens.length
             ? tokens.some(token => token.length >= 2 && nameText.includes(token))
