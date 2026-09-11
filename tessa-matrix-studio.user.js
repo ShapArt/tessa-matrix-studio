@@ -96,6 +96,7 @@
     HeaderRowKey: '__TESSA_HEADER_ROW',
     SchemaRowKey: '__TESSA_SCHEMA_ROW',
     TemplateModeKey: '__TESSA_TEMPLATE_MODE',
+    ReportOnlyKey: '__TESSA_REPORT_ONLY',
   });
 
   const DICTIONARY_CACHE = Object.freeze({
@@ -1637,6 +1638,9 @@
     const parsed = parsedSheets.get(matrixDescriptor.name);
     if (!parsed) throw new Error(`Не найден лист ${matrixDescriptor.path} в XLSX.`);
     const preliminaryMetadata = readMetadataPairs(parsed.rows, 40);
+    if (preliminaryMetadata[ROUNDTRIP.ReportOnlyKey]) {
+      throw new Error('Это Excel-отчёт только для просмотра. Его нельзя использовать как источник изменений или Apply. Выберите рабочую выгрузку, созданную кнопкой «Скачать Excel».');
+    }
     const declaredHeaderRow = Number(preliminaryMetadata[ROUNDTRIP.HeaderRowKey] || 0);
     const headerRowIndex = declaredHeaderRow > 0 && declaredHeaderRow <= parsed.rows.length
       ? declaredHeaderRow - 1
@@ -2624,6 +2628,142 @@
     const entries = [['[Content_Types].xml', contentTypes], ['_rels/.rels', rels], ['docProps/core.xml', core], ['docProps/app.xml', app], ['xl/workbook.xml', workbook], ['xl/_rels/workbook.xml.rels', workbookRels], ['xl/styles.xml', styles]];
     sheetXml.forEach((xml, index) => entries.push([`xl/worksheets/sheet${index + 1}.xml`, xml]));
     return await makeZip(entries);
+  }
+
+  // REVIEWED_CHANGES_REPORT_V1
+  // This workbook is a human-readable, report-only projection of Preview. It deliberately
+  // contains no roundtrip service IDs or baseline ledger and can never become an Apply source.
+  function buildChangesReportModel(plan, structure = null) {
+    const definitionLabels = new Map();
+    for (const condition of structure?.conditions || []) definitionLabels.set(`criterion:${condition.criterionRowId}`, condition.criterionName || condition.criterionRowId);
+    for (const fn of structure?.functions || []) definitionLabels.set(`function:${fn.id}`, fn.name || fn.id);
+    const headers = ['Изменение', 'Excel row', 'Причина', 'TESSA row', 'Поля', 'Было', 'Стало'];
+    const detailHeaders = ['Изменение', 'Excel row', 'TESSA row', 'Поле', 'Было', 'Стало', 'Причина'];
+    const operations = [];
+    const details = [];
+    const stringifyValues = values => Array.isArray(values) ? values.map(value => String(value ?? '')).filter(Boolean).join(' · ') : String(values ?? '');
+    const actionLabel = type => ({ update: 'UPDATE', add: 'ADD', delete: 'DELETE' }[type] || String(type || '').toUpperCase());
+
+    for (const action of plan?.actions || []) {
+      if (!['update', 'add', 'delete'].includes(action?.type)) continue;
+      const change = actionLabel(action.type);
+      const excelRow = action.excelRow?.excelRow ?? '';
+      const tessaRow = action.currentRow?.index !== undefined ? Number(action.currentRow.index) + 1 : '';
+      const changes = Array.isArray(action.changes) ? action.changes : [];
+      const reason = normalizeSpace(action.reason || action.match?.reason || '');
+      const fields = changes.map(item => item.label || definitionLabels.get(item.key) || item.key || '').filter(Boolean);
+      const beforeParts = changes.map(item => {
+        const label = item.label || definitionLabels.get(item.key) || item.key || '';
+        const value = stringifyValues(item.before);
+        return label ? `${label}: ${value || "(пусто)"}` : value;
+      });
+      const afterParts = changes.map(item => {
+        const label = item.label || definitionLabels.get(item.key) || item.key || '';
+        const value = stringifyValues(item.after);
+        return label ? `${label}: ${value || "(пусто)"}` : value;
+      });
+      operations.push({
+        change, excelRow, reason, tessaRow,
+        fields: fields.join(' · '), before: beforeParts.join('\n'), after: afterParts.join('\n'),
+        error: false,
+      });
+      if (changes.length) {
+        for (const item of changes) {
+          details.push({
+            change, excelRow, tessaRow,
+            field: item.label || definitionLabels.get(item.key) || item.key || '',
+            before: stringifyValues(item.before), after: stringifyValues(item.after), reason, error: false,
+          });
+        }
+      } else {
+        details.push({ change, excelRow, tessaRow, field: '', before: '', after: '', reason, error: false });
+      }
+    }
+
+    for (const skip of plan?.skippedRows || []) {
+      const reason = normalizeSpace(skip?.reason || 'Строка пропущена.');
+      const excelRow = skip?.excelRow ?? '';
+      const tessaRow = skip?.tessaRow ?? '';
+      const error = Boolean(normalizeSpace(skip?.code || ''));
+      operations.push({ change: 'SKIP', excelRow, reason, tessaRow, fields: '', before: '', after: '', error });
+      details.push({ change: 'SKIP', excelRow, tessaRow, field: '', before: '', after: '', reason, error });
+    }
+
+    return {
+      format: 'TESSA_MATRIX_CHANGES_REPORT_V1', reportOnly: true,
+      matrixId: plan?.matrixId || '', templateId: plan?.templateId || structure?.templateId || '',
+      createdAt: nowIso(), headers, detailHeaders, operations, details,
+    };
+  }
+
+  function changesReportStylesXml() {
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Aptos"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/></font></fonts><fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1F4E78"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2F0D9"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF4CCCC"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFCE5CD"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border/><border><left style="thin"><color rgb="FFD9E1F2"/></left><right style="thin"><color rgb="FFD9E1F2"/></right><top style="thin"><color rgb="FFD9E1F2"/></top><bottom style="thin"><color rgb="FFD9E1F2"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="8"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="center"/></xf><xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="6" borderId="1" xfId="0" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="1" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="top"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+  }
+
+  function changesReportRowStyle(row) {
+    if (row?.change === 'ADD') return 4;
+    if (row?.change === 'UPDATE') return 3;
+    if (row?.change === 'DELETE') return 5;
+    if (row?.change === 'SKIP') return row?.error ? 7 : 6;
+    return 1;
+  }
+
+  function changesReportWorksheetXml(headers, rows, metadata = null) {
+    const sheetRows = [];
+    let rowNumber = 1;
+    if (metadata) {
+      for (const pair of metadata) {
+        sheetRows.push(`<row r="${rowNumber}" hidden="1">${xlsxStringCell(rowNumber, 0, pair[0], 1)}${xlsxStringCell(rowNumber, 1, pair[1], 1)}</row>`);
+        rowNumber += 1;
+      }
+      rowNumber += 1;
+    }
+    const headerRow = rowNumber;
+    sheetRows.push(`<row r="${rowNumber}" ht="34" customHeight="1">${headers.map((value, index) => xlsxStringCell(rowNumber, index, value, 2)).join("")}</row>`);
+    rowNumber += 1;
+    for (const row of rows) {
+      const style = changesReportRowStyle(row);
+      const values = headers.map(header => ({
+        'Изменение': row.change, 'Excel row': row.excelRow, 'Причина': row.reason, 'TESSA row': row.tessaRow,
+        'Поля': row.fields, 'Было': row.before, 'Стало': row.after, 'Поле': row.field,
+      })[header] ?? '');
+      const lines = Math.max(1, ...values.map(value => String(value ?? '').split(/\r?\n/).length));
+      const height = Math.min(240, Math.max(28, lines * 16 + 8));
+      sheetRows.push(`<row r="${rowNumber}" ht="${height}" customHeight="1">${values.map((value, index) => xlsxStringCell(rowNumber, index, value, style)).join("")}</row>`);
+      rowNumber += 1;
+    }
+    const lastRow = Math.max(headerRow, rowNumber - 1);
+    const lastCol = indexToCol(headers.length - 1);
+    const widths = headers.map(header => ({ 'Изменение': 14, 'Excel row': 12, 'Причина': 52, 'TESSA row': 12, 'Поля': 34, 'Было': 58, 'Стало': 58, 'Поле': 34 })[header] || 30);
+    const cols = widths.map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`).join('');
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastCol}${lastRow}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="${headerRow}" topLeftCell="A${headerRow + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols>${cols}</cols><sheetData>${sheetRows.join("")}</sheetData><autoFilter ref="A${headerRow}:${lastCol}${lastRow}"/></worksheet>`;
+  }
+
+  async function createChangesReportXlsxBytes(plan, structure = null) {
+    const model = buildChangesReportModel(plan, structure);
+    const metadata = [
+      [ROUNDTRIP.ReportOnlyKey, model.format],
+      [ROUNDTRIP.MatrixIdKey, model.matrixId],
+      [ROUNDTRIP.TemplateIdKey, model.templateId],
+      ['__TESSA_CREATED_AT', model.createdAt],
+    ];
+    const operationRows = model.operations.map(row => ({ ...row }));
+    const detailRows = model.details.map(row => ({ ...row }));
+    const sheet1 = changesReportWorksheetXml(model.headers, operationRows, metadata);
+    const sheet2 = changesReportWorksheetXml(model.detailHeaders, detailRows, null);
+    const sheetNames = ['Изменения', 'Детали изменений'];
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>`;
+    const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`;
+    const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${xmlEscape(sheetNames[0])}" sheetId="1" r:id="rId1"/><sheet name="${xmlEscape(sheetNames[1])}" sheetId="2" r:id="rId2"/></sheets></workbook>`;
+    const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
+    const created = new Date().toISOString();
+    const core = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:creator>TESSA Matrix Studio</dc:creator><dc:title>Отчёт изменений матрицы</dc:title><dcterms:created xsi:type="dcterms:W3CDTF">${created}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${created}</dcterms:modified></cp:coreProperties>`;
+    const app = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Microsoft Excel</Application><HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Листы</vt:lpstr></vt:variant><vt:variant><vt:i4>2</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector size="2" baseType="lpstr"><vt:lpstr>Изменения</vt:lpstr><vt:lpstr>Детали изменений</vt:lpstr></vt:vector></TitlesOfParts><Company>ПАО «Группа Черкизово»</Company></Properties>`;
+    return await makeZip([
+      ['[Content_Types].xml', contentTypes], ['_rels/.rels', rels], ['docProps/core.xml', core], ['docProps/app.xml', app],
+      ['xl/workbook.xml', workbook], ['xl/_rels/workbook.xml.rels', workbookRels], ['xl/styles.xml', changesReportStylesXml()],
+      ['xl/worksheets/sheet1.xml', sheet1], ['xl/worksheets/sheet2.xml', sheet2],
+    ]);
   }
 
   function sanitizeFileName(value) {
@@ -7314,6 +7454,12 @@
     APP.lastStudioDiagnostics = null;
     APP.lastReport = null;
     APP.lastSupportReport = null;
+    const changesButton = document.querySelector?.('#tms-download-changes');
+    if (changesButton) {
+      changesButton.hidden = true;
+      changesButton.title = '';
+      setControlDisabled(changesButton, true);
+    }
     const reportButton = document.querySelector?.('#tms-download-report');
     if (reportButton) {
       reportButton.hidden = true;
@@ -10121,6 +10267,28 @@
     };
   }
 
+  async function downloadReviewedChangesXlsx() {
+    if (APP.busy || !APP.plan || !APP.structure) return;
+    setBusy(true);
+    try {
+      const reviewed = buildReviewedPlan(APP.plan, APP.review);
+      const model = buildChangesReportModel(reviewed, APP.structure);
+      if (!model.operations.length) throw new Error('В текущем Preview нет изменений или пропущенных строк для выгрузки.');
+      setProgress(35, 'Формирую Excel изменений', `${model.operations.length} операций`);
+      const bytes = await performanceStage('changes-report.xlsx-build', () => createChangesReportXlsxBytes(reviewed, APP.structure), { operation: 'changes-report', rows: model.operations.length });
+      const shortId = String(reviewed.matrixId || '').slice(0, 8);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const name = `TESSA_Изменения_${shortId || "matrix"}_${stamp}.xlsx`;
+      downloadBlob(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name);
+      setProgress(100, 'Excel изменений готов', `${model.operations.length} операций · файл только для просмотра`);
+    } catch (error) {
+      setProgress(100, 'Не удалось выгрузить изменения', friendlyErrorMessage(error));
+    } finally {
+      setBusy(false);
+      if (APP.plan) renderPlan(APP.plan);
+    }
+  }
+
   function cherkizovoLogoSvg() {
     return `<svg viewBox="0 0 192.756 192.756" aria-hidden="true" focusable="false"><path fill="#E31E24" d="M162.854 63.44c10.303 20.271 11.299 48.019-.664 67.957-16.449 26.752-46.689 41.541-77.263 37.719-26.086-2.492-52.505-21.104-61.81-46.357-9.637-23.76-3.655-53.502 14.123-72.278 21.268-23.262 56.659-31.902 86.567-19.772 15.951 6.478 30.24 16.78 39.047 32.731z"/><path fill="#fff" d="M117.66 53.471c.996 3.323 1.494 6.646-.5 9.471-5.98 6.48-15.451 8.806-24.258 6.646-4.486-.831-9.305-3.656-11.465-7.81-1.33-4.154.831-7.976 3.157-10.8 8.806-6.646 24.591-7.145 32.235 2.493z"/><path fill="#fff" d="M79.277 69.255c6.646 13.292-1.495 29.077 3.656 40.209.831 2.326 3.489 1.33 5.316 1.496 6.813-3.324 5.317-10.635 9.471-15.453 4.154-9.637 14.289-15.951 24.426-16.616 11.631-.665 23.428 5.982 28.246 17.114 4.486 9.471 4.154 23.096-2.824 31.57-4.986 8.807-14.291 12.295-23.262 13.957-8.309.166-15.951-4.818-19.607-12.295-2.16-5.484-3.82-12.463 0-17.779 4.652-9.139 23.428-9.139 16.615-23.096-2.99-2.327-6.314-5.151-10.467-3.324-13.293 7.976-13.625 23.761-19.607 35.89-4.486 9.305-9.471 22.264-21.767 22.93-8.972 1.494-16.117-2.99-20.77-10.469-6.812-16.615-6.812-37.219-9.471-54.997.332-7.975 4.818-15.951 12.462-19.606 10.47-4.651 22.266.334 27.583 10.469z"/></svg>`;
   }
@@ -10134,6 +10302,19 @@
     const applySection = document.querySelector('#tms-apply-section');
     if (applySection) applySection.hidden = false;
     const reviewed = buildReviewedPlan(plan, APP.review);
+    const changesButton = document.querySelector?.('#tms-download-changes');
+    const hasReviewedChanges = (reviewed.actions || []).some(action => ['update', 'add', 'delete'].includes(action?.type)) || Boolean(reviewed.skippedRows?.length);
+    if (changesButton) {
+      if (hasReviewedChanges) {
+        changesButton.hidden = false;
+        setControlDisabled(changesButton, false);
+        changesButton.title = 'Скачать только операции из текущего Preview';
+      } else {
+        changesButton.hidden = true;
+        setControlDisabled(changesButton, true);
+        changesButton.title = '';
+      }
+    }
     APP.capabilityActions = reviewed.actions;
     const applyState = applyAvailability(plan, APP.review);
     APP.reviewedApplyEnabled = applyState.canApply;
@@ -11187,7 +11368,7 @@
               <details><summary>Проверка с записью</summary><p>Сначала проверьте Excel и выберите операции в Preview. Кнопка применяет именно эти изменения после обычного подтверждения, затем перечитывает результат. Для испытаний используйте отдельный тестовый черновик. Добавление, изменение и удаление проверяются только если есть в выбранном наборе.</p><button id="tms-test-write" type="button">Применить выбранное и проверить запись</button></details><div id="tms-tests-result" role="status" aria-live="polite">Проверки ещё не запускались.</div>
             </details>
           </div></details>
-          <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-download-report" hidden disabled>Скачать результат</button><button id="tms-download-support-report" hidden disabled>Скачать отчёт для поддержки</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
+          <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-download-changes" hidden disabled>Скачать изменения в Excel</button><button id="tms-download-report" hidden disabled>Скачать результат</button><button id="tms-download-support-report" hidden disabled>Скачать отчёт для поддержки</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
           <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
         </div>
         <div id="tms-summary"></div><div id="tms-plan"></div>
@@ -11299,6 +11480,7 @@
       catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); setProgress(100, 'Проверка не завершена', message); }
       finally { setBusy(false); }
     });
+    panel.querySelector('#tms-download-changes').addEventListener('click', () => { downloadReviewedChangesXlsx(); });
     panel.querySelector('#tms-download-report').addEventListener('click', () => { downloadLastReport(); });
     panel.querySelector('#tms-download-support-report').addEventListener('click', () => {
       if (APP.busy) return;
@@ -11444,7 +11626,7 @@
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, triggerBlobDownload, downloadJson, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport, buildApplySupportReport,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
-    buildRoundtripGrid, createRoundtripXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
+    buildRoundtripGrid, createRoundtripXlsxBytes, buildChangesReportModel, createChangesReportXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, replacementConfirmationModel, confirmCrossMatrixReplacement, isWriterLockError, persistMainMatrixAfterApply, refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
