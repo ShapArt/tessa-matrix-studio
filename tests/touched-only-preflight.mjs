@@ -94,8 +94,9 @@ const liveCatalog = {
 fullSnapshotReads = 0;
 const addBridge = {
   ...bridge,
+  assertCanCreateRows: () => {},
   getCard: async () => { throw new Error('ADD-only must not CardGet unrelated rows'); },
-  createRowCard: async () => ({ card: {}, cardId: 'new-card', versionId: 'new-version' }),
+  createRowCard: async () => ({ card: {}, cardId: 'new-card', versionId: 'new-version', newMethod: 'test' }),
 };
 const addPreflight = await E.preflightPlan(addPlan, { bridge: addBridge, structure, previewOnly: true, liveAddRoleCatalog: liveCatalog });
 assert(addPreflight.preparedAdds.size === 1, `preparedAdds=${addPreflight.preparedAdds.size}`);
