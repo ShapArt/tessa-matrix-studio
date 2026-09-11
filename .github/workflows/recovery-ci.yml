@@ -1,0 +1,26 @@
+name: v1.14 Recovery CI
+
+on:
+  push:
+    branches: [fix/v1.14-recovery-uat-resolution]
+  pull_request:
+    branches: [feat/incremental-performance-v1.14]
+
+permissions:
+  contents: read
+
+jobs:
+  recovery-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Full regression
+        run: npm test
+      - name: Diff hygiene
+        run: git diff --check
