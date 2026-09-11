@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.13.0
+// @version      1.14.0
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.13.0',
+    version: '1.14.0',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -68,8 +68,17 @@
     lastSupportReport: null,
     lastIntervalDiagnostics: null,
     lastStudioDiagnostics: null,
+    lastPerformanceUat: null,
     nativeRecorder: null,
     dictionaryCatalog: null,
+    // INCREMENTAL_SESSION_CACHE_V1
+    // Ephemeral only: matrix rows/structure live in memory of the current tab and are
+    // never persisted to browser storage. Dictionary IndexedDB caching remains separate.
+    sessionCache: {
+      contextKey: '', matrixId: '', templateId: '', generation: 0, snapshot: null, structure: null,
+      rowByCardId: new Map(), hits: 0, misses: 0, invalidations: 0, lastInvalidationReason: '', updatedAt: null,
+    },
+    performanceTelemetry: { startedAt: new Date().toISOString(), stages: {}, events: [] },
     progress: { percent: 0, label: 'Готово', detail: '' },
   };
 
@@ -88,6 +97,7 @@
     HeaderRowKey: '__TESSA_HEADER_ROW',
     SchemaRowKey: '__TESSA_SCHEMA_ROW',
     TemplateModeKey: '__TESSA_TEMPLATE_MODE',
+    ReportOnlyKey: '__TESSA_REPORT_ONLY',
   });
 
   const DICTIONARY_CACHE = Object.freeze({
@@ -304,6 +314,333 @@
     return output;
   }
   const nowIso = () => new Date().toISOString();
+
+  function resetPerformanceTelemetry() {
+    APP.performanceTelemetry = { startedAt: nowIso(), stages: {}, events: [] };
+    return performanceSnapshot();
+  }
+
+  function recordPerformanceSample(name, elapsedMs, meta = {}, error = null) {
+    const key = String(name || 'unknown');
+    const ms = Math.max(0, Number(elapsedMs) || 0);
+    const state = APP.performanceTelemetry || (APP.performanceTelemetry = { startedAt: nowIso(), stages: {}, events: [] });
+    const previous = state.stages[key] || { count: 0, totalMs: 0, maxMs: 0, lastMs: 0, lastMeta: null, errors: 0 };
+    state.stages[key] = {
+      count: previous.count + 1,
+      totalMs: previous.totalMs + ms,
+      maxMs: Math.max(previous.maxMs || 0, ms),
+      lastMs: ms,
+      lastMeta: clonePlain(meta || {}),
+      errors: previous.errors + (error ? 1 : 0),
+    };
+    state.events.push({ at: nowIso(), name: key, elapsedMs: ms, meta: clonePlain(meta || {}), ok: !error });
+    if (state.events.length > 100) state.events.splice(0, state.events.length - 100);
+  }
+
+  async function performanceStage(name, fn, meta = {}) {
+    const started = monotonicNow();
+    try {
+      const value = await fn();
+      recordPerformanceSample(name, monotonicNow() - started, meta, null);
+      return value;
+    } catch (error) {
+      recordPerformanceSample(name, monotonicNow() - started, meta, error);
+      throw error;
+    }
+  }
+
+  function performanceSnapshot() {
+    return clonePlain(APP.performanceTelemetry || { startedAt: nowIso(), stages: {}, events: [] });
+  }
+
+  // PERFORMANCE_UAT_V1
+  // Local synthetic benchmark only: it builds the same roundtrip workbook and planner
+  // shapes as normal Studio work, but never calls TESSA services or mutation methods.
+  function performanceUatScenarioNames() {
+    return [
+      '0 changes', '1 ADD', '10 ADD', '100 ADD', '1 UPDATE', '10 UPDATE',
+      '1 DELETE', 'mixed 10', '3000 KEEP + 1 ADD', '3000 KEEP + 1 UPDATE',
+    ];
+  }
+
+  function performanceUatRow(index) {
+    const org = index % 100;
+    const person = index % 300;
+    const flat = {
+      'criterion:org': ['Орг ' + org],
+      'function:sign': ['Сотрудник ' + person],
+    };
+    return {
+      index,
+      rowCardId: 'perf-card-' + index,
+      versionId: 'perf-version-' + index,
+      fingerprint: fingerprintFlat(flat),
+      flat,
+      values: { org: [{ id: 'perf-org-' + org, display: 'Орг ' + org, kind: 'ReferenceGuid' }] },
+      roles: { sign: [{ id: 'perf-person-' + person, display: 'Сотрудник ' + person, roleTypeId: 1 }] },
+    };
+  }
+
+  function clonePerformanceWorkbook(workbook) {
+    const cloneRow = row => ({
+      ...row,
+      values: Array.isArray(row?.values) ? [...row.values] : [],
+      cellMeta: Array.isArray(row?.cellMeta) ? row.cellMeta.map(item => item && typeof item === 'object' ? { ...item } : item) : row?.cellMeta,
+    });
+    return {
+      ...workbook,
+      headers: [...(workbook?.headers || [])],
+      schemaTokens: [...(workbook?.schemaTokens || [])],
+      rows: (workbook?.rows || []).map(cloneRow),
+      roundtrip: {
+        ...(workbook?.roundtrip || {}),
+        baselineRows: (workbook?.roundtrip?.baselineRows || []).map(item => ({
+          ...item,
+          base: item?.base ? clonePlain(item.base) : item?.base,
+        })),
+      },
+    };
+  }
+
+  function buildPerformanceUatSummary(result = {}) {
+    return {
+      format: result.format || 'TESSA_PERFORMANCE_UAT_V1',
+      status: result.status || 'unknown',
+      scope: result.scope || 'synthetic-read-only',
+      baseRows: Math.max(0, Number(result.baseRows) || 0),
+      scenarios: Array.isArray(result.scenarios) ? result.scenarios.length : 0,
+      totalMs: Math.max(0, Number(result.totalMs) || 0),
+      cache: clonePlain(result.cache || { hits: 0, misses: 0 }),
+      liveTimings: clonePlain(result.liveTimings || {}),
+      failures: clonePlain(result.failures || []),
+      rows: (result.scenarios || []).map(item => ({
+        name: item.name,
+        plannerMs: Math.max(0, Number(item.plannerMs) || 0),
+        totalRows: Math.max(0, Number(item.totalRows) || 0),
+        fullyValidatedRows: Math.max(0, Number(item.fullyValidatedRows) || 0),
+        preflightRows: Math.max(0, Number(item.preflightRows) || 0),
+        baselineFastPathHits: Math.max(0, Number(item.baselineFastPathHits) || 0),
+        counts: clonePlain(item.counts || {}),
+      })),
+    };
+  }
+
+  async function runPerformanceUat(options = {}) {
+    const requested = Math.trunc(Number(options?.baseRows) || 3000);
+    const baseRows = Math.max(100, Math.min(10000, requested));
+    const started = monotonicNow();
+    const structure = {
+      templateId: 'performance-uat-template',
+      conditions: [{ criterionRowId: 'org', criterionName: 'Организация', operandTypeId: OPERAND.ReferenceGuid, refSection: 'GchPartners' }],
+      functions: [{ id: 'sign', name: 'Подписание', typeName: 'Подписание' }],
+    };
+    const snapshot = {
+      matrixId: 'performance-uat-matrix',
+      templateId: structure.templateId,
+      rows: Array.from({ length: baseRows }, (_, index) => performanceUatRow(index)),
+    };
+    const matrixInfo = { matrixId: snapshot.matrixId, TemplateID: snapshot.templateId, Name: 'Performance UAT' };
+    const catalog = mergeSnapshotIntoDictionaryCatalog(null, structure, snapshot);
+    const bytes = await createRoundtripXlsxBytes(structure, snapshot, matrixInfo, catalog, { includeActions: true });
+    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const baseWorkbook = await readXlsxArrayBuffer(buffer, 'performance-uat.xlsx');
+    const signer = baseWorkbook.headers.indexOf('Подписание');
+    const signerId = baseWorkbook.headers.indexOf('Подписание__ID');
+    if (signer < 0 || signerId < 0) throw new Error('Performance UAT: не найдены колонки функции Подписание.');
+
+    const changeSigner = (workbook, rowIndex, delta = 1) => {
+      const row = workbook.rows[rowIndex];
+      if (!row) throw new Error('Performance UAT: отсутствует строка ' + rowIndex + '.');
+      const person = (rowIndex + delta) % 300;
+      row.values[signer] = 'Сотрудник ' + person;
+      row.values[signerId] = 'perf-person-' + person + '|1';
+    };
+    const appendCopies = (workbook, count, sourceOffset = 0) => {
+      const maxExcelRow = Math.max(0, ...(workbook.rows || []).map(row => Number(row.excelRow) || 0));
+      for (let i = 0; i < count; i += 1) {
+        const sourceIndex = (sourceOffset + i) % baseWorkbook.rows.length;
+        const source = baseWorkbook.rows[sourceIndex];
+        const copy = {
+          ...source,
+          excelRow: maxExcelRow + i + 2,
+          values: [...source.values],
+          cellMeta: Array.isArray(source.cellMeta) ? source.cellMeta.map(item => item && typeof item === 'object' ? { ...item } : item) : source.cellMeta,
+        };
+        workbook.rows.push(copy);
+        changeSigner(workbook, workbook.rows.length - 1, 1);
+      }
+    };
+    const deleteRows = (workbook, indexes) => {
+      const remove = new Set(indexes);
+      workbook.rows = workbook.rows.filter((_, index) => !remove.has(index));
+    };
+
+    const scenarioBuilders = new Map([
+      ['0 changes', workbook => workbook],
+      ['1 ADD', workbook => { appendCopies(workbook, 1, 0); return workbook; }],
+      ['10 ADD', workbook => { appendCopies(workbook, 10, 20); return workbook; }],
+      ['100 ADD', workbook => { appendCopies(workbook, 100, 100); return workbook; }],
+      ['1 UPDATE', workbook => { changeSigner(workbook, 0, 1); return workbook; }],
+      ['10 UPDATE', workbook => { for (let i = 0; i < 10; i += 1) changeSigner(workbook, i, 1); return workbook; }],
+      ['1 DELETE', workbook => { deleteRows(workbook, [0]); return workbook; }],
+      ['mixed 10', workbook => {
+        for (let i = 0; i < 4; i += 1) changeSigner(workbook, i, 1);
+        deleteRows(workbook, [10, 11, 12]);
+        appendCopies(workbook, 3, 30);
+        return workbook;
+      }],
+      ['3000 KEEP + 1 ADD', workbook => { appendCopies(workbook, 1, 40); return workbook; }],
+      ['3000 KEEP + 1 UPDATE', workbook => { changeSigner(workbook, 42, 1); return workbook; }],
+    ]);
+
+    const expected = {
+      '0 changes': { noop: baseRows, fullyValidatedRows: 0, preflightRows: 0 },
+      '1 ADD': { add: 1 },
+      '10 ADD': { add: 10 },
+      '100 ADD': { add: 100 },
+      '1 UPDATE': { update: 1 },
+      '10 UPDATE': { update: 10 },
+      '1 DELETE': { delete: 1 },
+      'mixed 10': { preflightRows: 10 },
+      '3000 KEEP + 1 ADD': { add: 1, noop: baseRows, fullyValidatedRows: 1, baselineFastPathHits: baseRows },
+      '3000 KEEP + 1 UPDATE': { update: 1, noop: baseRows - 1, fullyValidatedRows: 1 },
+    };
+
+    const scenarios = [];
+    const failures = [];
+    for (const name of performanceUatScenarioNames()) {
+      const workbook = scenarioBuilders.get(name)(clonePerformanceWorkbook(baseWorkbook));
+      const planStarted = monotonicNow();
+      const plan = buildPlan(workbook, structure, snapshot, matrixInfo);
+      const plannerMs = Math.max(0, monotonicNow() - planStarted);
+      const counts = clonePlain(plan.counts || countActions(plan.actions || []));
+      const preflightRows = (plan.actions || []).filter(action => ['add', 'update', 'delete'].includes(action?.type)).length;
+      const item = {
+        name,
+        plannerMs,
+        totalRows: workbook.rows.length,
+        counts,
+        fullyValidatedRows: Math.max(0, Number(plan.incremental?.rowsFullyValidated) || 0),
+        preflightRows,
+        baselineFastPathHits: Math.max(0, Number(plan.incremental?.baselineFastPathHits) || 0),
+      };
+      scenarios.push(item);
+      const rule = expected[name] || {};
+      for (const [key, value] of Object.entries(rule)) {
+        const actual = Object.prototype.hasOwnProperty.call(counts, key) ? counts[key] : item[key];
+        if (Number(actual) !== Number(value)) failures.push({ scenario: name, metric: key, expected: value, actual });
+      }
+      await yieldToMain();
+    }
+
+    const cacheState = sessionCacheStats();
+    const telemetry = performanceSnapshot();
+    const result = {
+      format: 'TESSA_PERFORMANCE_UAT_V1',
+      scope: 'synthetic-read-only',
+      createdAt: nowIso(),
+      baseRows,
+      scenarios,
+      failures,
+      cache: {
+        hits: Math.max(0, Number(cacheState?.hits) || 0),
+        misses: Math.max(0, Number(cacheState?.misses) || 0),
+        invalidations: Math.max(0, Number(cacheState?.invalidations) || 0),
+      },
+      liveTimings: clonePlain(telemetry?.stages || {}),
+      totalMs: Math.max(0, monotonicNow() - started),
+    };
+    result.status = failures.length ? 'failed' : 'passed';
+    return result;
+  }
+
+  function sessionContextKey(matrixId, templateId) {
+    const matrix = canonicalValue(matrixId || '');
+    const template = canonicalValue(templateId || '');
+    return matrix && template ? `${matrix}::${template}` : '';
+  }
+
+  function createEmptySessionCache(previous = null, reason = '') {
+    return {
+      contextKey: '', matrixId: '', templateId: '',
+      generation: Math.max(0, Number(previous?.generation) || 0) + (previous ? 1 : 0),
+      snapshot: null, structure: null, rowByCardId: new Map(),
+      hits: Math.max(0, Number(previous?.hits) || 0),
+      misses: Math.max(0, Number(previous?.misses) || 0),
+      invalidations: Math.max(0, Number(previous?.invalidations) || 0) + (previous ? 1 : 0),
+      lastInvalidationReason: String(reason || ''), updatedAt: nowIso(),
+    };
+  }
+
+  function setSessionSnapshot(snapshot, structure = null) {
+    const matrixId = String(snapshot?.matrixId || '');
+    const templateId = String(snapshot?.templateId || structure?.templateId || '');
+    const key = sessionContextKey(matrixId, templateId);
+    if (!key) return null;
+    const previous = APP.sessionCache || createEmptySessionCache();
+    const rows = Array.isArray(snapshot?.rows) ? snapshot.rows : [];
+    const rowByCardId = new Map();
+    for (const row of rows) {
+      const id = canonicalValue(row?.rowCardId || '');
+      if (id) rowByCardId.set(id, row);
+    }
+    APP.sessionCache = {
+      contextKey: key, matrixId, templateId,
+      generation: Math.max(0, Number(previous.generation) || 0) + 1,
+      snapshot, structure: structure || previous.structure || null, rowByCardId,
+      hits: Math.max(0, Number(previous.hits) || 0), misses: Math.max(0, Number(previous.misses) || 0),
+      invalidations: Math.max(0, Number(previous.invalidations) || 0),
+      lastInvalidationReason: previous.lastInvalidationReason || '', updatedAt: nowIso(),
+    };
+    return snapshot;
+  }
+
+  function getSessionSnapshot(matrixId, templateId) {
+    const cache = APP.sessionCache || createEmptySessionCache();
+    const key = sessionContextKey(matrixId, templateId);
+    if (key && cache.contextKey === key && cache.snapshot) {
+      cache.hits += 1;
+      return cache.snapshot;
+    }
+    cache.misses += 1;
+    APP.sessionCache = cache;
+    return null;
+  }
+
+  function updateSessionRows({ matrixId, templateId, upsertRows = [], deleteRowIds = [] } = {}) {
+    const cache = APP.sessionCache || createEmptySessionCache();
+    const key = sessionContextKey(matrixId, templateId);
+    if (!key || key !== cache.contextKey || !cache.snapshot) {
+      cache.misses += 1;
+      APP.sessionCache = cache;
+      return null;
+    }
+    const byId = new Map((cache.snapshot.rows || []).map(row => [canonicalValue(row?.rowCardId || ''), row]).filter(([id]) => id));
+    for (const id of deleteRowIds || []) byId.delete(canonicalValue(id || ''));
+    for (const row of upsertRows || []) {
+      const id = canonicalValue(row?.rowCardId || '');
+      if (id) byId.set(id, row);
+    }
+    const next = { ...cache.snapshot, rows: Array.from(byId.values()), createdAt: nowIso() };
+    setSessionSnapshot(next, cache.structure);
+    APP.snapshot = next;
+    return next;
+  }
+
+  function invalidateSessionCache(reason = 'manual') {
+    APP.sessionCache = createEmptySessionCache(APP.sessionCache, reason);
+    return APP.sessionCache;
+  }
+
+  function sessionCacheStats() {
+    const cache = APP.sessionCache || createEmptySessionCache();
+    return {
+      contextKey: cache.contextKey || '', generation: cache.generation || 0,
+      rows: cache.snapshot?.rows?.length || 0, hits: cache.hits || 0, misses: cache.misses || 0,
+      invalidations: cache.invalidations || 0, lastInvalidationReason: cache.lastInvalidationReason || '',
+      updatedAt: cache.updatedAt || null,
+    };
+  }
 
   // ---------------------------------------------------------------------------
   // 2. БАЗОВЫЕ УТИЛИТЫ
@@ -1503,6 +1840,9 @@
     const parsed = parsedSheets.get(matrixDescriptor.name);
     if (!parsed) throw new Error(`Не найден лист ${matrixDescriptor.path} в XLSX.`);
     const preliminaryMetadata = readMetadataPairs(parsed.rows, 40);
+    if (preliminaryMetadata[ROUNDTRIP.ReportOnlyKey]) {
+      throw new Error('Это Excel-отчёт только для просмотра. Его нельзя использовать как источник изменений или Apply. Выберите рабочую выгрузку, созданную кнопкой «Скачать Excel».');
+    }
     const declaredHeaderRow = Number(preliminaryMetadata[ROUNDTRIP.HeaderRowKey] || 0);
     const headerRowIndex = declaredHeaderRow > 0 && declaredHeaderRow <= parsed.rows.length
       ? declaredHeaderRow - 1
@@ -1716,6 +2056,64 @@
     return Array.from(columns || []).findIndex(column => accepted.has(searchCanonical(column)));
   }
 
+  // EMPLOYEE_ROLE_PROJECTION_V1
+  // RoleID/RoleTypeID remain the identity. Employee fields below are presentation/search
+  // metadata read from explicit MtxRoles projection columns; position is never guessed
+  // from RoleName or free-form details.
+  const PERSONAL_ROLE_TYPE_ID = 1;
+
+  function exactProjectionColumnIndex(columns, aliases) {
+    const accepted = new Set((aliases || []).map(searchCanonical));
+    return Array.from(columns || []).findIndex(column => accepted.has(searchCanonical(column)));
+  }
+
+  function projectionText(row, columns, aliases, localize = value => value) {
+    const index = exactProjectionColumnIndex(columns, aliases);
+    if (index < 0) return '';
+    const raw = row?.[index];
+    if (raw === null || raw === undefined || typeof raw === 'object') return '';
+    return normalizeSpace(localize(raw));
+  }
+
+  function employeeProjectionFields(row, columns, roleTypeId, nativeDisplay, localize = value => value) {
+    if (Number(roleTypeId) !== PERSONAL_ROLE_TYPE_ID) return null;
+    const explicitShort = projectionText(row, columns, [
+      'ShortName', 'RoleShortName', 'UserShortName', 'EmployeeShortName', 'PersonalRoleShortName',
+    ], localize);
+    const shortName = explicitShort || normalizeSpace(nativeDisplay);
+    const fullName = projectionText(row, columns, [
+      'FullName', 'RoleFullName', 'UserFullName', 'EmployeeFullName', 'PersonalRoleFullName', 'PersonFullName',
+    ], localize);
+    const position = projectionText(row, columns, [
+      'PositionName', 'Position', 'RolePositionName', 'UserPositionName', 'EmployeePositionName',
+      'PersonalRolePositionName', 'JobTitle', 'JobTitleName', 'PostName',
+    ], localize);
+    const department = projectionText(row, columns, [
+      'DepartmentName', 'Department', 'RoleDepartmentName', 'UserDepartmentName', 'EmployeeDepartmentName',
+      'PersonalRoleDepartmentName', 'SubdivisionName', 'UnitName',
+    ], localize);
+    const displayName = position && shortName ? `${shortName} — ${position}` : (shortName || fullName || normalizeSpace(nativeDisplay));
+    return { shortName, fullName, position, department, displayName, nativeDisplay: normalizeSpace(nativeDisplay) };
+  }
+
+  function employeeResolvableAliases(item) {
+    if (!item || Number(item.roleTypeId) !== PERSONAL_ROLE_TYPE_ID) return [];
+    return [...new Set([
+      item.displayName, item.shortName, item.fullName, item.nativeDisplay,
+      ...(item.previousSelectors || []),
+    ].map(normalizeSpace).filter(Boolean))];
+  }
+
+  function dictionaryRoleDisplay(catalog, item) {
+    if (!catalog || !item) return item?.display || '';
+    const lookup = dictionaryLookup(catalog);
+    const id = canonicalValue(item.id);
+    const roleType = canonicalValue(item.roleTypeId);
+    const candidates = lookup?.byId?.get(`${id}|${roleType}`) || lookup?.byId?.get(`${id}|`) || [];
+    const found = candidates.find(entry => !roleType || canonicalValue(entry.roleTypeId) === roleType) || candidates[0];
+    return found?.displayName || found?.display || item.display || '';
+  }
+
   function finalizeDictionaryEntries(entries) {
     const byIdentity = new Map();
     for (const source of entries || []) {
@@ -1735,7 +2133,11 @@
       if (!display || !id) continue;
       const identity = `${canonicalValue(id)}|${canonicalValue(roleTypeId)}`;
       const qualifier = normalizeSpace(source.qualifier || humanQualifierFromDetails(source.details, display));
-      if (!byIdentity.has(identity)) byIdentity.set(identity, { ...source, id, display, roleTypeId, qualifier });
+      const previousSelectors = [...new Set([
+        ...(source.previousSelectors || []),
+        ...(Number(roleTypeId) === PERSONAL_ROLE_TYPE_ID && source.nativeDisplay && canonicalValue(source.nativeDisplay) !== canonicalValue(display) ? [source.nativeDisplay] : []),
+      ].map(normalizeSpace).filter(Boolean))];
+      if (!byIdentity.has(identity)) byIdentity.set(identity, { ...source, id, display, roleTypeId, qualifier, previousSelectors });
       else if (!byIdentity.get(identity).qualifier && qualifier) byIdentity.get(identity).qualifier = qualifier;
     }
     const values = [...byIdentity.values()];
@@ -1809,7 +2211,7 @@
 
   function dictionaryStructureSignature(structure) {
     const compact = {
-      projectionVersion: 4,
+      projectionVersion: 5,
       templateId: canonicalValue(structure?.templateId),
       conditions: (structure?.conditions || []).map(item => [
         canonicalValue(item.criterionRowId), canonicalValue(item.operandTypeId),
@@ -1918,6 +2320,15 @@
       const firstDisplay = captions.get(identity);
       if (!firstDisplay) captions.set(identity, display);
       if (current?.display === display || (firstDisplay && (current?.previousSelectors || []).includes(display))) return;
+      const employeeAliasMatch = current && Number(current.roleTypeId) === PERSONAL_ROLE_TYPE_ID
+        && employeeResolvableAliases(current).some(alias => canonicalValue(alias) === canonicalValue(display));
+      if (employeeAliasMatch) {
+        const aliases = [...new Set([...(current.previousSelectors || []), display].map(normalizeSpace).filter(Boolean))];
+        if ((current.previousSelectors || []).map(canonicalValue).includes(canonicalValue(display))) return;
+        if (!changesByCatalog.has(catalogId)) changesByCatalog.set(catalogId, new Map());
+        changesByCatalog.get(catalogId).set(identity, { ...current, previousSelectors: aliases });
+        return;
+      }
       if (!changesByCatalog.has(catalogId)) changesByCatalog.set(catalogId, new Map());
       // Every caption emitted into a matrix cell must survive XLSX serialization;
       // truncating this list makes an untouched row fail its ID-and-text check.
@@ -2007,6 +2418,7 @@
     const byId = new Map();
     const bySelector = new Map();
     const byDisplay = new Map();
+    const byEmployeeAlias = new Map();
     const searchRows = [];
     const append = (map, key, item) => {
       if (!key) return;
@@ -2023,6 +2435,7 @@
       }
       append(bySelector, canonicalValue(item.selector), item);
       append(byDisplay, canonicalValue(item.display), item);
+      for (const alias of employeeResolvableAliases(item)) append(byEmployeeAlias, canonicalValue(alias), item);
       searchRows.push({
         item,
         haystack: searchCanonical(`${item.selector || ''} ${item.display || ''} ${item.qualifier || ''} ${item.searchText || ''} ${item.details || ''} ${(item.previousSelectors || []).join(' ')}`),
@@ -2031,7 +2444,7 @@
 
     const isBoolean = canonicalValue(catalog.sourceView || '') === 'boolean'
       || (items.length > 0 && items.every(item => item.kind === 'Boolean' || ['true', 'false'].includes(canonicalValue(item.id))));
-    const lookup = { items, byId, bySelector, byDisplay, searchRows, isBoolean, resolutionCache: new Map() };
+    const lookup = { items, byId, bySelector, byDisplay, byEmployeeAlias, searchRows, isBoolean, resolutionCache: new Map() };
     DICTIONARY_LOOKUP_CACHE.set(catalog, lookup);
     return lookup;
   }
@@ -2077,12 +2490,16 @@
         || [];
       explicitMatch = candidates.find(item => !explicitRoleType || canonicalValue(item.roleTypeId) === explicitRoleType) || null;
     }
-    if (explicitMatch && [explicitMatch.selector, explicitMatch.display, ...(explicitMatch.previousSelectors || [])].map(canonicalValue).includes(visibleCanonical)) {
+    if (explicitMatch && [
+      explicitMatch.selector, explicitMatch.display, ...(explicitMatch.previousSelectors || []),
+      ...employeeResolvableAliases(explicitMatch),
+    ].map(canonicalValue).includes(visibleCanonical)) {
       return resolvedItem(explicitMatch, 'id-and-text');
     }
 
     let matches = lookup.bySelector.get(visibleCanonical) || [];
     if (!matches.length) matches = lookup.byDisplay.get(visibleCanonical) || [];
+    if (!matches.length) matches = lookup.byEmployeeAlias.get(visibleCanonical) || [];
     if (matches.length === 1) return resolvedItem(matches[0], 'exact');
     if (matches.length > 1) {
       const variants = matches.slice(0, 8).map(item => item.selector).join('; ');
@@ -2191,7 +2608,7 @@
         const key = definitionKey('function', fn.id);
         const dict = catalog.catalogs?.[catalog.columnCatalogIds?.[key]];
         const items = snapshotRow.roles?.[fn.id] || [];
-        values.push(items.map(item => item.display || dictionarySelector(dict, item.id, item.roleTypeId, '')).join('\n'));
+        values.push(items.map(item => dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, '')).join('\n'));
         values.push(items.map(item => `${item.id}|${item.roleTypeId}`).join('\n'));
       }
       for (let customIndex = 0; customIndex < customColumns.length; customIndex += 1) {
@@ -2415,6 +2832,142 @@
     return await makeZip(entries);
   }
 
+  // REVIEWED_CHANGES_REPORT_V1
+  // This workbook is a human-readable, report-only projection of Preview. It deliberately
+  // contains no roundtrip service IDs or baseline ledger and can never become an Apply source.
+  function buildChangesReportModel(plan, structure = null) {
+    const definitionLabels = new Map();
+    for (const condition of structure?.conditions || []) definitionLabels.set(`criterion:${condition.criterionRowId}`, condition.criterionName || condition.criterionRowId);
+    for (const fn of structure?.functions || []) definitionLabels.set(`function:${fn.id}`, fn.name || fn.id);
+    const headers = ['Изменение', 'Excel row', 'Причина', 'TESSA row', 'Поля', 'Было', 'Стало'];
+    const detailHeaders = ['Изменение', 'Excel row', 'TESSA row', 'Поле', 'Было', 'Стало', 'Причина'];
+    const operations = [];
+    const details = [];
+    const stringifyValues = values => Array.isArray(values) ? values.map(value => String(value ?? '')).filter(Boolean).join(' · ') : String(values ?? '');
+    const actionLabel = type => ({ update: 'UPDATE', add: 'ADD', delete: 'DELETE' }[type] || String(type || '').toUpperCase());
+
+    for (const action of plan?.actions || []) {
+      if (!['update', 'add', 'delete'].includes(action?.type)) continue;
+      const change = actionLabel(action.type);
+      const excelRow = action.excelRow?.excelRow ?? '';
+      const tessaRow = action.currentRow?.index !== undefined ? Number(action.currentRow.index) + 1 : '';
+      const changes = Array.isArray(action.changes) ? action.changes : [];
+      const reason = normalizeSpace(action.reason || action.match?.reason || '');
+      const fields = changes.map(item => item.label || definitionLabels.get(item.key) || item.key || '').filter(Boolean);
+      const beforeParts = changes.map(item => {
+        const label = item.label || definitionLabels.get(item.key) || item.key || '';
+        const value = stringifyValues(item.before);
+        return label ? `${label}: ${value || "(пусто)"}` : value;
+      });
+      const afterParts = changes.map(item => {
+        const label = item.label || definitionLabels.get(item.key) || item.key || '';
+        const value = stringifyValues(item.after);
+        return label ? `${label}: ${value || "(пусто)"}` : value;
+      });
+      operations.push({
+        change, excelRow, reason, tessaRow,
+        fields: fields.join(' · '), before: beforeParts.join('\n'), after: afterParts.join('\n'),
+        error: false,
+      });
+      if (changes.length) {
+        for (const item of changes) {
+          details.push({
+            change, excelRow, tessaRow,
+            field: item.label || definitionLabels.get(item.key) || item.key || '',
+            before: stringifyValues(item.before), after: stringifyValues(item.after), reason, error: false,
+          });
+        }
+      } else {
+        details.push({ change, excelRow, tessaRow, field: '', before: '', after: '', reason, error: false });
+      }
+    }
+
+    for (const skip of plan?.skippedRows || []) {
+      const reason = normalizeSpace(skip?.reason || 'Строка пропущена.');
+      const excelRow = skip?.excelRow ?? '';
+      const tessaRow = skip?.tessaRow ?? '';
+      const error = Boolean(normalizeSpace(skip?.code || ''));
+      operations.push({ change: 'SKIP', excelRow, reason, tessaRow, fields: '', before: '', after: '', error });
+      details.push({ change: 'SKIP', excelRow, tessaRow, field: '', before: '', after: '', reason, error });
+    }
+
+    return {
+      format: 'TESSA_MATRIX_CHANGES_REPORT_V1', reportOnly: true,
+      matrixId: plan?.matrixId || '', templateId: plan?.templateId || structure?.templateId || '',
+      createdAt: nowIso(), headers, detailHeaders, operations, details,
+    };
+  }
+
+  function changesReportStylesXml() {
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Aptos"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/></font></fonts><fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1F4E78"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2F0D9"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF4CCCC"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFCE5CD"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border/><border><left style="thin"><color rgb="FFD9E1F2"/></left><right style="thin"><color rgb="FFD9E1F2"/></right><top style="thin"><color rgb="FFD9E1F2"/></top><bottom style="thin"><color rgb="FFD9E1F2"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="8"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="center"/></xf><xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="6" borderId="1" xfId="0" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="1" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="top"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+  }
+
+  function changesReportRowStyle(row) {
+    if (row?.change === 'ADD') return 4;
+    if (row?.change === 'UPDATE') return 3;
+    if (row?.change === 'DELETE') return 5;
+    if (row?.change === 'SKIP') return row?.error ? 7 : 6;
+    return 1;
+  }
+
+  function changesReportWorksheetXml(headers, rows, metadata = null) {
+    const sheetRows = [];
+    let rowNumber = 1;
+    if (metadata) {
+      for (const pair of metadata) {
+        sheetRows.push(`<row r="${rowNumber}" hidden="1">${xlsxStringCell(rowNumber, 0, pair[0], 1)}${xlsxStringCell(rowNumber, 1, pair[1], 1)}</row>`);
+        rowNumber += 1;
+      }
+      rowNumber += 1;
+    }
+    const headerRow = rowNumber;
+    sheetRows.push(`<row r="${rowNumber}" ht="34" customHeight="1">${headers.map((value, index) => xlsxStringCell(rowNumber, index, value, 2)).join("")}</row>`);
+    rowNumber += 1;
+    for (const row of rows) {
+      const style = changesReportRowStyle(row);
+      const values = headers.map(header => ({
+        'Изменение': row.change, 'Excel row': row.excelRow, 'Причина': row.reason, 'TESSA row': row.tessaRow,
+        'Поля': row.fields, 'Было': row.before, 'Стало': row.after, 'Поле': row.field,
+      })[header] ?? '');
+      const lines = Math.max(1, ...values.map(value => String(value ?? '').split(/\r?\n/).length));
+      const height = Math.min(240, Math.max(28, lines * 16 + 8));
+      sheetRows.push(`<row r="${rowNumber}" ht="${height}" customHeight="1">${values.map((value, index) => xlsxStringCell(rowNumber, index, value, style)).join("")}</row>`);
+      rowNumber += 1;
+    }
+    const lastRow = Math.max(headerRow, rowNumber - 1);
+    const lastCol = indexToCol(headers.length - 1);
+    const widths = headers.map(header => ({ 'Изменение': 14, 'Excel row': 12, 'Причина': 52, 'TESSA row': 12, 'Поля': 34, 'Было': 58, 'Стало': 58, 'Поле': 34 })[header] || 30);
+    const cols = widths.map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`).join('');
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastCol}${lastRow}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="${headerRow}" topLeftCell="A${headerRow + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols>${cols}</cols><sheetData>${sheetRows.join("")}</sheetData><autoFilter ref="A${headerRow}:${lastCol}${lastRow}"/></worksheet>`;
+  }
+
+  async function createChangesReportXlsxBytes(plan, structure = null) {
+    const model = buildChangesReportModel(plan, structure);
+    const metadata = [
+      [ROUNDTRIP.ReportOnlyKey, model.format],
+      [ROUNDTRIP.MatrixIdKey, model.matrixId],
+      [ROUNDTRIP.TemplateIdKey, model.templateId],
+      ['__TESSA_CREATED_AT', model.createdAt],
+    ];
+    const operationRows = model.operations.map(row => ({ ...row }));
+    const detailRows = model.details.map(row => ({ ...row }));
+    const sheet1 = changesReportWorksheetXml(model.headers, operationRows, metadata);
+    const sheet2 = changesReportWorksheetXml(model.detailHeaders, detailRows, null);
+    const sheetNames = ['Изменения', 'Детали изменений'];
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>`;
+    const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`;
+    const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${xmlEscape(sheetNames[0])}" sheetId="1" r:id="rId1"/><sheet name="${xmlEscape(sheetNames[1])}" sheetId="2" r:id="rId2"/></sheets></workbook>`;
+    const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
+    const created = new Date().toISOString();
+    const core = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:creator>TESSA Matrix Studio</dc:creator><dc:title>Отчёт изменений матрицы</dc:title><dcterms:created xsi:type="dcterms:W3CDTF">${created}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${created}</dcterms:modified></cp:coreProperties>`;
+    const app = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Microsoft Excel</Application><HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Листы</vt:lpstr></vt:variant><vt:variant><vt:i4>2</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector size="2" baseType="lpstr"><vt:lpstr>Изменения</vt:lpstr><vt:lpstr>Детали изменений</vt:lpstr></vt:vector></TitlesOfParts><Company>ПАО «Группа Черкизово»</Company></Properties>`;
+    return await makeZip([
+      ['[Content_Types].xml', contentTypes], ['_rels/.rels', rels], ['docProps/core.xml', core], ['docProps/app.xml', app],
+      ['xl/workbook.xml', workbook], ['xl/_rels/workbook.xml.rels', workbookRels], ['xl/styles.xml', changesReportStylesXml()],
+      ['xl/worksheets/sheet1.xml', sheet1], ['xl/worksheets/sheet2.xml', sheet2],
+    ]);
+  }
+
   function sanitizeFileName(value) {
     return normalizeSpace(value || 'Матрица')
       .replace(/[\\/:*?"<>|]+/g, '_')
@@ -2443,23 +2996,24 @@
     if (!templateId) throw new Error('У матрицы не найден TemplateID.');
     setProgress(24, 'Читаю структуру', 'Критерии и функции матрицы');
     log('Выгрузка текущей матрицы: читаю структуру.');
-    const structure = await bridge.requestStructure(templateId);
+    const structure = await performanceStage('export.structure', () => bridge.requestStructure(templateId), { operation: 'export' });
     setProgress(38, 'Читаю строки', 'Загружаю текущее состояние матрицы');
     log('Выгрузка текущей матрицы: читаю строки.');
-    const snapshot = await bridge.loadSnapshot(structure);
+    const snapshot = await performanceStage('export.snapshot', () => bridge.loadSnapshot(structure), { operation: 'export' });
     setProgress(62, 'Обновляю справочники', 'Читаю свежие значения и роли из TESSA');
     log(options.forceDictionaryRefresh ? 'Выгрузка текущей матрицы: принудительно обновляю словари и роли.' : 'Выгрузка текущей матрицы: подключаю словари и роли.');
-    const dictionaryCatalog = await bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true });
+    const dictionaryCatalog = await performanceStage('export.dictionaries', () => bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true }), { operation: 'export', rows: snapshot.rows.length });
     APP.dictionaryCatalog = dictionaryCatalog;
     const matrixInfo = bridge.matrixInfo();
     setProgress(84, 'Формирую Excel', `${snapshot.rows.length} строк`);
-    const bytes = await createRoundtripXlsxBytes(structure, snapshot, matrixInfo, dictionaryCatalog, { includeActions: true });
+    const bytes = await performanceStage('export.xlsx-build', () => createRoundtripXlsxBytes(structure, snapshot, matrixInfo, dictionaryCatalog, { includeActions: true }), { operation: 'export', rows: snapshot.rows.length });
     const shortId = String(snapshot.matrixId || '').slice(0, 8);
     const name = `TESSA_Матрица_${sanitizeFileName(matrixInfo.TemplateName)}_${shortId}.xlsx`;
     downloadBlob(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name);
     APP.bridge = bridge;
     APP.structure = structure;
     APP.snapshot = snapshot;
+    setSessionSnapshot(snapshot, structure);
     log(`Текущая матрица выгружена: ${snapshot.rows.length} строк, ${dictionaryCatalog.stats.entries} значений в ${dictionaryCatalog.stats.catalogs} словарях.`);
     setProgress(100, 'Excel готов', `${snapshot.rows.length} строк · ${dictionaryCatalog.stats.entries} значений справочников`);
     return { name, structure, snapshot, matrixInfo, dictionaryCatalog, bytes };
@@ -4070,6 +4624,9 @@
         if (hidden || inactive) continue;
         if (options.recordKeepingOnly && recordKeepingIndex >= 0 && booleanSemantic(row[recordKeepingIndex]) !== true) continue;
         const roleTypeId = roleTypeIndex >= 0 && row[roleTypeIndex] !== null && row[roleTypeIndex] !== undefined && row[roleTypeIndex] !== '' ? Number(row[roleTypeIndex]) : '';
+        const nativeDisplay = display;
+        const employee = roleMode ? employeeProjectionFields(row, columns, roleTypeId, nativeDisplay, value => this.localizeValue(value)) : null;
+        if (employee?.displayName) display = employee.displayName;
         const details = columns.map((alias, index) => {
           if (index === idIndex || index === displayIndex || index === roleTypeIndex) return '';
           const value = this.localizeValue(row[index]);
@@ -4079,7 +4636,11 @@
         }).filter(Boolean).join(' | ').slice(0, 4000);
         const qualifier = humanQualifierFromDetails(details, display);
         const searchText = searchCanonical(`${display} ${qualifier} ${details} ${row.map(value => typeof value === 'object' ? '' : normalizeSpace(this.localizeValue(value))).join(' ')}`);
-        entries.push({ id: String(id), display, qualifier, roleTypeId: Number.isFinite(roleTypeId) ? roleTypeId : '', source: result.alias, status: 'Доступно', details, searchText });
+        entries.push({
+          id: String(id), display, qualifier, roleTypeId: Number.isFinite(roleTypeId) ? roleTypeId : '',
+          source: result.alias, status: 'Доступно', details, searchText,
+          ...(employee || {}),
+        });
       }
       return entries;
     }
@@ -5145,8 +5706,99 @@
   // копирование в новую свободную строку — как ДОБАВЛЕНИЕ.
   // ---------------------------------------------------------------------------
 
+  // INCREMENTAL_BASELINE_FAST_PATH_V1
+  // A V6 baseline contains the exact normalized row that was exported. If both visible
+  // values and companion IDs are still byte-semantically equivalent, do not resolve the
+  // same dictionaries again. Any doubt (formula, duplicate identity, moved duplicate,
+  // changed ID or value) falls through to the original full validation path.
+  function baselineExplicitValues(baseRow, column) {
+    if (!baseRow?.base) return [];
+    if (column.kind === 'function') {
+      return (baseRow.base.roles?.[column.id] || []).map(item => {
+        const id = item?.id == null ? '' : String(item.id);
+        const roleTypeId = item?.roleTypeId == null ? '' : String(item.roleTypeId);
+        return id ? `${id}|${roleTypeId}` : '';
+      });
+    }
+    return (baseRow.base.values?.[column.id] || []).map(item => item?.id == null ? '' : String(item.id));
+  }
+
+  function workbookBaselineFastPathIndex(workbook, columnMap) {
+    const bases = workbook.roundtrip?.baselineRows || [];
+    const byCard = new Map();
+    const byVersion = new Map();
+    bases.forEach((base, index) => {
+      const entry = { ...base, baselineIndex: index };
+      const card = canonicalValue(base?.rowCardId || '');
+      const version = canonicalValue(base?.versionId || '');
+      if (card) byCard.set(card, entry);
+      if (version) byVersion.set(version, entry);
+    });
+    const identityCounts = new Map();
+    for (const row of workbook.rows || []) {
+      const card = canonicalValue(columnMap.system.rowCardId === undefined ? '' : row.values[columnMap.system.rowCardId]);
+      const version = canonicalValue(columnMap.system.versionId === undefined ? '' : row.values[columnMap.system.versionId]);
+      const key = version || card ? `v:${version}|c:${card}` : '';
+      if (key) identityCounts.set(key, (identityCounts.get(key) || 0) + 1);
+    }
+    return { byCard, byVersion, identityCounts };
+  }
+
+  function unchangedDesiredRowFromBaseline(workbook, row, columnMap, baselineIndex) {
+    if (!workbook.roundtrip?.enabled || !workbook.roundtrip?.baselineRows?.length) return null;
+    const system = {
+      action: normalizeAction(columnMap.system.action === undefined ? '' : row.values[columnMap.system.action]),
+      rowCardId: normalizeSpace(columnMap.system.rowCardId === undefined ? '' : row.values[columnMap.system.rowCardId]),
+      versionId: normalizeSpace(columnMap.system.versionId === undefined ? '' : row.values[columnMap.system.versionId]),
+      baseFingerprint: normalizeSpace(columnMap.system.baseFingerprint === undefined ? '' : row.values[columnMap.system.baseFingerprint]),
+    };
+    if (system.action !== 'keep' || (!system.rowCardId && !system.versionId)) return null;
+    const cardKey = canonicalValue(system.rowCardId);
+    const versionKey = canonicalValue(system.versionId);
+    const base = (cardKey ? baselineIndex.byCard.get(cardKey) : null) || (versionKey ? baselineIndex.byVersion.get(versionKey) : null);
+    if (!base?.base) return null;
+    if (cardKey && canonicalValue(base.rowCardId) !== cardKey) return null;
+    if (versionKey && canonicalValue(base.versionId) !== versionKey) return null;
+    if (canonicalValue(system.baseFingerprint || '') !== canonicalValue(base.baseFingerprint || '')) return null;
+
+    const identityKey = `v:${versionKey}|c:${cardKey}`;
+    if ((baselineIndex.identityCounts.get(identityKey) || 0) > 1) {
+      const expectedExcelRow = Number(workbook.headerRow || 0) + 1 + Number(base.baselineIndex || 0);
+      if (Number(row.excelRow) !== expectedExcelRow) return null;
+    }
+
+    const flat = clonePlain(base.base.flat || {});
+    const ids = {};
+    const compare = {};
+    const columns = new Map();
+    for (const [id, column] of columnMap.columns.entries()) {
+      const meta = row.cellMeta?.[column.index];
+      if (meta?.hasFormula) return null;
+      const visible = splitCell(row.values[column.index]);
+      const expectedVisible = flat[column.key] || [];
+      if (!arraysEqual(visible, expectedVisible)) return null;
+      const expectedIds = baselineExplicitValues(base, column);
+      if (column.idIndex !== null) {
+        const actualIds = splitCell(row.values[column.idIndex]);
+        if (!arraysEqual(actualIds, expectedIds)) return null;
+      }
+      ids[column.key] = expectedIds;
+      compare[column.key] = currentCompareValues(base.base, column);
+      columns.set(id, column);
+    }
+    const hasData = [...columns.values()].some(column => (flat[column.key] || []).length > 0);
+    return {
+      excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, clearedForDeletion: false,
+      issues: [], fieldIssues: [], resolutions: [], fingerprint: base.baseFingerprint || fingerprintFlat(flat),
+      compareFingerprint: fingerprintFlat(compare), fastPath: 'baseline-unchanged',
+    };
+  }
+
   function workbookRowsToDesired(workbook, columnMap) {
+    const baselineFastPathIndex = workbookBaselineFastPathIndex(workbook, columnMap);
     return workbook.rows.map(row => {
+      const fastPath = unchangedDesiredRowFromBaseline(workbook, row, columnMap, baselineFastPathIndex);
+      if (fastPath) return fastPath;
       const flat = {};
       const ids = {};
       const compare = {};
@@ -5937,6 +6589,12 @@
   function buildPlan(workbook, structure, snapshot, matrixInfo = null) {
     const columnMap = buildColumnMap(workbook, structure);
     const desired = workbookRowsToDesired(workbook, columnMap);
+    const baselineFastPathHits = desired.reduce((sum, row) => sum + Number(row?.fastPath === 'baseline-unchanged'), 0);
+    const incremental = {
+      rowsCompared: desired.length,
+      baselineFastPathHits,
+      rowsFullyValidated: Math.max(0, desired.length - baselineFastPathHits),
+    };
     const workbookContext = columnMap.mode === 'roundtrip' && matrixInfo
       ? classifyWorkbookContext(workbook, matrixInfo)
       : null;
@@ -6073,6 +6731,7 @@
       structure,
       columnMap,
       desired,
+      incremental,
       actions,
       issues: fatalIssues,
       fatalIssues,
@@ -6694,52 +7353,58 @@
           };
         }
 
-        try {
-          const snapshot = await bridge.loadSnapshot(structure);
-          const snapshotMatrixId = canonicalValue(snapshot?.matrixId || directMatrixId || '');
-          const snapshotTemplateId = canonicalValue(snapshot?.templateId || directTemplateId || structure?.templateId || '');
-          if (snapshotMatrixId !== expectedMatrixId || snapshotTemplateId !== expectedTemplateId) {
-            return {
-              status: 'incomplete',
-              checkedCount: 0,
-              verifiedCount: 0,
-              divergentCount: 0,
-              missingCount: 0,
-              unknownCount: receiptContext?.receipts?.length || 0,
-              rows: [],
-              attempts: attempt,
-              retryable: false,
-              reasonCode: 'reconcile-context-mismatch',
-              startedAt,
-              finishedAt: nowIso(),
-            };
+        // RECEIPT_FIRST_RECONCILIATION_V1
+        // Verify only the identities that were actually mutated. A complete matrix
+        // snapshot is a correctness fallback, not the default cost of one changed row.
+        if (directMatrixId && directTemplateId) {
+          try {
+            const targeted = await performanceStage('reconcile.targeted', () => buildTargetedReconciliationSnapshot(bridge, receiptContext, structure), { operation: 'reconcile', receipts: receiptContext?.receipts?.length || 0 });
+            const targetedResult = reconcileMutationReceipts(receiptContext?.receipts || [], targeted, structure);
+            if (targetedResult.status === 'verified') {
+              return {
+                ...targetedResult,
+                mode: 'targeted-receipts',
+                attempts: attempt,
+                retryable: false,
+                startedAt,
+                finishedAt: nowIso(),
+              };
+            }
+            log('Точечная проверка не смогла доказать весь результат. Перепроверяю полным снимком.', 'warn');
+          } catch (error) {
+            if (isWriterLockError(error)) throw error;
+            log(`Точечная проверка результата недоступна: ${error.message || error}. Перепроверяю полным снимком.`, 'warn');
           }
+        }
+
+        const snapshot = await performanceStage('reconcile.fullSnapshot', () => bridge.loadSnapshot(structure), { operation: 'reconcile', fallback: true });
+        const snapshotMatrixId = canonicalValue(snapshot?.matrixId || directMatrixId || '');
+        const snapshotTemplateId = canonicalValue(snapshot?.templateId || directTemplateId || structure?.templateId || '');
+        if (snapshotMatrixId !== expectedMatrixId || snapshotTemplateId !== expectedTemplateId) {
           return {
-            ...reconcileMutationReceipts(receiptContext?.receipts || [], snapshot, structure),
-            mode: 'full-snapshot',
+            status: 'incomplete',
+            checkedCount: 0,
+            verifiedCount: 0,
+            divergentCount: 0,
+            missingCount: 0,
+            unknownCount: receiptContext?.receipts?.length || 0,
+            rows: [],
             attempts: attempt,
             retryable: false,
-            startedAt,
-            finishedAt: nowIso(),
-          };
-        } catch (error) {
-          if (isWriterLockError(error) || !isNativeIdentitySnapshotError(error)) throw error;
-          // Targeted fallback may bypass full snapshot identity, so the open card itself
-          // must prove the matrix/template context first. Legacy/fake bridges without
-          // direct context keep the old fail-closed full-snapshot behavior.
-          if (!directMatrixId || !directTemplateId) throw error;
-          log(`Полный снимок для проверки результата недоступен: ${error.message || error}. Проверяю только изменённые строки по receipt ID.`, 'warn');
-          const targeted = await buildTargetedReconciliationSnapshot(bridge, receiptContext, structure);
-          return {
-            ...reconcileMutationReceipts(receiptContext?.receipts || [], targeted, structure),
-            mode: 'targeted-receipts',
-            fallbackReasonCode: 'reconcile-full-snapshot-failed',
-            attempts: attempt,
-            retryable: false,
+            reasonCode: 'reconcile-context-mismatch',
             startedAt,
             finishedAt: nowIso(),
           };
         }
+        return {
+          ...reconcileMutationReceipts(receiptContext?.receipts || [], snapshot, structure),
+          mode: 'full-snapshot',
+          fallbackReasonCode: directMatrixId && directTemplateId ? 'reconcile-targeted-incomplete' : 'reconcile-targeted-unavailable',
+          attempts: attempt,
+          retryable: false,
+          startedAt,
+          finishedAt: nowIso(),
+        };
       } catch (error) {
         lastError = error;
         if (!isWriterLockError(error) || attempt === maxAttempts) break;
@@ -6897,7 +7562,7 @@
     APP.abortRequested = false;
     setProgress(5, '1/6 · Читаю Excel', file.name);
     log(`Читаю ${file.name}`);
-    const workbook = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
+    const workbook = await performanceStage('preview.xlsx-read', async () => readXlsxArrayBuffer(await file.arrayBuffer(), file.name), { operation: 'preview', fileName: file.name });
     setProgress(18, '1/6 · Excel прочитан', `${workbook.rows.length} строк данных`);
     log(`Excel: ${workbook.headers.filter(Boolean).length} столбцов, ${workbook.rows.length} строк данных.`);
     setProgress(22, '2/6 · Подключаюсь к TESSA', 'Проверяю открытую матрицу');
@@ -6905,7 +7570,7 @@
     const templateId = bridge.templateId();
     if (!templateId) throw new Error('В карточке матрицы не найден TemplateID.');
     setProgress(32, '3/6 · Читаю структуру TESSA', 'Критерии и функции');
-    const structure = await bridge.requestStructure(templateId);
+    const structure = await performanceStage('preview.structure', () => bridge.requestStructure(templateId), { operation: 'preview' });
     log(`Структура TESSA: ${structure.conditions.length} критериев, ${structure.functions.length} функций.`);
     const cachedSnapshot = APP.snapshot;
     const currentSectionSignature = bridge.matrixSectionSignature();
@@ -6919,10 +7584,13 @@
     // Обычный сценарий «скачал → изменил → проверил» не должен второй раз читать сотни карточек.
     // Перед Apply всё равно выполняется свежая серверная проверка, поэтому reuse безопасен для preview.
     setProgress(canReuseSnapshot ? 48 : 40, canReuseSnapshot ? '3/6 · Использую свежий снимок' : '3/6 · Читаю строки TESSA', canReuseSnapshot ? 'Повторная загрузка не нужна' : 'Сверяю текущие строки');
-    const snapshot = canReuseSnapshot ? cachedSnapshot : await bridge.loadSnapshot(structure);
+    const sessionSnapshot = getSessionSnapshot(bridge.mainCard?.id, structure.templateId);
+    const reusableSnapshot = canReuseSnapshot ? cachedSnapshot : sessionSnapshot;
+    const snapshot = reusableSnapshot || await performanceStage('preview.snapshot', () => bridge.loadSnapshot(structure), { operation: 'preview' });
+    if (!reusableSnapshot) setSessionSnapshot(snapshot, structure);
     setProgress(55, '4/6 · Сопоставляю Excel и TESSA', `${snapshot.rows.length} строк в TESSA`);
-    log(`Текущее состояние TESSA: ${snapshot.rows.length} строк${canReuseSnapshot ? ' (из текущей сессии)' : ''}.`);
-    const plan = buildPlan(workbook, structure, snapshot, bridge.matrixInfo());
+    log(`Текущее состояние TESSA: ${snapshot.rows.length} строк${reusableSnapshot ? ' (из текущей сессии)' : ''}.`);
+    const plan = await performanceStage('preview.plan', () => buildPlan(workbook, structure, snapshot, bridge.matrixInfo()), { operation: 'preview', rows: snapshot.rows.length, excelRows: workbook.rows.length });
     setProgress(62, '5/6 · Проверяю безопасность', 'Дубли, права, удаления и неоднозначности');
     plan.safety = evaluatePlanSafety(plan, bridge);
     plan.matrixInfo = plan.safety.matrixInfo;
@@ -6961,6 +7629,7 @@
     APP.bridge = bridge;
     APP.structure = structure;
     APP.snapshot = snapshot;
+    setSessionSnapshot(snapshot, structure);
     APP.review = createPlanReviewState();
     APP.previewView = createPreviewViewState();
     APP.plan = previewPlan;
@@ -6985,8 +7654,15 @@
     APP.reviewedApplyEnabled = false;
     APP.lastIntervalDiagnostics = null;
     APP.lastStudioDiagnostics = null;
+    APP.lastPerformanceUat = null;
     APP.lastReport = null;
     APP.lastSupportReport = null;
+    const changesButton = document.querySelector?.('#tms-download-changes');
+    if (changesButton) {
+      changesButton.hidden = true;
+      changesButton.title = '';
+      setControlDisabled(changesButton, true);
+    }
     const reportButton = document.querySelector?.('#tms-download-report');
     if (reportButton) {
       reportButton.hidden = true;
@@ -7213,6 +7889,94 @@
     }
   }
 
+  // TOUCHED_ONLY_PREFLIGHT_V1
+  // Incremental server validation is allowed only for ordinary row mutations whose
+  // target identities were already proven by the planner. Cross-matrix replacement,
+  // overwrite semantics and globally blocked plans stay on the full fail-closed path.
+  function incrementalSafetyMode(plan) {
+    if (!plan || plan.safety?.blocked || plan.crossMatrixReplacement?.enabled) return 'full-fallback';
+    const actions = (plan.actions || []).filter(action => action?.type && action.type !== 'noop');
+    if (!actions.length) return 'full-fallback';
+    if (actions.some(action => !['add', 'update', 'delete'].includes(action.type))) return 'full-fallback';
+    if (actions.some(action => isOverwriteMatch(action.match))) return 'full-fallback';
+    const types = new Set(actions.map(action => action.type));
+    if (types.size === 1) {
+      const only = [...types][0];
+      return only === 'add' ? 'add-only' : only;
+    }
+    return 'mixed';
+  }
+
+  function collectTouchedIdentities(plan) {
+    const targets = new Map();
+    const remember = (rowCardId, versionId, source = 'target') => {
+      const cardKey = canonicalValue(rowCardId || '');
+      const versionKey = canonicalValue(versionId || '');
+      if (!cardKey || !versionKey) return;
+      const key = cardKey + '|' + versionKey;
+      if (!targets.has(key)) targets.set(key, { rowCardId, versionId, source });
+    };
+    for (const action of plan?.actions || []) {
+      if (!action?.type || action.type === 'noop') continue;
+      if (action.type === 'update' || action.type === 'delete') {
+        remember(action.currentRow?.rowCardId, action.currentRow?.versionId, 'target');
+      }
+      if (action.type === 'add' && action.match?.matchedBy === 'copied-row-auto-add') {
+        remember(action.match?.sourceRowCardId, action.match?.sourceVersionId, 'source');
+      }
+    }
+    const rows = [...targets.values()];
+    return {
+      targets: rows,
+      rowCardIds: [...new Set(rows.map(item => item.rowCardId).filter(Boolean))],
+      versionIds: [...new Set(rows.map(item => item.versionId).filter(Boolean))],
+    };
+  }
+
+  async function buildTargetedPreflightSnapshot(bridge, plan, structure) {
+    const mode = incrementalSafetyMode(plan);
+    if (mode === 'full-fallback') return null;
+
+    // Targeted reads must be anchored to the actually open matrix card and template.
+    // A legacy/fake bridge without those direct facts falls back to the proven full path.
+    const directMatrixId = canonicalValue(bridge?.mainCard?.id || '');
+    const directTemplateId = canonicalValue(bridge?.templateId?.() || structure?.templateId || '');
+    const expectedMatrixId = canonicalValue(plan?.matrixId || '');
+    const expectedTemplateId = canonicalValue(plan?.templateId || structure?.templateId || '');
+    if (!directMatrixId || !directTemplateId || !expectedMatrixId || !expectedTemplateId) return null;
+    if (directMatrixId !== expectedMatrixId || directTemplateId !== expectedTemplateId) return null;
+
+    const criterionIdCache = new Map();
+    const roleIdCache = new Map();
+    const roleIdByFunctionCache = new Map();
+    const cardsByRowCardId = new Map();
+    const touched = collectTouchedIdentities(plan);
+    const rows = await mapConcurrent(touched.targets, PERFORMANCE.SnapshotCardGetConcurrency, async (target, index) => {
+      if (APP.abortRequested) throw preflightAbortError();
+      const card = await awaitPreflightAbortable(bridge.getCard(target.rowCardId));
+      cardsByRowCardId.set(canonicalValue(target.rowCardId), card);
+      return bridge.readMatrixRowFromCard(card, {
+        index,
+        rowCardId: target.rowCardId,
+        versionId: target.versionId,
+        rowName: target.source === 'source' ? 'Исходная строка' : 'Изменяемая строка',
+        source: 'preflight-targeted',
+      }, structure, { criterionIdCache, roleIdCache, roleIdByFunctionCache });
+    });
+
+    return {
+      matrixId: String(bridge.mainCard.id),
+      templateId: structure?.templateId || plan?.templateId || '',
+      rows,
+      criterionIdCache,
+      roleIdCache,
+      roleIdByFunctionCache,
+      cardsByRowCardId,
+      targeted: true,
+      createdAt: nowIso(),
+    };
+  }
+
   async function preflightPlan(plan, options = {}) {
     const previewOnly = Boolean(options.previewOnly);
     const preflightProgress = typeof options.onProgress === 'function'
@@ -7227,10 +7991,31 @@
     const bridge = options.bridge || await awaitPreflightAbortable(TessaBridge.create());
     assertWritableMatrixDraft(bridge);
     if (!previewOnly) assertNativeEditMode();
-    const structure = options.structure || await awaitPreflightAbortable(bridge.requestStructure(bridge.templateId()));
-    const fresh = options.fresh || await awaitPreflightAbortable(bridge.loadSnapshot(structure));
-    preflightProgress(18, 'Сверяю актуальное состояние', `${fresh.rows.length} строк в TESSA`);
-    if (fresh.matrixId !== plan.matrixId) throw new Error('Открыта другая матрица. Нажмите «Проверить изменения» ещё раз.');
+    const structure = options.structure || await performanceStage('preflight.structure', () => awaitPreflightAbortable(bridge.requestStructure(bridge.templateId())), { operation: 'preflight' });
+    const executableCount = (plan.actions || []).filter(action => action?.type && action.type !== 'noop').length;
+    const requestedIncrementalMode = incrementalSafetyMode(plan);
+    let fresh = options.fresh || null;
+    let incremental = { mode: options.fresh ? 'provided-snapshot' : 'full-fallback', preflightRows: executableCount, snapshotRows: fresh?.rows?.length || 0, fullSnapshot: Boolean(options.fresh) };
+    if (!fresh && requestedIncrementalMode !== 'full-fallback') {
+      try {
+        const targeted = await performanceStage('preflight.targeted', () => buildTargetedPreflightSnapshot(bridge, plan, structure), { operation: 'preflight', mode: requestedIncrementalMode });
+        if (targeted) {
+          fresh = targeted;
+          incremental = { mode: requestedIncrementalMode, preflightRows: executableCount, snapshotRows: targeted.rows.length, fullSnapshot: false };
+        }
+      } catch (error) {
+        if (isPreflightAbortError(error)) throw error;
+        log(`Точечная предварительная проверка недоступна: ${error.message || error}. Использую полный безопасный снимок.`, 'warn');
+      }
+    }
+    if (!fresh) {
+      fresh = await performanceStage('preflight.snapshot', () => awaitPreflightAbortable(bridge.loadSnapshot(structure)), { operation: 'preflight', fallbackFrom: requestedIncrementalMode });
+      incremental = { mode: 'full-fallback', requestedMode: requestedIncrementalMode, preflightRows: executableCount, snapshotRows: fresh?.rows?.length || 0, fullSnapshot: true };
+    }
+    preflightProgress(18, 'Сверяю актуальное состояние', incremental.fullSnapshot
+      ? `${fresh.rows.length} строк в TESSA`
+      : `точечно: ${incremental.snapshotRows} прочитано / ${incremental.preflightRows} операций`);
+    if (canonicalValue(fresh.matrixId) !== canonicalValue(plan.matrixId)) throw new Error('Открыта другая матрица. Нажмите «Проверить изменения» ещё раз.');
     // Template changes can happen between Preview and Apply without changing the
     // card ID. Never rebuild an old plan against a different set of field IDs.
     if (plan.templateId && canonicalValue(plan.templateId) !== canonicalValue(fresh.templateId || structure.templateId)) {
@@ -7321,7 +8106,10 @@
           displays.forEach((display, i) => { bridge.resolveRole(fn, display, ids[i] || null, fresh); roleCount += 1; });
         }
         if (!roleCount) throw new Error(`В строке Excel ${action.excelRow.excelRow} после изменений не останется исполнителей.`);
-        const card = await awaitPreflightAbortable(bridge.getCard(current.rowCardId));
+        const cachedCard = fresh?.cardsByRowCardId instanceof Map
+          ? fresh.cardsByRowCardId.get(canonicalValue(current.rowCardId))
+          : null;
+        const card = cachedCard || await awaitPreflightAbortable(bridge.getCard(current.rowCardId));
         bridge.rebuildRowCard(card, current.versionId, action.excelRow, structure, fresh);
         await awaitPreflightAbortable(bridge.validateDuplicate(card, current.versionId));
         preparedUpdates.set(action.excelRow.excelRow, { action, card, current });
@@ -7486,7 +8274,7 @@
       skipServerAddValidation
         ? `Локально проверено: ${preparedUpdates.size + preparedAdds.size + readyDeletes.length} · глубокая ADD-проверка будет после разделения пакета`
         : `Готово к записи: ${preparedUpdates.size + preparedAdds.size + readyDeletes.length}`);
-    return { bridge, structure, fresh, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips, runtimeSkippedActions, previewPolicy };
+    return { bridge, structure, fresh, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips, runtimeSkippedActions, previewPolicy, incremental };
   }
 
   /**
@@ -9155,7 +9943,12 @@
       ['interval/TESSA_Interval_Diagnostics.json', JSON.stringify(interval, null, 2)],
       ['interval/interval-summary.json', JSON.stringify(buildIntervalDiagnosticSummary(interval), null, 2)],
     ] : [];
-    return makeZip([['README.txt', readme], ['report.json', JSON.stringify(result.report, null, 2)], ...result.entries, ...intervalEntries]);
+    const performanceUat = result?.performanceUat || APP.lastPerformanceUat;
+    const performanceEntries = performanceUat ? [
+      ['performance/performance-uat.json', JSON.stringify(performanceUat, null, 2)],
+      ['performance/performance-uat-summary.json', JSON.stringify(buildPerformanceUatSummary(performanceUat), null, 2)],
+    ] : [];
+    return makeZip([['README.txt', readme], ['report.json', JSON.stringify(result.report, null, 2)], ...result.entries, ...intervalEntries, ...performanceEntries]);
   }
 
   function renderStudioDiagnostics(report = APP.lastStudioDiagnostics?.report) {
@@ -9230,6 +10023,31 @@
         delete result.intervalDiagnostics;
         result.report.intervalDiagnostics = { included: false, status: 'not-needed', writesAttempted: 0 };
       }
+      // Performance UAT is deliberately synthetic/read-only. Real touched-only server
+      // timings are copied from this session's telemetry and are never fabricated.
+      let performanceUat;
+      try {
+        setProgress(95, 'Performance UAT', 'Локальные сценарии 0/1/10/100/3000 строк');
+        performanceUat = await runPerformanceUat({ baseRows: 3000 });
+      } catch (error) {
+        performanceUat = {
+          format: 'TESSA_PERFORMANCE_UAT_V1', scope: 'synthetic-read-only', status: 'failed',
+          createdAt: nowIso(), baseRows: 3000, scenarios: [], cache: { hits: 0, misses: 0 },
+          liveTimings: clonePlain(performanceSnapshot()?.stages || {}), totalMs: 0,
+          failures: [{ scenario: 'setup', metric: 'exception', expected: 'success', actual: friendlyErrorMessage(error) }],
+        };
+      }
+      APP.lastPerformanceUat = performanceUat;
+      result.performanceUat = performanceUat;
+      result.report.performanceUat = buildPerformanceUatSummary(performanceUat);
+      result.report.checks.push({
+        status: performanceUat.status === 'passed' ? 'pass' : 'fail',
+        title: 'Performance UAT',
+        detail: performanceUat.status === 'passed'
+          ? performanceUat.scenarios.length + ' synthetic read-only сценариев · ' + Math.round(performanceUat.totalMs) + ' мс'
+          : 'Не пройдено: ' + (performanceUat.failures || []).length + '. См. performance/performance-uat.json',
+      });
+      if (performanceUat.status !== 'passed') result.report.status = 'failed';
       // References stay in memory only; package serialization uses report/entries.
       result.source = { plan: originalPlan, workbook: originalWorkbook, file };
       APP.lastStudioDiagnostics = result;
@@ -9682,6 +10500,28 @@
     };
   }
 
+  async function downloadReviewedChangesXlsx() {
+    if (APP.busy || !APP.plan || !APP.structure) return;
+    setBusy(true);
+    try {
+      const reviewed = buildReviewedPlan(APP.plan, APP.review);
+      const model = buildChangesReportModel(reviewed, APP.structure);
+      if (!model.operations.length) throw new Error('В текущем Preview нет изменений или пропущенных строк для выгрузки.');
+      setProgress(35, 'Формирую Excel изменений', `${model.operations.length} операций`);
+      const bytes = await performanceStage('changes-report.xlsx-build', () => createChangesReportXlsxBytes(reviewed, APP.structure), { operation: 'changes-report', rows: model.operations.length });
+      const shortId = String(reviewed.matrixId || '').slice(0, 8);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const name = `TESSA_Изменения_${shortId || "matrix"}_${stamp}.xlsx`;
+      downloadBlob(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name);
+      setProgress(100, 'Excel изменений готов', `${model.operations.length} операций · файл только для просмотра`);
+    } catch (error) {
+      setProgress(100, 'Не удалось выгрузить изменения', friendlyErrorMessage(error));
+    } finally {
+      setBusy(false);
+      if (APP.plan) renderPlan(APP.plan);
+    }
+  }
+
   function cherkizovoLogoSvg() {
     return `<svg viewBox="0 0 192.756 192.756" aria-hidden="true" focusable="false"><path fill="#E31E24" d="M162.854 63.44c10.303 20.271 11.299 48.019-.664 67.957-16.449 26.752-46.689 41.541-77.263 37.719-26.086-2.492-52.505-21.104-61.81-46.357-9.637-23.76-3.655-53.502 14.123-72.278 21.268-23.262 56.659-31.902 86.567-19.772 15.951 6.478 30.24 16.78 39.047 32.731z"/><path fill="#fff" d="M117.66 53.471c.996 3.323 1.494 6.646-.5 9.471-5.98 6.48-15.451 8.806-24.258 6.646-4.486-.831-9.305-3.656-11.465-7.81-1.33-4.154.831-7.976 3.157-10.8 8.806-6.646 24.591-7.145 32.235 2.493z"/><path fill="#fff" d="M79.277 69.255c6.646 13.292-1.495 29.077 3.656 40.209.831 2.326 3.489 1.33 5.316 1.496 6.813-3.324 5.317-10.635 9.471-15.453 4.154-9.637 14.289-15.951 24.426-16.616 11.631-.665 23.428 5.982 28.246 17.114 4.486 9.471 4.154 23.096-2.824 31.57-4.986 8.807-14.291 12.295-23.262 13.957-8.309.166-15.951-4.818-19.607-12.295-2.16-5.484-3.82-12.463 0-17.779 4.652-9.139 23.428-9.139 16.615-23.096-2.99-2.327-6.314-5.151-10.467-3.324-13.293 7.976-13.625 23.761-19.607 35.89-4.486 9.305-9.471 22.264-21.767 22.93-8.972 1.494-16.117-2.99-20.77-10.469-6.812-16.615-6.812-37.219-9.471-54.997.332-7.975 4.818-15.951 12.462-19.606 10.47-4.651 22.266.334 27.583 10.469z"/></svg>`;
   }
@@ -9695,6 +10535,19 @@
     const applySection = document.querySelector('#tms-apply-section');
     if (applySection) applySection.hidden = false;
     const reviewed = buildReviewedPlan(plan, APP.review);
+    const changesButton = document.querySelector?.('#tms-download-changes');
+    const hasReviewedChanges = (reviewed.actions || []).some(action => ['update', 'add', 'delete'].includes(action?.type)) || Boolean(reviewed.skippedRows?.length);
+    if (changesButton) {
+      if (hasReviewedChanges) {
+        changesButton.hidden = false;
+        setControlDisabled(changesButton, false);
+        changesButton.title = 'Скачать только операции из текущего Preview';
+      } else {
+        changesButton.hidden = true;
+        setControlDisabled(changesButton, true);
+        changesButton.title = '';
+      }
+    }
     APP.capabilityActions = reviewed.actions;
     const applyState = applyAvailability(plan, APP.review);
     APP.reviewedApplyEnabled = applyState.canApply;
@@ -10089,6 +10942,7 @@
     const nextTemplateId = probe?.matrix?.templateId || null;
     if (!APP.busy && previousCardId && (previousCardId !== nextCardId || APP.capabilityCheckedTemplateId !== nextTemplateId)) {
       resetFilePreview();
+      invalidateSessionCache('matrix-or-template-changed');
       APP.structure = null; APP.snapshot = null; APP.bridge = null; APP.dictionaryCatalog = null;
       APP.lastMutationReceipts = null; APP.lastReconciliation = null;
       renderReconciliationResult(null);
@@ -10747,7 +11601,7 @@
               <details><summary>Проверка с записью</summary><p>Сначала проверьте Excel и выберите операции в Preview. Кнопка применяет именно эти изменения после обычного подтверждения, затем перечитывает результат. Для испытаний используйте отдельный тестовый черновик. Добавление, изменение и удаление проверяются только если есть в выбранном наборе.</p><button id="tms-test-write" type="button">Применить выбранное и проверить запись</button></details><div id="tms-tests-result" role="status" aria-live="polite">Проверки ещё не запускались.</div>
             </details>
           </div></details>
-          <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-download-report" hidden disabled>Скачать результат</button><button id="tms-download-support-report" hidden disabled>Скачать отчёт для поддержки</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
+          <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-download-changes" hidden disabled>Скачать изменения в Excel</button><button id="tms-download-report" hidden disabled>Скачать результат</button><button id="tms-download-support-report" hidden disabled>Скачать отчёт для поддержки</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
           <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
         </div>
         <div id="tms-summary"></div><div id="tms-plan"></div>
@@ -10859,6 +11713,7 @@
       catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); setProgress(100, 'Проверка не завершена', message); }
       finally { setBusy(false); }
     });
+    panel.querySelector('#tms-download-changes').addEventListener('click', () => { downloadReviewedChangesXlsx(); });
     panel.querySelector('#tms-download-report').addEventListener('click', () => { downloadLastReport(); });
     panel.querySelector('#tms-download-support-report').addEventListener('click', () => {
       if (APP.busy) return;
@@ -11004,14 +11859,17 @@
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, triggerBlobDownload, downloadJson, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport, buildApplySupportReport,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
-    buildRoundtripGrid, createRoundtripXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
+    buildRoundtripGrid, createRoundtripXlsxBytes, buildChangesReportModel, createChangesReportXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, replacementConfirmationModel, confirmCrossMatrixReplacement, isWriterLockError, persistMainMatrixAfterApply, refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, classifyWorkbookContext, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
     preflightPlan, applyPreflightPreview, crossMatrixReplacementIntegrity, verifyCrossMatrixRollback, finalizeCrossMatrixTransferVerification, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
+    incrementalSafetyMode, collectTouchedIdentities, buildTargetedPreflightSnapshot, buildTargetedReconciliationSnapshot,
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, partnerRecordKeepingColumnIndex, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport,
+    performanceStage, performanceSnapshot, resetPerformanceTelemetry, performanceUatScenarioNames, runPerformanceUat, buildPerformanceUatSummary, makeZip, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,
+    baselineExplicitValues, workbookBaselineFastPathIndex, unchangedDesiredRowFromBaseline,
     TessaBridge,
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },
   };

@@ -1,0 +1,51 @@
+name: GREEN Task5 changes-only XLSX
+
+on:
+  push:
+    branches: [feat/incremental-performance-v1.14]
+
+permissions:
+  contents: write
+
+jobs:
+  green:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Apply changes-only report implementation
+        run: node tools/patch-task5-changes-report.mjs
+      - name: Verify Task5 contracts
+        run: |
+          node tests/changes-report-xlsx.mjs
+          node tests/changes-report-ui.mjs
+      - name: Verify focused XLSX and Preview regressions
+        run: |
+          node tests/xlsx-office-interop.mjs
+          node tests/xlsx-opc-relationships.mjs
+          node tests/xlsx-load.mjs
+          node tests/xlsx-archive-security.mjs
+          node tests/preview-support-ux.mjs
+          node tests/review-ui-contract.mjs
+          node tests/review-bulk-package.mjs
+          node tests/ui-dom.cjs
+      - name: Verify full regression suite
+        run: npm test
+      - name: Verify diff hygiene
+        run: git diff --check
+      - name: Commit implementation
+        run: |
+          if git diff --quiet; then
+            echo "No implementation diff to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js package.json
+          git commit -m "feat: export reviewed changes to Excel"
+          git push

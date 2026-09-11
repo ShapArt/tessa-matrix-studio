@@ -171,7 +171,7 @@ function snap(rows) { return { matrixId: 'matrix-1', templateId: structure.templ
   assert(result.status === 'verified', JSON.stringify(result));
   assert(result.verifiedCount === 4 && result.checkedCount === 4, JSON.stringify(result));
   assert(result.mode === 'targeted-receipts', JSON.stringify(result));
-  assert(result.fallbackReasonCode === 'reconcile-full-snapshot-failed', JSON.stringify(result));
+  assert(!result.fallbackReasonCode, JSON.stringify(result));
 }
 
 console.log('TESSA Matrix Studio strict mutation reconciliation matrix: OK');

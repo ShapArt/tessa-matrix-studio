@@ -1,0 +1,51 @@
+name: GREEN Task3 touched-only server validation
+
+on:
+  push:
+    branches: [feat/incremental-performance-v1.14]
+
+permissions:
+  contents: write
+
+jobs:
+  green:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Apply touched-only server validation
+        run: node tools/patch-task3-touched-only.mjs
+      - name: Verify Task3 contracts
+        run: |
+          node tests/touched-only-preflight.mjs
+          node tests/touched-only-reconciliation.mjs
+          node tests/incremental-fallback-safety.mjs
+      - name: Verify focused safety regressions
+        run: |
+          node tests/preflight-stale-replace-source.mjs
+          node tests/preflight-stale-copied-add-source.mjs
+          node tests/reconciliation.mjs
+          node tests/reconciliation-identity-ambiguity.mjs
+          node tests/reconciliation-writer-lock.mjs
+          node tests/reconciliation-performance.mjs
+          node tests/apply-verification-accounting.mjs
+      - name: Verify full regression suite
+        run: npm test
+      - name: Verify diff hygiene
+        run: git diff --check
+      - name: Commit implementation
+        run: |
+          if git diff --quiet; then
+            echo "No implementation diff to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js tests/reconciliation.mjs
+          git commit -m "perf: validate only touched TESSA rows"
+          git push
