@@ -19,7 +19,19 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Apply v1.14 RC documentation/version patch
-        run: node tools/patch-task7-v1.14-rc.mjs
+        run: |
+          node tools/patch-task7-v1.14-rc.mjs
+          python - <<'PY'
+          from pathlib import Path
+          readme = Path('README.md')
+          text = readme.read_text(encoding='utf-8')
+          text = text.replace('Текущая версия: **1.13.0**', 'Текущая версия: **1.14.0**')
+          readme.write_text(text, encoding='utf-8')
+          issue = Path('.github/ISSUE_TEMPLATE/bug_report.yml')
+          text = issue.read_text(encoding='utf-8')
+          text = text.replace('placeholder: 1.13.0', 'placeholder: 1.14.0')
+          issue.write_text(text, encoding='utf-8')
+          PY
       - name: Verify v1.14 RC contract
         run: node tests/v1.14-rc-contract.mjs
       - name: Verify release/candidate contracts
@@ -40,6 +52,6 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json tessa-matrix-studio.user.js README.md CHANGELOG.md docs/communications/v1.14-colleague-test-message.md tools/patch-task7-v1.14-rc.mjs
+          git add package.json package-lock.json tessa-matrix-studio.user.js README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml docs/communications/v1.14-colleague-test-message.md tools/patch-task7-v1.14-rc.mjs
           git commit -m "chore: prepare v1.14.0 release candidate"
           git push
