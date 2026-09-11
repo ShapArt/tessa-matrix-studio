@@ -59,6 +59,78 @@ replaceExact(
   'picker paste UX',
 );
 
+// Live UAT 2026-09-11 produced a legitimate Studio-generated dictionary worksheet of
+// 139,568,463 bytes. Keep the archive bounded, but do not reject our own workbook at
+// the old 128 MiB single-entry ceiling. Total uncompressed size and ratio guards remain.
+replaceExact(
+`    MaxEntryUncompressedBytes: 128 * 1024 * 1024,`,
+`    MaxEntryUncompressedBytes: 192 * 1024 * 1024, // LIVE_UAT_2026_09_11: valid dictionary sheet exceeded 128 MiB`,
+  'XLSX self-generated dictionary ceiling',
+);
+
+// Full UAT obtains one explicit consent before its write phase. Let internal callers
+// provide a scoped confirmer so temporary ADD/UPDATE/DELETE scenarios do not present a
+// second browser confirm for every mutation. Normal UI calls still use window.confirm.
+replaceExact(
+`  async function applyPlan(plan) {
+    if (!plan) throw new Error('Сначала проверьте Excel.');`,
+`  async function applyPlan(plan, options = {}) {
+    if (!plan) throw new Error('Сначала проверьте Excel.');
+    const confirmApply = typeof options.confirm === 'function' ? options.confirm : message => window.confirm(message);`,
+  'inject Apply confirmer',
+);
+replaceExact(
+`      const okBatch = window.confirm(\`${'${batch.reason}'}
+
+Продолжить?\`);`,
+`      const okBatch = confirmApply(\`${'${batch.reason}'}
+
+Продолжить?\`);`,
+  'batch confirmation policy',
+);
+replaceExact(
+`      const okLow = window.confirm('Есть строки с низкой уверенностью сопоставления. Продолжить после проверки предпросмотра?');`,
+`      const okLow = confirmApply('Есть строки с низкой уверенностью сопоставления. Продолжить после проверки предпросмотра?');`,
+  'low-confidence confirmation policy',
+);
+replaceExact(
+`      const ok = window.confirm(\`Применить корректные изменения к TESSA?\\n\\nИзменить: ${'${c.update}'}\\nДобавить: ${'${c.add}'}\\nУдалить: ${'${c.delete}'}\\nПропустить: ${'${c.skip || 0}'}${'${plan.skippedFields?.length ? `\\nОставить без изменения отдельных полей: ${plan.skippedFields.length}` : \'\'}'}\\n\\nОшибочные строки и указанные в Preview поля не будут применены.\`);`,
+`      const ok = confirmApply(\`Применить корректные изменения к TESSA?\\n\\nИзменить: ${'${c.update}'}\\nДобавить: ${'${c.add}'}\\nУдалить: ${'${c.delete}'}\\nПропустить: ${'${c.skip || 0}'}${'${plan.skippedFields?.length ? `\\nОставить без изменения отдельных полей: ${plan.skippedFields.length}` : \'\'}'}\\n\\nОшибочные строки и указанные в Preview поля не будут применены.\`);`,
+  'standard confirmation policy',
+);
+
+// Snapshot rows intentionally cross a DTO boundary and no longer retain native Card
+// instances. Diagnostics must hydrate the native row card on demand, just as the later
+// server-validation checks already do, otherwise every per-field rebuild is NOT RUN.
+replaceExact(
+`    if (generated && columns) for (const column of columns.values()) {`,
+`    const diagnosticNativeCardCache = new Map();
+    const getDiagnosticNativeCard = async row => {
+      const key = canonicalValue(row?.rowCardId);
+      if (!key) throw new Error('У контрольной строки отсутствует CardID.');
+      if (!diagnosticNativeCardCache.has(key)) diagnosticNativeCardCache.set(key, await bridge.getCard(row.rowCardId));
+      return diagnosticNativeCardCache.get(key);
+    };
+    if (generated && columns) for (const column of columns.values()) {`,
+  'diagnostic native-card cache',
+);
+replaceExact(
+`      await run(\`field-${'${column.key}'}\`, \`Поле: ${'${column.name || column.excelHeader}'}\`, async () => {`,
+`      await run(\`field-${'${column.key}'}\`, \`Поле «${'${column.name || column.excelHeader}'}»\`, async () => {`,
+  'diagnostic field title clarity',
+);
+replaceExact(
+`        if (!controlRow.card?.clone) return { status: 'not-run', detail: 'Карточка для проверки перестройки недоступна.' };`,
+`        const nativeCard = await getDiagnosticNativeCard(controlRow);
+        if (typeof nativeCard?.clone !== 'function') return { status: 'not-run', detail: 'Нативная карточка строки не поддерживает clone().' };`,
+  'diagnostic field card hydration',
+);
+replaceExact(
+`        const cloned = controlRow.card.clone();`,
+`        const cloned = nativeCard.clone();`,
+  'diagnostic field card clone',
+);
+
 // Full UAT packages use the same audited ZIP writer as XLSX/diagnostics instead of
 // introducing another archive implementation in the runtime hotfix.
 replaceExact(
@@ -72,9 +144,9 @@ replaceExact(
 if ((source.match(/DUPLICATE_IDENTITY_COPY_AS_ADD_V1/g) || []).length !== 2) {
   throw new Error('Copied identity patch marker count mismatch.');
 }
-if (!source.includes('tms-picker-import-block') || !source.includes('TessaBridge, makeZip,')) {
-  throw new Error('UX/UAT export patch verification failed.');
+for (const marker of ['tms-picker-import-block', 'TessaBridge, makeZip,', 'LIVE_UAT_2026_09_11', 'const confirmApply =', 'diagnosticNativeCardCache']) {
+  if (!source.includes(marker)) throw new Error(`v1.13.0 transform verification failed: ${marker}`);
 }
 
 fs.writeFileSync(target, source, 'utf8');
-console.log('TESSA Matrix Studio v1.13.0 row lifecycle + picker UX transform: OK');
+console.log('TESSA Matrix Studio v1.13.0 row lifecycle + live UAT hardening transform: OK');
