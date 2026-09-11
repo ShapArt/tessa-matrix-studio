@@ -1,0 +1,43 @@
+name: v1.14 Recovery Patch Executor
+
+on:
+  push:
+    branches: [fix/v1.14-recovery-uat-resolution]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-patches:
+    if: contains(github.event.head_commit.message, '[recovery-patch]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/v1.14-recovery-uat-resolution
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Apply idempotent recovery transforms
+        run: |
+          node tools/embed-canonical-full-uat.mjs
+          node tools/patch-employee-position-resolver.mjs
+      - name: Focused verification before commit
+        run: |
+          node --check tessa-matrix-studio.user.js
+          node tests/full-uat-runner-contract.mjs
+          node tests/matrix-identity-authority.mjs
+          node tests/employee-name-resolver.mjs
+          git diff --check
+      - name: Commit transformed production source
+        run: |
+          if git diff --quiet -- tessa-matrix-studio.user.js; then
+            echo 'No production source diff to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tessa-matrix-studio.user.js
+          git commit -m 'fix: separate employee identity from position matching'
+          git push origin HEAD:fix/v1.14-recovery-uat-resolution
