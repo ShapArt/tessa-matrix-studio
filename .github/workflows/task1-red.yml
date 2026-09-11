@@ -1,14 +1,14 @@
-name: RED Task1 performance cache
+name: GREEN Task1 performance cache
 
 on:
   push:
     branches: [feat/incremental-performance-v1.14]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  red:
+  green:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -16,7 +16,23 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Verify telemetry RED
-        run: node tests/performance-telemetry.mjs
-      - name: Verify session cache RED
-        run: node tests/session-matrix-cache.mjs
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Apply task1 implementation
+        run: node tools/patch-task1-performance-cache.mjs
+      - name: Verify task1 contracts
+        run: |
+          node tests/performance-telemetry.mjs
+          node tests/session-matrix-cache.mjs
+      - name: Verify full regression suite
+        run: npm test
+      - name: Verify diff hygiene
+        run: git diff --check
+      - name: Commit implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js
+          git diff --cached --quiet && exit 0
+          git commit -m "perf: add session matrix cache and telemetry"
+          git push origin HEAD:feat/incremental-performance-v1.14
