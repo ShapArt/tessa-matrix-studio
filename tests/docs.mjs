@@ -55,20 +55,9 @@ assert(downloadUrl === 'https://github.com/ShapArt/tessa-matrix-studio/releases/
 assert(updateUrl === 'https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.meta.js', 'userscript update check must use latest metadata asset');
 assert(readme.includes(updateUrl), 'README does not document metadata update URL');
 assert(!readme.includes('cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js'), 'README must not use stale jsDelivr @main install/update path');
-
-// Public screenshots must describe the current v1.13 UI, not retain stale pre-release captures.
-for (const asset of [
-  'docs/assets/studio-panel-v1.13.svg',
-  'docs/assets/studio-picker-v1.13.svg',
-  'docs/assets/studio-preview-v1.13.svg',
-  'docs/assets/studio-uat-v1.13.svg',
-]) {
-  assert(readme.includes(asset), `README lost current UI screenshot: ${asset}`);
-  assert(fs.existsSync(new URL(`../${asset}`, import.meta.url)), `README screenshot asset does not exist: ${asset}`);
-}
-assert(!readme.includes('docs/assets/studio-panel.webp'), 'README still references stale Studio panel screenshot');
-assert(!readme.includes('docs/assets/studio-preview.webp'), 'README still references stale Preview screenshot');
-
+assert(readme.includes('docs/assets/studio-panel.webp'), 'README lost real Studio panel screenshot');
+assert(readme.includes('docs/assets/excel-real.webp'), 'README lost real Excel screenshot');
+assert(readme.includes('docs/assets/studio-preview.webp'), 'README lost real preview screenshot');
 assert(readme.includes('Tampermonkey → Dashboard / Панель управления'), 'README lost Tampermonkey Dashboard fallback');
 assert(readme.includes('Utilities / Сервис'), 'README lost Tampermonkey Utilities fallback');
 assert(readme.includes('В разделе **URL** вставьте:'), 'README lost manual URL import field');
