@@ -17,6 +17,8 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Full base regression suite
+        run: npm test
       - name: Build exact v1.13 runtime in-place
         run: |
           node hotfixes/malformed-range-diagnostic-transform.mjs tessa-matrix-studio.user.js
@@ -26,14 +28,12 @@ jobs:
           printf '\n' >> tessa-matrix-studio.user.js
           cat hotfixes/full-uat-runner-v1.js >> tessa-matrix-studio.user.js
           node hotfixes/v1.13.0-full-uat-live-finalize.mjs tessa-matrix-studio.user.js
-      - name: Copied identity lifecycle regression
+      - name: Copied identity lifecycle regression on exact runtime
         run: node tests/user-copied-identity-regression.mjs
-      - name: Full UAT runner contract
+      - name: Full UAT runner contract on exact runtime
         run: node tests/full-uat-runner-contract.mjs
-      - name: Live UAT regressions
+      - name: Live UAT regressions on exact runtime
         run: node tests/live-uat-regressions.mjs
-      - name: Full regression suite
-        run: npm test
       - name: Source sanity
         run: |
           node --check tessa-matrix-studio.user.js
