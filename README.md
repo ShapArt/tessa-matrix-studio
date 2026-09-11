@@ -222,7 +222,9 @@ Full UAT проверяет, среди прочего:
 
 ### **[УСТАНОВИТЬ TESSA MATRIX STUDIO v1.13.0](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**
 
-Tampermonkey откроет окно установки userscript. Подтвердите установку, затем обновите страницу TESSA (`Ctrl+R`).
+Tampermonkey откроет окно установки userscript. Подтвердите установку версии **1.13.0**, затем обновите страницу TESSA (`Ctrl+R`).
+
+Текущая версия: **1.13.0**.
 
 Studio настроена на корпоративные адреса TESSA из userscript (`tessa-app*`, `tessa-app01`, `tessa-app01tl`, `tessa.cherkizovsky.net`).
 
@@ -233,6 +235,14 @@ Studio настроена на корпоративные адреса TESSA и�
 **Ссылка .user.js открылась как текст или установка не стартовала**
 
 Если браузер показывает исходный код вместо окна Tampermonkey, сначала убедитесь, что Tampermonkey установлен и включён, затем повторно откройте ссылку установки. В Chromium-браузерах также проверьте разрешение userscript'ов / режим разработчика.
+
+Если прямая ссылка всё равно открывается как текст, используйте ручной импорт: откройте **Tampermonkey → Dashboard / Панель управления**, затем **Utilities / Сервис**. В разделе **URL** вставьте:
+
+`https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js`
+
+Проверка обновлений выполняется через отдельный metadata URL:
+
+`https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.meta.js`
 
 **Панель Studio не появилась**
 
