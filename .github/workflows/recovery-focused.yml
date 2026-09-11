@@ -23,6 +23,7 @@ jobs:
           node tests/cross-matrix-context.mjs
           node tests/matrix-identity-authority.mjs
           node tests/employee-name-resolver.mjs
+          node tests/resolution-center.mjs
           node tests/three-way-merge.mjs
           node tests/changes-report-xlsx.mjs
           node tests/changes-report-ui.mjs
