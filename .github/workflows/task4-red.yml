@@ -1,14 +1,14 @@
-name: RED Task4 employee Excel labels
+name: GREEN Task4 employee Excel labels
 
 on:
   push:
     branches: [feat/incremental-performance-v1.14]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  red:
+  green:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -16,7 +16,36 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Verify employee position Excel RED
-        run: node tests/employee-position-excel.mjs
-      - name: Verify employee resolver RED
-        run: node tests/employee-name-resolver.mjs
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Apply employee label implementation
+        run: node tools/patch-task4-employee-labels.mjs
+      - name: Verify Task4 contracts
+        run: |
+          node tests/employee-position-excel.mjs
+          node tests/employee-name-resolver.mjs
+      - name: Verify focused dictionary and picker regressions
+        run: |
+          node tests/function-role-type-catalog.mjs
+          node tests/dictionary-native-captions.mjs
+          node tests/dictionary-high-cardinality.mjs
+          node tests/dictionary-projection-refresh.mjs
+          node tests/column-dictionary-routing.mjs
+          node tests/picker-production-ux.mjs
+          node tests/picker-performance.mjs
+          node tests/picker-dom-production.cjs
+      - name: Verify full regression suite
+        run: npm test
+      - name: Verify diff hygiene
+        run: git diff --check
+      - name: Commit implementation
+        run: |
+          if git diff --quiet; then
+            echo "No implementation diff to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js package.json
+          git commit -m "feat: show employee positions in Excel roles"
+          git push
