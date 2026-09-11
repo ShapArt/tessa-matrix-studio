@@ -70,6 +70,14 @@
     lastStudioDiagnostics: null,
     nativeRecorder: null,
     dictionaryCatalog: null,
+    // INCREMENTAL_SESSION_CACHE_V1
+    // Ephemeral only: matrix rows/structure live in memory of the current tab and are
+    // never persisted to browser storage. Dictionary IndexedDB caching remains separate.
+    sessionCache: {
+      contextKey: '', matrixId: '', templateId: '', generation: 0, snapshot: null, structure: null,
+      rowByCardId: new Map(), hits: 0, misses: 0, invalidations: 0, lastInvalidationReason: '', updatedAt: null,
+    },
+    performanceTelemetry: { startedAt: new Date().toISOString(), stages: {}, events: [] },
     progress: { percent: 0, label: 'Готово', detail: '' },
   };
 
@@ -304,6 +312,132 @@
     return output;
   }
   const nowIso = () => new Date().toISOString();
+
+  function resetPerformanceTelemetry() {
+    APP.performanceTelemetry = { startedAt: nowIso(), stages: {}, events: [] };
+    return performanceSnapshot();
+  }
+
+  function recordPerformanceSample(name, elapsedMs, meta = {}, error = null) {
+    const key = String(name || 'unknown');
+    const ms = Math.max(0, Number(elapsedMs) || 0);
+    const state = APP.performanceTelemetry || (APP.performanceTelemetry = { startedAt: nowIso(), stages: {}, events: [] });
+    const previous = state.stages[key] || { count: 0, totalMs: 0, maxMs: 0, lastMs: 0, lastMeta: null, errors: 0 };
+    state.stages[key] = {
+      count: previous.count + 1,
+      totalMs: previous.totalMs + ms,
+      maxMs: Math.max(previous.maxMs || 0, ms),
+      lastMs: ms,
+      lastMeta: clonePlain(meta || {}),
+      errors: previous.errors + (error ? 1 : 0),
+    };
+    state.events.push({ at: nowIso(), name: key, elapsedMs: ms, meta: clonePlain(meta || {}), ok: !error });
+    if (state.events.length > 100) state.events.splice(0, state.events.length - 100);
+  }
+
+  async function performanceStage(name, fn, meta = {}) {
+    const started = monotonicNow();
+    try {
+      const value = await fn();
+      recordPerformanceSample(name, monotonicNow() - started, meta, null);
+      return value;
+    } catch (error) {
+      recordPerformanceSample(name, monotonicNow() - started, meta, error);
+      throw error;
+    }
+  }
+
+  function performanceSnapshot() {
+    return clonePlain(APP.performanceTelemetry || { startedAt: nowIso(), stages: {}, events: [] });
+  }
+
+  function sessionContextKey(matrixId, templateId) {
+    const matrix = canonicalValue(matrixId || '');
+    const template = canonicalValue(templateId || '');
+    return matrix && template ? `${matrix}::${template}` : '';
+  }
+
+  function createEmptySessionCache(previous = null, reason = '') {
+    return {
+      contextKey: '', matrixId: '', templateId: '',
+      generation: Math.max(0, Number(previous?.generation) || 0) + (previous ? 1 : 0),
+      snapshot: null, structure: null, rowByCardId: new Map(),
+      hits: Math.max(0, Number(previous?.hits) || 0),
+      misses: Math.max(0, Number(previous?.misses) || 0),
+      invalidations: Math.max(0, Number(previous?.invalidations) || 0) + (previous ? 1 : 0),
+      lastInvalidationReason: String(reason || ''), updatedAt: nowIso(),
+    };
+  }
+
+  function setSessionSnapshot(snapshot, structure = null) {
+    const matrixId = String(snapshot?.matrixId || '');
+    const templateId = String(snapshot?.templateId || structure?.templateId || '');
+    const key = sessionContextKey(matrixId, templateId);
+    if (!key) return null;
+    const previous = APP.sessionCache || createEmptySessionCache();
+    const rows = Array.isArray(snapshot?.rows) ? snapshot.rows : [];
+    const rowByCardId = new Map();
+    for (const row of rows) {
+      const id = canonicalValue(row?.rowCardId || '');
+      if (id) rowByCardId.set(id, row);
+    }
+    APP.sessionCache = {
+      contextKey: key, matrixId, templateId,
+      generation: Math.max(0, Number(previous.generation) || 0) + 1,
+      snapshot, structure: structure || previous.structure || null, rowByCardId,
+      hits: Math.max(0, Number(previous.hits) || 0), misses: Math.max(0, Number(previous.misses) || 0),
+      invalidations: Math.max(0, Number(previous.invalidations) || 0),
+      lastInvalidationReason: previous.lastInvalidationReason || '', updatedAt: nowIso(),
+    };
+    return snapshot;
+  }
+
+  function getSessionSnapshot(matrixId, templateId) {
+    const cache = APP.sessionCache || createEmptySessionCache();
+    const key = sessionContextKey(matrixId, templateId);
+    if (key && cache.contextKey === key && cache.snapshot) {
+      cache.hits += 1;
+      return cache.snapshot;
+    }
+    cache.misses += 1;
+    APP.sessionCache = cache;
+    return null;
+  }
+
+  function updateSessionRows({ matrixId, templateId, upsertRows = [], deleteRowIds = [] } = {}) {
+    const cache = APP.sessionCache || createEmptySessionCache();
+    const key = sessionContextKey(matrixId, templateId);
+    if (!key || key !== cache.contextKey || !cache.snapshot) {
+      cache.misses += 1;
+      APP.sessionCache = cache;
+      return null;
+    }
+    const byId = new Map((cache.snapshot.rows || []).map(row => [canonicalValue(row?.rowCardId || ''), row]).filter(([id]) => id));
+    for (const id of deleteRowIds || []) byId.delete(canonicalValue(id || ''));
+    for (const row of upsertRows || []) {
+      const id = canonicalValue(row?.rowCardId || '');
+      if (id) byId.set(id, row);
+    }
+    const next = { ...cache.snapshot, rows: Array.from(byId.values()), createdAt: nowIso() };
+    setSessionSnapshot(next, cache.structure);
+    APP.snapshot = next;
+    return next;
+  }
+
+  function invalidateSessionCache(reason = 'manual') {
+    APP.sessionCache = createEmptySessionCache(APP.sessionCache, reason);
+    return APP.sessionCache;
+  }
+
+  function sessionCacheStats() {
+    const cache = APP.sessionCache || createEmptySessionCache();
+    return {
+      contextKey: cache.contextKey || '', generation: cache.generation || 0,
+      rows: cache.snapshot?.rows?.length || 0, hits: cache.hits || 0, misses: cache.misses || 0,
+      invalidations: cache.invalidations || 0, lastInvalidationReason: cache.lastInvalidationReason || '',
+      updatedAt: cache.updatedAt || null,
+    };
+  }
 
   // ---------------------------------------------------------------------------
   // 2. БАЗОВЫЕ УТИЛИТЫ
@@ -2443,23 +2577,24 @@
     if (!templateId) throw new Error('У матрицы не найден TemplateID.');
     setProgress(24, 'Читаю структуру', 'Критерии и функции матрицы');
     log('Выгрузка текущей матрицы: читаю структуру.');
-    const structure = await bridge.requestStructure(templateId);
+    const structure = await performanceStage('export.structure', () => bridge.requestStructure(templateId), { operation: 'export' });
     setProgress(38, 'Читаю строки', 'Загружаю текущее состояние матрицы');
     log('Выгрузка текущей матрицы: читаю строки.');
-    const snapshot = await bridge.loadSnapshot(structure);
+    const snapshot = await performanceStage('export.snapshot', () => bridge.loadSnapshot(structure), { operation: 'export' });
     setProgress(62, 'Обновляю справочники', 'Читаю свежие значения и роли из TESSA');
     log(options.forceDictionaryRefresh ? 'Выгрузка текущей матрицы: принудительно обновляю словари и роли.' : 'Выгрузка текущей матрицы: подключаю словари и роли.');
-    const dictionaryCatalog = await bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true });
+    const dictionaryCatalog = await performanceStage('export.dictionaries', () => bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true }), { operation: 'export', rows: snapshot.rows.length });
     APP.dictionaryCatalog = dictionaryCatalog;
     const matrixInfo = bridge.matrixInfo();
     setProgress(84, 'Формирую Excel', `${snapshot.rows.length} строк`);
-    const bytes = await createRoundtripXlsxBytes(structure, snapshot, matrixInfo, dictionaryCatalog, { includeActions: true });
+    const bytes = await performanceStage('export.xlsx-build', () => createRoundtripXlsxBytes(structure, snapshot, matrixInfo, dictionaryCatalog, { includeActions: true }), { operation: 'export', rows: snapshot.rows.length });
     const shortId = String(snapshot.matrixId || '').slice(0, 8);
     const name = `TESSA_Матрица_${sanitizeFileName(matrixInfo.TemplateName)}_${shortId}.xlsx`;
     downloadBlob(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name);
     APP.bridge = bridge;
     APP.structure = structure;
     APP.snapshot = snapshot;
+    setSessionSnapshot(snapshot, structure);
     log(`Текущая матрица выгружена: ${snapshot.rows.length} строк, ${dictionaryCatalog.stats.entries} значений в ${dictionaryCatalog.stats.catalogs} словарях.`);
     setProgress(100, 'Excel готов', `${snapshot.rows.length} строк · ${dictionaryCatalog.stats.entries} значений справочников`);
     return { name, structure, snapshot, matrixInfo, dictionaryCatalog, bytes };
@@ -6897,7 +7032,7 @@
     APP.abortRequested = false;
     setProgress(5, '1/6 · Читаю Excel', file.name);
     log(`Читаю ${file.name}`);
-    const workbook = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
+    const workbook = await performanceStage('preview.xlsx-read', async () => readXlsxArrayBuffer(await file.arrayBuffer(), file.name), { operation: 'preview', fileName: file.name });
     setProgress(18, '1/6 · Excel прочитан', `${workbook.rows.length} строк данных`);
     log(`Excel: ${workbook.headers.filter(Boolean).length} столбцов, ${workbook.rows.length} строк данных.`);
     setProgress(22, '2/6 · Подключаюсь к TESSA', 'Проверяю открытую матрицу');
@@ -6905,7 +7040,7 @@
     const templateId = bridge.templateId();
     if (!templateId) throw new Error('В карточке матрицы не найден TemplateID.');
     setProgress(32, '3/6 · Читаю структуру TESSA', 'Критерии и функции');
-    const structure = await bridge.requestStructure(templateId);
+    const structure = await performanceStage('preview.structure', () => bridge.requestStructure(templateId), { operation: 'preview' });
     log(`Структура TESSA: ${structure.conditions.length} критериев, ${structure.functions.length} функций.`);
     const cachedSnapshot = APP.snapshot;
     const currentSectionSignature = bridge.matrixSectionSignature();
@@ -6919,10 +7054,13 @@
     // Обычный сценарий «скачал → изменил → проверил» не должен второй раз читать сотни карточек.
     // Перед Apply всё равно выполняется свежая серверная проверка, поэтому reuse безопасен для preview.
     setProgress(canReuseSnapshot ? 48 : 40, canReuseSnapshot ? '3/6 · Использую свежий снимок' : '3/6 · Читаю строки TESSA', canReuseSnapshot ? 'Повторная загрузка не нужна' : 'Сверяю текущие строки');
-    const snapshot = canReuseSnapshot ? cachedSnapshot : await bridge.loadSnapshot(structure);
+    const sessionSnapshot = getSessionSnapshot(bridge.mainCard?.id, structure.templateId);
+    const reusableSnapshot = canReuseSnapshot ? cachedSnapshot : sessionSnapshot;
+    const snapshot = reusableSnapshot || await performanceStage('preview.snapshot', () => bridge.loadSnapshot(structure), { operation: 'preview' });
+    if (!reusableSnapshot) setSessionSnapshot(snapshot, structure);
     setProgress(55, '4/6 · Сопоставляю Excel и TESSA', `${snapshot.rows.length} строк в TESSA`);
-    log(`Текущее состояние TESSA: ${snapshot.rows.length} строк${canReuseSnapshot ? ' (из текущей сессии)' : ''}.`);
-    const plan = buildPlan(workbook, structure, snapshot, bridge.matrixInfo());
+    log(`Текущее состояние TESSA: ${snapshot.rows.length} строк${reusableSnapshot ? ' (из текущей сессии)' : ''}.`);
+    const plan = await performanceStage('preview.plan', () => buildPlan(workbook, structure, snapshot, bridge.matrixInfo()), { operation: 'preview', rows: snapshot.rows.length, excelRows: workbook.rows.length });
     setProgress(62, '5/6 · Проверяю безопасность', 'Дубли, права, удаления и неоднозначности');
     plan.safety = evaluatePlanSafety(plan, bridge);
     plan.matrixInfo = plan.safety.matrixInfo;
@@ -6961,6 +7099,7 @@
     APP.bridge = bridge;
     APP.structure = structure;
     APP.snapshot = snapshot;
+    setSessionSnapshot(snapshot, structure);
     APP.review = createPlanReviewState();
     APP.previewView = createPreviewViewState();
     APP.plan = previewPlan;
@@ -7227,8 +7366,8 @@
     const bridge = options.bridge || await awaitPreflightAbortable(TessaBridge.create());
     assertWritableMatrixDraft(bridge);
     if (!previewOnly) assertNativeEditMode();
-    const structure = options.structure || await awaitPreflightAbortable(bridge.requestStructure(bridge.templateId()));
-    const fresh = options.fresh || await awaitPreflightAbortable(bridge.loadSnapshot(structure));
+    const structure = options.structure || await performanceStage('preflight.structure', () => awaitPreflightAbortable(bridge.requestStructure(bridge.templateId())), { operation: 'preflight' });
+    const fresh = options.fresh || await performanceStage('preflight.snapshot', () => awaitPreflightAbortable(bridge.loadSnapshot(structure)), { operation: 'preflight' });
     preflightProgress(18, 'Сверяю актуальное состояние', `${fresh.rows.length} строк в TESSA`);
     if (fresh.matrixId !== plan.matrixId) throw new Error('Открыта другая матрица. Нажмите «Проверить изменения» ещё раз.');
     // Template changes can happen between Preview and Apply without changing the
@@ -10089,6 +10228,7 @@
     const nextTemplateId = probe?.matrix?.templateId || null;
     if (!APP.busy && previousCardId && (previousCardId !== nextCardId || APP.capabilityCheckedTemplateId !== nextTemplateId)) {
       resetFilePreview();
+      invalidateSessionCache('matrix-or-template-changed');
       APP.structure = null; APP.snapshot = null; APP.bridge = null; APP.dictionaryCatalog = null;
       APP.lastMutationReceipts = null; APP.lastReconciliation = null;
       renderReconciliationResult(null);
@@ -11012,6 +11152,7 @@
     preflightPlan, applyPreflightPreview, crossMatrixReplacementIntegrity, verifyCrossMatrixRollback, finalizeCrossMatrixTransferVerification, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, partnerRecordKeepingColumnIndex, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport,
+    performanceStage, performanceSnapshot, resetPerformanceTelemetry, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,
     TessaBridge,
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },
   };
