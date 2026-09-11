@@ -5280,8 +5280,99 @@
   // копирование в новую свободную строку — как ДОБАВЛЕНИЕ.
   // ---------------------------------------------------------------------------
 
+  // INCREMENTAL_BASELINE_FAST_PATH_V1
+  // A V6 baseline contains the exact normalized row that was exported. If both visible
+  // values and companion IDs are still byte-semantically equivalent, do not resolve the
+  // same dictionaries again. Any doubt (formula, duplicate identity, moved duplicate,
+  // changed ID or value) falls through to the original full validation path.
+  function baselineExplicitValues(baseRow, column) {
+    if (!baseRow?.base) return [];
+    if (column.kind === 'function') {
+      return (baseRow.base.roles?.[column.id] || []).map(item => {
+        const id = item?.id == null ? '' : String(item.id);
+        const roleTypeId = item?.roleTypeId == null ? '' : String(item.roleTypeId);
+        return id ? `${id}|${roleTypeId}` : '';
+      });
+    }
+    return (baseRow.base.values?.[column.id] || []).map(item => item?.id == null ? '' : String(item.id));
+  }
+
+  function workbookBaselineFastPathIndex(workbook, columnMap) {
+    const bases = workbook.roundtrip?.baselineRows || [];
+    const byCard = new Map();
+    const byVersion = new Map();
+    bases.forEach((base, index) => {
+      const entry = { ...base, baselineIndex: index };
+      const card = canonicalValue(base?.rowCardId || '');
+      const version = canonicalValue(base?.versionId || '');
+      if (card) byCard.set(card, entry);
+      if (version) byVersion.set(version, entry);
+    });
+    const identityCounts = new Map();
+    for (const row of workbook.rows || []) {
+      const card = canonicalValue(columnMap.system.rowCardId === undefined ? '' : row.values[columnMap.system.rowCardId]);
+      const version = canonicalValue(columnMap.system.versionId === undefined ? '' : row.values[columnMap.system.versionId]);
+      const key = version || card ? `v:${version}|c:${card}` : '';
+      if (key) identityCounts.set(key, (identityCounts.get(key) || 0) + 1);
+    }
+    return { byCard, byVersion, identityCounts };
+  }
+
+  function unchangedDesiredRowFromBaseline(workbook, row, columnMap, baselineIndex) {
+    if (!workbook.roundtrip?.enabled || !workbook.roundtrip?.baselineRows?.length) return null;
+    const system = {
+      action: normalizeAction(columnMap.system.action === undefined ? '' : row.values[columnMap.system.action]),
+      rowCardId: normalizeSpace(columnMap.system.rowCardId === undefined ? '' : row.values[columnMap.system.rowCardId]),
+      versionId: normalizeSpace(columnMap.system.versionId === undefined ? '' : row.values[columnMap.system.versionId]),
+      baseFingerprint: normalizeSpace(columnMap.system.baseFingerprint === undefined ? '' : row.values[columnMap.system.baseFingerprint]),
+    };
+    if (system.action !== 'keep' || (!system.rowCardId && !system.versionId)) return null;
+    const cardKey = canonicalValue(system.rowCardId);
+    const versionKey = canonicalValue(system.versionId);
+    const base = (cardKey ? baselineIndex.byCard.get(cardKey) : null) || (versionKey ? baselineIndex.byVersion.get(versionKey) : null);
+    if (!base?.base) return null;
+    if (cardKey && canonicalValue(base.rowCardId) !== cardKey) return null;
+    if (versionKey && canonicalValue(base.versionId) !== versionKey) return null;
+    if (canonicalValue(system.baseFingerprint || '') !== canonicalValue(base.baseFingerprint || '')) return null;
+
+    const identityKey = `v:${versionKey}|c:${cardKey}`;
+    if ((baselineIndex.identityCounts.get(identityKey) || 0) > 1) {
+      const expectedExcelRow = Number(workbook.headerRow || 0) + 1 + Number(base.baselineIndex || 0);
+      if (Number(row.excelRow) !== expectedExcelRow) return null;
+    }
+
+    const flat = clonePlain(base.base.flat || {});
+    const ids = {};
+    const compare = {};
+    const columns = new Map();
+    for (const [id, column] of columnMap.columns.entries()) {
+      const meta = row.cellMeta?.[column.index];
+      if (meta?.hasFormula) return null;
+      const visible = splitCell(row.values[column.index]);
+      const expectedVisible = flat[column.key] || [];
+      if (!arraysEqual(visible, expectedVisible)) return null;
+      const expectedIds = baselineExplicitValues(base, column);
+      if (column.idIndex !== null) {
+        const actualIds = splitCell(row.values[column.idIndex]);
+        if (!arraysEqual(actualIds, expectedIds)) return null;
+      }
+      ids[column.key] = expectedIds;
+      compare[column.key] = currentCompareValues(base.base, column);
+      columns.set(id, column);
+    }
+    const hasData = [...columns.values()].some(column => (flat[column.key] || []).length > 0);
+    return {
+      excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, clearedForDeletion: false,
+      issues: [], fieldIssues: [], resolutions: [], fingerprint: base.baseFingerprint || fingerprintFlat(flat),
+      compareFingerprint: fingerprintFlat(compare), fastPath: 'baseline-unchanged',
+    };
+  }
+
   function workbookRowsToDesired(workbook, columnMap) {
+    const baselineFastPathIndex = workbookBaselineFastPathIndex(workbook, columnMap);
     return workbook.rows.map(row => {
+      const fastPath = unchangedDesiredRowFromBaseline(workbook, row, columnMap, baselineFastPathIndex);
+      if (fastPath) return fastPath;
       const flat = {};
       const ids = {};
       const compare = {};
@@ -6072,6 +6163,12 @@
   function buildPlan(workbook, structure, snapshot, matrixInfo = null) {
     const columnMap = buildColumnMap(workbook, structure);
     const desired = workbookRowsToDesired(workbook, columnMap);
+    const baselineFastPathHits = desired.reduce((sum, row) => sum + Number(row?.fastPath === 'baseline-unchanged'), 0);
+    const incremental = {
+      rowsCompared: desired.length,
+      baselineFastPathHits,
+      rowsFullyValidated: Math.max(0, desired.length - baselineFastPathHits),
+    };
     const workbookContext = columnMap.mode === 'roundtrip' && matrixInfo
       ? classifyWorkbookContext(workbook, matrixInfo)
       : null;
@@ -6208,6 +6305,7 @@
       structure,
       columnMap,
       desired,
+      incremental,
       actions,
       issues: fatalIssues,
       fatalIssues,
@@ -11153,6 +11251,7 @@
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, partnerRecordKeepingColumnIndex, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport,
     performanceStage, performanceSnapshot, resetPerformanceTelemetry, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,
+    baselineExplicitValues, workbookBaselineFastPathIndex, unchangedDesiredRowFromBaseline,
     TessaBridge,
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },
   };
