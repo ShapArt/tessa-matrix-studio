@@ -1,14 +1,14 @@
-name: RED Task7 v1.14 RC contract
+name: GREEN Task7 v1.14 RC contract
 
 on:
   push:
     branches: [feat/incremental-performance-v1.14]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  red:
+  green:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -16,5 +16,30 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Verify v1.14 RC RED
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Apply v1.14 RC documentation/version patch
+        run: node tools/patch-task7-v1.14-rc.mjs
+      - name: Verify v1.14 RC contract
         run: node tests/v1.14-rc-contract.mjs
+      - name: Verify release/candidate contracts
+        run: |
+          node tests/docs.mjs
+          node tests/release-workflow.mjs
+          node tests/workflow-security.mjs
+          node tests/uat-candidate-workflow.mjs
+      - name: Verify full regression suite
+        run: npm test
+      - name: Verify diff hygiene
+        run: git diff --check
+      - name: Commit release candidate sources
+        run: |
+          if git diff --quiet; then
+            echo "No RC diff to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json tessa-matrix-studio.user.js README.md CHANGELOG.md docs/communications/v1.14-colleague-test-message.md tools/patch-task7-v1.14-rc.mjs
+          git commit -m "chore: prepare v1.14.0 release candidate"
+          git push
