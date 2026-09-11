@@ -6927,52 +6927,58 @@
           };
         }
 
-        try {
-          const snapshot = await bridge.loadSnapshot(structure);
-          const snapshotMatrixId = canonicalValue(snapshot?.matrixId || directMatrixId || '');
-          const snapshotTemplateId = canonicalValue(snapshot?.templateId || directTemplateId || structure?.templateId || '');
-          if (snapshotMatrixId !== expectedMatrixId || snapshotTemplateId !== expectedTemplateId) {
-            return {
-              status: 'incomplete',
-              checkedCount: 0,
-              verifiedCount: 0,
-              divergentCount: 0,
-              missingCount: 0,
-              unknownCount: receiptContext?.receipts?.length || 0,
-              rows: [],
-              attempts: attempt,
-              retryable: false,
-              reasonCode: 'reconcile-context-mismatch',
-              startedAt,
-              finishedAt: nowIso(),
-            };
+        // RECEIPT_FIRST_RECONCILIATION_V1
+        // Verify only the identities that were actually mutated. A complete matrix
+        // snapshot is a correctness fallback, not the default cost of one changed row.
+        if (directMatrixId && directTemplateId) {
+          try {
+            const targeted = await performanceStage('reconcile.targeted', () => buildTargetedReconciliationSnapshot(bridge, receiptContext, structure), { operation: 'reconcile', receipts: receiptContext?.receipts?.length || 0 });
+            const targetedResult = reconcileMutationReceipts(receiptContext?.receipts || [], targeted, structure);
+            if (targetedResult.status === 'verified') {
+              return {
+                ...targetedResult,
+                mode: 'targeted-receipts',
+                attempts: attempt,
+                retryable: false,
+                startedAt,
+                finishedAt: nowIso(),
+              };
+            }
+            log('Точечная проверка не смогла доказать весь результат. Перепроверяю полным снимком.', 'warn');
+          } catch (error) {
+            if (isWriterLockError(error)) throw error;
+            log(`Точечная проверка результата недоступна: ${error.message || error}. Перепроверяю полным снимком.`, 'warn');
           }
+        }
+
+        const snapshot = await performanceStage('reconcile.fullSnapshot', () => bridge.loadSnapshot(structure), { operation: 'reconcile', fallback: true });
+        const snapshotMatrixId = canonicalValue(snapshot?.matrixId || directMatrixId || '');
+        const snapshotTemplateId = canonicalValue(snapshot?.templateId || directTemplateId || structure?.templateId || '');
+        if (snapshotMatrixId !== expectedMatrixId || snapshotTemplateId !== expectedTemplateId) {
           return {
-            ...reconcileMutationReceipts(receiptContext?.receipts || [], snapshot, structure),
-            mode: 'full-snapshot',
+            status: 'incomplete',
+            checkedCount: 0,
+            verifiedCount: 0,
+            divergentCount: 0,
+            missingCount: 0,
+            unknownCount: receiptContext?.receipts?.length || 0,
+            rows: [],
             attempts: attempt,
             retryable: false,
-            startedAt,
-            finishedAt: nowIso(),
-          };
-        } catch (error) {
-          if (isWriterLockError(error) || !isNativeIdentitySnapshotError(error)) throw error;
-          // Targeted fallback may bypass full snapshot identity, so the open card itself
-          // must prove the matrix/template context first. Legacy/fake bridges without
-          // direct context keep the old fail-closed full-snapshot behavior.
-          if (!directMatrixId || !directTemplateId) throw error;
-          log(`Полный снимок для проверки результата недоступен: ${error.message || error}. Проверяю только изменённые строки по receipt ID.`, 'warn');
-          const targeted = await buildTargetedReconciliationSnapshot(bridge, receiptContext, structure);
-          return {
-            ...reconcileMutationReceipts(receiptContext?.receipts || [], targeted, structure),
-            mode: 'targeted-receipts',
-            fallbackReasonCode: 'reconcile-full-snapshot-failed',
-            attempts: attempt,
-            retryable: false,
+            reasonCode: 'reconcile-context-mismatch',
             startedAt,
             finishedAt: nowIso(),
           };
         }
+        return {
+          ...reconcileMutationReceipts(receiptContext?.receipts || [], snapshot, structure),
+          mode: 'full-snapshot',
+          fallbackReasonCode: directMatrixId && directTemplateId ? 'reconcile-targeted-incomplete' : 'reconcile-targeted-unavailable',
+          attempts: attempt,
+          retryable: false,
+          startedAt,
+          finishedAt: nowIso(),
+        };
       } catch (error) {
         lastError = error;
         if (!isWriterLockError(error) || attempt === maxAttempts) break;
@@ -7450,6 +7456,94 @@
     }
   }
 
+  // TOUCHED_ONLY_PREFLIGHT_V1
+  // Incremental server validation is allowed only for ordinary row mutations whose
+  // target identities were already proven by the planner. Cross-matrix replacement,
+  // overwrite semantics and globally blocked plans stay on the full fail-closed path.
+  function incrementalSafetyMode(plan) {
+    if (!plan || plan.safety?.blocked || plan.crossMatrixReplacement?.enabled) return 'full-fallback';
+    const actions = (plan.actions || []).filter(action => action?.type && action.type !== 'noop');
+    if (!actions.length) return 'full-fallback';
+    if (actions.some(action => !['add', 'update', 'delete'].includes(action.type))) return 'full-fallback';
+    if (actions.some(action => isOverwriteMatch(action.match))) return 'full-fallback';
+    const types = new Set(actions.map(action => action.type));
+    if (types.size === 1) {
+      const only = [...types][0];
+      return only === 'add' ? 'add-only' : only;
+    }
+    return 'mixed';
+  }
+
+  function collectTouchedIdentities(plan) {
+    const targets = new Map();
+    const remember = (rowCardId, versionId, source = 'target') => {
+      const cardKey = canonicalValue(rowCardId || '');
+      const versionKey = canonicalValue(versionId || '');
+      if (!cardKey || !versionKey) return;
+      const key = cardKey + '|' + versionKey;
+      if (!targets.has(key)) targets.set(key, { rowCardId, versionId, source });
+    };
+    for (const action of plan?.actions || []) {
+      if (!action?.type || action.type === 'noop') continue;
+      if (action.type === 'update' || action.type === 'delete') {
+        remember(action.currentRow?.rowCardId, action.currentRow?.versionId, 'target');
+      }
+      if (action.type === 'add' && action.match?.matchedBy === 'copied-row-auto-add') {
+        remember(action.match?.sourceRowCardId, action.match?.sourceVersionId, 'source');
+      }
+    }
+    const rows = [...targets.values()];
+    return {
+      targets: rows,
+      rowCardIds: [...new Set(rows.map(item => item.rowCardId).filter(Boolean))],
+      versionIds: [...new Set(rows.map(item => item.versionId).filter(Boolean))],
+    };
+  }
+
+  async function buildTargetedPreflightSnapshot(bridge, plan, structure) {
+    const mode = incrementalSafetyMode(plan);
+    if (mode === 'full-fallback') return null;
+
+    // Targeted reads must be anchored to the actually open matrix card and template.
+    // A legacy/fake bridge without those direct facts falls back to the proven full path.
+    const directMatrixId = canonicalValue(bridge?.mainCard?.id || '');
+    const directTemplateId = canonicalValue(bridge?.templateId?.() || structure?.templateId || '');
+    const expectedMatrixId = canonicalValue(plan?.matrixId || '');
+    const expectedTemplateId = canonicalValue(plan?.templateId || structure?.templateId || '');
+    if (!directMatrixId || !directTemplateId || !expectedMatrixId || !expectedTemplateId) return null;
+    if (directMatrixId !== expectedMatrixId || directTemplateId !== expectedTemplateId) return null;
+
+    const criterionIdCache = new Map();
+    const roleIdCache = new Map();
+    const roleIdByFunctionCache = new Map();
+    const cardsByRowCardId = new Map();
+    const touched = collectTouchedIdentities(plan);
+    const rows = await mapConcurrent(touched.targets, PERFORMANCE.SnapshotCardGetConcurrency, async (target, index) => {
+      if (APP.abortRequested) throw preflightAbortError();
+      const card = await awaitPreflightAbortable(bridge.getCard(target.rowCardId));
+      cardsByRowCardId.set(canonicalValue(target.rowCardId), card);
+      return bridge.readMatrixRowFromCard(card, {
+        index,
+        rowCardId: target.rowCardId,
+        versionId: target.versionId,
+        rowName: target.source === 'source' ? 'Исходная строка' : 'Изменяемая строка',
+        source: 'preflight-targeted',
+      }, structure, { criterionIdCache, roleIdCache, roleIdByFunctionCache });
+    });
+
+    return {
+      matrixId: String(bridge.mainCard.id),
+      templateId: structure?.templateId || plan?.templateId || '',
+      rows,
+      criterionIdCache,
+      roleIdCache,
+      roleIdByFunctionCache,
+      cardsByRowCardId,
+      targeted: true,
+      createdAt: nowIso(),
+    };
+  }
+
   async function preflightPlan(plan, options = {}) {
     const previewOnly = Boolean(options.previewOnly);
     const preflightProgress = typeof options.onProgress === 'function'
@@ -7465,9 +7559,30 @@
     assertWritableMatrixDraft(bridge);
     if (!previewOnly) assertNativeEditMode();
     const structure = options.structure || await performanceStage('preflight.structure', () => awaitPreflightAbortable(bridge.requestStructure(bridge.templateId())), { operation: 'preflight' });
-    const fresh = options.fresh || await performanceStage('preflight.snapshot', () => awaitPreflightAbortable(bridge.loadSnapshot(structure)), { operation: 'preflight' });
-    preflightProgress(18, 'Сверяю актуальное состояние', `${fresh.rows.length} строк в TESSA`);
-    if (fresh.matrixId !== plan.matrixId) throw new Error('Открыта другая матрица. Нажмите «Проверить изменения» ещё раз.');
+    const executableCount = (plan.actions || []).filter(action => action?.type && action.type !== 'noop').length;
+    const requestedIncrementalMode = incrementalSafetyMode(plan);
+    let fresh = options.fresh || null;
+    let incremental = { mode: options.fresh ? 'provided-snapshot' : 'full-fallback', preflightRows: executableCount, snapshotRows: fresh?.rows?.length || 0, fullSnapshot: Boolean(options.fresh) };
+    if (!fresh && requestedIncrementalMode !== 'full-fallback') {
+      try {
+        const targeted = await performanceStage('preflight.targeted', () => buildTargetedPreflightSnapshot(bridge, plan, structure), { operation: 'preflight', mode: requestedIncrementalMode });
+        if (targeted) {
+          fresh = targeted;
+          incremental = { mode: requestedIncrementalMode, preflightRows: executableCount, snapshotRows: targeted.rows.length, fullSnapshot: false };
+        }
+      } catch (error) {
+        if (isPreflightAbortError(error)) throw error;
+        log(`Точечная предварительная проверка недоступна: ${error.message || error}. Использую полный безопасный снимок.`, 'warn');
+      }
+    }
+    if (!fresh) {
+      fresh = await performanceStage('preflight.snapshot', () => awaitPreflightAbortable(bridge.loadSnapshot(structure)), { operation: 'preflight', fallbackFrom: requestedIncrementalMode });
+      incremental = { mode: 'full-fallback', requestedMode: requestedIncrementalMode, preflightRows: executableCount, snapshotRows: fresh?.rows?.length || 0, fullSnapshot: true };
+    }
+    preflightProgress(18, 'Сверяю актуальное состояние', incremental.fullSnapshot
+      ? `${fresh.rows.length} строк в TESSA`
+      : `точечно: ${incremental.snapshotRows} прочитано / ${incremental.preflightRows} операций`);
+    if (canonicalValue(fresh.matrixId) !== canonicalValue(plan.matrixId)) throw new Error('Открыта другая матрица. Нажмите «Проверить изменения» ещё раз.');
     // Template changes can happen between Preview and Apply without changing the
     // card ID. Never rebuild an old plan against a different set of field IDs.
     if (plan.templateId && canonicalValue(plan.templateId) !== canonicalValue(fresh.templateId || structure.templateId)) {
@@ -7558,7 +7673,10 @@
           displays.forEach((display, i) => { bridge.resolveRole(fn, display, ids[i] || null, fresh); roleCount += 1; });
         }
         if (!roleCount) throw new Error(`В строке Excel ${action.excelRow.excelRow} после изменений не останется исполнителей.`);
-        const card = await awaitPreflightAbortable(bridge.getCard(current.rowCardId));
+        const cachedCard = fresh?.cardsByRowCardId instanceof Map
+          ? fresh.cardsByRowCardId.get(canonicalValue(current.rowCardId))
+          : null;
+        const card = cachedCard || await awaitPreflightAbortable(bridge.getCard(current.rowCardId));
         bridge.rebuildRowCard(card, current.versionId, action.excelRow, structure, fresh);
         await awaitPreflightAbortable(bridge.validateDuplicate(card, current.versionId));
         preparedUpdates.set(action.excelRow.excelRow, { action, card, current });
@@ -7723,7 +7841,7 @@
       skipServerAddValidation
         ? `Локально проверено: ${preparedUpdates.size + preparedAdds.size + readyDeletes.length} · глубокая ADD-проверка будет после разделения пакета`
         : `Готово к записи: ${preparedUpdates.size + preparedAdds.size + readyDeletes.length}`);
-    return { bridge, structure, fresh, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips, runtimeSkippedActions, previewPolicy };
+    return { bridge, structure, fresh, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips, runtimeSkippedActions, previewPolicy, incremental };
   }
 
   /**
@@ -11248,6 +11366,7 @@
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, classifyWorkbookContext, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
     preflightPlan, applyPreflightPreview, crossMatrixReplacementIntegrity, verifyCrossMatrixRollback, finalizeCrossMatrixTransferVerification, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
+    incrementalSafetyMode, collectTouchedIdentities, buildTargetedPreflightSnapshot, buildTargetedReconciliationSnapshot,
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, partnerRecordKeepingColumnIndex, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport,
     performanceStage, performanceSnapshot, resetPerformanceTelemetry, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,
