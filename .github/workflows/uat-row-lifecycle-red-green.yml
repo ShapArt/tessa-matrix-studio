@@ -17,9 +17,12 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Build candidate userscript in-place
+      - name: Build exact v1.13 runtime in-place
         run: |
+          node hotfixes/malformed-range-diagnostic-transform.mjs tessa-matrix-studio.user.js
           node hotfixes/v1.13.0-user-row-lifecycle-transform.mjs tessa-matrix-studio.user.js
+          printf '\n' >> tessa-matrix-studio.user.js
+          cat hotfixes/interval-add-valid-fallback.js >> tessa-matrix-studio.user.js
           printf '\n' >> tessa-matrix-studio.user.js
           cat hotfixes/full-uat-runner-v1.js >> tessa-matrix-studio.user.js
           node hotfixes/v1.13.0-full-uat-live-finalize.mjs tessa-matrix-studio.user.js
@@ -39,4 +42,23 @@ jobs:
           grep -Fq "diagnosticNativeCardCache" tessa-matrix-studio.user.js
           grep -Fq "source: 'full-uat'" tessa-matrix-studio.user.js
           grep -Fq "tms-picker-import-block" tessa-matrix-studio.user.js
+          grep -Fq "__TMS_INSTALL_INTERVAL_ADD_VALID_FALLBACK__" tessa-matrix-studio.user.js
           grep -Fq "__TMS_FULL_UAT_V1__" tessa-matrix-studio.user.js
+          grep -Fq "Numeric ranges have an exact grammar" tessa-matrix-studio.user.js
+      - name: Package exact candidate
+        run: |
+          mkdir -p dist
+          cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
+          sha256sum dist/tessa-matrix-studio.user.js > dist/SHA256SUMS.txt
+          printf '{\n  "version": "1.13.0",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "exact-v1.13-live-uat-candidate"\n}\n' \
+            "$(git rev-parse HEAD)" "$(sha256sum dist/tessa-matrix-studio.user.js | awk '{print $1}')" > dist/candidate-manifest.json
+      - name: Upload exact candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tessa-matrix-studio-v1.13.0-final-candidate-${{ github.run_id }}
+          path: |
+            dist/tessa-matrix-studio.user.js
+            dist/SHA256SUMS.txt
+            dist/candidate-manifest.json
+          if-no-files-found: error
+          retention-days: 14
