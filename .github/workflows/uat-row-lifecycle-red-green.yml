@@ -17,10 +17,15 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Apply candidate transform
-        run: node hotfixes/v1.13.0-user-row-lifecycle-transform.mjs tessa-matrix-studio.user.js
+      - name: Build candidate userscript in-place
+        run: |
+          node hotfixes/v1.13.0-user-row-lifecycle-transform.mjs tessa-matrix-studio.user.js
+          printf '\n' >> tessa-matrix-studio.user.js
+          cat hotfixes/full-uat-runner-v1.js >> tessa-matrix-studio.user.js
       - name: Copied identity lifecycle regression
         run: node tests/user-copied-identity-regression.mjs
+      - name: Full UAT runner contract
+        run: node tests/full-uat-runner-contract.mjs
       - name: Full regression suite
         run: npm test
       - name: Source sanity
@@ -28,3 +33,4 @@ jobs:
           node --check tessa-matrix-studio.user.js
           grep -Fq "DUPLICATE_IDENTITY_COPY_AS_ADD_V1" tessa-matrix-studio.user.js
           grep -Fq "tms-picker-import-block" tessa-matrix-studio.user.js
+          grep -Fq "__TMS_FULL_UAT_V1__" tessa-matrix-studio.user.js
