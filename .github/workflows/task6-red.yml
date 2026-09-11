@@ -18,7 +18,7 @@ jobs:
           package-manager-cache: false
       - name: Install dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Repair Task6 patch syntax
+      - name: Repair Task6 patch bootstrap
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -26,10 +26,18 @@ jobs:
           lines = p.read_text(encoding='utf-8').splitlines()
           replacement = r"  diagnostics += '\n\n' + marker + '\n\nВстроенная диагностика дополнительно запускает локальный **read-only** benchmark planner-а. Он не вызывает серверные операции записи и не изменяет карточки TESSA.\n\nПроверяются сценарии: 0 изменений; 1/10/100 ADD; 1/10 UPDATE; 1 DELETE; mixed 10; 3000 KEEP + 1 ADD; 3000 KEEP + 1 UPDATE. Для каждого сценария фиксируются время planner-а, число строк, прошедших полную validation, число mutation/preflight-строк и baseline fast-path hits.\n\nВ ZIP диагностики добавляются `performance/performance-uat.json` и `performance/performance-uat-summary.json`. Поля `liveTimings` берутся только из реально накопленной telemetry текущей вкладки (например, `preflight.targeted` / `reconcile.targeted`) и не подменяются synthetic-замерами. Поэтому до live UAT нельзя интерпретировать synthetic planner timings как подтверждённое ускорение сервера TESSA.\n';"
           matches = [i for i, line in enumerate(lines) if line.startswith('  diagnostics += `')]
-          if len(matches) != 1:
-              raise SystemExit(f'expected one diagnostics append line, got {len(matches)}')
-          lines[matches[0]] = replacement
-          p.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          if len(matches) == 1:
+              lines[matches[0]] = replacement
+          elif len(matches) > 1:
+              raise SystemExit(f'expected at most one diagnostics append line, got {len(matches)}')
+          text = '\n'.join(lines) + '\n'
+          old = 'performanceUatScenarioNames, runPerformanceUat, buildPerformanceUatSummary, sessionContextKey'
+          new = 'performanceUatScenarioNames, runPerformanceUat, buildPerformanceUatSummary, makeZip, sessionContextKey'
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('Task6 makeZip export patch anchor missing')
+          p.write_text(text, encoding='utf-8')
           PY
           node --check tools/patch-task6-performance-uat.mjs
       - name: Apply performance UAT implementation
