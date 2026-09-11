@@ -26,6 +26,8 @@ jobs:
         run: node tests/user-copied-identity-regression.mjs
       - name: Full UAT runner contract
         run: node tests/full-uat-runner-contract.mjs
+      - name: Live UAT regressions
+        run: node tests/live-uat-regressions.mjs
       - name: Full regression suite
         run: npm test
       - name: Source sanity
