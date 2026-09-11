@@ -17,5 +17,14 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Apply candidate transform
+        run: node hotfixes/v1.13.0-user-row-lifecycle-transform.mjs tessa-matrix-studio.user.js
       - name: Copied identity lifecycle regression
         run: node tests/user-copied-identity-regression.mjs
+      - name: Full regression suite
+        run: npm test
+      - name: Source sanity
+        run: |
+          node --check tessa-matrix-studio.user.js
+          grep -Fq "DUPLICATE_IDENTITY_COPY_AS_ADD_V1" tessa-matrix-studio.user.js
+          grep -Fq "tms-picker-import-block" tessa-matrix-studio.user.js
