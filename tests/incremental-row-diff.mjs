@@ -51,8 +51,11 @@ plan = E.buildPlan(updated, structure, snapshot, info);
 assert(plan.counts.update === 1 && plan.counts.noop === 2, JSON.stringify(plan.counts));
 assert(plan.incremental?.rowsFullyValidated === 1 && plan.incremental?.baselineFastPathHits === 2, JSON.stringify(plan.incremental));
 
+// A copied row keeps source hidden identity, but changing a business value makes it a real ADD.
 const added = clone();
 const copied = { ...added.rows[0], excelRow: added.rows.at(-1).excelRow + 2, values: [...added.rows[0].values], cellMeta: added.rows[0].cellMeta ? [...added.rows[0].cellMeta] : undefined };
+copied.values[signer] = 'Сотрудник 2';
+copied.values[signerId] = 'person-2|1';
 added.rows.push(copied);
 plan = E.buildPlan(added, structure, snapshot, info);
 assert(plan.counts.add === 1 && plan.counts.noop === 3, JSON.stringify(plan.counts));
