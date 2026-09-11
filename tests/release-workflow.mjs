@@ -28,10 +28,10 @@ assert(verifyStepIndex >= 0 && installDependenciesIndex < verifyStepIndex,
 
 // A release can land through a multi-commit/fast-forward integration. Looking only at HEAD^..HEAD
 // misses the userscript when the tip commit is docs-only. Compare the latest published release tag
-// with the exact verified HEAD instead.
+// with the exact verified HEAD instead. Formatting may wrap the watched paths across YAML lines.
 assert(workflow.includes('gh release view --json tagName'), 'release must resolve the latest published release tag');
 assert(workflow.includes('PREVIOUS_TAG'), 'release change gate must keep the previous published tag');
-assert(workflow.includes('git diff --name-only "$PREVIOUS_TAG"..HEAD -- tessa-matrix-studio.user.js'),
+assert(/git diff --name-only\s+"\$PREVIOUS_TAG"\.\.HEAD\s+--[\s\\\S]*?tessa-matrix-studio\.user\.js/.test(workflow),
   'release must detect userscript changes across the full published-release-to-HEAD range');
 assert(!workflow.includes('git diff-tree --no-commit-id --name-only -r HEAD^ HEAD'),
   'release must not rely on only the last commit for userscript change detection');
