@@ -44,6 +44,53 @@ jobs:
         run: npm test
       - name: Verify diff hygiene
         run: git diff --check
+      - name: Build exact live-TESSA UAT candidate
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          mkdir -p dist
+          cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
+          node hotfixes/malformed-range-diagnostic-transform.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.13.0-user-row-lifecycle-transform.mjs dist/tessa-matrix-studio.user.js
+          sed -i -E "0,/^\/\/ @version[[:space:]]+[0-9.]+$/s//\/\/ @version      $VERSION/" dist/tessa-matrix-studio.user.js
+          sed -i -E "0,/^[[:space:]]+version: '[0-9.]+'[,]$/s//    version: '$VERSION',/" dist/tessa-matrix-studio.user.js
+          printf '\n' >> dist/tessa-matrix-studio.user.js
+          cat hotfixes/interval-add-valid-fallback.js >> dist/tessa-matrix-studio.user.js
+          printf '\n' >> dist/tessa-matrix-studio.user.js
+          cat hotfixes/full-uat-runner-v1.js >> dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.13.0-full-uat-live-finalize.mjs dist/tessa-matrix-studio.user.js
+          node --check dist/tessa-matrix-studio.user.js
+          grep -Fqx "// @version      $VERSION" dist/tessa-matrix-studio.user.js
+          grep -Fq "version: '$VERSION'," dist/tessa-matrix-studio.user.js
+          grep -Fq "__TMS_INSTALL_INTERVAL_ADD_VALID_FALLBACK__" dist/tessa-matrix-studio.user.js
+          grep -Fq "__TMS_FULL_UAT_V1__" dist/tessa-matrix-studio.user.js
+          grep -Fq "DUPLICATE_IDENTITY_COPY_AS_ADD_V1" dist/tessa-matrix-studio.user.js
+          grep -Fq "LIVE_UAT_2026_09_11" dist/tessa-matrix-studio.user.js
+          grep -Fq "source: 'full-uat'" dist/tessa-matrix-studio.user.js
+          grep -Fq "Numeric ranges have an exact grammar" dist/tessa-matrix-studio.user.js
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/user-copied-identity-regression.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/full-uat-runner-contract.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/live-uat-regressions.mjs
+          awk 'BEGIN { emit=0 } /^\/\/ ==UserScript==/ { emit=1 } emit { print } /^\/\/ ==\/UserScript==/ { exit }' dist/tessa-matrix-studio.user.js > dist/tessa-matrix-studio.meta.js
+          test -s dist/tessa-matrix-studio.meta.js
+          (cd dist && sha256sum tessa-matrix-studio.meta.js tessa-matrix-studio.user.js > SHA256SUMS.txt)
+          USER_SHA="$(sha256sum dist/tessa-matrix-studio.user.js | awk '{print $1}')"
+          COMMIT_SHA="$(git rev-parse HEAD)"
+          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "live-tessa-uat-before-release"\n}\n' "$VERSION" "$COMMIT_SHA" "$USER_SHA" > dist/candidate-manifest.json
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Upload exact UAT candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tessa-matrix-studio-uat-v${{ steps.candidate.outputs.version }}-${{ github.run_id }}
+          path: |
+            dist/tessa-matrix-studio.user.js
+            dist/tessa-matrix-studio.meta.js
+            dist/SHA256SUMS.txt
+            dist/candidate-manifest.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Commit release candidate sources
         run: |
           if git diff --quiet; then
