@@ -1,14 +1,14 @@
-name: RED Task6 performance UAT
+name: GREEN Task6 performance UAT
 
 on:
   push:
     branches: [feat/incremental-performance-v1.14]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  red:
+  green:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -16,5 +16,33 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Verify performance UAT RED
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Apply performance UAT implementation
+        run: node tools/patch-task6-performance-uat.mjs
+      - name: Verify Task6 contract
         run: node tests/performance-uat.mjs
+      - name: Verify performance and diagnostics regressions
+        run: |
+          node tests/incremental-large-matrix.mjs
+          node tests/performance-telemetry.mjs
+          node tests/reconciliation-performance.mjs
+          node tests/preview-performance.mjs
+          node tests/studio-diagnostics.mjs
+          node tests/studio-interval-bundle.mjs
+          node tests/full-uat-runner-contract.mjs
+      - name: Verify full regression suite
+        run: npm test
+      - name: Verify diff hygiene
+        run: git diff --check
+      - name: Commit implementation
+        run: |
+          if git diff --quiet; then
+            echo "No implementation diff to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js package.json docs/STUDIO-DIAGNOSTICS.md
+          git commit -m "feat: add performance UAT diagnostics"
+          git push
