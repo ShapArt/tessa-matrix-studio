@@ -68,6 +68,7 @@
     lastSupportReport: null,
     lastIntervalDiagnostics: null,
     lastStudioDiagnostics: null,
+    lastPerformanceUat: null,
     nativeRecorder: null,
     dictionaryCatalog: null,
     // INCREMENTAL_SESSION_CACHE_V1
@@ -350,6 +351,207 @@
 
   function performanceSnapshot() {
     return clonePlain(APP.performanceTelemetry || { startedAt: nowIso(), stages: {}, events: [] });
+  }
+
+  // PERFORMANCE_UAT_V1
+  // Local synthetic benchmark only: it builds the same roundtrip workbook and planner
+  // shapes as normal Studio work, but never calls TESSA services or mutation methods.
+  function performanceUatScenarioNames() {
+    return [
+      '0 changes', '1 ADD', '10 ADD', '100 ADD', '1 UPDATE', '10 UPDATE',
+      '1 DELETE', 'mixed 10', '3000 KEEP + 1 ADD', '3000 KEEP + 1 UPDATE',
+    ];
+  }
+
+  function performanceUatRow(index) {
+    const org = index % 100;
+    const person = index % 300;
+    const flat = {
+      'criterion:org': ['Орг ' + org],
+      'function:sign': ['Сотрудник ' + person],
+    };
+    return {
+      index,
+      rowCardId: 'perf-card-' + index,
+      versionId: 'perf-version-' + index,
+      fingerprint: fingerprintFlat(flat),
+      flat,
+      values: { org: [{ id: 'perf-org-' + org, display: 'Орг ' + org, kind: 'ReferenceGuid' }] },
+      roles: { sign: [{ id: 'perf-person-' + person, display: 'Сотрудник ' + person, roleTypeId: 1 }] },
+    };
+  }
+
+  function clonePerformanceWorkbook(workbook) {
+    const cloneRow = row => ({
+      ...row,
+      values: Array.isArray(row?.values) ? [...row.values] : [],
+      cellMeta: Array.isArray(row?.cellMeta) ? row.cellMeta.map(item => item && typeof item === 'object' ? { ...item } : item) : row?.cellMeta,
+    });
+    return {
+      ...workbook,
+      headers: [...(workbook?.headers || [])],
+      schemaTokens: [...(workbook?.schemaTokens || [])],
+      rows: (workbook?.rows || []).map(cloneRow),
+      roundtrip: {
+        ...(workbook?.roundtrip || {}),
+        baselineRows: (workbook?.roundtrip?.baselineRows || []).map(item => ({
+          ...item,
+          base: item?.base ? clonePlain(item.base) : item?.base,
+        })),
+      },
+    };
+  }
+
+  function buildPerformanceUatSummary(result = {}) {
+    return {
+      format: result.format || 'TESSA_PERFORMANCE_UAT_V1',
+      status: result.status || 'unknown',
+      scope: result.scope || 'synthetic-read-only',
+      baseRows: Math.max(0, Number(result.baseRows) || 0),
+      scenarios: Array.isArray(result.scenarios) ? result.scenarios.length : 0,
+      totalMs: Math.max(0, Number(result.totalMs) || 0),
+      cache: clonePlain(result.cache || { hits: 0, misses: 0 }),
+      liveTimings: clonePlain(result.liveTimings || {}),
+      failures: clonePlain(result.failures || []),
+      rows: (result.scenarios || []).map(item => ({
+        name: item.name,
+        plannerMs: Math.max(0, Number(item.plannerMs) || 0),
+        totalRows: Math.max(0, Number(item.totalRows) || 0),
+        fullyValidatedRows: Math.max(0, Number(item.fullyValidatedRows) || 0),
+        preflightRows: Math.max(0, Number(item.preflightRows) || 0),
+        baselineFastPathHits: Math.max(0, Number(item.baselineFastPathHits) || 0),
+        counts: clonePlain(item.counts || {}),
+      })),
+    };
+  }
+
+  async function runPerformanceUat(options = {}) {
+    const requested = Math.trunc(Number(options?.baseRows) || 3000);
+    const baseRows = Math.max(100, Math.min(10000, requested));
+    const started = monotonicNow();
+    const structure = {
+      templateId: 'performance-uat-template',
+      conditions: [{ criterionRowId: 'org', criterionName: 'Организация', operandTypeId: OPERAND.ReferenceGuid, refSection: 'GchPartners' }],
+      functions: [{ id: 'sign', name: 'Подписание', typeName: 'Подписание' }],
+    };
+    const snapshot = {
+      matrixId: 'performance-uat-matrix',
+      templateId: structure.templateId,
+      rows: Array.from({ length: baseRows }, (_, index) => performanceUatRow(index)),
+    };
+    const matrixInfo = { matrixId: snapshot.matrixId, TemplateID: snapshot.templateId, Name: 'Performance UAT' };
+    const catalog = mergeSnapshotIntoDictionaryCatalog(null, structure, snapshot);
+    const bytes = await createRoundtripXlsxBytes(structure, snapshot, matrixInfo, catalog, { includeActions: true });
+    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const baseWorkbook = await readXlsxArrayBuffer(buffer, 'performance-uat.xlsx');
+    const signer = baseWorkbook.headers.indexOf('Подписание');
+    const signerId = baseWorkbook.headers.indexOf('Подписание__ID');
+    if (signer < 0 || signerId < 0) throw new Error('Performance UAT: не найдены колонки функции Подписание.');
+
+    const changeSigner = (workbook, rowIndex, delta = 1) => {
+      const row = workbook.rows[rowIndex];
+      if (!row) throw new Error('Performance UAT: отсутствует строка ' + rowIndex + '.');
+      const person = (rowIndex + delta) % 300;
+      row.values[signer] = 'Сотрудник ' + person;
+      row.values[signerId] = 'perf-person-' + person + '|1';
+    };
+    const appendCopies = (workbook, count, sourceOffset = 0) => {
+      const maxExcelRow = Math.max(0, ...(workbook.rows || []).map(row => Number(row.excelRow) || 0));
+      for (let i = 0; i < count; i += 1) {
+        const sourceIndex = (sourceOffset + i) % baseWorkbook.rows.length;
+        const source = baseWorkbook.rows[sourceIndex];
+        const copy = {
+          ...source,
+          excelRow: maxExcelRow + i + 2,
+          values: [...source.values],
+          cellMeta: Array.isArray(source.cellMeta) ? source.cellMeta.map(item => item && typeof item === 'object' ? { ...item } : item) : source.cellMeta,
+        };
+        workbook.rows.push(copy);
+        changeSigner(workbook, workbook.rows.length - 1, 1);
+      }
+    };
+    const deleteRows = (workbook, indexes) => {
+      const remove = new Set(indexes);
+      workbook.rows = workbook.rows.filter((_, index) => !remove.has(index));
+    };
+
+    const scenarioBuilders = new Map([
+      ['0 changes', workbook => workbook],
+      ['1 ADD', workbook => { appendCopies(workbook, 1, 0); return workbook; }],
+      ['10 ADD', workbook => { appendCopies(workbook, 10, 20); return workbook; }],
+      ['100 ADD', workbook => { appendCopies(workbook, 100, 100); return workbook; }],
+      ['1 UPDATE', workbook => { changeSigner(workbook, 0, 1); return workbook; }],
+      ['10 UPDATE', workbook => { for (let i = 0; i < 10; i += 1) changeSigner(workbook, i, 1); return workbook; }],
+      ['1 DELETE', workbook => { deleteRows(workbook, [0]); return workbook; }],
+      ['mixed 10', workbook => {
+        for (let i = 0; i < 4; i += 1) changeSigner(workbook, i, 1);
+        deleteRows(workbook, [10, 11, 12]);
+        appendCopies(workbook, 3, 30);
+        return workbook;
+      }],
+      ['3000 KEEP + 1 ADD', workbook => { appendCopies(workbook, 1, 40); return workbook; }],
+      ['3000 KEEP + 1 UPDATE', workbook => { changeSigner(workbook, 42, 1); return workbook; }],
+    ]);
+
+    const expected = {
+      '0 changes': { noop: baseRows, fullyValidatedRows: 0, preflightRows: 0 },
+      '1 ADD': { add: 1 },
+      '10 ADD': { add: 10 },
+      '100 ADD': { add: 100 },
+      '1 UPDATE': { update: 1 },
+      '10 UPDATE': { update: 10 },
+      '1 DELETE': { delete: 1 },
+      'mixed 10': { preflightRows: 10 },
+      '3000 KEEP + 1 ADD': { add: 1, noop: baseRows, fullyValidatedRows: 1, baselineFastPathHits: baseRows },
+      '3000 KEEP + 1 UPDATE': { update: 1, noop: baseRows - 1, fullyValidatedRows: 1 },
+    };
+
+    const scenarios = [];
+    const failures = [];
+    for (const name of performanceUatScenarioNames()) {
+      const workbook = scenarioBuilders.get(name)(clonePerformanceWorkbook(baseWorkbook));
+      const planStarted = monotonicNow();
+      const plan = buildPlan(workbook, structure, snapshot, matrixInfo);
+      const plannerMs = Math.max(0, monotonicNow() - planStarted);
+      const counts = clonePlain(plan.counts || countActions(plan.actions || []));
+      const preflightRows = (plan.actions || []).filter(action => ['add', 'update', 'delete'].includes(action?.type)).length;
+      const item = {
+        name,
+        plannerMs,
+        totalRows: workbook.rows.length,
+        counts,
+        fullyValidatedRows: Math.max(0, Number(plan.incremental?.rowsFullyValidated) || 0),
+        preflightRows,
+        baselineFastPathHits: Math.max(0, Number(plan.incremental?.baselineFastPathHits) || 0),
+      };
+      scenarios.push(item);
+      const rule = expected[name] || {};
+      for (const [key, value] of Object.entries(rule)) {
+        const actual = Object.prototype.hasOwnProperty.call(counts, key) ? counts[key] : item[key];
+        if (Number(actual) !== Number(value)) failures.push({ scenario: name, metric: key, expected: value, actual });
+      }
+      await yieldToMain();
+    }
+
+    const cacheState = sessionCacheStats();
+    const telemetry = performanceSnapshot();
+    const result = {
+      format: 'TESSA_PERFORMANCE_UAT_V1',
+      scope: 'synthetic-read-only',
+      createdAt: nowIso(),
+      baseRows,
+      scenarios,
+      failures,
+      cache: {
+        hits: Math.max(0, Number(cacheState?.hits) || 0),
+        misses: Math.max(0, Number(cacheState?.misses) || 0),
+        invalidations: Math.max(0, Number(cacheState?.invalidations) || 0),
+      },
+      liveTimings: clonePlain(telemetry?.stages || {}),
+      totalMs: Math.max(0, monotonicNow() - started),
+    };
+    result.status = failures.length ? 'failed' : 'passed';
+    return result;
   }
 
   function sessionContextKey(matrixId, templateId) {
@@ -7452,6 +7654,7 @@
     APP.reviewedApplyEnabled = false;
     APP.lastIntervalDiagnostics = null;
     APP.lastStudioDiagnostics = null;
+    APP.lastPerformanceUat = null;
     APP.lastReport = null;
     APP.lastSupportReport = null;
     const changesButton = document.querySelector?.('#tms-download-changes');
@@ -9740,7 +9943,12 @@
       ['interval/TESSA_Interval_Diagnostics.json', JSON.stringify(interval, null, 2)],
       ['interval/interval-summary.json', JSON.stringify(buildIntervalDiagnosticSummary(interval), null, 2)],
     ] : [];
-    return makeZip([['README.txt', readme], ['report.json', JSON.stringify(result.report, null, 2)], ...result.entries, ...intervalEntries]);
+    const performanceUat = result?.performanceUat || APP.lastPerformanceUat;
+    const performanceEntries = performanceUat ? [
+      ['performance/performance-uat.json', JSON.stringify(performanceUat, null, 2)],
+      ['performance/performance-uat-summary.json', JSON.stringify(buildPerformanceUatSummary(performanceUat), null, 2)],
+    ] : [];
+    return makeZip([['README.txt', readme], ['report.json', JSON.stringify(result.report, null, 2)], ...result.entries, ...intervalEntries, ...performanceEntries]);
   }
 
   function renderStudioDiagnostics(report = APP.lastStudioDiagnostics?.report) {
@@ -9815,6 +10023,31 @@
         delete result.intervalDiagnostics;
         result.report.intervalDiagnostics = { included: false, status: 'not-needed', writesAttempted: 0 };
       }
+      // Performance UAT is deliberately synthetic/read-only. Real touched-only server
+      // timings are copied from this session's telemetry and are never fabricated.
+      let performanceUat;
+      try {
+        setProgress(95, 'Performance UAT', 'Локальные сценарии 0/1/10/100/3000 строк');
+        performanceUat = await runPerformanceUat({ baseRows: 3000 });
+      } catch (error) {
+        performanceUat = {
+          format: 'TESSA_PERFORMANCE_UAT_V1', scope: 'synthetic-read-only', status: 'failed',
+          createdAt: nowIso(), baseRows: 3000, scenarios: [], cache: { hits: 0, misses: 0 },
+          liveTimings: clonePlain(performanceSnapshot()?.stages || {}), totalMs: 0,
+          failures: [{ scenario: 'setup', metric: 'exception', expected: 'success', actual: friendlyErrorMessage(error) }],
+        };
+      }
+      APP.lastPerformanceUat = performanceUat;
+      result.performanceUat = performanceUat;
+      result.report.performanceUat = buildPerformanceUatSummary(performanceUat);
+      result.report.checks.push({
+        status: performanceUat.status === 'passed' ? 'pass' : 'fail',
+        title: 'Performance UAT',
+        detail: performanceUat.status === 'passed'
+          ? performanceUat.scenarios.length + ' synthetic read-only сценариев · ' + Math.round(performanceUat.totalMs) + ' мс'
+          : 'Не пройдено: ' + (performanceUat.failures || []).length + '. См. performance/performance-uat.json',
+      });
+      if (performanceUat.status !== 'passed') result.report.status = 'failed';
       // References stay in memory only; package serialization uses report/entries.
       result.source = { plan: originalPlan, workbook: originalWorkbook, file };
       APP.lastStudioDiagnostics = result;
@@ -11635,7 +11868,7 @@
     incrementalSafetyMode, collectTouchedIdentities, buildTargetedPreflightSnapshot, buildTargetedReconciliationSnapshot,
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, partnerRecordKeepingColumnIndex, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport,
-    performanceStage, performanceSnapshot, resetPerformanceTelemetry, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,
+    performanceStage, performanceSnapshot, resetPerformanceTelemetry, performanceUatScenarioNames, runPerformanceUat, buildPerformanceUatSummary, makeZip, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,
     baselineExplicitValues, workbookBaselineFastPathIndex, unchangedDesiredRowFromBaseline,
     TessaBridge,
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },

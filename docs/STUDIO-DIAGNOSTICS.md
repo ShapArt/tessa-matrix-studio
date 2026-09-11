@@ -57,3 +57,12 @@ Studio выполнит проверки и скачает один `TESSA_Diagn
 Живая проверка: выбрать проблемный Excel → скачать ZIP → открыть `report.json`. Для текущего отказа ожидаются отдельные результаты сохранённой строки, её перестройки, точной новой копии и Excel 36/37. Повторное скачивание не должно вызывать новых запросов. Смена матрицы/файла в процессе должна остановить прогон, а не сохранить старой матрице новый результат. Во время прогона не должно быть Store/Delete.
 
 Контракты платформы: [CardRequest](https://mytessa.ru/docs/4.1/web/classes/Platform.Cards.Service.CardRequest.html), [CardNewRequest](https://mytessa.ru/docs/4.1/web/classes/Platform.Cards.Service.CardNewRequest.html). Корпоративный обработчик проверки дубликатов этими страницами не описан. Его ошибка `LeftOperandExtractor` в 1.9.50 воспроизводится; 1.9.51 добавляет диагностику и не объявляет её исправленной.
+
+
+## Performance UAT (v1.14 candidate)
+
+Встроенная диагностика дополнительно запускает локальный **read-only** benchmark planner-а. Он не вызывает серверные операции записи и не изменяет карточки TESSA.
+
+Проверяются сценарии: 0 изменений; 1/10/100 ADD; 1/10 UPDATE; 1 DELETE; mixed 10; 3000 KEEP + 1 ADD; 3000 KEEP + 1 UPDATE. Для каждого сценария фиксируются время planner-а, число строк, прошедших полную validation, число mutation/preflight-строк и baseline fast-path hits.
+
+В ZIP диагностики добавляются `performance/performance-uat.json` и `performance/performance-uat-summary.json`. Поля `liveTimings` берутся только из реально накопленной telemetry текущей вкладки (например, `preflight.targeted` / `reconcile.targeted`) и не подменяются synthetic-замерами. Поэтому до live UAT нельзя интерпретировать synthetic planner timings как подтверждённое ускорение сервера TESSA.

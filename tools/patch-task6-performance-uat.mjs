@@ -248,7 +248,7 @@ replaceOnce(
 
 replaceOnce(
   `    performanceStage, performanceSnapshot, resetPerformanceTelemetry, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,`,
-  `    performanceStage, performanceSnapshot, resetPerformanceTelemetry, performanceUatScenarioNames, runPerformanceUat, buildPerformanceUatSummary, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,`,
+  `    performanceStage, performanceSnapshot, resetPerformanceTelemetry, performanceUatScenarioNames, runPerformanceUat, buildPerformanceUatSummary, makeZip, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,`,
   'performance UAT exports',
 );
 
@@ -266,7 +266,7 @@ if (!pkg.scripts?.test?.includes('tests/performance-uat.mjs')) {
 let diagnostics = fs.readFileSync(diagnosticsPath, 'utf8');
 const marker = '## Performance UAT (v1.14 candidate)';
 if (!diagnostics.includes(marker)) {
-  diagnostics += `\n\n${marker}\n\nВстроенная диагностика дополнительно запускает локальный **read-only** benchmark planner-а. Он не вызывает серверные операции записи и не изменяет карточки TESSA.\n\nПроверяются сценарии: 0 изменений; 1/10/100 ADD; 1/10 UPDATE; 1 DELETE; mixed 10; 3000 KEEP + 1 ADD; 3000 KEEP + 1 UPDATE. Для каждого сценария фиксируются время planner-а, число строк, прошедших полную validation, число mutation/preflight-строк и baseline fast-path hits.\n\nВ ZIP диагностики добавляются \\`performance/performance-uat.json\\` и \\`performance/performance-uat-summary.json\\`. Поля \\`liveTimings\\` берутся только из реально накопленной telemetry текущей вкладки (например, \\`preflight.targeted\\` / \\`reconcile.targeted\\`) и не подменяются synthetic-замерами. Поэтому до live UAT нельзя интерпретировать synthetic planner timings как подтверждённое ускорение сервера TESSA.\n`;
+  diagnostics += '\n\n' + marker + '\n\nВстроенная диагностика дополнительно запускает локальный **read-only** benchmark planner-а. Он не вызывает серверные операции записи и не изменяет карточки TESSA.\n\nПроверяются сценарии: 0 изменений; 1/10/100 ADD; 1/10 UPDATE; 1 DELETE; mixed 10; 3000 KEEP + 1 ADD; 3000 KEEP + 1 UPDATE. Для каждого сценария фиксируются время planner-а, число строк, прошедших полную validation, число mutation/preflight-строк и baseline fast-path hits.\n\nВ ZIP диагностики добавляются `performance/performance-uat.json` и `performance/performance-uat-summary.json`. Поля `liveTimings` берутся только из реально накопленной telemetry текущей вкладки (например, `preflight.targeted` / `reconcile.targeted`) и не подменяются synthetic-замерами. Поэтому до live UAT нельзя интерпретировать synthetic planner timings как подтверждённое ускорение сервера TESSA.\n';
   fs.writeFileSync(diagnosticsPath, diagnostics);
 }
 
