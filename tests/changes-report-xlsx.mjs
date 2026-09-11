@@ -44,7 +44,7 @@ const model = E.buildChangesReportModel(plan, structure);
 assert.deepEqual(model.headers.slice(0, 3), ['Изменение', 'Excel row', 'Причина']);
 assert.deepEqual(model.operations.map(row => row.change), ['UPDATE', 'ADD', 'DELETE', 'SKIP']);
 assert.ok(!model.operations.some(row => row.change === 'KEEP' || row.change === 'NOOP'), 'KEEP/NOOP must never appear in changes report');
-assert.equal(model.details.length, 4, JSON.stringify(model.details));
+assert.equal(model.details.length, 5, JSON.stringify(model.details));
 assert.ok(model.details.some(row => row.field === 'Организация' && row.before === 'Орг А' && row.after === 'Орг Б'));
 assert.ok(model.details.some(row => row.change === 'SKIP' && /Исполнитель/.test(row.reason)));
 assert.equal(model.reportOnly, true);
