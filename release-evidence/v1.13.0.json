@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 2,
+  "version": "1.13.0",
+  "userscriptSha256": "079b60d2d880164948e0a0f3082d0d7e3ec5147d6a251eec4372c3277946156f",
+  "deleteEvidenceSha256": "6db572c52aba131c946754ad16a21c9335e6ebea75000244c16c57b6d3e89a03",
+  "saveEvidenceSha256": "2f1cce89a095ae28fc8de7bfddc95b4ff699ac554a1257cebad046c7069655c1",
+  "capturedAt": "2026-09-11T11:56:44.041Z",
+  "status": "verified",
+  "operation": "delete-save-native-request",
+  "deleteVerified": true,
+  "deleteRequestObserved": true,
+  "deleteRequestType": "d090417f-bf4b-45ed-9c82-33ef23acd96f",
+  "deleteInfoHasVersionId": true,
+  "localMembershipStayedStable": true,
+  "localCardStayedCleanAfterDelete": true,
+  "saveObserved": true,
+  "refreshGetObserved": true,
+  "sameMatrix": true,
+  "operationOrderValid": true,
+  "restorationSafe": true,
+  "storeRecordCount": 1,
+  "truncatedCount": 0
+}
