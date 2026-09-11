@@ -44,7 +44,8 @@ jobs:
           node tests/preview-performance.mjs
           node tests/studio-diagnostics.mjs
           node tests/studio-interval-bundle.mjs
-          node tests/full-uat-runner-contract.mjs
+          cat tessa-matrix-studio.user.js hotfixes/full-uat-runner-v1.js > /tmp/tessa-matrix-studio-with-full-uat.js
+          TMS_TEST_SOURCE=/tmp/tessa-matrix-studio-with-full-uat.js node tests/full-uat-runner-contract.mjs
       - name: Verify full regression suite
         run: npm test
       - name: Verify diff hygiene
