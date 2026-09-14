@@ -4,4 +4,4 @@ This marker intentionally triggers the deterministic Task11 workflow on the v1.1
 
 Scope: live TESSA-backed value picker without an Excel prerequisite, plus the aggregate XLSX archive false-positive fix while preserving independent ZIP safety guards.
 
-Retry 2: preserve the existing TEST_MODE-only injected APP picker path for DOM regression tests; production still refreshes dictionaries directly from TESSA when no workbook is selected.
+Retry 3: keep the existing TEST_MODE-only injected APP path for DOM tests and remove the last user-facing instruction that incorrectly required downloading Excel when live TESSA dictionaries are unavailable.
