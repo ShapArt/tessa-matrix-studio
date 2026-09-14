@@ -10,9 +10,7 @@ function replaceExact(before, after, label) {
 }
 
 // The copied-ID merge path lives in a different function scope from buildPlan(). The
-// initial lifecycle patch intentionally reuses the same policy, but the scorer itself
-// must also exist locally. Without this block schema refresh throws ReferenceError for
-// an all-edited copied-identity group.
+// lifecycle overlay reuses the same policy, but the scorer itself must also exist locally.
 replaceExact(
 `    const findCurrentByIdentity = desired => {
       if (desired?.system?.versionId) {
@@ -52,20 +50,16 @@ replaceExact(
   'merge copied-identity scorer scope',
 );
 
-// The Full UAT button already asks for explicit consent once before any write. The live
-// 2026-09-11 run proved that routing each temporary operation through the normal Apply
-// dialog makes automation nondeterministic: two scenarios returned null while cleanup
-// remained safe. Scope confirmation bypass to this runner only; ordinary Apply keeps UI.
+// Full UAT already asks for one explicit consent before entering the destructive phase.
+// Bypass nested per-operation dialogs only for this runner; ordinary Apply keeps UI.
 replaceExact(
 `      const result = await E.applyPlan(plan);`,
 `      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat' });`,
   'pre-approved Full UAT Apply',
 );
 
-// A truthy Apply result is not sufficient: partial/cancelled results are intentionally
-// returned by the production writer. UAT must count a write only when exactly one
-// mutation completed with no skipped or unstarted work. Read-back still verifies the
-// domain result immediately afterwards.
+// A truthy Apply object may still represent partial/cancelled work. Full UAT accepts
+// exactly one completed mutation and rejects any skip/unstarted/write failure.
 replaceExact(
 `      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat' });
       if (!result) throw new Error(\`${'${label}'}: применение отменено.\`);
@@ -87,30 +81,40 @@ replaceExact(
   'strict Full UAT Apply result',
 );
 
-// Use the exact RowCardID returned by the successful ADD receipt. This is stronger than
-// diffing row counts when another user writes concurrently, and it gives us a safe cleanup
-// target even if the immediate read-back fails.
+// Task9 introduced a cleanup-obligation ledger before the temporary ADD starts. Bind that
+// obligation to the exact RowCardID returned by the successful ADD receipt *before* doing
+// post-write read-back. If read-back itself fails, cleanup can therefore target the exact
+// accepted row rather than guessing from a row-count diff.
 replaceExact(
-`      const result = await applySingle(plan, \`${'${scenarioId}'}: ADD\`); const after = await freshSnapshot();
+`      const after = await freshSnapshot();
       const created = after.snapshot.rows.filter(row => !beforeIds.has(canon(row.rowCardId)));
-      if (created.length !== 1) throw new Error(\`После ADD ожидалась 1 новая строка, найдено ${'${created.length}'}.\`);
-      return { created: created[0], after: after.snapshot, bridge: after.bridge, catalog: currentCatalog, candidate, result };`,
-`      const result = await applySingle(plan, \`${'${scenarioId}'}: ADD\`);
+      if (created.length !== 1) {
+        resolveCleanupObligation(rowObligation.id, { status: 'pending', discoveredRowIds: created.map(row => row.rowCardId) });
+        throw new Error(\`После ADD ожидалась 1 новая строка, найдено ${'${created.length}'}.\`);
+      }
+      resolveCleanupObligation(rowObligation.id, { status: 'pending', rowCardId: created[0].rowCardId, identifiedAt: now() });
+      return { created: created[0], after: after.snapshot, bridge: after.bridge, catalog: currentCatalog, candidate, result, cleanupObligationId: rowObligation.id };`,
+`      // FULL_UAT_ADD_RECEIPT_RECOVERY_V2
       const addReceipt = (result.rows || []).find(row => row?.type === 'add' && row?.status === 'ok' && row?.rowCardId);
       const receiptRowCardId = String(addReceipt?.rowCardId || '');
       if (!receiptRowCardId) throw new Error(\`${'${scenarioId}'}: успешный ADD не вернул RowCardID для cleanup.\`);
+      resolveCleanupObligation(rowObligation.id, { status: 'pending', rowCardId: receiptRowCardId, identifiedAt: now(), identifiedBy: 'apply-receipt' });
+      let after;
       try {
-        const after = await freshSnapshot();
-        const created = after.snapshot.rows.find(row => canon(row.rowCardId) === canon(receiptRowCardId));
-        if (!created) throw new Error('Добавленная временная строка не найдена по RowCardID после read-back.');
-        return { created, after: after.snapshot, bridge: after.bridge, catalog: currentCatalog, candidate, result };
+        after = await freshSnapshot();
       } catch (error) {
-        // FULL_UAT_ADD_RECEIPT_RECOVERY_V1
         const cleanupOk = await cleanupCreatedRow(receiptRowCardId, \`${'${scenarioId}'}-add-readback-recovery\`);
-        if (!cleanupOk) throw new Error(\`${'${scenarioId}'}: ADD был принят, read-back не завершён, cleanup по receipt RowCardID не подтверждён: ${'${String(error?.message || error)}'}\`);
+        if (!cleanupOk) throw new Error(\`${'${scenarioId}'}: ADD принят, read-back не завершён и cleanup по receipt RowCardID не подтверждён: ${'${String(error?.message || error)}'}\`);
         throw error;
-      }`,
-  'Full UAT ADD receipt recovery',
+      }
+      const created = after.snapshot.rows.find(row => canon(row.rowCardId) === canon(receiptRowCardId));
+      if (!created) {
+        const cleanupOk = await cleanupCreatedRow(receiptRowCardId, \`${'${scenarioId}'}-add-receipt-mismatch-recovery\`);
+        if (!cleanupOk) throw new Error(\`${'${scenarioId}'}: ADD receipt RowCardID отсутствует в read-back и cleanup не подтверждён.\`);
+        throw new Error(\`Добавленная временная строка не найдена по receipt RowCardID ${'${receiptRowCardId}'}.\`);
+      }
+      return { created, after: after.snapshot, bridge: after.bridge, catalog: currentCatalog, candidate, result, cleanupObligationId: rowObligation.id };`,
+  'Full UAT ADD receipt recovery v2',
 );
 
 // A NOT_RUN branch occurs after a real temporary ADD. Cleanup before returning rather
@@ -132,11 +136,11 @@ for (const marker of [
   "E.applyPlan(plan, { confirm: () => true, source: 'full-uat' })",
   'MERGE_COPY_IDENTITY_SCORING_V1',
   'FULL_UAT_STRICT_APPLY_RESULT_V1',
-  'FULL_UAT_ADD_RECEIPT_RECOVERY_V1',
+  'FULL_UAT_ADD_RECEIPT_RECOVERY_V2',
   'FULL_UAT_CLEAR_NOT_RUN_CLEANUP_V1',
 ]) {
   if (!source.includes(marker)) throw new Error(`Full UAT live finalizer verification failed: ${marker}`);
 }
 
 fs.writeFileSync(target, source, 'utf8');
-console.log('TESSA Matrix Studio v1.13.0 Full UAT live/review finalize: OK');
+console.log('TESSA Matrix Studio v1.14 Full UAT artifact finalize: OK');

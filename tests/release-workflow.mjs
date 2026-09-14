@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import './v1.14-artifact-composition.mjs';
 import './release-native-evidence-workflow-enforcement.mjs';
 import './uat-candidate-workflow.mjs';
 import './native-evidence-attestation-cli.mjs';
