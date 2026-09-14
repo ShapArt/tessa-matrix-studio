@@ -12,9 +12,11 @@ assert.match(code, /MaxEntryUncompressedBytes:\s*128 \* 1024 \* 1024,/);
 assert.match(code, /MaxTotalUncompressedBytes:\s*512 \* 1024 \* 1024,/);
 assert.match(code, /MaxCompressionRatio:\s*100,/);
 
-// Product contract: without an explicitly selected workbook the picker must go to TESSA,
-// not demand that the user export Excel first.
-assert.match(code, /const source = file\s*\? await readXlsxArrayBuffer[\s\S]*?: await loadLivePickerSource\(\);/);
+// Product contract: without an explicitly selected workbook production must go to TESSA,
+// not demand that the user export Excel first. A TEST_MODE-only APP fallback is permitted so
+// DOM regressions can exercise picker rendering without pretending to host TESSA.
+assert.match(code, /else \{\s*source = await loadLivePickerSource\(\);\s*\}/);
+assert.match(code, /window\.__TESSA_MATRIX_SYNC_TEST_MODE__ && APP\.structure && APP\.snapshot && APP\.dictionaryCatalog/);
 assert.doesNotMatch(code, /Сначала скачайте Excel или выберите рабочую книгу со справочниками\./);
 assert.match(code, /loadDictionaryCatalog\(structure, snapshot, \{ forceRefresh: true \}\)/);
 
@@ -66,4 +68,4 @@ assert.ok(Array.isArray(source.headers), 'picker source must expose headers');
 assert.ok(Array.isArray(source.schemaTokens), 'picker source must expose schema tokens');
 assert.equal(source.dictionaryCatalog, catalog, 'picker must use the fresh TESSA dictionary catalog');
 
-console.log('Task11 regressions: picker bootstraps directly from TESSA; XLSX aggregate ceiling is raised without weakening independent guards: OK');
+console.log('Task11 regressions: production picker bootstraps directly from TESSA; XLSX aggregate ceiling is raised without weakening independent guards: OK');
