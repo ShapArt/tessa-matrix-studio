@@ -18,6 +18,8 @@ assert.match(code, /MaxCompressionRatio:\s*100,/);
 assert.match(code, /else \{\s*source = await loadLivePickerSource\(\);\s*\}/);
 assert.match(code, /window\.__TESSA_MATRIX_SYNC_TEST_MODE__ && APP\.structure && APP\.snapshot && APP\.dictionaryCatalog/);
 assert.doesNotMatch(code, /Сначала скачайте Excel или выберите рабочую книгу со справочниками\./);
+assert.doesNotMatch(code, /В книге нет справочников для выбора\. Скачайте Excel со справочниками\./);
+assert.match(code, /В текущей матрице не удалось получить справочники для выбора\. Обновите карточку матрицы и повторите\./);
 assert.match(code, /loadDictionaryCatalog\(structure, snapshot, \{ forceRefresh: true \}\)/);
 
 globalThis.window = globalThis;
@@ -68,4 +70,4 @@ assert.ok(Array.isArray(source.headers), 'picker source must expose headers');
 assert.ok(Array.isArray(source.schemaTokens), 'picker source must expose schema tokens');
 assert.equal(source.dictionaryCatalog, catalog, 'picker must use the fresh TESSA dictionary catalog');
 
-console.log('Task11 regressions: production picker bootstraps directly from TESSA; XLSX aggregate ceiling is raised without weakening independent guards: OK');
+console.log('Task11 regressions: production picker bootstraps directly from TESSA; no-Excel guidance is preserved; XLSX aggregate ceiling is raised without weakening independent guards: OK');
