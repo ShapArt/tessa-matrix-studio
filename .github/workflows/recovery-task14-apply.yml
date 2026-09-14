@@ -58,3 +58,5 @@ jobs:
           fi
           git commit -m "fix: bound high-cardinality diagnostics evidence [task14-green]"
           git push origin HEAD:fix/v1.14-recovery-uat-resolution
+
+# Workflow registered before this trigger commit.
