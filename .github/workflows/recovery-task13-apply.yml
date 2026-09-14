@@ -51,3 +51,5 @@ jobs:
           fi
           git commit -m "fix: skip disposable XLSX sheets before inflate [task13-green]"
           git push origin HEAD:fix/v1.14-recovery-uat-resolution
+
+# Task13 workflow registered before this trigger commit.
