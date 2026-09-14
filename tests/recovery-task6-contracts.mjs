@@ -97,7 +97,8 @@ function cloneBook() {
   assert.equal(result.unresolved[0].kind, 'local-delete');
 }
 
-// Dictionary refresh after export: add, remove and rename, while local rows/baseline stay byte-semantically intact.
+// Dictionary refresh after export: add, remove and rename, while the actual workbook
+// carrying the user's local matrix value remains byte-preserved outside reference sheets.
 {
   const refStructure = {
     templateId: 'dict-template',
@@ -107,20 +108,19 @@ function cloneBook() {
     ],
     functions: [],
   };
-  const flat = { 'criterion:ref': ['Прежнее'], 'criterion:note': ['Исходное'] };
-  const refSnapshot = { matrixId: 'dict-matrix', rows: [{
-    index: 0, rowCardId: 'dict-row', versionId: 'dict-v1', flat, fingerprint: E.fingerprintFlat(flat),
-    values: { ref: [{ id: 'one', display: 'Прежнее', kind: 'ReferenceGuid' }], note: [{ kind: 'String', display: 'Исходное' }] }, roles: {},
+  const localFlat = { 'criterion:ref': ['Прежнее'], 'criterion:note': ['Моя локальная правка'] };
+  const localSnapshot = { matrixId: 'dict-matrix', rows: [{
+    index: 0, rowCardId: 'dict-row', versionId: 'dict-v1', flat: localFlat, fingerprint: E.fingerprintFlat(localFlat),
+    values: { ref: [{ id: 'one', display: 'Прежнее', kind: 'ReferenceGuid' }], note: [{ kind: 'String', display: 'Моя локальная правка' }] }, roles: {},
   }] };
   const oldCatalog = { catalogs: { old: { id: 'old', entries: [
     { id: 'one', display: 'Прежнее', selector: 'Прежнее' },
     { id: 'gone', display: 'Удаляемое', selector: 'Удаляемое' },
   ] } }, columnCatalogIds: { 'criterion:ref': 'old' } };
-  const book = await E.readXlsxArrayBuffer(buf(await E.createRoundtripXlsxBytes(refStructure, refSnapshot, { TemplateID: refStructure.templateId }, oldCatalog)));
-  const noteIndex = book.schemaTokens.indexOf('criterion:note');
-  book.rows[0].values[noteIndex] = 'Моя локальная правка';
+  const book = await E.readXlsxArrayBuffer(buf(await E.createRoundtripXlsxBytes(refStructure, localSnapshot, { TemplateID: refStructure.templateId }, oldCatalog)));
   const beforeRows = structuredClone(book.rows);
   const beforeBase = structuredClone(book.roundtrip.baselineRows);
+  assert.equal(book.rows[0].values[book.schemaTokens.indexOf('criterion:note')], 'Моя локальная правка');
   const freshCatalog = { catalogs: { fresh: { id: 'fresh', entries: [
     { id: 'one', display: 'Переименованное' },
     { id: 'new', display: 'Добавленное' },
