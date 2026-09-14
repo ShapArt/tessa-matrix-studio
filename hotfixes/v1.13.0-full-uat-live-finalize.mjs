@@ -175,16 +175,11 @@ replaceExact(
   'Full UAT failure evidence summary',
 );
 
+// Patch only the unique status suffix instead of matching the whole one-line try block;
+// the source intentionally uses a line-continuation backslash inside its template literal.
 replaceExact(
-`      try { const result = await runFullUat({ liveConfirmation: 'full-uat-confirmed' }); status.dataset.state = result.status; status.textContent = \`${'${result.status}'} · PASS ${'${result.summary?.pass || 0}'} · FAIL ${'${result.summary?.fail || 0}'} · NOT RUN ${'${result.summary?.notRun || 0}'}\\
-Итоговый ZIP скачан. Seed: ${'${result.seed}'}\`; }`,
-`      try {
-        const result = await runFullUat({ liveConfirmation: 'full-uat-confirmed' });
-        status.dataset.state = result.status;
-        const failureLines = (result.failedChecks || []).map(check => \`FAIL ${'${check.id || \'unknown\'}'} · ${'${check.detail || check.title || \'Без деталей\'}'}\`);
-        status.textContent = \`${'${result.status}'} · PASS ${'${result.summary?.pass || 0}'} · FAIL ${'${result.summary?.fail || 0}'} · NOT RUN ${'${result.summary?.notRun || 0}'}\\
-Итоговый ZIP скачан. Seed: ${'${result.seed}'}${'${failureLines.length ? `\\n${failureLines.join("\\n")}` : \'\'}'}\`;
-      }`,
+`Итоговый ZIP скачан. Seed: ${'${result.seed}'}`,
+`Итоговый ZIP скачан. Seed: ${'${result.seed}'}${'${(result.failedChecks || []).length ? "\\n" + result.failedChecks.map(check => "FAIL " + (check.id || "unknown") + " · " + (check.detail || check.title || "Без деталей")).join("\\n") : ""}'}`,
   'visible Full UAT failure evidence',
 );
 
