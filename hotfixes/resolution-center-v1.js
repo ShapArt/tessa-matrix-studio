@@ -48,18 +48,26 @@
     });
     if (!selected) throw new Error('Выбранный вариант отсутствует в актуальном наборе кандидатов.');
 
+    // Display text is user-visible roundtrip data. Keep its punctuation exactly as the
+    // dictionary returned it (notably the em dash in "ФИО — должность"). The generic
+    // normalizeSpace() intentionally folds Unicode dashes for matching and therefore
+    // must not be used when writing the selected label back to Excel.
+    const cleanCellToken = value => String(value ?? '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
     const valueIndex = Math.max(0, Math.trunc(Number(resolution.valueIndex) || 0));
     const writeToken = (cellIndex, value) => {
       const index = Number(cellIndex);
       if (!Number.isInteger(index) || index < 0) return false;
       const parts = splitCell(row.values[index] || '');
       while (parts.length <= valueIndex) parts.push('');
-      parts[valueIndex] = normalizeSpace(value);
+      parts[valueIndex] = cleanCellToken(value);
       row.values[index] = parts.join('; ');
       return true;
     };
 
-    const display = normalizeSpace(selected.selector || selected.display || selected.shortName || selected.fullName || '');
+    const display = cleanCellToken(selected.selector || selected.display || selected.shortName || selected.fullName || '');
     if (!display) throw new Error('У выбранного кандидата отсутствует отображаемое значение.');
     const explicit = normalizeSpace(selected.explicit || (selected.roleTypeId === undefined || selected.roleTypeId === null || selected.roleTypeId === ''
       ? String(selected.id || '')
