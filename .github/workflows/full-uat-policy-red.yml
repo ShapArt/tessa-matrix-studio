@@ -1,0 +1,25 @@
+name: v1.14 Full UAT write policy RED
+
+on:
+  push:
+    branches: [fix/v1.14-live-uat-autoconfirm-6fail]
+
+permissions:
+  contents: read
+
+jobs:
+  red:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Confirm focused regression is RED before production patch
+        run: |
+          if node tests/full-uat-write-policy.mjs; then
+            echo 'Expected Full UAT write-policy regression to fail before production fix.'
+            exit 1
+          fi
+          echo 'RED confirmed: production policy is not implemented yet.'
