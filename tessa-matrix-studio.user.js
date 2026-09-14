@@ -9773,10 +9773,13 @@
       await run(`field-${column.key}`, `Поле: ${column.name || column.excelHeader}`, async () => {
         const controlRow = snapshot.rows.find(row => (column.kind === 'function' ? row.roles?.[column.id] : row.values?.[column.id])?.length);
         if (!controlRow) return { status: 'not-run', detail: 'В матрице нет заполненного примера этого поля.' };
-        if (!controlRow.card?.clone) return { status: 'not-run', detail: 'Карточка для проверки перестройки недоступна.' };
+        // Snapshot rows are deliberately plain DTOs and must never retain a live TESSA Card.
+        // Reopen only the one control row needed by this read-only diagnostic, then clone it locally.
+        const liveCard = await bridge.getCard(controlRow.rowCardId);
+        if (!liveCard?.clone) return { status: 'not-run', detail: 'Карточка для проверки перестройки недоступна.' };
         const desired = desiredFromRow(controlRow);
         desired.flat[column.key] = []; desired.ids[column.key] = [];
-        const cloned = controlRow.card.clone();
+        const cloned = liveCard.clone();
         const removesLastRole = column.kind === 'function' && !Object.entries(controlRow.roles || {}).some(([id,items]) => id !== column.id && items.length);
         try { bridge.rebuildRowCard(cloned, controlRow.versionId, desired, structure, snapshot); }
         catch (error) {
