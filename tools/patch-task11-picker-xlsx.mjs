@@ -114,6 +114,19 @@ if (!source.includes('createRuntimeMonitor, loadLivePickerSource, pickerColumns,
   );
 }
 
+// Once live loading is supported, an empty catalog must not tell the user to export Excel.
+// Keep the workbook-specific guidance only when the user actually selected a workbook.
+const oldEmptyCatalogError = "    if (!columns.length) throw new Error('В книге нет справочников для выбора. Скачайте Excel со справочниками.');";
+if (source.includes(oldEmptyCatalogError)) {
+  replaceOnce(
+    oldEmptyCatalogError,
+    `    if (!columns.length) throw new Error(file
+      ? 'В выбранной книге нет справочников для выбора. Выберите актуальную рабочую книгу.'
+      : 'В текущей матрице не удалось получить справочники для выбора. Обновите карточку матрицы и повторите.');`,
+    'Task11 no-Excel empty-catalog guidance',
+  );
+}
+
 // Guard against accidentally weakening unrelated archive protections.
 assert.match(source, /MaxInputBytes:\s*32 \* 1024 \* 1024,/);
 assert.match(source, /MaxEntries:\s*256,/);
@@ -123,6 +136,7 @@ assert.match(source, /MaxCompressionRatio:\s*100,/);
 assert.match(source, /loadDictionaryCatalog\(structure, snapshot, \{ forceRefresh: true \}\)/);
 assert.match(source, /else \{\s*source = await loadLivePickerSource\(\);\s*\}/);
 assert.doesNotMatch(source, /Сначала скачайте Excel или выберите рабочую книгу со справочниками\./);
+assert.doesNotMatch(source, /В книге нет справочников для выбора\. Скачайте Excel со справочниками\./);
 
 fs.writeFileSync(path, source, 'utf8');
-console.log('Task11 patch applied: live picker bootstrap + 512 MiB aggregate XLSX ceiling.');
+console.log('Task11 patch applied: live picker bootstrap + no-Excel guidance + 512 MiB aggregate XLSX ceiling.');
