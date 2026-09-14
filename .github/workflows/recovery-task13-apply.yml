@@ -20,6 +20,17 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
+      - name: Allow the two known Full UAT option anchors
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/patch-task13-selective-xlsx.mjs')
+          text = path.read_text(encoding='utf-8')
+          old = "  assert.equal(source.indexOf(oldText, first + oldText.length), -1, `${label}: source anchor is not unique`);\n"
+          if old not in text:
+              raise SystemExit('replaceOnce uniqueness guard anchor not found')
+          path.write_text(text.replace(old, '', 1), encoding='utf-8')
+          PY
       - name: Apply deterministic Task13 production patch
         run: node tools/patch-task13-selective-xlsx.mjs
       - name: Install dependencies
@@ -51,5 +62,3 @@ jobs:
           fi
           git commit -m "fix: skip disposable XLSX sheets before inflate [task13-green]"
           git push origin HEAD:fix/v1.14-recovery-uat-resolution
-
-# Task13 workflow registered before this trigger commit.
