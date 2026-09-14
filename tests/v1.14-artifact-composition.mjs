@@ -34,17 +34,35 @@ try {
   assert.match(source, /MaxTotalUncompressedBytes:\s*512\s*\*\s*1024\s*\*\s*1024/,
     'release/UAT composition must preserve the canonical bounded total archive ceiling');
   assert.match(source, /FULL_UAT_STRICT_APPLY_RESULT_V1/,
-    'composed artifact must reject partial Full UAT writes');
+    'composed artifact must validate Full UAT writes');
   assert.match(source, /FULL_UAT_ADD_RECEIPT_RECOVERY_V2/,
     'composed artifact must bind temporary-row cleanup to the exact successful ADD receipt');
   assert.match(source, /FULL_UAT_CLEAR_NOT_RUN_CLEANUP_V1/,
     'composed artifact must cleanup temporary rows before NOT_RUN');
 
+  // Live UAT 2026-09-14 showed that every temporary Apply invoked the native editor Save,
+  // forcing the tester through repeated TESSA confirmation dialogs. Full UAT already has
+  // one explicit write-phase consent and performs its own fresh read-back/cleanup proof.
+  // Every internal mutation must therefore defer the main-card Save; exactly one native
+  // Save is flushed after all write + recovery cleanup work has finished.
+  assert.match(source, /deferMainMatrixSave:\s*true/,
+    'Full UAT internal Apply calls must defer the native main-card Save');
+  assert.match(source, /FULL_UAT_DEFER_MAIN_SAVE_V1/,
+    'applyPlan must expose the scoped deferred-save contract used only by Full UAT');
+  assert.match(source, /reason:\s*'deferred-by-caller'/,
+    'deferred Apply must record an explicit skipped-save reason instead of silently saving');
+  assert.match(source, /FULL_UAT_SINGLE_MAIN_SAVE_V1/,
+    'Full UAT must flush one native main-card Save after all write/cleanup operations');
+  assert.match(source, /report\.writesCompleted\s*>\s*0[\s\S]{0,900}saveMainMatrixAfterApply\(\)/,
+    'the single final Save must be conditional on at least one accepted UAT mutation');
+  assert.doesNotMatch(source, /result\.success\s*!==\s*true\s*\|\|\s*result\.status\s*!==\s*'completed'/,
+    'Full UAT must not reject an accepted write solely because nested post-write verification reported partial');
+
   run(['tests/user-copied-identity-regression.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/full-uat-runner-contract.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/live-uat-regressions.mjs'], { TMS_TEST_SOURCE: target });
 
-  console.log('v1.14 release/UAT artifact composition: canonical limits + live cleanup invariants OK');
+  console.log('v1.14 release/UAT artifact composition: canonical limits + live cleanup + single-save invariants OK');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
