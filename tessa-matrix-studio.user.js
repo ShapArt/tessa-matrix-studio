@@ -69,6 +69,9 @@
     lastIntervalDiagnostics: null,
     lastStudioDiagnostics: null,
     lastPerformanceUat: null,
+    reviewedChangesArtifact: null,
+    reviewedChangesArtifactBuild: null,
+    reviewedChangesArtifactRequest: 0,
     nativeRecorder: null,
     dictionaryCatalog: null,
     // INCREMENTAL_SESSION_CACHE_V1
@@ -6862,6 +6865,7 @@
     const started = Math.max(0, Number(result?.startedCount || 0));
     const applied = Math.max(0, Number(result?.appliedCount || 0));
     if (!started && !applied) return false;
+    clearReviewedChangesArtifact(state);
     state.plan = null;
     state.snapshot = null;
     state.bridge = null;
@@ -7723,6 +7727,7 @@
 
   function resetFilePreview() {
     clearTimeout(APP.previewSearchTimer);
+    clearReviewedChangesArtifact(APP);
     APP.plan = null;
     APP.workbook = null;
     APP.review = createPlanReviewState();
@@ -10743,25 +10748,166 @@
     };
   }
 
-  async function downloadReviewedChangesXlsx() {
+  function reviewedChangesArtifactDescriptor(reviewed, structure) {
+    const model = buildChangesReportModel(reviewed, structure);
+    const payload = {
+      matrixId: model.matrixId || '',
+      templateId: model.templateId || '',
+      operations: model.operations || [],
+      details: model.details || [],
+    };
+    return {
+      model,
+      key: `${Number(model.operations?.length || 0)}:${hashText(JSON.stringify(payload))}`,
+    };
+  }
+
+  function revokeReviewedChangesArtifact(state = APP) {
+    if (!state) return;
+    const artifact = state.reviewedChangesArtifact;
+    state.reviewedChangesArtifact = null;
+    if (!artifact?.url) return;
+    try { URL.revokeObjectURL(artifact.url); } catch (_) { /* best effort */ }
+  }
+
+  function clearReviewedChangesArtifact(state = APP) {
+    if (!state) return;
+    state.reviewedChangesArtifactRequest = Number(state.reviewedChangesArtifactRequest || 0) + 1;
+    state.reviewedChangesArtifactBuild = null;
+    revokeReviewedChangesArtifact(state);
+  }
+
+  function updateReviewedChangesDownloadControl({ hasChanges = false, ready = false, error = '' } = {}) {
+    const button = document.querySelector?.('#tms-download-changes');
+    if (!button) return;
+    button.hidden = !hasChanges;
+    setControlDisabled(button, !ready);
+    button.title = ready
+      ? 'Скачать только операции из текущего Preview'
+      : hasChanges
+        ? (error || 'Формирую Excel изменений…')
+        : '';
+  }
+
+  async function prepareReviewedChangesArtifact(plan = APP.plan, reviewedSnapshot = null) {
+    const structure = APP.structure;
+    if (!plan || !structure) {
+      clearReviewedChangesArtifact(APP);
+      updateReviewedChangesDownloadControl();
+      return null;
+    }
+
+    const reviewed = reviewedSnapshot || buildReviewedPlan(plan, APP.review);
+    const descriptor = reviewedChangesArtifactDescriptor(reviewed, structure);
+    if (!descriptor.model.operations.length) {
+      clearReviewedChangesArtifact(APP);
+      updateReviewedChangesDownloadControl();
+      return null;
+    }
+
+    if (APP.reviewedChangesArtifact?.key === descriptor.key) {
+      updateReviewedChangesDownloadControl({ hasChanges: true, ready: true });
+      return APP.reviewedChangesArtifact;
+    }
+    if (APP.reviewedChangesArtifactBuild?.key === descriptor.key) {
+      updateReviewedChangesDownloadControl({ hasChanges: true, ready: false });
+      return APP.reviewedChangesArtifactBuild.promise;
+    }
+
+    clearReviewedChangesArtifact(APP);
+    const token = APP.reviewedChangesArtifactRequest;
+    const shortId = String(reviewed.matrixId || '').slice(0, 8);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const name = `TESSA_Изменения_${shortId || 'matrix'}_${stamp}.xlsx`;
+    updateReviewedChangesDownloadControl({ hasChanges: true, ready: false });
+
+    const promise = (async () => {
+      const bytes = await performanceStage(
+        'changes-report.xlsx-build',
+        () => createChangesReportXlsxBytes(reviewed, structure),
+        { operation: 'changes-report', rows: descriptor.model.operations.length },
+      );
+      const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+
+      // Preview/review may have changed while ZIP/XML generation yielded to the event loop.
+      // Never publish an artifact that belongs to an obsolete selection.
+      if (token !== APP.reviewedChangesArtifactRequest || APP.plan !== plan || APP.structure !== structure) {
+        try { URL.revokeObjectURL(url); } catch (_) { /* best effort */ }
+        return null;
+      }
+      const currentReviewed = buildReviewedPlan(APP.plan, APP.review);
+      const currentDescriptor = reviewedChangesArtifactDescriptor(currentReviewed, APP.structure);
+      if (currentDescriptor.key !== descriptor.key) {
+        try { URL.revokeObjectURL(url); } catch (_) { /* best effort */ }
+        return null;
+      }
+
+      revokeReviewedChangesArtifact(APP);
+      const artifact = {
+        key: descriptor.key,
+        url,
+        blob,
+        name,
+        operationCount: descriptor.model.operations.length,
+        preparedAt: nowIso(),
+      };
+      APP.reviewedChangesArtifact = artifact;
+      if (APP.reviewedChangesArtifactBuild?.token === token) APP.reviewedChangesArtifactBuild = null;
+      updateReviewedChangesDownloadControl({ hasChanges: true, ready: true });
+      return artifact;
+    })().catch(error => {
+      if (token === APP.reviewedChangesArtifactRequest) {
+        APP.reviewedChangesArtifactBuild = null;
+        revokeReviewedChangesArtifact(APP);
+        updateReviewedChangesDownloadControl({
+          hasChanges: true,
+          ready: false,
+          error: `Не удалось подготовить Excel: ${friendlyErrorMessage(error)}`,
+        });
+      }
+      return null;
+    });
+
+    APP.reviewedChangesArtifactBuild = { key: descriptor.key, token, promise };
+    return promise;
+  }
+
+  // The actual anchor activation is deliberately synchronous. The expensive XLSX build
+  // happens after Preview; the click only consumes the already prepared Blob URL, so the
+  // browser still sees the download as part of the user's gesture.
+  function downloadReviewedChangesXlsx() {
     if (APP.busy || !APP.plan || !APP.structure) return;
-    setBusy(true);
+    const reviewed = buildReviewedPlan(APP.plan, APP.review);
+    const descriptor = reviewedChangesArtifactDescriptor(reviewed, APP.structure);
+    if (!descriptor.model.operations.length) {
+      setProgress(100, 'Нет изменений для выгрузки', 'Текущий Preview не содержит операций или пропущенных строк.');
+      return;
+    }
+
+    const artifact = APP.reviewedChangesArtifact;
+    if (!artifact?.url || artifact.key !== descriptor.key) {
+      updateReviewedChangesDownloadControl({ hasChanges: true, ready: false });
+      void prepareReviewedChangesArtifact(APP.plan, reviewed);
+      setProgress(100, 'Excel изменений ещё готовится', 'Дождитесь, пока кнопка станет доступна, и нажмите её ещё раз.');
+      return;
+    }
+
+    const host = document.body || document.documentElement;
+    const anchor = document.createElement('a');
+    anchor.href = artifact.url;
+    anchor.download = artifact.name;
+    anchor.rel = 'noopener';
+    anchor.hidden = true;
+    if (anchor.style) anchor.style.display = 'none';
+    if (host?.appendChild) host.appendChild(anchor);
     try {
-      const reviewed = buildReviewedPlan(APP.plan, APP.review);
-      const model = buildChangesReportModel(reviewed, APP.structure);
-      if (!model.operations.length) throw new Error('В текущем Preview нет изменений или пропущенных строк для выгрузки.');
-      setProgress(35, 'Формирую Excel изменений', `${model.operations.length} операций`);
-      const bytes = await performanceStage('changes-report.xlsx-build', () => createChangesReportXlsxBytes(reviewed, APP.structure), { operation: 'changes-report', rows: model.operations.length });
-      const shortId = String(reviewed.matrixId || '').slice(0, 8);
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const name = `TESSA_Изменения_${shortId || "matrix"}_${stamp}.xlsx`;
-      downloadBlob(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name);
-      setProgress(100, 'Excel изменений готов', `${model.operations.length} операций · файл только для просмотра`);
+      anchor.click();
+      setProgress(100, 'Excel изменений готов', `${artifact.operationCount} операций · файл только для просмотра`);
     } catch (error) {
-      setProgress(100, 'Не удалось выгрузить изменения', friendlyErrorMessage(error));
+      setProgress(100, 'Не удалось скачать изменения', friendlyErrorMessage(error));
     } finally {
-      setBusy(false);
-      if (APP.plan) renderPlan(APP.plan);
+      try { anchor.remove?.(); } catch (_) { /* best effort */ }
     }
   }
 
@@ -10782,13 +10928,15 @@
     const hasReviewedChanges = (reviewed.actions || []).some(action => ['update', 'add', 'delete'].includes(action?.type)) || Boolean(reviewed.skippedRows?.length);
     if (changesButton) {
       if (hasReviewedChanges) {
-        changesButton.hidden = false;
-        setControlDisabled(changesButton, false);
-        changesButton.title = 'Скачать только операции из текущего Preview';
+        const descriptor = reviewedChangesArtifactDescriptor(reviewed, APP.structure);
+        const ready = Boolean(APP.reviewedChangesArtifact?.url && APP.reviewedChangesArtifact.key === descriptor.key);
+        updateReviewedChangesDownloadControl({ hasChanges: true, ready });
+        if (!ready && APP.reviewedChangesArtifactBuild?.key !== descriptor.key) {
+          void prepareReviewedChangesArtifact(plan, reviewed);
+        }
       } else {
-        changesButton.hidden = true;
-        setControlDisabled(changesButton, true);
-        changesButton.title = '';
+        clearReviewedChangesArtifact(APP);
+        updateReviewedChangesDownloadControl();
       }
     }
     APP.capabilityActions = reviewed.actions;
@@ -12076,6 +12224,7 @@
     });
     APP.runtimeMonitor.start();
     window.addEventListener('pagehide', () => {
+      clearReviewedChangesArtifact(APP);
       restoreNativeRecorderMethods(APP.nativeRecorder);
       APP.nativeRecorder = null;
       APP.runtimeMonitor?.stop();
