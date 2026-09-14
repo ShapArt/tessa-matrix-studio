@@ -9769,17 +9769,24 @@
         return { detail: `Проверено названий: ${checked}; одинаковых названий с уточнением: ${ambiguous}. Источник: ${dictionary.sourceView || 'текущая матрица'}.` };
       });
     }
+    const diagnosticNativeCardCache = new Map();
+    const getDiagnosticNativeCard = async row => {
+      const key = canonicalValue(row?.rowCardId);
+      if (!key) throw new Error('У контрольной строки отсутствует CardID.');
+      if (!diagnosticNativeCardCache.has(key)) diagnosticNativeCardCache.set(key, await bridge.getCard(row.rowCardId));
+      return diagnosticNativeCardCache.get(key);
+    };
     if (generated && columns) for (const column of columns.values()) {
-      await run(`field-${column.key}`, `Поле: ${column.name || column.excelHeader}`, async () => {
+      await run(`field-${column.key}`, `Поле «${column.name || column.excelHeader}»`, async () => {
         const controlRow = snapshot.rows.find(row => (column.kind === 'function' ? row.roles?.[column.id] : row.values?.[column.id])?.length);
         if (!controlRow) return { status: 'not-run', detail: 'В матрице нет заполненного примера этого поля.' };
         // Snapshot rows are deliberately plain DTOs and must never retain a live TESSA Card.
-        // Reopen only the one control row needed by this read-only diagnostic, then clone it locally.
-        const liveCard = await bridge.getCard(controlRow.rowCardId);
-        if (!liveCard?.clone) return { status: 'not-run', detail: 'Карточка для проверки перестройки недоступна.' };
+        // Reopen only the control rows needed by diagnostics and reuse them within this run.
+        const nativeCard = await getDiagnosticNativeCard(controlRow);
+        if (typeof nativeCard?.clone !== 'function') return { status: 'not-run', detail: 'Нативная карточка строки не поддерживает clone().' };
         const desired = desiredFromRow(controlRow);
         desired.flat[column.key] = []; desired.ids[column.key] = [];
-        const cloned = liveCard.clone();
+        const cloned = nativeCard.clone();
         const removesLastRole = column.kind === 'function' && !Object.entries(controlRow.roles || {}).some(([id,items]) => id !== column.id && items.length);
         try { bridge.rebuildRowCard(cloned, controlRow.versionId, desired, structure, snapshot); }
         catch (error) {

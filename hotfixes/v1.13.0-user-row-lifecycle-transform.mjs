@@ -99,6 +99,9 @@ replaceExact(
   'standard confirmation policy',
 );
 
+// Since v1.14 the live-card diagnostics fix is canonical source. For older source
+// snapshots keep the historical build transform, but skip it when already present.
+if (!source.includes('const diagnosticNativeCardCache = new Map();')) {
 // Snapshot rows intentionally cross a DTO boundary and no longer retain native Card
 // instances. Diagnostics must hydrate the native row card on demand, just as the later
 // server-validation checks already do, otherwise every per-field rebuild is NOT RUN.
@@ -130,6 +133,7 @@ replaceExact(
 `        const cloned = nativeCard.clone();`,
   'diagnostic field card clone',
 );
+}
 
 // Full UAT packages use the same audited ZIP writer as XLSX/diagnostics instead of
 // introducing another archive implementation in the runtime hotfix.
