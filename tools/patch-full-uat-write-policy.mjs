@@ -15,9 +15,6 @@ function insertBeforeOnce(text, anchor, addition, label) {
   return text.replace(anchor, `${addition}${anchor}`);
 }
 
-// ---------------------------------------------------------------------------
-// Canonical userscript: scoped Apply options + Full UAT accepted-write policy.
-// ---------------------------------------------------------------------------
 const userPath = 'tessa-matrix-studio.user.js';
 let source = read(userPath);
 
@@ -27,7 +24,6 @@ source = replaceOnce(
   `  async function applyPlan(plan, options = {}) {\n    if (!plan) throw new Error('Сначала проверьте Excel.');\n    const confirmApply = typeof options.confirm === 'function' ? options.confirm : message => window.confirm(message);`,
   'Apply options',
 );
-
 source = replaceOnce(
   source,
   `      const okBatch = window.confirm(\`${'${batch.reason}'}\n\nПродолжить?\`);`,
@@ -46,7 +42,6 @@ source = replaceOnce(
   `      const ok = confirmApply(\`Применить корректные изменения к TESSA?\\n\\nИзменить: ${'${c.update}'}\\nДобавить: ${'${c.add}'}\\nУдалить: ${'${c.delete}'}\\nПропустить: ${'${c.skip || 0}'}${'${plan.skippedFields?.length ? `\\nОставить без изменения отдельных полей: ${plan.skippedFields.length}` : \'\'}'}\\n\\nОшибочные строки и указанные в Preview поля не будут применены.\`);`,
   'Apply standard confirmer',
 );
-
 source = replaceOnce(
   source,
   `    result.matrixSave = await persistMainMatrixAfterApply(bridge, result);`,
@@ -60,40 +55,32 @@ source = insertBeforeOnce(
   `  function fullUatAcceptedWriteResult(result) {\n    // FULL_UAT_ACCEPTED_WRITE_V2\n    if (!result || result.cancelled === true || result.status === 'cancelled') return false;\n    const accepted = Number(result.appliedCount ?? result.acceptedCount ?? 0);\n    return accepted === 1\n      && Number(result.failedCount || 0) === 0\n      && Number(result.notStartedCount || 0) === 0\n      && Number(result.preflightSkippedCount || 0) === 0\n      && Number(result.storeSkippedCount || 0) === 0;\n  }\n\n`,
   'Full UAT accepted-write helper',
 );
-
 source = insertBeforeOnce(
   source,
   `    async function freshSnapshot() {`,
-  `    let fullUatMainSavePending = false;\n    let fullUatBatchedSaveAttempted = false;\n    async function flushFullUatMainSave() {\n      if (!fullUatMainSavePending || fullUatBatchedSaveAttempted) return { ok: true, skipped: true, reason: 'nothing-pending' };\n      fullUatBatchedSaveAttempted = true;\n      // FULL_UAT_BATCHED_MAIN_SAVE_V1\n      try {\n        if (!bridge || typeof bridge.saveMainMatrixAfterApply !== 'function') throw new Error('Нативный Save основной карточки недоступен.');\n        const outcome = await bridge.saveMainMatrixAfterApply();\n        const ok = outcome?.ok !== false;\n        addCheck('full-uat-batched-save', 'Единое сохранение write-фазы', ok ? 'PASS' : 'FAIL', ok\n          ? 'Все временные ADD/UPDATE/DELETE объединены в один штатный Save основной карточки TESSA.'\n          : `Единый Save основной карточки не подтверждён: ${'${outcome?.error || outcome?.reason || \'unknown\'}'}.`,\n          { required: true, data: E.safePlain(outcome || {}, { maxDepth: 4, maxKeys: 100, maxArray: 50 }) });\n        if (ok) fullUatMainSavePending = false;\n        return { ...(outcome || {}), ok };\n      } catch (error) {\n        const detail = String(error?.message || error);\n        addCheck('full-uat-batched-save', 'Единое сохранение write-фазы', 'FAIL', detail, { required: true });\n        return { ok: false, skipped: false, error: detail };\n      }\n    }\n\n`,
+  `    let fullUatMainSavePending = false;\n    let fullUatBatchedSaveAttempted = false;\n    async function flushFullUatMainSave() {\n      if (!fullUatMainSavePending || fullUatBatchedSaveAttempted) return { ok: true, skipped: true, reason: 'nothing-pending' };\n      fullUatBatchedSaveAttempted = true;\n      // FULL_UAT_BATCHED_MAIN_SAVE_V1\n      try {\n        if (!bridge || typeof bridge.saveMainMatrixAfterApply !== 'function') throw new Error('Нативный Save основной карточки недоступен.');\n        const outcome = await bridge.saveMainMatrixAfterApply();\n        const ok = outcome?.ok !== false;\n        const saveDetail = ok\n          ? 'Все временные ADD/UPDATE/DELETE объединены в один штатный Save основной карточки TESSA.'\n          : 'Единый Save основной карточки не подтверждён: ' + String(outcome?.error || outcome?.reason || 'unknown') + '.';\n        addCheck('full-uat-batched-save', 'Единое сохранение write-фазы', ok ? 'PASS' : 'FAIL', saveDetail,\n          { required: true, data: E.safePlain(outcome || {}, { maxDepth: 4, maxKeys: 100, maxArray: 50 }) });\n        if (ok) fullUatMainSavePending = false;\n        return { ...(outcome || {}), ok };\n      } catch (error) {\n        const detail = String(error?.message || error);\n        addCheck('full-uat-batched-save', 'Единое сохранение write-фазы', 'FAIL', detail, { required: true });\n        return { ok: false, skipped: false, error: detail };\n      }\n    }\n\n`,
   'Full UAT batched Save helper',
 );
-
 source = replaceOnce(
   source,
   `      const result = await E.applyPlan(plan);\n      if (!result) throw new Error(\`${'${label}'}: применение отменено.\`);\n      report.writesCompleted += 1;\n      return result;`,
   `      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMatrixSave: true });\n      if (!result) throw new Error(\`${'${label}'}: применение отменено.\`);\n      if (!fullUatAcceptedWriteResult(result)) {\n        throw new Error(\`${'${label}'}: серверная мутация не принята полностью (status=${'${result.status}'}, applied=${'${result.appliedCount}'}, skipped=${'${result.skippedCount}'}, notStarted=${'${result.notStartedCount}'}).\`);\n      }\n      fullUatMainSavePending = true;\n      report.writesCompleted += 1;\n      return result;`,
   'Full UAT internal Apply policy',
 );
-
 source = replaceOnce(
   source,
   `\n\n      const applyEvidence = report.checks.find(check => check.id === 'write-add-delete' && check.status === 'PASS') || report.checks.find(check => check.id === 'write-update-delete' && check.status === 'PASS');`,
   `\n\n      await flushFullUatMainSave();\n      const applyEvidence = report.checks.find(check => check.id === 'write-add-delete' && check.status === 'PASS') || report.checks.find(check => check.id === 'write-update-delete' && check.status === 'PASS');`,
   'flush Full UAT main Save once',
 );
-
 source = replaceOnce(
   source,
   `baselineRestoreProof, runFullUat, installUi`,
   `baselineRestoreProof, fullUatAcceptedWriteResult, runFullUat, installUi`,
   'export Full UAT accepted-write helper',
 );
-
 write(userPath, source);
 
-// ---------------------------------------------------------------------------
-// Artifact transforms: do not re-patch canonical v1.14 behavior.
-// ---------------------------------------------------------------------------
 const lifecyclePath = 'hotfixes/v1.13.0-user-row-lifecycle-transform.mjs';
 let lifecycle = read(lifecyclePath);
 const applyPatchStart = `replaceExact(\n\`  async function applyPlan(plan) {`;
@@ -116,7 +103,6 @@ finalizer = replaceOnce(
   `if (!source.includes("E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMatrixSave: true })")) {\n  replaceExact(\n\`      const result = await E.applyPlan(plan);\`,\n\`      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMatrixSave: true });\`,\n    'pre-approved Full UAT Apply',\n  );\n}`,
   'idempotent Full UAT Apply finalizer',
 );
-
 const strictStart = finalizer.indexOf(`// A truthy Apply object may still represent partial/cancelled work.`);
 const receiptStart = finalizer.indexOf(`// Task9 introduced a cleanup-obligation ledger`, strictStart);
 if (strictStart < 0 || receiptStart < 0) throw new Error('strict Full UAT result block not found');
@@ -131,9 +117,6 @@ finalizer = finalizer.replace(`  'FULL_UAT_STRICT_APPLY_RESULT_V1',`, `  'FULL_U
 if (finalizer.includes('FULL_UAT_STRICT_APPLY_RESULT_V1')) throw new Error('obsolete strict Apply marker survived finalizer patch');
 write(finalizerPath, finalizer);
 
-// ---------------------------------------------------------------------------
-// Regression expectations for the composed installable artifact.
-// ---------------------------------------------------------------------------
 const livePath = 'tests/live-uat-regressions.mjs';
 let live = read(livePath);
 live = replaceOnce(
