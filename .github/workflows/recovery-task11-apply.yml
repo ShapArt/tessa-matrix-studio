@@ -33,6 +33,8 @@ jobs:
         run: node tests/xlsx-self-roundtrip-limit.mjs
       - name: Picker production UX regression
         run: node tests/picker-production-ux.mjs
+      - name: Picker DOM regression
+        run: node tests/picker-dom-production.cjs
       - name: Full regression
         run: npm test
       - name: Diff hygiene
