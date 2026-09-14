@@ -42,11 +42,24 @@ function patchCanonicalSource() {
 
 function patchTransform() {
   let text = fs.readFileSync(transformPath, 'utf8');
+  const guard = "if (!source.includes('const diagnosticNativeCardCache = new Map();')) {";
+  if (text.includes(guard)) return;
+
   const start = text.indexOf('// Snapshot rows intentionally cross a DTO boundary');
   const end = text.indexOf('// Full UAT packages use the same audited ZIP writer', start);
   if (start < 0 || end < 0 || end <= start) throw new Error('diagnostics transform block not found');
-  const replacement = `// Snapshot rows intentionally cross a DTO boundary and no longer retain native Card\n// instances. Since v1.14 this logic also lives in canonical source. Keep the transform\n// backwards-compatible for older source snapshots, but make it idempotent for v1.14+.\nif (!source.includes('const diagnosticNativeCardCache = new Map();')) {\n  replaceExact(\n\`    if (generated && columns) for (const column of columns.values()) {\`,\n\`    const diagnosticNativeCardCache = new Map();\n    const getDiagnosticNativeCard = async row => {\n      const key = canonicalValue(row?.rowCardId);\n      if (!key) throw new Error('У контрольной строки отсутствует CardID.');\n      if (!diagnosticNativeCardCache.has(key)) diagnosticNativeCardCache.set(key, await bridge.getCard(row.rowCardId));\n      return diagnosticNativeCardCache.get(key);\n    };\n    if (generated && columns) for (const column of columns.values()) {\`,\n    'diagnostic native-card cache',\n  );\n  replaceExact(\n\`      await run(\\\`field-\\${column.key}\\\`, \\\`Поле: \\${column.name || column.excelHeader}\\\`, async () => {\`,\n\`      await run(\\\`field-\\${column.key}\\\`, \\\`Поле «\\${column.name || column.excelHeader}»\\\`, async () => {\`,\n    'diagnostic field title clarity',\n  );\n  if (source.includes(\"        if (!controlRow.card?.clone) return { status: 'not-run', detail: 'Карточка для проверки перестройки недоступна.' };\")) {\n    replaceExact(\n\`        if (!controlRow.card?.clone) return { status: 'not-run', detail: 'Карточка для проверки перестройки недоступна.' };\`,\n\`        const nativeCard = await getDiagnosticNativeCard(controlRow);\n        if (typeof nativeCard?.clone !== 'function') return { status: 'not-run', detail: 'Нативная карточка строки не поддерживает clone().' };\`,\n      'diagnostic field card hydration',\n    );\n    replaceExact(\n\`        const cloned = controlRow.card.clone();\`,\n\`        const cloned = nativeCard.clone();\`,\n      'diagnostic field card clone',\n    );\n  } else {\n    replaceExact(\n\`        // Snapshot rows are deliberately plain DTOs and must never retain a live TESSA Card.\n        // Reopen only the one control row needed by this read-only diagnostic, then clone it locally.\n        const liveCard = await bridge.getCard(controlRow.rowCardId);\n        if (!liveCard?.clone) return { status: 'not-run', detail: 'Карточка для проверки перестройки недоступна.' };\`,\n\`        // Snapshot rows are deliberately plain DTOs and must never retain a live TESSA Card.\n        // Reopen only the control rows needed by diagnostics and reuse them within this run.\n        const nativeCard = await getDiagnosticNativeCard(controlRow);\n        if (typeof nativeCard?.clone !== 'function') return { status: 'not-run', detail: 'Нативная карточка строки не поддерживает clone().' };\`,\n      'diagnostic field card hydration from direct-source fix',\n    );\n    replaceExact(\n\`        const cloned = liveCard.clone();\`,\n\`        const cloned = nativeCard.clone();\`,\n      'diagnostic field card clone from direct-source fix',\n    );\n  }\n}\n\n`;
-  text = text.slice(0, start) + replacement + text.slice(end);
+
+  const oldBlock = text.slice(start, end).trimEnd();
+  const wrapped = [
+    '// Since v1.14 the live-card diagnostics fix is canonical source. For older source',
+    '// snapshots keep the historical build transform, but skip it when already present.',
+    guard,
+    oldBlock,
+    '}',
+    '',
+    '',
+  ].join('\n');
+  text = text.slice(0, start) + wrapped + text.slice(end);
   fs.writeFileSync(transformPath, text);
 }
 
