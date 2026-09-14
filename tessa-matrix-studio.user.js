@@ -1343,9 +1343,13 @@
     return output;
   }
 
-  async function unzipArrayBuffer(arrayBuffer) {
+  async function unzipArrayBuffer(arrayBuffer, options = {}) {
     const bytes = new Uint8Array(arrayBuffer);
     const limits = effectiveXlsxArchiveLimits();
+    const normalizeSelectionKey = value => String(value || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+    const includeEntryNames = new Set((options.includeEntryNames || []).map(normalizeSelectionKey).filter(Boolean));
+    const skipEntryNames = new Set((options.skipEntryNames || []).map(normalizeSelectionKey).filter(Boolean));
+    const hasIncludeFilter = includeEntryNames.size > 0;
     if (bytes.byteLength > limits.MaxInputBytes) {
       throw xlsxArchiveError(`размер файла превышает безопасный лимит ${archiveLimitLabel(limits.MaxInputBytes)}.`);
     }
@@ -1415,18 +1419,21 @@
       seenPaths.add(pathInfo.key);
       const centralExtra = bytes.slice(nameStart + nameLength, nameStart + nameLength + extraLength);
       parseZipExtra(centralExtra, name);
+      const materializeEntry = (!hasIncludeFilter || includeEntryNames.has(pathInfo.key)) && !skipEntryNames.has(pathInfo.key);
 
-      if (uncompressedSize > limits.MaxEntryUncompressedBytes) {
-        throw xlsxArchiveError(`распакованный размер файла ${name} превышает безопасный лимит ${archiveLimitLabel(limits.MaxEntryUncompressedBytes)}.`);
-      }
-      declaredTotal += uncompressedSize;
-      declaredCompressedTotal += compressedSize;
-      if (declaredTotal > limits.MaxTotalUncompressedBytes) {
-        throw xlsxArchiveError(`суммарный распакованный размер превышает безопасный лимит ${archiveLimitLabel(limits.MaxTotalUncompressedBytes)}.`);
-      }
-      const declaredRatio = compressedSize > 0 ? uncompressedSize / compressedSize : (uncompressedSize ? Infinity : 1);
-      if (declaredRatio > limits.MaxCompressionRatio) {
-        throw xlsxArchiveError(`подозрительная степень сжатия файла ${name} превышает ${limits.MaxCompressionRatio}×.`);
+      if (materializeEntry) {
+        if (uncompressedSize > limits.MaxEntryUncompressedBytes) {
+          throw xlsxArchiveError(`распакованный размер файла ${name} превышает безопасный лимит ${archiveLimitLabel(limits.MaxEntryUncompressedBytes)}.`);
+        }
+        declaredTotal += uncompressedSize;
+        declaredCompressedTotal += compressedSize;
+        if (declaredTotal > limits.MaxTotalUncompressedBytes) {
+          throw xlsxArchiveError(`суммарный распакованный размер превышает безопасный лимит ${archiveLimitLabel(limits.MaxTotalUncompressedBytes)}.`);
+        }
+        const declaredRatio = compressedSize > 0 ? uncompressedSize / compressedSize : (uncompressedSize ? Infinity : 1);
+        if (declaredRatio > limits.MaxCompressionRatio) {
+          throw xlsxArchiveError(`подозрительная степень сжатия файла ${name} превышает ${limits.MaxCompressionRatio}×.`);
+        }
       }
 
       ensureZipRange(bytes.length, localOffset, 30, `локальный заголовок ${name}`);
@@ -1449,13 +1456,15 @@
       ensureZipRange(bytes.length, dataStart, compressedSize, `сжатые данные ${name}`);
       if (dataStart + compressedSize > centralOffset) throw xlsxArchiveError(`сжатые данные файла ${name} пересекают центральный ZIP-каталог.`);
 
-      descriptors.push({
-        name,
-        method,
-        compressedSize,
-        uncompressedSize,
-        compressed: bytes.slice(dataStart, dataStart + compressedSize),
-      });
+      if (materializeEntry) {
+        descriptors.push({
+          name,
+          method,
+          compressedSize,
+          uncompressedSize,
+          compressed: bytes.slice(dataStart, dataStart + compressedSize),
+        });
+      }
       offset += recordLength;
     }
 
@@ -1842,9 +1851,22 @@
   const WORKBOOK_ARCHIVES = new WeakMap();
 
   async function readXlsxArrayBuffer(arrayBuffer, fileName = 'matrix.xlsx', options = {}) {
-    const entries = await unzipArrayBuffer(arrayBuffer);
-    const skipSheetNames = new Set((options.skipSheetNames || []).map(name => String(name)));
+    const skipSheetNames = new Set((options.skipSheetNames || []).map(name => String(name).trim()).filter(Boolean));
     const decoder = new TextDecoder('utf-8');
+    let entries;
+    if (options.selectiveInflate === true && skipSheetNames.size) {
+      const metadataEntries = await unzipArrayBuffer(arrayBuffer, {
+        includeEntryNames: ['xl/workbook.xml', 'xl/_rels/workbook.xml.rels'],
+      });
+      const metadataDescriptors = parseWorkbookSheets(metadataEntries, decoder);
+      const skipEntryNames = metadataDescriptors
+        .filter(descriptor => skipSheetNames.has(String(descriptor.name || '').trim()))
+        .map(descriptor => descriptor.path)
+        .filter(Boolean);
+      entries = await unzipArrayBuffer(arrayBuffer, { skipEntryNames });
+    } else {
+      entries = await unzipArrayBuffer(arrayBuffer);
+    }
     const shared = parseSharedStrings(entries.has('xl/sharedStrings.xml') ? decoder.decode(entries.get('xl/sharedStrings.xml')) : '');
     const styles = parseStylesXml(entries.has('xl/styles.xml') ? decoder.decode(entries.get('xl/styles.xml')) : '');
     const sheetDescriptors = parseWorkbookSheets(entries, decoder);
@@ -3691,15 +3713,30 @@
     return makeZip([...entries]);
   }
 
+  async function readSelectedWorkbookWithLiveCatalog(file, { needBridge = false } = {}) {
+    if (!file) throw new Error('Выберите файл .xlsx.');
+    const workbook = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name, {
+      skipSheetNames: ['Словари'],
+      selectiveInflate: true,
+    });
+    if (!needBridge) return { workbook, bridge: null, structure: null, dictionaryCatalog: null };
+    const bridge = await TessaBridge.create();
+    const templateId = bridge.templateId();
+    if (!templateId) throw new Error('В карточке матрицы не найден TemplateID.');
+    const structure = await bridge.requestStructure(templateId);
+    const dictionaryCatalog = await bridge.loadDictionaryCatalog(structure, { rows: [] }, { forceRefresh: true });
+    workbook.dictionaryCatalog = dictionaryCatalog;
+    return { workbook, bridge, structure, dictionaryCatalog };
+  }
+
   async function refreshSelectedWorkbookDictionaries(file) {
     if (!file) throw new Error('Сначала выберите изменённый Excel в шаге 2.');
     setProgress(10, 'Читаю ваш Excel', 'Матрица и ваши правки сохранятся');
-    const workbook = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
-    const bridge = await TessaBridge.create(), matrixInfo = bridge.matrixInfo();
+    const selected = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true });
+    const { workbook, bridge, structure, dictionaryCatalog: catalog } = selected;
+    const matrixInfo = bridge.matrixInfo();
     if (canonicalValue(workbook.roundtrip?.templateId) !== canonicalValue(matrixInfo.TemplateID)) throw new Error('Excel относится к другому шаблону.');
-    const structure = await bridge.requestStructure(bridge.templateId());
-    setProgress(35, 'Обновляю справочники', 'Читаю актуальные значения TESSA');
-    const catalog = await bridge.loadDictionaryCatalog(structure, { rows: [] }, { forceRefresh: true });
+    setProgress(35, 'Обновляю справочники', 'Использую актуальные значения TESSA');
     const bytes = await refreshWorkbookDictionaries(workbook, structure, catalog);
     downloadBlob(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), file.name.replace(/\.xlsx$/i, '') + '_СПРАВОЧНИКИ.xlsx');
     setProgress(100, 'Справочники обновлены', catalog.stats.errors.length ? `Есть неполные справочники: ${catalog.stats.errors.length}. Запустите диагностику.` : 'Матрица и ваши изменения сохранены в новом файле');
@@ -3708,7 +3745,7 @@
 
   async function refreshSelectedWorkbook(file) {
     if (!file) throw new Error('Выберите Excel, который нужно обновить.');
-    const workbook = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
+    const { workbook } = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true });
     return refreshWorkbookSchema(workbook, file.name);
   }
 
@@ -7738,15 +7775,14 @@
     APP.abortRequested = false;
     setProgress(5, '1/6 · Читаю Excel', file.name);
     log(`Читаю ${file.name}`);
-    const workbook = await performanceStage('preview.xlsx-read', async () => readXlsxArrayBuffer(await file.arrayBuffer(), file.name), { operation: 'preview', fileName: file.name });
+    const selected = await performanceStage('preview.xlsx-read', async () => readSelectedWorkbookWithLiveCatalog(file, { needBridge: true }), { operation: 'preview', fileName: file.name });
+    const { workbook, bridge, structure } = selected;
     setProgress(18, '1/6 · Excel прочитан', `${workbook.rows.length} строк данных`);
     log(`Excel: ${workbook.headers.filter(Boolean).length} столбцов, ${workbook.rows.length} строк данных.`);
-    setProgress(22, '2/6 · Подключаюсь к TESSA', 'Проверяю открытую матрицу');
-    const bridge = await TessaBridge.create();
+    setProgress(22, '2/6 · TESSA подключена', 'Открытая матрица определена');
     const templateId = bridge.templateId();
     if (!templateId) throw new Error('В карточке матрицы не найден TemplateID.');
-    setProgress(32, '3/6 · Читаю структуру TESSA', 'Критерии и функции');
-    const structure = await performanceStage('preview.structure', () => bridge.requestStructure(templateId), { operation: 'preview' });
+    setProgress(32, '3/6 · Структура TESSA прочитана', 'Критерии, функции и актуальные справочники');
     log(`Структура TESSA: ${structure.conditions.length} критериев, ${structure.functions.length} функций.`);
     const cachedSnapshot = APP.snapshot;
     const currentSectionSignature = bridge.matrixSectionSignature();
@@ -7799,7 +7835,7 @@
     APP.workbook = workbook;
     if (workbook.dictionaryCatalog && workbook.roundtrip?.enabled) {
       APP.dictionaryCatalog = normalizeDictionaryCatalog(clonePlain(workbook.dictionaryCatalog));
-      APP.dictionaryCatalog.stats.cache = { hit: true, key: dictionaryCacheKey(structure), savedAt: Date.now(), ageMs: 0, source: 'workbook' };
+      APP.dictionaryCatalog.stats.cache = { hit: true, key: dictionaryCacheKey(structure), savedAt: Date.now(), ageMs: 0, source: 'live-tessa' };
       writeDictionaryCache(dictionaryCacheKey(structure), APP.dictionaryCatalog).catch(() => {});
     }
     APP.bridge = bridge;
@@ -12804,6 +12840,7 @@
     const book = await E.readXlsxArrayBuffer(buffer, 'TESSA_UAT_CURRENT.xlsx', {
       skipSheetNames: ['Словари'],
       dictionaryCatalog: catalog,
+      selectiveInflate: true,
     });
     return { bytes, book };
   }
@@ -13112,7 +13149,7 @@
         const refreshed = await E.readXlsxArrayBuffer(
           refreshedBytes.buffer.slice(refreshedBytes.byteOffset, refreshedBytes.byteOffset + refreshedBytes.byteLength),
           'TESSA_UAT_REFRESHED.xlsx',
-          { skipSheetNames: ['Словари'], dictionaryCatalog: catalog, retainArchive: false },
+          { skipSheetNames: ['Словари'], dictionaryCatalog: catalog, retainArchive: false, selectiveInflate: true },
         );
         const plan = E.buildPlan(refreshed, structure, baseline, info); if (plan.counts.skip || plan.counts.add || plan.counts.update || plan.counts.delete) throw new Error(`После refresh появились изменения: ${JSON.stringify(plan.counts)}`);
         packageEntries.push(['dictionary-refreshed.xlsx', refreshedBytes]); return { detail: 'Справочники обновились; матрица и скрытые identity сохранились.' };
@@ -13123,7 +13160,7 @@
         const parsed = await E.readXlsxArrayBuffer(
           mergedBytes.buffer.slice(mergedBytes.byteOffset, mergedBytes.byteOffset + mergedBytes.byteLength),
           'TESSA_UAT_MERGED.xlsx',
-          { skipSheetNames: ['Словари'], dictionaryCatalog: catalog, retainArchive: false },
+          { skipSheetNames: ['Словари'], dictionaryCatalog: catalog, retainArchive: false, selectiveInflate: true },
         ); const plan = E.buildPlan(parsed, structure, baseline, info);
         if (plan.counts.skip || plan.counts.add || plan.counts.update || plan.counts.delete) throw new Error(`Merge дал ложные изменения: ${JSON.stringify(plan.counts)}`);
         packageEntries.push(['merged-current.xlsx', mergedBytes]); return { detail: 'Объединение roundtrip с неизменившейся TESSA идемпотентно.' };
