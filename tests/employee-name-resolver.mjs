@@ -44,6 +44,14 @@ const catalog = E.normalizeDictionaryCatalog({
           position: 'Эксперт', department: 'ОЦО', nativeDisplay: 'Петров П.П.',
           previousSelectors: ['Петров П.П.'], source: 'MtxRoles', status: 'Доступно',
         },
+        {
+          id: 'kireeva', roleTypeId: 1,
+          display: 'Киреева Ю.А. — Руководитель управления',
+          displayName: 'Киреева Ю.А. — Руководитель управления',
+          shortName: 'Киреева Ю.А.', fullName: 'Киреева Юлия Александровна',
+          position: 'Руководитель управления', department: 'ОЦО', nativeDisplay: 'Киреева Ю.А.',
+          previousSelectors: ['Киреева Ю.А.'], source: 'MtxRoles', status: 'Доступно',
+        },
       ],
     },
   },
@@ -76,5 +84,15 @@ resolved = E.resolveEmbeddedDictionaryValue(workbook, column, 'Иванов И.�
 assert.equal(resolved.resolved, true, resolved.issue || 'explicit RoleID did not preserve old workbook compatibility');
 assert.equal(resolved.explicit, 'p2|1');
 assert.equal(resolved.display, 'Иванов И.И. — Главный специалист');
+
+// Regression from live UAT: a position is searchable metadata, not person identity.
+// Even one unique employee carrying this position must never be silently selected from
+// a position-only cell. Studio must expose a structured candidate for explicit choice.
+resolved = E.resolveEmbeddedDictionaryValue(workbook, column, 'Руководитель управления', '');
+assert.equal(resolved.resolved, false, 'position-only text must never auto-select Киреева or any other person');
+assert.equal(resolved.resolution, 'employee-position-only');
+assert.ok(Array.isArray(resolved.candidates) && resolved.candidates.some(item => item.id === 'kireeva'),
+  `position ambiguity must expose structured current candidates: ${JSON.stringify(resolved)}`);
+assert.match(resolved.issue || '', /выберите.*сотрудник|должност/i);
 
 console.log('TESSA Matrix Studio employee tolerant resolver: OK');

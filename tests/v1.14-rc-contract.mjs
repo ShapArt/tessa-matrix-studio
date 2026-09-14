@@ -11,6 +11,10 @@ assert.equal(pkg.version, '1.14.0', 'package candidate version must be 1.14.0');
 assert.match(source, /^\/\/ @version\s+1\.14\.0$/m, 'userscript metadata version must be 1.14.0');
 assert.match(source, /version:\s*'1\.14\.0'/, 'runtime version must be 1.14.0');
 
+assert.match(source, /__TMS_FULL_UAT_V1__/, 'canonical userscript must ship the Full UAT runner');
+assert.match(source, /Запустить полный UAT/, 'canonical userscript must expose the Full UAT action');
+assert.match(source, /runFullUat/, 'canonical userscript must contain the Full UAT implementation');
+
 assert.match(changelog, /## 1\.14\.0 — 2026-09-11/);
 for (const token of ['session', 'touched', 'ФИО', 'Скачать изменения в Excel', 'Performance UAT']) {
   assert.ok(changelog.includes(token), `CHANGELOG must mention ${token}`);
