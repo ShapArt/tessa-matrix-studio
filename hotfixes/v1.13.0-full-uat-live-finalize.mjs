@@ -51,34 +51,39 @@ replaceExact(
 );
 
 // Full UAT already asks for one explicit consent before entering the destructive phase.
-// Bypass nested per-operation dialogs only for this runner; ordinary Apply keeps UI.
+// Bypass nested per-operation dialogs and defer the native main-card Save until all
+// temporary writes and cleanup have completed. Ordinary Apply keeps both behaviours.
 replaceExact(
 `      const result = await E.applyPlan(plan);`,
-`      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat' });`,
-  'pre-approved Full UAT Apply',
+`      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMainMatrixSave: true });`,
+  'pre-approved Full UAT Apply with deferred main Save',
 );
 
-// A truthy Apply object may still represent partial/cancelled work. Full UAT accepts
-// exactly one completed mutation and rejects any skip/unstarted/write failure.
+// Full UAT owns the authoritative post-write proof: every accepted temporary mutation is
+// immediately re-read from TESSA and cleanup is verified against the baseline. Therefore
+// do not reject an accepted Store/Delete merely because the nested ordinary Apply path
+// reports partial due to its own refresh/reconciliation layer. Mutation accounting must
+// still prove exactly one accepted write and zero skipped/failed/unstarted work.
 replaceExact(
-`      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat' });
+`      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMainMatrixSave: true });
       if (!result) throw new Error(\`${'${label}'}: применение отменено.\`);
       report.writesCompleted += 1;
       return result;`,
-`      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat' });
+`      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMainMatrixSave: true });
       if (!result) throw new Error(\`${'${label}'}: применение отменено.\`);
       // FULL_UAT_STRICT_APPLY_RESULT_V1
-      if (result.success !== true || result.status !== 'completed'
+      // FULL_UAT_ACCEPTED_WRITE_RESULT_V2
+      if (result.cancelled === true
         || Number(result.appliedCount || 0) !== 1
         || Number(result.failedCount || 0) !== 0
         || Number(result.notStartedCount || 0) !== 0
         || Number(result.preflightSkippedCount || 0) !== 0
         || Number(result.storeSkippedCount || 0) !== 0) {
-        throw new Error(\`${'${label}'}: запись завершилась не полностью (status=${'${result.status}'}, applied=${'${result.appliedCount}'}, skipped=${'${result.skippedCount}'}, notStarted=${'${result.notStartedCount}'}).\`);
+        throw new Error(\`${'${label}'}: серверная операция завершилась не полностью (status=${'${result.status}'}, applied=${'${result.appliedCount}'}, skipped=${'${result.skippedCount}'}, notStarted=${'${result.notStartedCount}'}).\`);
       }
       report.writesCompleted += 1;
       return result;`,
-  'strict Full UAT Apply result',
+  'accepted Full UAT write accounting',
 );
 
 // Task9 introduced a cleanup-obligation ledger before the temporary ADD starts. Bind that
@@ -132,15 +137,41 @@ replaceExact(
   'Full UAT NOT_RUN cleanup',
 );
 
+// All temporary UAT writes (including recovery cleanup) are already proven by fresh
+// server read-back. Flush the main matrix through TESSA's native editor exactly once,
+// after cleanup has finished and before the final baseline proof. This is the only native
+// Save in the Full UAT write transaction, so the tester sees at most one TESSA Save dialog.
+replaceExact(
+`      try {
+        await recoverCleanupObligations();
+        if (cleanupLedgerController && baselineSignature && structure && report.matrix?.matrixId) {`,
+`      try {
+        await recoverCleanupObligations();
+        // FULL_UAT_SINGLE_MAIN_SAVE_V1
+        if (report.writesCompleted > 0) {
+          if (!bridge || typeof bridge.saveMainMatrixAfterApply !== 'function') throw new Error('Финальный нативный Save основной карточки матрицы недоступен.');
+          const finalMainSave = await bridge.saveMainMatrixAfterApply();
+          report.finalMatrixSave = E.safePlain(finalMainSave, { maxDepth: 4, maxKeys: 80, maxArray: 20 });
+          if (!finalMainSave || finalMainSave.ok === false) throw new Error(\`Финальный нативный Save основной карточки матрицы не подтверждён: ${'${String(finalMainSave?.reason || finalMainSave?.error || \'unknown\')}'}\`);
+          timeline('main-matrix-save', 'Один нативный Save после write/cleanup фазы.', { method: finalMainSave.method || null });
+        } else {
+          report.finalMatrixSave = { ok: false, skipped: true, reason: 'no-accepted-writes' };
+        }
+        if (cleanupLedgerController && baselineSignature && structure && report.matrix?.matrixId) {`,
+  'single final Full UAT main-card Save',
+);
+
 for (const marker of [
-  "E.applyPlan(plan, { confirm: () => true, source: 'full-uat' })",
+  "E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMainMatrixSave: true })",
   'MERGE_COPY_IDENTITY_SCORING_V1',
   'FULL_UAT_STRICT_APPLY_RESULT_V1',
+  'FULL_UAT_ACCEPTED_WRITE_RESULT_V2',
   'FULL_UAT_ADD_RECEIPT_RECOVERY_V2',
   'FULL_UAT_CLEAR_NOT_RUN_CLEANUP_V1',
+  'FULL_UAT_SINGLE_MAIN_SAVE_V1',
 ]) {
   if (!source.includes(marker)) throw new Error(`Full UAT live finalizer verification failed: ${marker}`);
 }
 
 fs.writeFileSync(target, source, 'utf8');
-console.log('TESSA Matrix Studio v1.14 Full UAT artifact finalize: OK');
+console.log('TESSA Matrix Studio v1.14 Full UAT single-save artifact finalize: OK');
