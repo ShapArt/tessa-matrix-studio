@@ -143,7 +143,7 @@
     MaxInputBytes: 32 * 1024 * 1024,
     MaxEntries: 256,
     MaxEntryUncompressedBytes: 128 * 1024 * 1024,
-    MaxTotalUncompressedBytes: 256 * 1024 * 1024,
+    MaxTotalUncompressedBytes: 512 * 1024 * 1024,
     MaxCompressionRatio: 100,
   });
 
@@ -11711,17 +11711,69 @@
     }
   }
 
-  // Only read a local workbook or the already downloaded dictionary. This picker
-  // never writes to Excel or TESSA; the user reviews the resulting workbook.
+  // Load fresh matrix metadata and dictionaries straight from TESSA for the value
+  // picker. This is deliberately read-only: no Excel is generated and no matrix rows are
+  // written. A bridge override exists only for deterministic Node regressions.
+  async function loadLivePickerSource(bridgeOverride = null) {
+    setProgress(8, 'Подключаюсь к TESSA', 'Готовлю справочники для выбора значений');
+    const bridge = bridgeOverride || await TessaBridge.create();
+    const templateId = bridge.templateId();
+    if (!templateId) throw new Error('У матрицы не найден TemplateID.');
+
+    setProgress(28, 'Читаю структуру', 'Критерии и функции текущей матрицы');
+    const structure = await performanceStage(
+      'picker.structure',
+      () => bridge.requestStructure(templateId),
+      { operation: 'picker' },
+    );
+
+    setProgress(48, 'Читаю матрицу', 'Получаю текущее состояние из TESSA');
+    const snapshot = await performanceStage(
+      'picker.snapshot',
+      () => bridge.loadSnapshot(structure),
+      { operation: 'picker' },
+    );
+
+    setProgress(70, 'Обновляю справочники', 'Получаю актуальные значения и роли из TESSA');
+    const dictionaryCatalog = await performanceStage(
+      'picker.dictionaries',
+      () => bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true }),
+      { operation: 'picker', rows: snapshot.rows.length },
+    );
+
+    APP.bridge = bridge;
+    APP.structure = structure;
+    APP.snapshot = snapshot;
+    APP.dictionaryCatalog = dictionaryCatalog;
+
+    const grid = buildRoundtripGrid(structure, snapshot, {}, dictionaryCatalog);
+    setProgress(92, 'Справочники готовы', 'Открываю выбор значений');
+    return {
+      headers: grid.columns.map(column => column.header),
+      schemaTokens: grid.columns.map(column => column.schema),
+      dictionaryCatalog: grid.dictionaryCatalog,
+    };
+  }
+
+  // Excel remains supported when a workbook is explicitly selected. In production, no
+  // workbook means a fresh TESSA read every time so Active -> Draft transitions and stale
+  // in-memory catalogs cannot make the picker depend on a previous export. Node DOM tests
+  // may intentionally inject APP state so they can exercise rendering without a TESSA host.
   async function openValuePicker() {
     const file = document.querySelector('#tms-file')?.files?.[0];
     let source;
-    if (file) source = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
-    else if (APP.structure && APP.snapshot && APP.dictionaryCatalog) {
+    if (file) {
+      source = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
+    } else if (window.__TESSA_MATRIX_SYNC_TEST_MODE__ && APP.structure && APP.snapshot && APP.dictionaryCatalog) {
       const grid = buildRoundtripGrid(APP.structure, APP.snapshot, {}, APP.dictionaryCatalog);
-      source = { headers: grid.columns.map(c => c.header), schemaTokens: grid.columns.map(c => c.schema), dictionaryCatalog: grid.dictionaryCatalog };
+      source = {
+        headers: grid.columns.map(column => column.header),
+        schemaTokens: grid.columns.map(column => column.schema),
+        dictionaryCatalog: grid.dictionaryCatalog,
+      };
+    } else {
+      source = await loadLivePickerSource();
     }
-    if (!source) throw new Error('Сначала скачайте Excel или выберите рабочую книгу со справочниками.');
     const columns = pickerColumns(source);
     if (!columns.length) throw new Error('В книге нет справочников для выбора. Скачайте Excel со справочниками.');
     closeValuePicker();
@@ -12340,7 +12392,7 @@
     STUDIO_ACTION_REGISTRY,
     applyIntervalStructuralProbe, applyCardNewTopologyProbe, applyCardNewEnvelopeProbe, summarizeCardIdentityTopology, collectIntervalDiagnostics, buildIntervalDiagnosticSummary, resolveStudioIntervalDiagnostics, collectStudioDiagnostics, makeStudioDiagnosticPackage,
     classifyIntervalDiagnosticError, collectNativeRuntimeSurface, sanitizeNativeOperationRecord, stageMatrixRowDelete, applyResultSummary, buildNativeRuntimeSurfaceReport, restoreNativeRecorderMethods, startNativeOperationRecorder, stopNativeOperationRecorder,
-    createRuntimeMonitor, pickerColumns, pickerEntryKey, pickerRoleTypeOptions, pickerDefaultRoleFilter, searchPickerPage, searchPickerEntries, pickerEntryPresentation, bulkSelectPickerItems, bulkSelectPickerMatches, pickerSelectionText,
+    createRuntimeMonitor, loadLivePickerSource, pickerColumns, pickerEntryKey, pickerRoleTypeOptions, pickerDefaultRoleFilter, searchPickerPage, searchPickerEntries, pickerEntryPresentation, bulkSelectPickerItems, bulkSelectPickerMatches, pickerSelectionText,
     probeRuntimeEnvironment, inspectNativeViewCapabilitiesReadOnly, inspectMatrixCapabilitiesReadOnly,
     evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, triggerBlobDownload, downloadJson, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport, buildApplySupportReport,
