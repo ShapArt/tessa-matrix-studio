@@ -15,8 +15,9 @@ globalThis.URL.revokeObjectURL = () => {};
 globalThis.document = { body: { innerText: '' }, querySelector: () => null, querySelectorAll: () => [] };
 vm.runInThisContext(source, { filename: 'tessa-matrix-studio.user.js' });
 
-const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
-assert.equal(typeof E.fullUatAcceptedWriteResult, 'function', 'Full UAT must expose its accepted-write policy');
+const UAT = globalThis.__TMS_FULL_UAT_V1__;
+assert.ok(UAT, 'Full UAT runner export is required');
+assert.equal(typeof UAT.fullUatAcceptedWriteResult, 'function', 'Full UAT must expose its accepted-write policy');
 
 const acceptedButVerificationPending = {
   cancelled: false,
@@ -32,7 +33,7 @@ const acceptedButVerificationPending = {
   verificationIncomplete: true,
   matrixSaveIncomplete: true,
 };
-assert.equal(E.fullUatAcceptedWriteResult(acceptedButVerificationPending), true,
+assert.equal(UAT.fullUatAcceptedWriteResult(acceptedButVerificationPending), true,
   'accepted server mutation must be eligible for the Full UAT fresh read-back even when ordinary Apply verification is still partial');
 
 for (const bad of [
@@ -44,7 +45,7 @@ for (const bad of [
   { ...acceptedButVerificationPending, preflightSkippedCount: 1 },
   { ...acceptedButVerificationPending, storeSkippedCount: 1 },
 ]) {
-  assert.equal(E.fullUatAcceptedWriteResult(bad), false, `unsafe/incomplete mutation must be rejected: ${JSON.stringify(bad)}`);
+  assert.equal(UAT.fullUatAcceptedWriteResult(bad), false, `unsafe/incomplete mutation must be rejected: ${JSON.stringify(bad)}`);
 }
 
 assert.match(source, /E\.applyPlan\(plan,\s*\{\s*confirm:\s*\(\)\s*=>\s*true,\s*source:\s*'full-uat',\s*deferMatrixSave:\s*true\s*\}\)/,
