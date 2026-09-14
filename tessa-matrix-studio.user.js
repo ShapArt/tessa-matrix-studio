@@ -12432,6 +12432,71 @@
     return a.length === b.length && a.every((value, index) => value === b[index]);
   }
 
+  // TASK9_SELF_RESTORING_UAT_V1
+  // A destructive UAT write is not considered safe merely because its local test
+  // finished. Every write leaves a durable cleanup obligation which is settled only
+  // after a fresh server read proves the temporary state is gone/restored.
+  function createCleanupLedger(baselineSignature = []) {
+    const frozenBaseline = [...(baselineSignature || [])];
+    const obligations = [];
+    let sequence = 0;
+    const safeCopy = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+    const snapshot = () => {
+      const rows = obligations.map(item => safeCopy(item));
+      const verifiedStatuses = new Set(['verified', 'already-absent']);
+      const failedStatuses = new Set(['failed', 'error']);
+      return {
+        baselineSignature: [...frozenBaseline],
+        total: rows.length,
+        pending: rows.filter(item => item.status === 'pending').length,
+        verified: rows.filter(item => verifiedStatuses.has(item.status)).length,
+        failed: rows.filter(item => failedStatuses.has(item.status)).length,
+        obligations: rows,
+      };
+    };
+    return {
+      baselineSignature: [...frozenBaseline],
+      register(input = {}) {
+        sequence += 1;
+        const item = {
+          id: `cleanup-${String(sequence).padStart(4, '0')}`,
+          status: 'pending',
+          registeredAt: now(),
+          ...safeCopy(input),
+        };
+        if (!item.status) item.status = 'pending';
+        obligations.push(item);
+        return safeCopy(item);
+      },
+      resolve(id, result = {}) {
+        const item = obligations.find(candidate => candidate.id === id);
+        if (!item) throw new Error(`Cleanup obligation ${id} не найдена.`);
+        Object.assign(item, safeCopy(result));
+        if (!item.status) item.status = 'verified';
+        return safeCopy(item);
+      },
+      snapshot,
+    };
+  }
+
+  function baselineRestoreProof(baselineSignature = [], afterSignature = [], ledgerSnapshot = {}) {
+    const baseline = [...(baselineSignature || [])];
+    const after = [...(afterSignature || [])];
+    const baselineEquivalent = sameArray(baseline, after);
+    const pendingObligations = Number(ledgerSnapshot?.pending || 0);
+    const failedObligations = Number(ledgerSnapshot?.failed || 0);
+    return {
+      status: baselineEquivalent && pendingObligations === 0 && failedObligations === 0 ? 'VERIFIED' : 'UNSAFE',
+      baselineEquivalent,
+      pendingObligations,
+      failedObligations,
+      baselineSignature: baseline,
+      afterSignature: after,
+      checkedAt: now(),
+    };
+  }
+
+
   function directTokenIndexes(book) {
     const out = [];
     (book.schemaTokens || []).forEach((token, index) => {
@@ -12721,15 +12786,59 @@
     const rng = seededRandom(seed);
     const report = {
       format: 'TESSA_FULL_UAT_V1', studioVersion: '1.14.0', runnerVersion: VERSION, seed, startedAt,
-      status: 'INCOMPLETE', matrix: null, checks: [], timeline: [], cleanup: [], dictionaryAudit: null, functionalActionAudit: null,
+      status: 'INCOMPLETE', matrix: null, checks: [], timeline: [], cleanup: [], cleanupLedger: null, restoreProof: null, dictionaryAudit: null, functionalActionAudit: null,
       rolePresentationAudit: null, recordKeepingAudit: null, fieldMutationAudit: null, liveConfirmation: options.liveConfirmation === 'full-uat-confirmed' ? 'full-uat-confirmed' : null, writesAttempted: 0, writesCompleted: 0,
     };
     const packageEntries = [];
     let baseline = null, structure = null, catalog = null, bridge = null, baselineSignature = null;
+    let cleanupLedgerController = null;
     let cleanupUnsafe = false;
     const timeline = (stage, detail, extra = null) => report.timeline.push({ at: now(), stage, detail, ...(extra ? { extra } : {}) });
     const addCheck = (id, title, status, detail, extra = {}) => {
       const item = { id, title, status, detail, ...extra }; report.checks.push(item); timeline(id, `${status}: ${detail}`); return item;
+    };
+
+    const registerCleanupObligation = input => {
+      if (!cleanupLedgerController) throw new Error('Cleanup ledger ещё не инициализирован baseline-сигнатурой.');
+      const item = cleanupLedgerController.register(input);
+      report.cleanupLedger = cleanupLedgerController.snapshot();
+      timeline('cleanup-register', `${item.kind || 'unknown'} ${item.id}`, { scenarioId: item.scenarioId || null, rowCardId: item.rowCardId || null, token: item.token || null });
+      return item;
+    };
+    const resolveCleanupObligation = (id, result = {}) => {
+      if (!cleanupLedgerController || !id) return null;
+      const item = cleanupLedgerController.resolve(id, result);
+      report.cleanupLedger = cleanupLedgerController.snapshot();
+      timeline('cleanup-resolve', `${item.id}: ${item.status}`, { scenarioId: item.scenarioId || null, rowCardId: item.rowCardId || null, token: item.token || null });
+      return item;
+    };
+    const pendingCleanupForRow = rowCardId => cleanupLedgerController
+      ? cleanupLedgerController.snapshot().obligations.filter(item => item.status === 'pending' && canon(item.rowCardId) === canon(rowCardId))
+      : [];
+    const resolveCleanupForAbsentRow = (rowCardId, status = 'already-absent', extra = {}) => {
+      for (const obligation of pendingCleanupForRow(rowCardId)) {
+        resolveCleanupObligation(obligation.id, { status, resolvedAt: now(), ...extra });
+      }
+    };
+    const registerFieldMutationObligations = (plan, scenarioId, rowCardId) => {
+      const executable = (plan?.actions || []).filter(action => action.type === 'update' && canon(action.currentRow?.rowCardId) === canon(rowCardId));
+      const ids = [];
+      for (const action of executable) {
+        for (const change of action.changes || []) {
+          const obligation = registerCleanupObligation({
+            kind: 'field-mutation',
+            scenarioId,
+            rowCardId,
+            token: String(change.key || ''),
+            before: E.safePlain(change.before || [], { maxDepth: 4, maxKeys: 50, maxArray: 50 }),
+            candidate: E.safePlain(change.after || [], { maxDepth: 4, maxKeys: 50, maxArray: 50 }),
+            restoreStrategy: 'restore-or-delete-temporary-row',
+            createdAt: now(),
+          });
+          ids.push(obligation.id);
+        }
+      }
+      return ids;
     };
     const runCheck = async (id, title, fn, required = true) => {
       try {
@@ -12759,7 +12868,7 @@
       try {
         const current = await freshSnapshot();
         const target = current.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
-        if (!target) { report.cleanup.push({ scenarioId, rowCardId, status: 'already-absent', at: now() }); return true; }
+        if (!target) { report.cleanup.push({ scenarioId, rowCardId, status: 'already-absent', at: now() }); resolveCleanupForAbsentRow(rowCardId, 'already-absent', { resolvedBy: scenarioId }); return true; }
         const currentCatalog = await current.bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true });
         const { book } = await workbookFromSnapshot(structure, current.snapshot, current.bridge, currentCatalog);
         const cardIndex = tokenIndex(book, 'system:rowCardId');
@@ -12771,10 +12880,28 @@
         const verified = await freshSnapshot();
         if (verified.snapshot.rows.some(row => canon(row.rowCardId) === canon(rowCardId))) throw new Error('Временная строка осталась после DELETE/read-back.');
         report.cleanup.push({ scenarioId, rowCardId, status: 'verified', at: now(), result: E.safePlain(result, { maxDepth: 5, maxKeys: 200, maxArray: 100 }) });
+        resolveCleanupForAbsentRow(rowCardId, 'verified', { resolvedBy: scenarioId });
         return true;
       } catch (error) {
         cleanupUnsafe = true; report.cleanup.push({ scenarioId, rowCardId, status: 'FAILED', at: now(), error: String(error?.message || error) }); return false;
       }
+    }
+
+    async function recoverCleanupObligations() {
+      if (!cleanupLedgerController || !baselineSignature || !structure || !report.matrix?.matrixId) return;
+      const pendingRows = cleanupLedgerController.snapshot().obligations
+        .filter(item => item.status === 'pending' && item.kind === 'temporary-row' && String(item.rowCardId || '').trim())
+        .reverse();
+      for (const obligation of pendingRows) {
+        const cleaned = await cleanupCreatedRow(obligation.rowCardId, `${obligation.scenarioId || 'uat'}: global-finally`);
+        if (!cleaned) timeline('cleanup-retry-failed', obligation.id, { rowCardId: obligation.rowCardId });
+      }
+      const state = await freshSnapshot();
+      for (const obligation of cleanupLedgerController.snapshot().obligations.filter(item => item.status === 'pending' && item.kind === 'field-mutation')) {
+        const exists = state.snapshot.rows.some(row => canon(row.rowCardId) === canon(obligation.rowCardId));
+        if (!exists) resolveCleanupObligation(obligation.id, { status: 'already-absent', resolvedAt: now(), resolvedBy: 'global-finally-row-absence' });
+      }
+      report.cleanupLedger = cleanupLedgerController.snapshot();
     }
     async function createTemporaryRow(scenarioId) {
       const current = await freshSnapshot(); bridge = current.bridge;
@@ -12782,16 +12909,42 @@
       const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog);
       const candidate = findUniqueAddCandidate(book, structure, current.snapshot, bridge, currentCatalog, rng, { gap: 3 });
       let plan = applySafety(candidate.plan, bridge); const beforeIds = new Set(current.snapshot.rows.map(row => canon(row.rowCardId)));
-      const result = await applySingle(plan, `${scenarioId}: ADD`); const after = await freshSnapshot();
+      const rowObligation = registerCleanupObligation({
+        kind: 'temporary-row',
+        scenarioId,
+        rowCardId: null,
+        beforeRowIds: [...beforeIds],
+        excelRow: candidate.row?.excelRow || null,
+        restoreStrategy: 'delete-temporary-row',
+        createdAt: now(),
+      });
+      let result;
+      try {
+        result = await applySingle(plan, `${scenarioId}: ADD`);
+      } catch (error) {
+        try {
+          const verification = await freshSnapshot();
+          const extras = verification.snapshot.rows.filter(row => !beforeIds.has(canon(row.rowCardId)));
+          if (extras.length === 0) resolveCleanupObligation(rowObligation.id, { status: 'already-absent', resolvedAt: now(), resolvedBy: 'add-failed-fresh-read' });
+          else if (extras.length === 1) resolveCleanupObligation(rowObligation.id, { status: 'pending', rowCardId: extras[0].rowCardId, discoveredAfterApplyError: true });
+        } catch (_) { /* leave pending: global proof must become UNSAFE rather than guess */ }
+        throw error;
+      }
+      const after = await freshSnapshot();
       const created = after.snapshot.rows.filter(row => !beforeIds.has(canon(row.rowCardId)));
-      if (created.length !== 1) throw new Error(`После ADD ожидалась 1 новая строка, найдено ${created.length}.`);
-      return { created: created[0], after: after.snapshot, bridge: after.bridge, catalog: currentCatalog, candidate, result };
+      if (created.length !== 1) {
+        resolveCleanupObligation(rowObligation.id, { status: 'pending', discoveredRowIds: created.map(row => row.rowCardId) });
+        throw new Error(`После ADD ожидалась 1 новая строка, найдено ${created.length}.`);
+      }
+      resolveCleanupObligation(rowObligation.id, { status: 'pending', rowCardId: created[0].rowCardId, identifiedAt: now() });
+      return { created: created[0], after: after.snapshot, bridge: after.bridge, catalog: currentCatalog, candidate, result, cleanupObligationId: rowObligation.id };
     }
 
     try {
       timeline('start', `Full UAT seed=${seed}`);
       bridge = await E.TessaBridge.create(); E.assertWritableMatrixDraft(bridge); E.assertNativeEditMode();
       structure = await bridge.requestStructure(bridge.templateId()); baseline = await bridge.loadSnapshot(structure); baselineSignature = snapshotSignature(baseline);
+      cleanupLedgerController = createCleanupLedger(baselineSignature); report.cleanupLedger = cleanupLedgerController.snapshot();
       catalog = await bridge.loadDictionaryCatalog(structure, baseline, { forceRefresh: true, transient: true });
       const info = bridge.matrixInfo(); report.matrix = { matrixId: info.matrixId, templateId: info.TemplateID, name: info.TemplateName, state: info.StateName, rows: baseline.rows.length };
       const base = await workbookFromSnapshot(structure, baseline, bridge, catalog); packageEntries.push(['matrix-current.xlsx', base.bytes]);
@@ -12957,7 +13110,7 @@
         try {
           const current = await freshSnapshot(); bridge = current.bridge; const currentCatalog = await bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true }); const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog); const target = findRowByCard(book, rowCardId); if (!target) throw new Error('Временная строка не найдена после ADD.');
           let updatePlan = null; for (const column of shuffled(mutableCriterionColumns(book, currentCatalog, 3), rng)) { for (const entry of shuffled(column.entries.filter(entry => canon(entry.selector || entry.display) !== canon(target.values[column.index])), rng).slice(0, 20)) { const attempt = cloneWorkbook(book), row = findRowByCard(attempt, rowCardId); setDictionaryValue(attempt, row, column.key, entry); const plan = E.buildPlan(attempt, structure, current.snapshot, bridge.matrixInfo()); const exec = plan.actions.filter(action => action.type !== 'noop'); if (exec.length === 1 && exec[0].type === 'update' && canon(exec[0].currentRow?.rowCardId) === canon(rowCardId) && !plan.counts.skip) { updatePlan = plan; break; } } if (updatePlan) break; }
-          if (!updatePlan) throw new Error('Не удалось подобрать безопасное UPDATE временной строки.'); await applySingle(updatePlan, 'write-update-delete: UPDATE'); const afterUpdate = await freshSnapshot(); if (!afterUpdate.snapshot.rows.some(row => canon(row.rowCardId) === canon(rowCardId))) throw new Error('Временная строка исчезла после UPDATE.'); if (!await cleanupCreatedRow(rowCardId, 'write-update-delete')) throw new Error('Cleanup после UPDATE не подтверждён.'); const final = await freshSnapshot(); if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) throw new Error('После UPDATE cleanup baseline не восстановлен.'); return { detail: 'Временная строка изменена через штатный Store/read-back и полностью удалена.' };
+          if (!updatePlan) throw new Error('Не удалось подобрать безопасное UPDATE временной строки.'); registerFieldMutationObligations(updatePlan, 'write-update-delete', rowCardId); await applySingle(updatePlan, 'write-update-delete: UPDATE'); const afterUpdate = await freshSnapshot(); if (!afterUpdate.snapshot.rows.some(row => canon(row.rowCardId) === canon(rowCardId))) throw new Error('Временная строка исчезла после UPDATE.'); if (!await cleanupCreatedRow(rowCardId, 'write-update-delete')) throw new Error('Cleanup после UPDATE не подтверждён.'); const final = await freshSnapshot(); if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) throw new Error('После UPDATE cleanup baseline не восстановлен.'); return { detail: 'Временная строка изменена через штатный Store/read-back и полностью удалена.' };
         } catch (error) { await cleanupCreatedRow(rowCardId, 'write-update-delete-finally'); throw error; }
       });
       await runCheck('write-every-field', 'Сервер: каждое доступное поле → read-back → restore', async () => {
@@ -12978,6 +13131,7 @@
 
           for (const inventoryItem of inventory) {
             let mutationApplied = false;
+            let mutationObligationIds = [];
             let original = null;
             let originalSemantic = [];
             const evidence = {
@@ -13030,6 +13184,7 @@
               }
 
               evidence.candidate = candidateEvidenceValue(selected.candidate);
+              mutationObligationIds = registerFieldMutationObligations(selected.plan, `write-every-field:${liveItem.token}`, rowCardId);
               await applySingle(selected.plan, `write-every-field ${liveItem.token}: UPDATE`);
               mutationApplied = true;
               const after = await freshSnapshot(); bridge = after.bridge;
@@ -13072,6 +13227,7 @@
                   const restoredSemantic = canonicalFieldValues(restoredRow?.flat?.[restoreItem.token] || []);
                   if (!sameArray(restoredSemantic, originalSemantic)) throw new Error(`restore read-back ${restoreItem.token} не совпал с исходным значением.`);
                   evidence.restoreResult = 'verified';
+                  for (const obligationId of mutationObligationIds) resolveCleanupObligation(obligationId, { status: 'verified', resolvedAt: now(), resolvedBy: 'field-readback-restore' });
                 } catch (restoreError) {
                   cleanupUnsafe = true;
                   evidence.restoreResult = `FAILED: ${String(restoreError?.message || restoreError)}`;
@@ -13106,7 +13262,7 @@
           const current = await freshSnapshot(); bridge = current.bridge; const currentCatalog = await bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true }); const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog); const target = findRowByCard(book, rowCardId); if (!target) throw new Error('Временная строка не найдена после ADD.');
           const candidateIndexes = directTokenIndexes(book).filter(index => String(book.schemaTokens[index]).startsWith('criterion:') && String(target.values[index] || '').trim()); let clearPlan = null;
           for (const index of shuffled(candidateIndexes, rng)) { const key = book.schemaTokens[index]; if (!(book.rows || []).some(row => canon(rowIdentity(book, row).rowCardId) !== canon(rowCardId) && !String(row.values[index] || '').trim())) continue; const attempt = cloneWorkbook(book), row = findRowByCard(attempt, rowCardId); row.values[index] = ''; const idIndex = companionIndex(attempt, key); if (idIndex >= 0) row.values[idIndex] = ''; const plan = E.buildPlan(attempt, structure, current.snapshot, bridge.matrixInfo()); const exec = plan.actions.filter(action => action.type !== 'noop'); if (exec.length === 1 && exec[0].type === 'update' && canon(exec[0].currentRow?.rowCardId) === canon(rowCardId) && !plan.counts.skip) { clearPlan = plan; break; } }
-          if (!clearPlan) return { status: 'NOT_RUN', detail: 'Не найдено доказанно необязательное заполненное поле временной строки.' }; await applySingle(clearPlan, 'write-clear-delete: CLEAR'); if (!await cleanupCreatedRow(rowCardId, 'write-clear-delete')) throw new Error('Cleanup после очистки не подтверждён.'); const final = await freshSnapshot(); if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) throw new Error('После очистки cleanup baseline не восстановлен.'); return { detail: 'Очистка значения применена на временной строке, подтверждена и откатана.' };
+          if (!clearPlan) return { status: 'NOT_RUN', detail: 'Не найдено доказанно необязательное заполненное поле временной строки.' }; registerFieldMutationObligations(clearPlan, 'write-clear-delete', rowCardId); await applySingle(clearPlan, 'write-clear-delete: CLEAR'); if (!await cleanupCreatedRow(rowCardId, 'write-clear-delete')) throw new Error('Cleanup после очистки не подтверждён.'); const final = await freshSnapshot(); if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) throw new Error('После очистки cleanup baseline не восстановлен.'); return { detail: 'Очистка значения применена на временной строке, подтверждена и откатана.' };
         } catch (error) { await cleanupCreatedRow(rowCardId, 'write-clear-delete-finally'); throw error; }
       });
 
@@ -13126,6 +13282,31 @@
     } finally {
 
       try {
+        await recoverCleanupObligations();
+        if (cleanupLedgerController && baselineSignature && structure && report.matrix?.matrixId) {
+          const restoredState = await freshSnapshot();
+          report.cleanupLedger = cleanupLedgerController.snapshot();
+          report.restoreProof = baselineRestoreProof(baselineSignature, snapshotSignature(restoredState.snapshot), report.cleanupLedger);
+          addCheck('final-restore-proof', 'Task9: восстановление baseline', report.restoreProof.status === 'VERIFIED' ? 'PASS' : 'FAIL', report.restoreProof.status === 'VERIFIED'
+            ? `Baseline подтверждён fresh read; cleanup ${report.cleanupLedger.verified}/${report.cleanupLedger.total}.`
+            : `UNSAFE: baselineEquivalent=${report.restoreProof.baselineEquivalent}, pending=${report.restoreProof.pendingObligations}, failed=${report.restoreProof.failedObligations}.`,
+            { required: true, data: report.restoreProof });
+          if (report.restoreProof.status === 'UNSAFE') { cleanupUnsafe = true; report.status = 'UNSAFE'; }
+        }
+      } catch (recoveryError) {
+        cleanupUnsafe = true;
+        report.status = 'UNSAFE';
+        report.cleanupLedger = cleanupLedgerController ? cleanupLedgerController.snapshot() : report.cleanupLedger;
+        report.restoreProof = {
+          status: 'UNSAFE', baselineEquivalent: false,
+          pendingObligations: Number(report.cleanupLedger?.pending || 0),
+          failedObligations: Number(report.cleanupLedger?.failed || 0),
+          error: String(recoveryError?.message || recoveryError), checkedAt: now(),
+        };
+        addCheck('final-restore-proof', 'Task9: восстановление baseline', 'FAIL', `UNSAFE: ${report.restoreProof.error}`, { required: true, data: report.restoreProof });
+      }
+
+      try {
         const packageProbe = await E.makeZip([...packageEntries, ['task8-package-probe.txt', utf8('TESSA Full UAT package probe')]]);
         if (!(packageProbe instanceof Uint8Array) || packageProbe.length < 4 || packageProbe[0] !== 0x50 || packageProbe[1] !== 0x4b) throw new Error('Full UAT package probe не является ZIP.');
         addCheck('action-full-uat', 'Действие: полный UAT', 'PASS', `Full UAT package path сформировал ZIP (${packageProbe.length} байт).`, { required: true, data: { outcome: 'full-uat-package', artifact: 'TESSA_Full_UAT_*.zip', bytes: packageProbe.length } });
@@ -13133,11 +13314,12 @@
         addCheck('action-full-uat', 'Действие: полный UAT', 'FAIL', String(packageProbeError?.message || packageProbeError), { required: true, data: { outcome: null } });
       }
       report.functionalActionAudit = actionCoverageFromChecks(report.checks, E.STUDIO_ACTION_REGISTRY || []);
-      if (report.functionalActionAudit.missing.length && report.status === 'PASSED') report.status = 'FAILED';
-      report.finishedAt = now(); report.durationMs = new Date(report.finishedAt).getTime() - new Date(startedAt).getTime(); report.summary = { pass: report.checks.filter(x => x.status === 'PASS').length, fail: report.checks.filter(x => x.status === 'FAIL').length, warn: report.checks.filter(x => x.status === 'WARN').length, notRun: report.checks.filter(x => x.status === 'NOT_RUN').length, writesAttempted: report.writesAttempted, writesCompleted: report.writesCompleted, cleanupVerified: report.cleanup.filter(x => x.status === 'verified' || x.status === 'already-absent').length, cleanupFailed: report.cleanup.filter(x => x.status === 'FAILED').length };
+      if (cleanupUnsafe || report.restoreProof?.status === 'UNSAFE') report.status = 'UNSAFE';
+      else if (report.functionalActionAudit.missing.length && report.status === 'PASSED') report.status = 'FAILED';
+      report.finishedAt = now(); report.durationMs = new Date(report.finishedAt).getTime() - new Date(startedAt).getTime(); report.summary = { pass: report.checks.filter(x => x.status === 'PASS').length, fail: report.checks.filter(x => x.status === 'FAIL').length, warn: report.checks.filter(x => x.status === 'WARN').length, notRun: report.checks.filter(x => x.status === 'NOT_RUN').length, writesAttempted: report.writesAttempted, writesCompleted: report.writesCompleted, cleanupVerified: report.cleanup.filter(x => x.status === 'verified' || x.status === 'already-absent').length, cleanupFailed: report.cleanup.filter(x => x.status === 'FAILED').length, cleanupLedgerPending: Number(report.cleanupLedger?.pending || 0), cleanupLedgerFailed: Number(report.cleanupLedger?.failed || 0), restoreStatus: report.restoreProof?.status || 'NOT_RUN' };
       const summary = { format: 'TESSA_FULL_UAT_SUMMARY_V1', status: report.status, seed: report.seed, studioVersion: report.studioVersion, runnerVersion: report.runnerVersion, matrix: report.matrix, startedAt: report.startedAt, finishedAt: report.finishedAt, summary: report.summary };
       const readme = `TESSA Matrix Studio — Full UAT\n\nСтатус: ${report.status}\nSeed: ${report.seed}\nМатрица: ${report.matrix?.name || ''} (${report.matrix?.matrixId || ''})\n\nPASSED — обязательные проверки прошли и cleanup подтверждён.\nFAILED — есть функциональная ошибка, cleanup подтверждён.\nUNSAFE — cleanup или восстановление исходного состояния не подтверждены.\nINCOMPLETE — UAT не дошёл до полного набора проверок.\n`;
-      packageEntries.push(['summary.json', utf8(summary)], ['uat-report.json', utf8(report)], ['timeline.json', utf8(report.timeline)], ['dictionary-audit.json', utf8({ dictionaryAudit: report.dictionaryAudit, rolePresentationAudit: report.rolePresentationAudit, recordKeepingAudit: report.recordKeepingAudit })], ['README.txt', utf8(readme)]);
+      packageEntries.push(['cleanup-ledger.json', utf8(report.cleanupLedger || {})], ['restore-proof.json', utf8(report.restoreProof || {})], ['summary.json', utf8(summary)], ['uat-report.json', utf8(report)], ['timeline.json', utf8(report.timeline)], ['dictionary-audit.json', utf8({ dictionaryAudit: report.dictionaryAudit, rolePresentationAudit: report.rolePresentationAudit, recordKeepingAudit: report.recordKeepingAudit })], ['README.txt', utf8(readme)]);
       try { const zip = await E.makeZip(packageEntries); const stamp = report.finishedAt.replace(/[:.]/g, '-'); E.triggerBlobDownload(new Blob([zip], { type: 'application/zip' }), `TESSA_Full_UAT_${report.status}_${stamp}.zip`); }
       catch (error) { console.error('[TESSA Full UAT] package error', error); try { E.downloadJson(report, `TESSA_Full_UAT_${report.status}.json`, null); } catch (_) { /* best effort */ } }
     }
@@ -13165,6 +13347,6 @@
     return true;
   }
 
-  window[INSTALL_KEY] = { version: VERSION, seededRandom, hashSeed, snapshotSignature, cloneWorkbook, buildWritableFieldInventory, fieldCandidateValues, actionCoverageFromChecks, runFullUat, installUi };
+  window[INSTALL_KEY] = { version: VERSION, seededRandom, hashSeed, snapshotSignature, cloneWorkbook, buildWritableFieldInventory, fieldCandidateValues, actionCoverageFromChecks, createCleanupLedger, baselineRestoreProof, runFullUat, installUi };
   if (!globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__) { let attempts = 0; const timer = setInterval(() => { attempts += 1; if (installUi() || attempts > 120) clearInterval(timer); }, 250); installUi(); }
 })();
