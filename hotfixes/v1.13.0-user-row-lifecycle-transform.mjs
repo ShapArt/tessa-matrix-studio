@@ -59,14 +59,10 @@ replaceExact(
   'picker paste UX',
 );
 
-// Live UAT 2026-09-11 produced a legitimate Studio-generated dictionary worksheet of
-// 139,568,463 bytes. Keep the archive bounded, but do not reject our own workbook at
-// the old 128 MiB single-entry ceiling. Total uncompressed size and ratio guards remain.
-replaceExact(
-`    MaxEntryUncompressedBytes: 128 * 1024 * 1024,`,
-`    MaxEntryUncompressedBytes: 192 * 1024 * 1024, // LIVE_UAT_2026_09_11: valid dictionary sheet exceeded 128 MiB`,
-  'XLSX self-generated dictionary ceiling',
-);
+// Since Task13 the canonical reader keeps the ordinary per-entry ZIP guard strict and
+// excludes disposable service sheets (notably «Словари») before inflate when a live
+// catalog is supplied. Do not re-raise MaxEntryUncompressedBytes here: doing so would
+// make the release/UAT artifact less strict than the canonical source verified by CI.
 
 // Full UAT obtains one explicit consent before its write phase. Let internal callers
 // provide a scoped confirmer so temporary ADD/UPDATE/DELETE scenarios do not present a
@@ -102,10 +98,7 @@ replaceExact(
 // Since v1.14 the live-card diagnostics fix is canonical source. For older source
 // snapshots keep the historical build transform, but skip it when already present.
 if (!source.includes('const diagnosticNativeCardCache = new Map();')) {
-// Snapshot rows intentionally cross a DTO boundary and no longer retain native Card
-// instances. Diagnostics must hydrate the native row card on demand, just as the later
-// server-validation checks already do, otherwise every per-field rebuild is NOT RUN.
-replaceExact(
+  replaceExact(
 `    if (generated && columns) for (const column of columns.values()) {`,
 `    const diagnosticNativeCardCache = new Map();
     const getDiagnosticNativeCard = async row => {
@@ -115,24 +108,24 @@ replaceExact(
       return diagnosticNativeCardCache.get(key);
     };
     if (generated && columns) for (const column of columns.values()) {`,
-  'diagnostic native-card cache',
-);
-replaceExact(
+    'diagnostic native-card cache',
+  );
+  replaceExact(
 `      await run(\`field-${'${column.key}'}\`, \`Поле: ${'${column.name || column.excelHeader}'}\`, async () => {`,
 `      await run(\`field-${'${column.key}'}\`, \`Поле «${'${column.name || column.excelHeader}'}»\`, async () => {`,
-  'diagnostic field title clarity',
-);
-replaceExact(
+    'diagnostic field title clarity',
+  );
+  replaceExact(
 `        if (!controlRow.card?.clone) return { status: 'not-run', detail: 'Карточка для проверки перестройки недоступна.' };`,
 `        const nativeCard = await getDiagnosticNativeCard(controlRow);
         if (typeof nativeCard?.clone !== 'function') return { status: 'not-run', detail: 'Нативная карточка строки не поддерживает clone().' };`,
-  'diagnostic field card hydration',
-);
-replaceExact(
+    'diagnostic field card hydration',
+  );
+  replaceExact(
 `        const cloned = controlRow.card.clone();`,
 `        const cloned = nativeCard.clone();`,
-  'diagnostic field card clone',
-);
+    'diagnostic field card clone',
+  );
 }
 
 // Full UAT packages use the same audited ZIP writer as XLSX/diagnostics instead of
@@ -148,7 +141,7 @@ replaceExact(
 if ((source.match(/DUPLICATE_IDENTITY_COPY_AS_ADD_V1/g) || []).length !== 2) {
   throw new Error('Copied identity patch marker count mismatch.');
 }
-for (const marker of ['tms-picker-import-block', 'TessaBridge, makeZip,', 'LIVE_UAT_2026_09_11', 'const confirmApply =', 'diagnosticNativeCardCache']) {
+for (const marker of ['tms-picker-import-block', 'TessaBridge, makeZip,', 'const confirmApply =', 'diagnosticNativeCardCache']) {
   if (!source.includes(marker)) throw new Error(`v1.13.0 transform verification failed: ${marker}`);
 }
 
