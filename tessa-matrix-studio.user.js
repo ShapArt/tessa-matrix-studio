@@ -1841,14 +1841,16 @@
 
   const WORKBOOK_ARCHIVES = new WeakMap();
 
-  async function readXlsxArrayBuffer(arrayBuffer, fileName = 'matrix.xlsx') {
+  async function readXlsxArrayBuffer(arrayBuffer, fileName = 'matrix.xlsx', options = {}) {
     const entries = await unzipArrayBuffer(arrayBuffer);
+    const skipSheetNames = new Set((options.skipSheetNames || []).map(name => String(name)));
     const decoder = new TextDecoder('utf-8');
     const shared = parseSharedStrings(entries.has('xl/sharedStrings.xml') ? decoder.decode(entries.get('xl/sharedStrings.xml')) : '');
     const styles = parseStylesXml(entries.has('xl/styles.xml') ? decoder.decode(entries.get('xl/styles.xml')) : '');
     const sheetDescriptors = parseWorkbookSheets(entries, decoder);
     const parsedSheets = new Map();
     for (const descriptor of sheetDescriptors) {
+      if (skipSheetNames.has(descriptor.name)) continue;
       const raw = entries.get(descriptor.path);
       if (!raw) continue;
       parsedSheets.set(descriptor.name, parseSheetXml(decoder.decode(raw), shared, styles));
@@ -1899,7 +1901,7 @@
       rows: data,
       metadata,
       parsedSheets,
-      dictionaryCatalog: parseEmbeddedDictionaryCatalog(parsedSheets),
+      dictionaryCatalog: options.dictionaryCatalog || parseEmbeddedDictionaryCatalog(parsedSheets),
       roundtrip: {
         enabled: ROUNDTRIP.AcceptedFormats.includes(format),
         format,
@@ -1910,8 +1912,12 @@
         baselineRows: parseBaselineRows(parsedSheets),
       },
     };
-    WORKBOOK_ARCHIVES.set(workbook, entries);
+    if (options.retainArchive !== false) WORKBOOK_ARCHIVES.set(workbook, entries);
     return workbook;
+  }
+
+  function releaseWorkbookArchive(workbook) {
+    return Boolean(workbook && WORKBOOK_ARCHIVES.delete(workbook));
   }
 
 
@@ -12399,7 +12405,7 @@
     evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, triggerBlobDownload, downloadJson, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport, buildApplySupportReport,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
-    readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
+    readXlsxArrayBuffer, releaseWorkbookArchive, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, buildChangesReportModel, createChangesReportXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, replacementConfirmationModel, confirmCrossMatrixReplacement, isWriterLockError, persistMainMatrixAfterApply, refreshNativeMatrixViewAfterApply, collectPlanResolutionItems, applyResolutionChoiceToWorkbook, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
@@ -12795,7 +12801,10 @@
   async function workbookFromSnapshot(structure, snapshot, bridge, catalog) {
     const bytes = await E.createRoundtripXlsxBytes(structure, snapshot, bridge.matrixInfo(), catalog, { includeActions: true });
     const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-    const book = await E.readXlsxArrayBuffer(buffer, 'TESSA_UAT_CURRENT.xlsx');
+    const book = await E.readXlsxArrayBuffer(buffer, 'TESSA_UAT_CURRENT.xlsx', {
+      skipSheetNames: ['Словари'],
+      dictionaryCatalog: catalog,
+    });
     return { bytes, book };
   }
 
@@ -13098,14 +13107,24 @@
         return { detail: 'Неизвестное значение остановлено до Store.', data: compactPlan(plan) };
       });
       await runCheck('dictionary-refresh', 'Обновление справочников без потери строк', async () => {
-        const refreshedBytes = await E.refreshWorkbookDictionaries(base.book, structure, catalog); const refreshed = await E.readXlsxArrayBuffer(refreshedBytes.buffer.slice(refreshedBytes.byteOffset, refreshedBytes.byteOffset + refreshedBytes.byteLength), 'TESSA_UAT_REFRESHED.xlsx');
+        const refreshedBytes = await E.refreshWorkbookDictionaries(base.book, structure, catalog);
+        E.releaseWorkbookArchive(base.book);
+        const refreshed = await E.readXlsxArrayBuffer(
+          refreshedBytes.buffer.slice(refreshedBytes.byteOffset, refreshedBytes.byteOffset + refreshedBytes.byteLength),
+          'TESSA_UAT_REFRESHED.xlsx',
+          { skipSheetNames: ['Словари'], dictionaryCatalog: catalog, retainArchive: false },
+        );
         const plan = E.buildPlan(refreshed, structure, baseline, info); if (plan.counts.skip || plan.counts.add || plan.counts.update || plan.counts.delete) throw new Error(`После refresh появились изменения: ${JSON.stringify(plan.counts)}`);
         packageEntries.push(['dictionary-refreshed.xlsx', refreshedBytes]); return { detail: 'Справочники обновились; матрица и скрытые identity сохранились.' };
       });
       await runCheck('merge-current', 'Объединение с актуальной TESSA', async () => {
         const merged = E.mergeWorkbookIntoCurrentSnapshot(base.book, structure, baseline); if ((merged.snapshot?.rows || []).length !== baseline.rows.length) throw new Error(`После merge строк ${merged.snapshot?.rows?.length}, ожидалось ${baseline.rows.length}.`);
         const mergedBytes = await E.createRoundtripXlsxBytes(structure, merged.snapshot, info, catalog, { baselineRows: baseline.rows, includeActions: true, schemaChanges: merged.schemaChanges, customColumns: merged.customColumns });
-        const parsed = await E.readXlsxArrayBuffer(mergedBytes.buffer.slice(mergedBytes.byteOffset, mergedBytes.byteOffset + mergedBytes.byteLength), 'TESSA_UAT_MERGED.xlsx'); const plan = E.buildPlan(parsed, structure, baseline, info);
+        const parsed = await E.readXlsxArrayBuffer(
+          mergedBytes.buffer.slice(mergedBytes.byteOffset, mergedBytes.byteOffset + mergedBytes.byteLength),
+          'TESSA_UAT_MERGED.xlsx',
+          { skipSheetNames: ['Словари'], dictionaryCatalog: catalog, retainArchive: false },
+        ); const plan = E.buildPlan(parsed, structure, baseline, info);
         if (plan.counts.skip || plan.counts.add || plan.counts.update || plan.counts.delete) throw new Error(`Merge дал ложные изменения: ${JSON.stringify(plan.counts)}`);
         packageEntries.push(['merged-current.xlsx', mergedBytes]); return { detail: 'Объединение roundtrip с неизменившейся TESSA идемпотентно.' };
       });
