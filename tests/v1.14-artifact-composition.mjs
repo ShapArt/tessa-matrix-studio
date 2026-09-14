@@ -33,8 +33,12 @@ try {
     'release/UAT composition must preserve the canonical 128 MiB strict per-entry ceiling');
   assert.match(source, /MaxTotalUncompressedBytes:\s*512\s*\*\s*1024\s*\*\s*1024/,
     'release/UAT composition must preserve the canonical bounded total archive ceiling');
-  assert.match(source, /FULL_UAT_STRICT_APPLY_RESULT_V1/,
-    'composed artifact must reject partial Full UAT writes');
+  assert.match(source, /FULL_UAT_ACCEPTED_WRITE_V2/,
+    'composed artifact must let Full UAT distinguish accepted server mutation from its later fresh read-back');
+  assert.match(source, /FULL_UAT_BATCHED_MAIN_SAVE_V1/,
+    'composed artifact must batch Full UAT main-card persistence into one native Save');
+  assert.doesNotMatch(source, /FULL_UAT_STRICT_APPLY_RESULT_V1/,
+    'composed artifact must not restore the obsolete status===completed Full UAT gate');
   assert.match(source, /FULL_UAT_ADD_RECEIPT_RECOVERY_V2/,
     'composed artifact must bind temporary-row cleanup to the exact successful ADD receipt');
   assert.match(source, /FULL_UAT_CLEAR_NOT_RUN_CLEANUP_V1/,
@@ -44,7 +48,7 @@ try {
   run(['tests/full-uat-runner-contract.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/live-uat-regressions.mjs'], { TMS_TEST_SOURCE: target });
 
-  console.log('v1.14 release/UAT artifact composition: canonical limits + live cleanup invariants OK');
+  console.log('v1.14 release/UAT artifact composition: canonical limits + accepted-write + batched-save + cleanup invariants OK');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
