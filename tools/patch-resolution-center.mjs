@@ -125,8 +125,8 @@ replaceOnce(
 );
 
 replaceOnce(
-  '    refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,',
-  '    refreshNativeMatrixViewAfterApply, collectPlanResolutionItems, applyResolutionChoiceToWorkbook, finalizeApplyResult, applyResultMessage,',
+  'refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,',
+  'refreshNativeMatrixViewAfterApply, collectPlanResolutionItems, applyResolutionChoiceToWorkbook, finalizeApplyResult, applyResultMessage,',
   'test exports',
 );
 
