@@ -58,11 +58,26 @@ try {
   assert.doesNotMatch(source, /result\.success\s*!==\s*true\s*\|\|\s*result\.status\s*!==\s*'completed'/,
     'Full UAT must not reject an accepted write solely because nested post-write verification reported partial');
 
+  // PR #105 regression: native evidence used to stop before the only final Save. Validate
+  // ordering on the fully composed userscript, not merely the transform source markers.
+  assert.match(source, /FULL_UAT_RECORDER_THROUGH_FINAL_SAVE_V2/);
+  assert.match(source, /FULL_UAT_FINAL_VERDICT_AFTER_SAVE_V2/);
+  assert.match(source, /FULL_UAT_FAILURE_SUMMARY_V1/);
+  assert.match(source, /FULL_UAT_APPLY_FAILURE_EVIDENCE_V3/);
+  const saveIndex = source.indexOf('const finalMainSave = await bridge.saveMainMatrixAfterApply();');
+  const recorderStopIndex = source.indexOf('const nativeRecord = await E.stopNativeOperationRecorder(false);', saveIndex);
+  const verdictIndex = source.indexOf('// FULL_UAT_FINAL_VERDICT_AFTER_SAVE_V2', recorderStopIndex);
+  assert.ok(saveIndex >= 0, 'composed Full UAT must contain its final native Save');
+  assert.ok(recorderStopIndex > saveIndex, 'native recorder must stop only after the final native Save');
+  assert.ok(verdictIndex > recorderStopIndex, 'final verdict must be calculated only after Save evidence is closed');
+  assert.match(source, /failed-checks\.json/, 'FAILED package must contain machine-readable failed checks');
+  assert.match(source, /FAILURES\.txt/, 'FAILED package must contain an immediately readable failure summary');
+
   run(['tests/user-copied-identity-regression.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/full-uat-runner-contract.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/live-uat-regressions.mjs'], { TMS_TEST_SOURCE: target });
 
-  console.log('v1.14 release/UAT artifact composition: canonical limits + live cleanup + single-save invariants OK');
+  console.log('v1.14 release/UAT artifact composition: canonical limits + live cleanup + final Save evidence ordering OK');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
