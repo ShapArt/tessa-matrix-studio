@@ -119,7 +119,6 @@ jobs:
           printf '\n' >> dist/tessa-matrix-studio.user.js
           cat hotfixes/interval-add-valid-fallback.js >> dist/tessa-matrix-studio.user.js
           printf '\n' >> dist/tessa-matrix-studio.user.js
-          cat hotfixes/full-uat-runner-v1.js >> dist/tessa-matrix-studio.user.js
           node hotfixes/v1.13.0-full-uat-live-finalize.mjs dist/tessa-matrix-studio.user.js
 
           node --check dist/tessa-matrix-studio.user.js
