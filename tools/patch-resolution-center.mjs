@@ -119,15 +119,8 @@ replaceOnce(
 );
 
 replaceOnce(
-`      \${warnings.length ? \`<details class=\\"tms-warning\\"><summary>Нужно проверить</summary><div>\${warnings.map(item => \`<div>\${escapeHtml(item)}</div>\`).join('')}</div></details>\` : ''}
-    \`;
-
-    // Не теряем раскрытую строку после клика по review-кнопке и повторного renderPlan().`,
-`      \${warnings.length ? \`<details class=\\"tms-warning\\"><summary>Нужно проверить</summary><div>\${warnings.map(item => \`<div>\${escapeHtml(item)}</div>\`).join('')}</div></details>\` : ''}
-    \`;
-    renderResolutionCenter(plan);
-
-    // Не теряем раскрытую строку после клика по review-кнопке и повторного renderPlan().`,
+  '    // Не теряем раскрытую строку после клика по review-кнопке и повторного renderPlan().',
+  '    renderResolutionCenter(plan);\n\n    // Не теряем раскрытую строку после клика по review-кнопке и повторного renderPlan().',
   'Resolution Center render hook',
 );
 
