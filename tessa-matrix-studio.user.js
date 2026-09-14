@@ -5863,6 +5863,7 @@
       const issues = [];
       const fieldIssues = [];
       const resolutions = [];
+      const resolutionItems = [];
       for (const [id, column] of columnMap.columns.entries()) {
         const issueStart = issues.length;
         const cellOperandKind = operandKind(column);
@@ -5896,6 +5897,25 @@
           resolvedIds.push(result.explicit);
           if (result.issue) {
             issues.push(`Excel ${row.excelRow}: ${result.issue}`);
+            if (result.resolution && Array.isArray(result.candidates) && result.candidates.length) {
+              resolutionItems.push({
+                id: `excel-${row.excelRow}-${column.key}-${index}`,
+                source: 'excel-validation',
+                excelRow: row.excelRow,
+                columnKey: column.key,
+                column: column.excelHeader,
+                columnIndex: column.index,
+                idIndex: column.idIndex,
+                valueIndex: index,
+                base: null,
+                mine: visible,
+                server: null,
+                visible,
+                resolution: result.resolution,
+                issue: result.issue,
+                candidates: clonePlain(result.candidates),
+              });
+            }
             compareValues.push(`invalid:${canonicalValue(visible)}`);
             return;
           }
@@ -5946,7 +5966,7 @@
           && canonicalValue(item.versionId) === canonicalValue(system.versionId));
         if (!system.baseFingerprint && base) system.baseFingerprint = base.baseFingerprint;
       }
-      return { excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, clearedForDeletion, issues, fieldIssues, resolutions, fingerprint: fingerprintFlat(flat), compareFingerprint: fingerprintFlat(compare) };
+      return { excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, clearedForDeletion, issues, fieldIssues, resolutions, resolutionItems, fingerprint: fingerprintFlat(flat), compareFingerprint: fingerprintFlat(compare) };
     });
   }
 
@@ -8453,6 +8473,161 @@
    * и не являются частью requested mutation-plan, поэтому сами по себе не делают
    * успешный Apply частичным.
    */
+  // RESOLUTION_CENTER_V1
+  function collectPlanResolutionItems(plan) {
+    const collected = [];
+    const append = (item, defaults = {}) => {
+      if (!item || typeof item !== 'object') return;
+      const normalized = {
+        ...clonePlain(item),
+        source: item.source || defaults.source || 'excel-validation',
+        actionType: item.actionType || defaults.actionType || null,
+        excelRow: Number(item.excelRow || defaults.excelRow) || null,
+        base: item.base ?? null,
+        mine: item.mine ?? item.visible ?? '',
+        server: item.server ?? null,
+        candidates: Array.isArray(item.candidates) ? clonePlain(item.candidates) : [],
+      };
+      normalized.id = normalizeSpace(normalized.id)
+        || ['resolution', normalized.excelRow || 'row', normalized.columnKey || normalized.column || 'field', normalized.valueIndex || 0].join('-');
+      collected.push(normalized);
+    };
+    for (const skip of plan?.skippedRows || []) {
+      for (const item of skip?.resolutionItems || []) append(item, skip);
+    }
+    for (const row of plan?.desired || []) {
+      for (const item of row?.resolutionItems || []) append(item, { excelRow: row?.excelRow, source: 'excel-validation' });
+    }
+    const seen = new Set();
+    return collected.filter(item => {
+      const key = normalizeSpace(item.id);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function applyResolutionChoiceToWorkbook(workbook, resolution, choice) {
+    if (!workbook || !Array.isArray(workbook.rows)) throw new Error('Книга Excel для исправления недоступна.');
+    if (!resolution || typeof resolution !== 'object') throw new Error('Не передан вариант исправления.');
+    const excelRow = Number(resolution.excelRow);
+    const row = workbook.rows.find(item => Number(item?.excelRow) === excelRow);
+    if (!row || !Array.isArray(row.values)) throw new Error('Строка Excel для исправления не найдена.');
+    const candidates = Array.isArray(resolution.candidates) ? resolution.candidates : [];
+    const requestedId = canonicalValue(choice?.id || '');
+    const requestedRoleType = canonicalValue(choice?.roleTypeId ?? '');
+    const selected = candidates.find(candidate => {
+      if (canonicalValue(candidate?.id || '') !== requestedId) return false;
+      const candidateRoleType = canonicalValue(candidate?.roleTypeId ?? '');
+      return !requestedRoleType || !candidateRoleType || candidateRoleType === requestedRoleType;
+    });
+    if (!selected) throw new Error('Выбранный вариант отсутствует в актуальном наборе кандидатов.');
+
+    // Display text is user-visible roundtrip data. Keep its punctuation exactly as the
+    // dictionary returned it (notably the em dash in "ФИО — должность"). The generic
+    // normalizeSpace() intentionally folds Unicode dashes for matching and therefore
+    // must not be used when writing the selected label back to Excel.
+    const cleanCellToken = value => String(value ?? '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const valueIndex = Math.max(0, Math.trunc(Number(resolution.valueIndex) || 0));
+    const writeToken = (cellIndex, value) => {
+      const index = Number(cellIndex);
+      if (!Number.isInteger(index) || index < 0) return false;
+      const parts = splitCell(row.values[index] || '');
+      while (parts.length <= valueIndex) parts.push('');
+      parts[valueIndex] = cleanCellToken(value);
+      row.values[index] = parts.join('; ');
+      return true;
+    };
+
+    const display = cleanCellToken(selected.selector || selected.display || selected.shortName || selected.fullName || '');
+    if (!display) throw new Error('У выбранного кандидата отсутствует отображаемое значение.');
+    const explicit = normalizeSpace(selected.explicit || (selected.roleTypeId === undefined || selected.roleTypeId === null || selected.roleTypeId === ''
+      ? String(selected.id || '')
+      : String(selected.id || '') + '|' + String(selected.roleTypeId)));
+    const changedVisible = writeToken(resolution.columnIndex, display);
+    const changedExplicit = writeToken(resolution.idIndex, explicit);
+    if (!changedVisible) throw new Error('Не удалось определить колонку Excel для исправления.');
+    return { changed: changedVisible || changedExplicit, excelRow, display, explicit, candidate: clonePlain(selected) };
+  }
+
+  async function recheckResolutionCenterPlan() {
+    if (!APP.workbook || !APP.structure || !APP.bridge) throw new Error('Сначала выполните проверку выбранного Excel.');
+    APP.abortRequested = false;
+    setProgress(20, 'Перепроверяю исправление', 'Перечитываю актуальную матрицу TESSA');
+    const bridge = APP.bridge;
+    const structure = APP.structure;
+    const snapshot = await bridge.loadSnapshot(structure);
+    const plan = buildPlan(APP.workbook, structure, snapshot, bridge.matrixInfo());
+    plan.safety = evaluatePlanSafety(plan, bridge);
+    plan.matrixInfo = plan.safety.matrixInfo;
+    let previewPlan = plan;
+    if (!plan.safety.blocked && plan.actions.some(action => action.type !== 'noop')) {
+      const previewPreflight = await preflightPlan(plan, { previewOnly: true, bridge, structure, onProgress: () => {} });
+      previewPlan = applyPreflightPreview(plan, previewPreflight);
+    }
+    APP.snapshot = snapshot;
+    setSessionSnapshot(snapshot, structure);
+    APP.review = createPlanReviewState();
+    APP.previewView = createPreviewViewState();
+    APP.plan = previewPlan;
+    renderPlan(previewPlan);
+    const unresolved = collectPlanResolutionItems(previewPlan).length;
+    setProgress(100, unresolved ? 'Нужно ещё уточнение' : 'Исправление проверено', unresolved ? 'Остались неоднозначные значения: ' + unresolved : 'Preview пересобран по актуальной TESSA.');
+    return previewPlan;
+  }
+
+  function renderResolutionCenter(plan) {
+    const host = document.querySelector?.('#tms-resolution-center');
+    if (!host) return;
+    const items = collectPlanResolutionItems(plan);
+    if (!items.length) {
+      host.hidden = true;
+      host.innerHTML = '';
+      return;
+    }
+    host.hidden = false;
+    host.innerHTML = '<div class="tms-review-note"><b>Нужно уточнить значения: ' + items.length + '</b><br>Studio не будет угадывать сотрудника или справочник. Выберите точное значение и перепроверьте Preview.</div>'
+      + items.map((item, itemIndex) => {
+        const title = item.excelRow ? 'Excel ' + item.excelRow + ' · ' + (item.column || item.columnKey || 'поле') : (item.column || item.columnKey || 'Конфликт');
+        const candidates = (item.candidates || []).map((candidate, candidateIndex) => {
+          const label = candidate.selector || candidate.display || candidate.shortName || candidate.fullName || candidate.id || 'Вариант';
+          return '<div class="tms-resolution-choice"><span>' + escapeHtml(label) + '</span><button type="button" data-resolution-choice="' + itemIndex + ':' + candidateIndex + '">Выбрать и перепроверить</button></div>';
+        }).join('');
+        return '<details class="tms-action" open><summary><b>' + escapeHtml(title) + '</b></summary><div class="tms-action-body"><div class="tms-warning">' + escapeHtml(item.issue || 'Требуется явный выбор.') + '</div>' + candidates + '<button type="button" data-resolution-skip="' + itemIndex + '">Пропустить осознанно</button></div></details>';
+      }).join('');
+
+    host.querySelectorAll?.('button[data-resolution-choice]')?.forEach(button => button.addEventListener('click', async () => {
+      if (APP.busy) return;
+      const [itemIndexText, candidateIndexText] = String(button.dataset.resolutionChoice || '').split(':');
+      const item = items[Number(itemIndexText)];
+      const candidate = item?.candidates?.[Number(candidateIndexText)];
+      if (!item || !candidate) return;
+      setBusy(true);
+      try {
+        const outcome = applyResolutionChoiceToWorkbook(APP.workbook, item, candidate);
+        log('Resolution Center: Excel ' + outcome.excelRow + ' → ' + outcome.display + '.');
+        await recheckResolutionCenterPlan();
+      } catch (error) {
+        const message = friendlyErrorMessage(error);
+        log(message, 'error', error);
+        setProgress(100, 'Не удалось применить уточнение', message);
+      } finally {
+        setBusy(false);
+      }
+    }));
+
+    host.querySelectorAll?.('button[data-resolution-skip]')?.forEach(button => button.addEventListener('click', () => {
+      const item = items[Number(button.dataset.resolutionSkip)];
+      if (!item) return;
+      button.disabled = true;
+      button.textContent = 'Пропуск подтверждён';
+      log('Resolution Center: пользователь осознанно пропустил Excel ' + (item.excelRow || '?') + ' · ' + (item.column || item.columnKey || 'поле') + '.', 'warn');
+    }));
+  }
+
   function finalizeApplyResult(result, options = {}) {
     const cancelled = Boolean(options.cancelled ?? result?.cancelled);
     result.acceptedCount = (result.rows || []).filter(row => row.status === 'ok').length;
@@ -8480,7 +8655,10 @@
       || result.storeSkippedCount > 0
       || result.failedCount > 0
       || result.notStartedCount > 0;
-    result.status = cancelled ? 'cancelled' : (mutationIncomplete ? 'partial' : 'completed');
+    const sourceNeedsAttention = result.sourceSkippedCount > 0;
+    result.status = cancelled
+      ? 'cancelled'
+      : (mutationIncomplete ? 'partial' : (sourceNeedsAttention ? 'attention' : 'completed'));
     result.partial = result.status !== 'completed';
     result.success = result.status === 'completed';
     return result;
@@ -8513,6 +8691,14 @@
         : (result?.viewRefresh && !result.viewRefresh.skipped ? '\nЗапись завершена, но отображение TESSA не удалось обновить автоматически.' : '');
       const verifyNote = result?.reconciliation ? `\nПовторная проверка: подтверждено ${verified} из ${accepted}.` : '';
       return `Готово. Применено: ${applied} из ${requested}.\nВсе подготовленные изменения применены.${matrixSaveNote}${verifyNote}${sourceNote}${result.skippedFields?.length ? `\nНе применено отдельных полей: ${result.skippedFields.length}. Причины указаны в отчёте.` : ''}${refreshNote}\nПеред следующим Apply нужна свежая проверка или свежая выгрузка Excel.`;
+    }
+    if (result?.status === 'attention') {
+      return `Требуется внимание.\
+\
+Применено: ${applied} из ${requested}.\
+Отдельно не вошли в Apply: ${sourceSkipped}.\
+\
+Исправьте неоднозначные значения в Resolution Center и перепроверьте Preview либо подтвердите осознанный пропуск. Зелёный результат возможен только без неразрешённых пользовательских изменений.`;
     }
     const mutationSkipped = preflightSkipped + storeSkipped;
     if (result?.verificationIncomplete && mutationSkipped === 0 && notStarted === 0 && applied === requested) {
@@ -10635,6 +10821,8 @@
       ${warnings.length ? `<details class="tms-warning"><summary>Нужно проверить</summary><div>${warnings.map(item => `<div>${escapeHtml(item)}</div>`).join('')}</div></details>` : ''}
     `;
 
+    renderResolutionCenter(plan);
+
     // Не теряем раскрытую строку после клика по review-кнопке и повторного renderPlan().
     const openActionKeys = new Set([...table.querySelectorAll('details[open][data-review-action-key]')].map(item => item.dataset.reviewActionKey));
     table.innerHTML = '';
@@ -11540,6 +11728,9 @@
       #tms-panel .tms-action-body{padding:0 12px 12px}
       #tms-panel .tms-review-row-actions{display:flex;gap:8px;flex-wrap:wrap;padding:4px 0 8px}
       #tms-panel .tms-review-state{font-size:12px;color:var(--tms-muted)}
+      #tms-panel #tms-resolution-center{margin:12px 0}
+      #tms-panel .tms-resolution-choice{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid var(--tms-line)}
+      #tms-panel .tms-resolution-choice span{flex:1;overflow-wrap:anywhere}
       #tms-panel .tms-review-btn[aria-pressed=true]{background:#e9edf1}
       #tms-panel .tms-review-row-excluded{background:var(--tms-soft)}
       #tms-panel .tms-diff{padding:10px 0;border-top:1px solid var(--tms-line)}
@@ -11661,7 +11852,7 @@
           <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-download-changes" hidden disabled>Скачать изменения в Excel</button><button id="tms-download-report" hidden disabled>Скачать результат</button><button id="tms-download-support-report" hidden disabled>Скачать отчёт для поддержки</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
           <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
         </div>
-        <div id="tms-summary"></div><div id="tms-plan"></div>
+        <div id="tms-summary"></div><section id="tms-resolution-center" hidden aria-label="Разрешение неоднозначностей"></section><div id="tms-plan"></div>
       </div>`;
     document.body.appendChild(panel);
 
@@ -11917,7 +12108,7 @@
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, buildChangesReportModel, createChangesReportXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
-    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, replacementConfirmationModel, confirmCrossMatrixReplacement, isWriterLockError, persistMainMatrixAfterApply, refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,
+    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, replacementConfirmationModel, confirmCrossMatrixReplacement, isWriterLockError, persistMainMatrixAfterApply, refreshNativeMatrixViewAfterApply, collectPlanResolutionItems, applyResolutionChoiceToWorkbook, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, classifyWorkbookContext, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
