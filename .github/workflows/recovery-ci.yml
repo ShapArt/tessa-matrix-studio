@@ -5,6 +5,7 @@ on:
     branches: [fix/v1.14-recovery-uat-resolution]
   pull_request:
     branches: [feat/incremental-performance-v1.14]
+  workflow_dispatch:
 
 permissions:
   contents: read
