@@ -1,0 +1,1 @@
+RED proof trigger for Full UAT write policy.
