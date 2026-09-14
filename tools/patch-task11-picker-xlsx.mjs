@@ -82,14 +82,25 @@ if (!source.includes('async function loadLivePickerSource(')) {
     };
   }
 
-  // Excel remains supported when a workbook is explicitly selected. Without a workbook,
-  // always refresh from the currently open TESSA matrix so Active -> Draft transitions and
-  // stale in-memory catalogs cannot make the picker depend on a previous export.
+  // Excel remains supported when a workbook is explicitly selected. In production, no
+  // workbook means a fresh TESSA read every time so Active -> Draft transitions and stale
+  // in-memory catalogs cannot make the picker depend on a previous export. Node DOM tests
+  // may intentionally inject APP state so they can exercise rendering without a TESSA host.
   async function openValuePicker() {
     const file = document.querySelector('#tms-file')?.files?.[0];
-    const source = file
-      ? await readXlsxArrayBuffer(await file.arrayBuffer(), file.name)
-      : await loadLivePickerSource();
+    let source;
+    if (file) {
+      source = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
+    } else if (window.__TESSA_MATRIX_SYNC_TEST_MODE__ && APP.structure && APP.snapshot && APP.dictionaryCatalog) {
+      const grid = buildRoundtripGrid(APP.structure, APP.snapshot, {}, APP.dictionaryCatalog);
+      source = {
+        headers: grid.columns.map(column => column.header),
+        schemaTokens: grid.columns.map(column => column.schema),
+        dictionaryCatalog: grid.dictionaryCatalog,
+      };
+    } else {
+      source = await loadLivePickerSource();
+    }
     const columns = pickerColumns(source);`;
 
   replaceOnce(oldBlock, newBlock, 'Task11 live picker bootstrap');
@@ -110,6 +121,7 @@ assert.match(source, /MaxEntryUncompressedBytes:\s*128 \* 1024 \* 1024,/);
 assert.match(source, /MaxTotalUncompressedBytes:\s*512 \* 1024 \* 1024,/);
 assert.match(source, /MaxCompressionRatio:\s*100,/);
 assert.match(source, /loadDictionaryCatalog\(structure, snapshot, \{ forceRefresh: true \}\)/);
+assert.match(source, /else \{\s*source = await loadLivePickerSource\(\);\s*\}/);
 assert.doesNotMatch(source, /Сначала скачайте Excel или выберите рабочую книгу со справочниками\./);
 
 fs.writeFileSync(path, source, 'utf8');
