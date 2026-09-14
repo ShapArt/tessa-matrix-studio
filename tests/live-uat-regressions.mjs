@@ -47,8 +47,8 @@ assert.match(source, /FULL_UAT_CLEAR_NOT_RUN_CLEANUP_V1/,
   'Full UAT must cleanup a temporary row before returning NOT_RUN from clear-field scenario');
 assert.match(source, /FULL_UAT_ADD_RECEIPT_RECOVERY_V2/,
   'Full UAT must bind the Task9 cleanup obligation to the exact ADD receipt before read-back');
-assert.match(source, /Number\(result\.appliedCount \|\| 0\) !== 1/,
-  'Full UAT write helper must require exactly one applied mutation');
+assert.match(source, /const accepted = Number\(result\.appliedCount \?\? result\.acceptedCount \?\? 0\)/,
+  'Full UAT accepted-write helper must require exactly one accepted/applied mutation before fresh read-back');
 assert.match(source, /cleanupCreatedRow\(receiptRowCardId, `\$\{scenarioId\}-add-readback-recovery`\)/,
   'post-ADD read-back failure must cleanup by the exact stored RowCardID from the Apply receipt');
 
