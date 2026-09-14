@@ -18,14 +18,22 @@ assert.match(source, /MaxCompressionRatio:\s*100/,
 assert.match(source, /skipSheetNames:\s*\['Словари'\][\s\S]{0,300}selectiveInflate:\s*true/,
   'live-catalog workbook reads must skip the disposable dictionary XML before inflate');
 
-// Full UAT already asks for one explicit confirmation before real temporary writes.
-// Nested Apply confirmations made live temporary write scenarios nondeterministic.
+// Full UAT asks once for explicit consent before real temporary writes. Its internal
+// operations must not repeat ordinary Apply confirmation dialogs or native main-card Saves.
 assert.match(source, /async function applyPlan\(plan, options = \{\}\)/,
-  'Apply must support an injected confirmation policy for pre-approved UAT writes');
+  'Apply must support scoped options for pre-approved UAT writes');
 assert.match(source, /const confirmApply = typeof options\.confirm === 'function'/,
   'Apply must preserve normal UI confirmation while allowing a scoped UAT confirmer');
-assert.match(source, /E\.applyPlan\(plan, \{ confirm: \(\) => true, source: 'full-uat' \}\)/,
-  'Full UAT must not ask a second confirmation for every temporary mutation');
+assert.match(source, /FULL_UAT_DEFER_MAIN_SAVE_V1/,
+  'Apply must expose a scoped deferred native-Save policy for Full UAT');
+assert.match(source, /reason:\s*'deferred-by-caller'/,
+  'deferred main-card Save must be explicit in Apply accounting');
+assert.match(source, /E\.applyPlan\(plan, \{ confirm: \(\) => true, source: 'full-uat', deferMainMatrixSave: true \}\)/,
+  'Full UAT must auto-confirm its internal Apply calls and defer their native main-card Save');
+assert.match(source, /FULL_UAT_SINGLE_MAIN_SAVE_V1/,
+  'Full UAT must perform one final native Save after write/cleanup work');
+assert.match(source, /report\.writesCompleted\s*>\s*0[\s\S]{0,900}saveMainMatrixAfterApply\(\)/,
+  'the final native Save must happen only when at least one UAT mutation was accepted');
 
 // Snapshot rows are intentionally DTO-only. Field diagnostics must hydrate a native Card
 // on demand instead of expecting row.card to exist in the snapshot.
@@ -36,13 +44,17 @@ assert.match(source, /await bridge\.getCard\(row\.rowCardId\)/,
 assert.doesNotMatch(source, /if \(!controlRow\.card\?\.clone\) return \{ status: 'not-run', detail: 'Карточка для проверки перестройки недоступна\.'/,
   'field diagnostics must not mark every field NOT RUN merely because snapshot DTOs contain no Card object');
 
-// Schema refresh must use a locally-defined semantic change scorer. Full UAT accepts only
-// a complete single mutation, and every temporary ADD is bound to the exact receipt ID in
-// the Task9 cleanup ledger before post-write read-back begins.
+// Schema refresh must use a locally-defined semantic change scorer. Full UAT accepts an
+// operation only when exactly one mutation was actually applied with no skipped/failed or
+// unstarted work; the runner then owns the authoritative fresh read-back and cleanup proof.
 assert.match(source, /MERGE_COPY_IDENTITY_SCORING_V1/,
   'merge-with-current must define copied-identity change scoring in its own scope');
 assert.match(source, /FULL_UAT_STRICT_APPLY_RESULT_V1/,
-  'Full UAT must reject partial, skipped or incomplete Apply results');
+  'Full UAT must keep explicit write-accounting validation');
+assert.match(source, /FULL_UAT_ACCEPTED_WRITE_RESULT_V2/,
+  'Full UAT must distinguish accepted writes from nested post-write verification status');
+assert.doesNotMatch(source, /result\.success\s*!==\s*true\s*\|\|\s*result\.status\s*!==\s*'completed'/,
+  'Full UAT must not fail an accepted mutation solely because ordinary Apply post-write verification is partial');
 assert.match(source, /FULL_UAT_CLEAR_NOT_RUN_CLEANUP_V1/,
   'Full UAT must cleanup a temporary row before returning NOT_RUN from clear-field scenario');
 assert.match(source, /FULL_UAT_ADD_RECEIPT_RECOVERY_V2/,
@@ -66,4 +78,4 @@ vm.runInThisContext(source);
 assert.ok(globalThis.__TESSA_MATRIX_SYNC_EXPORTS__?.applyPlan);
 assert.ok(globalThis.__TMS_FULL_UAT_V1__?.runFullUat);
 
-console.log('Live UAT regressions: selective XLSX, pre-approved writes, native diagnostics and cleanup invariants: OK');
+console.log('Live UAT regressions: selective XLSX, single-consent/single-save writes, native diagnostics and cleanup invariants: OK');
