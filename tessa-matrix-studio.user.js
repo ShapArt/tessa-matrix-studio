@@ -11775,7 +11775,9 @@
       source = await loadLivePickerSource();
     }
     const columns = pickerColumns(source);
-    if (!columns.length) throw new Error('В книге нет справочников для выбора. Скачайте Excel со справочниками.');
+    if (!columns.length) throw new Error(file
+      ? 'В выбранной книге нет справочников для выбора. Выберите актуальную рабочую книгу.'
+      : 'В текущей матрице не удалось получить справочники для выбора. Обновите карточку матрицы и повторите.');
     closeValuePicker();
     APP.picker = {
       columns,
