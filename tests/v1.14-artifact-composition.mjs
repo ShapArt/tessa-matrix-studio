@@ -58,11 +58,21 @@ try {
   assert.doesNotMatch(source, /result\.success\s*!==\s*true\s*\|\|\s*result\.status\s*!==\s*'completed'/,
     'Full UAT must not reject an accepted write solely because nested post-write verification reported partial');
 
+  // A failed one-button UAT must be diagnosable from the result itself. The current live
+  // package can contain exact check details while the visible status/summary only says
+  // "FAIL 4", which forces another tooling round just to learn which checks failed.
+  assert.match(source, /FULL_UAT_FAILURE_SUMMARY_V1/,
+    'composed artifact must expose a stable failure-summary contract');
+  assert.match(source, /failedChecks:\s*failedChecks/,
+    'summary.json must include the exact failed check IDs/titles/details');
+  assert.match(source, /result\.failedChecks[\s\S]{0,500}check\.id[\s\S]{0,500}check\.detail/,
+    'visible Full UAT status must print failed check IDs and details');
+
   run(['tests/user-copied-identity-regression.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/full-uat-runner-contract.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/live-uat-regressions.mjs'], { TMS_TEST_SOURCE: target });
 
-  console.log('v1.14 release/UAT artifact composition: canonical limits + live cleanup + single-save invariants OK');
+  console.log('v1.14 release/UAT artifact composition: canonical limits + live cleanup + single-save + failure-evidence invariants OK');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

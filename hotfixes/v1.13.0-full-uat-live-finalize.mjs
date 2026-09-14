@@ -161,6 +161,28 @@ replaceExact(
   'single final Full UAT main-card Save',
 );
 
+// A one-button UAT must also be one-result diagnostics. Persist the exact failed checks in
+// summary.json and expose the same compact evidence in the visible final status. This does
+// not change pass/fail criteria; it only removes the blind "FAIL N" aggregate.
+replaceExact(
+`      const summary = { format: 'TESSA_FULL_UAT_SUMMARY_V1', status: report.status, seed: report.seed, studioVersion: report.studioVersion, runnerVersion: report.runnerVersion, matrix: report.matrix, startedAt: report.startedAt, finishedAt: report.finishedAt, summary: report.summary };`,
+`      // FULL_UAT_FAILURE_SUMMARY_V1
+      const failedChecks = report.checks.filter(check => check?.status === 'FAIL').map(check => ({
+        id: String(check.id || ''), title: String(check.title || ''), detail: String(check.detail || ''), required: check.required !== false,
+      }));
+      report.failedChecks = failedChecks;
+      const summary = { format: 'TESSA_FULL_UAT_SUMMARY_V1', status: report.status, seed: report.seed, studioVersion: report.studioVersion, runnerVersion: report.runnerVersion, matrix: report.matrix, startedAt: report.startedAt, finishedAt: report.finishedAt, summary: report.summary, failedChecks: failedChecks };`,
+  'Full UAT failure evidence summary',
+);
+
+// Patch only the unique status suffix instead of matching the whole one-line try block;
+// the source intentionally uses a line-continuation backslash inside its template literal.
+replaceExact(
+`Итоговый ZIP скачан. Seed: ${'${result.seed}'}`,
+`Итоговый ZIP скачан. Seed: ${'${result.seed}'}${'${(result.failedChecks || []).length ? "\\n" + result.failedChecks.map(check => "FAIL " + (check.id || "unknown") + " · " + (check.detail || check.title || "Без деталей")).join("\\n") : ""}'}`,
+  'visible Full UAT failure evidence',
+);
+
 for (const marker of [
   "E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMainMatrixSave: true })",
   'MERGE_COPY_IDENTITY_SCORING_V1',
@@ -169,9 +191,10 @@ for (const marker of [
   'FULL_UAT_ADD_RECEIPT_RECOVERY_V2',
   'FULL_UAT_CLEAR_NOT_RUN_CLEANUP_V1',
   'FULL_UAT_SINGLE_MAIN_SAVE_V1',
+  'FULL_UAT_FAILURE_SUMMARY_V1',
 ]) {
   if (!source.includes(marker)) throw new Error(`Full UAT live finalizer verification failed: ${marker}`);
 }
 
 fs.writeFileSync(target, source, 'utf8');
-console.log('TESSA Matrix Studio v1.14 Full UAT single-save artifact finalize: OK');
+console.log('TESSA Matrix Studio v1.14 Full UAT single-save + failure-evidence artifact finalize: OK');
