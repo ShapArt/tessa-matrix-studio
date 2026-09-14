@@ -72,8 +72,13 @@ replaceExact(
     if (!plan) throw new Error('Сначала проверьте Excel.');`,
 `  async function applyPlan(plan, options = {}) {
     if (!plan) throw new Error('Сначала проверьте Excel.');
-    const confirmApply = typeof options.confirm === 'function' ? options.confirm : message => window.confirm(message);`,
-  'inject Apply confirmer',
+    const confirmApply = typeof options.confirm === 'function' ? options.confirm : message => window.confirm(message);
+    // FULL_UAT_DEFER_MAIN_SAVE_V1
+    // Full UAT owns the complete temporary-write transaction and proves each mutation by
+    // fresh read-back. It may defer the native main-card Save until cleanup is finished;
+    // ordinary Apply never sets this flag and therefore keeps the existing Save contract.
+    const deferMainMatrixSave = options.deferMainMatrixSave === true;`,
+  'inject Apply confirmer and deferred-save policy',
 );
 replaceExact(
 `      const okBatch = window.confirm(\`${'${batch.reason}'}
@@ -93,6 +98,22 @@ replaceExact(
 `      const ok = window.confirm(\`Применить корректные изменения к TESSA?\\n\\nИзменить: ${'${c.update}'}\\nДобавить: ${'${c.add}'}\\nУдалить: ${'${c.delete}'}\\nПропустить: ${'${c.skip || 0}'}${'${plan.skippedFields?.length ? `\\nОставить без изменения отдельных полей: ${plan.skippedFields.length}` : \'\'}'}\\n\\nОшибочные строки и указанные в Preview поля не будут применены.\`);`,
 `      const ok = confirmApply(\`Применить корректные изменения к TESSA?\\n\\nИзменить: ${'${c.update}'}\\nДобавить: ${'${c.add}'}\\nУдалить: ${'${c.delete}'}\\nПропустить: ${'${c.skip || 0}'}${'${plan.skippedFields?.length ? `\\nОставить без изменения отдельных полей: ${plan.skippedFields.length}` : \'\'}'}\\n\\nОшибочные строки и указанные в Preview поля не будут применены.\`);`,
   'standard confirmation policy',
+);
+
+// Keep ordinary Apply on the native editor Save pipeline, but let the pre-confirmed Full
+// UAT transaction defer that Save. The accepted row receipts remain available immediately
+// and Full UAT performs its own server read-back before moving to the next operation.
+replaceExact(
+`    result.matrixSave = await persistMainMatrixAfterApply(bridge, result);`,
+`    result.matrixSave = deferMainMatrixSave
+      ? {
+          ok: false,
+          skipped: true,
+          reason: 'deferred-by-caller',
+          acceptedCount: (result.rows || []).filter(row => row?.status === 'ok').length,
+        }
+      : await persistMainMatrixAfterApply(bridge, result);`,
+  'defer native main-card Save for Full UAT',
 );
 
 // Since v1.14 the live-card diagnostics fix is canonical source. For older source
@@ -141,9 +162,9 @@ replaceExact(
 if ((source.match(/DUPLICATE_IDENTITY_COPY_AS_ADD_V1/g) || []).length !== 2) {
   throw new Error('Copied identity patch marker count mismatch.');
 }
-for (const marker of ['tms-picker-import-block', 'TessaBridge, makeZip,', 'const confirmApply =', 'diagnosticNativeCardCache']) {
+for (const marker of ['tms-picker-import-block', 'TessaBridge, makeZip,', 'const confirmApply =', 'FULL_UAT_DEFER_MAIN_SAVE_V1', "reason: 'deferred-by-caller'", 'diagnosticNativeCardCache']) {
   if (!source.includes(marker)) throw new Error(`v1.13.0 transform verification failed: ${marker}`);
 }
 
 fs.writeFileSync(target, source, 'utf8');
-console.log('TESSA Matrix Studio v1.13.0 row lifecycle + live UAT hardening transform: OK');
+console.log('TESSA Matrix Studio v1.14 row lifecycle + deferred Full UAT Save transform: OK');
