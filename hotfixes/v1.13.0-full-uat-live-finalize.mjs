@@ -223,7 +223,7 @@ replaceExact(
         .filter(check => check.status === 'FAIL')
         .map(check => ({ id: check.id, title: check.title, detail: check.detail, required: check.required !== false }));
       if (report.failedChecks.length) {
-        const failureText = report.failedChecks.map((check, index) => (index + 1) + '. ' + check.id + ' — ' + (check.title || '') + '\n' + String(check.detail || '')).join('\n\n');
+        const failureText = report.failedChecks.map((check, index) => (index + 1) + '. ' + check.id + ' — ' + (check.title || '') + '\\n' + String(check.detail || '')).join('\\n\\n');
         packageEntries.push(['failed-checks.json', utf8({ seed: report.seed, status: report.status, failures: report.failedChecks })], ['FAILURES.txt', utf8(failureText)]);
       }
 
