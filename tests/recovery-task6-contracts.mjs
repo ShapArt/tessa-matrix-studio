@@ -131,8 +131,10 @@ function cloneBook() {
   const catalogId = refreshed.dictionaryCatalog.columnCatalogIds['criterion:ref'];
   const entries = refreshed.dictionaryCatalog.catalogs[catalogId].entries;
   assert.deepEqual(entries.map(x => x.id).sort(), ['new', 'one'], 'removed lookup values must disappear and added values must appear');
-  assert.equal(entries.find(x => x.id === 'one').display, 'Переименованное');
-  assert.equal(entries.find(x => x.id === 'one').selector, 'Прежнее', 'stable ID rename must preserve the old selector for the existing workbook cell');
+  const renamed = entries.find(x => x.id === 'one');
+  assert.equal(renamed.display, 'Переименованное');
+  assert.equal(renamed.selector, 'Переименованное', 'refreshed catalog must expose the current renamed value');
+  assert.ok((renamed.previousSelectors || []).includes('Прежнее'), 'renamed value must retain the old selector as compatibility history');
   assert.equal(E.resolveEmbeddedDictionaryValue(refreshed, { kind: 'criterion', key: 'criterion:ref', excelHeader: 'Справочник' }, 'Прежнее', 'one').explicit, 'one');
 }
 
