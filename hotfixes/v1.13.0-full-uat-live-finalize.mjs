@@ -55,8 +55,18 @@ replaceExact(
 // temporary writes and cleanup have completed. Ordinary Apply keeps both behaviours.
 replaceExact(
 `      const result = await E.applyPlan(plan);`,
-`      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMainMatrixSave: true });`,
-  'pre-approved Full UAT Apply with deferred main Save',
+`      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMainMatrixSave: true, runtimeBridge: bridge, runtimeStructure: structure });`,
+  'pre-approved Full UAT Apply with deferred main Save and scoped runtime context',
+);
+
+// FULL_UAT_RUNTIME_CONTEXT_V1
+// The UPDATE plans below are built from freshSnapshot(). Keep their preflight bound to
+// that same bridge/structure instead of creating a second context between plan and Apply.
+// Ordinary Apply does not supply these options and therefore keeps the original path.
+replaceExact(
+`      preflight = await preflightPlan(plan);`,
+`      preflight = await preflightPlan(plan, { bridge: options.runtimeBridge || undefined, structure: options.runtimeStructure || undefined });`,
+  'scoped Full UAT preflight runtime context',
 );
 
 // Full UAT owns the authoritative post-write proof: every accepted temporary mutation is
@@ -66,11 +76,11 @@ replaceExact(
 // still prove exactly one accepted write and zero skipped/failed/unstarted work. Preserve
 // the first concrete rejection reason so a live failure is actionable without archaeology.
 replaceExact(
-`      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMainMatrixSave: true });
+`      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMainMatrixSave: true, runtimeBridge: bridge, runtimeStructure: structure });
       if (!result) throw new Error(\`${'${label}'}: применение отменено.\`);
       report.writesCompleted += 1;
       return result;`,
-`      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMainMatrixSave: true });
+`      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMainMatrixSave: true, runtimeBridge: bridge, runtimeStructure: structure });
       if (!result) throw new Error(\`${'${label}'}: применение отменено.\`);
       // FULL_UAT_STRICT_APPLY_RESULT_V1
       // FULL_UAT_ACCEPTED_WRITE_RESULT_V2
@@ -233,8 +243,11 @@ replaceExact(
 );
 
 for (const marker of [
-  "E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMainMatrixSave: true })",
+  "E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMainMatrixSave: true, runtimeBridge: bridge, runtimeStructure: structure })",
   'MERGE_COPY_IDENTITY_SCORING_V1',
+  'FULL_UAT_RUNTIME_CONTEXT_V1',
+  'options.runtimeBridge',
+  'options.runtimeStructure',
   'FULL_UAT_STRICT_APPLY_RESULT_V1',
   'FULL_UAT_ACCEPTED_WRITE_RESULT_V2',
   'FULL_UAT_APPLY_FAILURE_EVIDENCE_V3',
@@ -252,4 +265,4 @@ for (const marker of [
 }
 
 fs.writeFileSync(target, source, 'utf8');
-console.log('TESSA Matrix Studio v1.14 Full UAT final proof artifact finalize: OK');
+console.log('TESSA Matrix Studio v1.14 Full UAT runtime-context + final proof artifact finalize: OK');
