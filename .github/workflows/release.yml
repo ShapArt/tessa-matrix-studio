@@ -54,7 +54,9 @@ jobs:
               hotfixes/v1.13.0-user-row-lifecycle-transform.mjs \
               hotfixes/full-uat-runner-v1.js \
               hotfixes/v1.13.0-full-uat-live-finalize.mjs \
-              package.json | grep -Eq '^(tessa-matrix-studio\.user\.js|hotfixes/interval-add-valid-fallback\.js|hotfixes/malformed-range-diagnostic-transform\.mjs|hotfixes/v1\.13\.0-user-row-lifecycle-transform\.mjs|hotfixes/full-uat-runner-v1\.js|hotfixes/v1\.13\.0-full-uat-live-finalize\.mjs|package\.json)$'; then
+              hotfixes/v1.14-full-uat-inline-failures.mjs \
+              hotfixes/v1.14-live-uat-final-four.mjs \
+              package.json | grep -Eq '^(tessa-matrix-studio\.user\.js|hotfixes/interval-add-valid-fallback\.js|hotfixes/malformed-range-diagnostic-transform\.mjs|hotfixes/v1\.13\.0-user-row-lifecycle-transform\.mjs|hotfixes/full-uat-runner-v1\.js|hotfixes/v1\.13\.0-full-uat-live-finalize\.mjs|hotfixes/v1\.14-full-uat-inline-failures\.mjs|hotfixes/v1\.14-live-uat-final-four\.mjs|package\.json)$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -120,6 +122,8 @@ jobs:
           cat hotfixes/interval-add-valid-fallback.js >> dist/tessa-matrix-studio.user.js
           printf '\n' >> dist/tessa-matrix-studio.user.js
           node hotfixes/v1.13.0-full-uat-live-finalize.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14-full-uat-inline-failures.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14-live-uat-final-four.mjs dist/tessa-matrix-studio.user.js
 
           node --check dist/tessa-matrix-studio.user.js
           grep -Fqx "// @version      $VERSION" dist/tessa-matrix-studio.user.js
@@ -131,6 +135,10 @@ jobs:
           grep -Fq "diagnosticNativeCardCache" dist/tessa-matrix-studio.user.js
           grep -Fq "source: 'full-uat'" dist/tessa-matrix-studio.user.js
           grep -Fq "Numeric ranges have an exact grammar" dist/tessa-matrix-studio.user.js
+          grep -Fq "FULL_UAT_INLINE_FAILURES_V1" dist/tessa-matrix-studio.user.js
+          grep -Fq "FULL_UAT_PICKER_SOURCE_V2" dist/tessa-matrix-studio.user.js
+          grep -Fq "REFRESH_DICTIONARY_DIRECT_XML_V2" dist/tessa-matrix-studio.user.js
+          grep -Fq "FULL_UAT_BOOLEAN_SEMANTIC_V2" dist/tessa-matrix-studio.user.js
 
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/user-copied-identity-regression.mjs
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/full-uat-runner-contract.mjs
@@ -153,7 +161,9 @@ jobs:
             hotfixes/malformed-range-diagnostic-transform.mjs \
             hotfixes/v1.13.0-user-row-lifecycle-transform.mjs \
             hotfixes/full-uat-runner-v1.js \
-            hotfixes/v1.13.0-full-uat-live-finalize.mjs
+            hotfixes/v1.13.0-full-uat-live-finalize.mjs \
+            hotfixes/v1.14-full-uat-inline-failures.mjs \
+            hotfixes/v1.14-live-uat-final-four.mjs
           (
             cd dist
             sha256sum \
@@ -247,6 +257,10 @@ jobs:
           grep -Fq "DUPLICATE_IDENTITY_COPY_AS_ADD_V1" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
           grep -Fq "LIVE_UAT_2026_09_11" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
           grep -Fq "Numeric ranges have an exact grammar" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "FULL_UAT_INLINE_FAILURES_V1" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "FULL_UAT_PICKER_SOURCE_V2" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "REFRESH_DICTIONARY_DIRECT_XML_V2" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "FULL_UAT_BOOLEAN_SEMANTIC_V2" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
           (
             cd "$PUBLIC_DIR"
             sha256sum --check SHA256SUMS.txt

@@ -27,6 +27,7 @@ try {
   fs.appendFileSync(target, `\n${fs.readFileSync(path.join(root, 'hotfixes/interval-add-valid-fallback.js'), 'utf8')}\n`);
   run(['hotfixes/v1.13.0-full-uat-live-finalize.mjs', target]);
   run(['hotfixes/v1.14-full-uat-inline-failures.mjs', target]);
+  run(['hotfixes/v1.14-live-uat-final-four.mjs', target]);
   run(['--check', target]);
 
   const source = fs.readFileSync(target, 'utf8');
@@ -74,8 +75,16 @@ try {
   assert.match(source, /failed-checks\.json/, 'FAILED package must contain machine-readable failed checks');
   assert.match(source, /FAILURES\.txt/, 'FAILED package must contain an immediately readable failure summary');
 
-  // Seeds 29768023 and 1346937433 both reproduced the same 29/4 result. The composed
-  // candidate must therefore surface exact failures without requiring ZIP extraction.
+  // Live failures from seed 874674273: picker must use the production source shape,
+  // generated dictionary refresh must bypass only its own trusted service XML, and Boolean
+  // UAT expectations must compare against native true/false semantics.
+  assert.match(source, /FULL_UAT_PICKER_SOURCE_V2/);
+  assert.match(source, /REFRESH_DICTIONARY_DIRECT_XML_V2/);
+  assert.match(source, /FULL_UAT_BOOLEAN_SEMANTIC_V2/);
+  assert.doesNotMatch(source, /E\.pickerColumns\(structure, catalog\)/);
+
+  // Seeds 29768023 and 1346937433 reproduced the same 29/4 result. The composed candidate
+  // must surface exact failures without requiring ZIP extraction.
   assert.match(source, /FULL_UAT_INLINE_FAILURES_V1/,
     'composed artifact must render failed checks inline');
   assert.match(source, /FAIL DETAILS/,
@@ -89,7 +98,7 @@ try {
   run(['tests/full-uat-runner-contract.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/live-uat-regressions.mjs'], { TMS_TEST_SOURCE: target });
 
-  console.log('v1.14 release/UAT artifact composition: canonical limits + live cleanup + final Save evidence + inline failures OK');
+  console.log('v1.14 release/UAT artifact composition: canonical limits + live cleanup + final Save evidence + inline failures + final-four fixes OK');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

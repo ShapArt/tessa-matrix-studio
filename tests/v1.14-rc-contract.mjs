@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
+import './live-uat-final-four-regressions.mjs';
+import './live-uat-release-composition.mjs';
 
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const source = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
@@ -8,6 +10,7 @@ const readme = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8')
 const communicationPath = new URL('../docs/communications/v1.14-colleague-test-message.md', import.meta.url);
 const fullUatFinalizer = fs.readFileSync(new URL('../hotfixes/v1.13.0-full-uat-live-finalize.mjs', import.meta.url), 'utf8');
 const inlineFailureUxPath = new URL('../hotfixes/v1.14-full-uat-inline-failures.mjs', import.meta.url);
+const finalFourPath = new URL('../hotfixes/v1.14-live-uat-final-four.mjs', import.meta.url);
 
 assert.equal(pkg.version, '1.14.0', 'package candidate version must be 1.14.0');
 assert.match(source, /^\/\/ @version\s+1\.14\.0$/m, 'userscript metadata version must be 1.14.0');
@@ -45,6 +48,12 @@ assert.match(inlineFailureUx, /TESSA_Full_UAT_FAILURES_/,
 assert.match(inlineFailureUx, /FAIL DETAILS/,
   'inline failure UX must render explicit failure details in the panel');
 
+assert.ok(fs.existsSync(finalFourPath), 'final-four live UAT transform must exist');
+const finalFour = fs.readFileSync(finalFourPath, 'utf8');
+assert.match(finalFour, /FULL_UAT_PICKER_SOURCE_V2/);
+assert.match(finalFour, /REFRESH_DICTIONARY_DIRECT_XML_V2/);
+assert.match(finalFour, /FULL_UAT_BOOLEAN_SEMANTIC_V2/);
+
 // The three post-ADD write scenarios build UPDATE plans from a fresh bridge/snapshot.
 // Apply/preflight must use that same runtime context, otherwise the temporary row can be
 // checked against another context between plan construction and Store.
@@ -79,4 +88,4 @@ assert.match(readme, /\*\*v1\.14\.0/);
 assert.ok(readme.includes('docs/assets/studio-panel.webp'), 'real README screenshot must be preserved');
 assert.ok(readme.includes('Скачать изменения в Excel'), 'README should mention reviewed-changes export');
 
-console.log('TESSA Matrix Studio v1.14 RC documentation/final-proof/inline-failures/runtime-context contract: OK');
+console.log('TESSA Matrix Studio v1.14 RC documentation/final-proof/inline-failures/runtime-context/final-four contract: OK');
