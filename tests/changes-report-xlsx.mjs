@@ -5,7 +5,7 @@ import { applyChangesReportFullRow } from '../hotfixes/v1.14.1-changes-report-fu
 
 const baseCode = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
 const code = applyChangesReportFullRow(baseCode);
-assert.ok(code.includes('REVIEWED_CHANGES_REPORT_V2'), 'v1.14.1 changes-report marker missing');
+assert.ok(code.includes('REVIEWED_CHANGES_REPORT_V3'), 'v1.14.1 Russian changes-report marker missing');
 assert.ok(!code.includes('Детали изменений'), 'changes workbook must contain only one visible report sheet');
 assert.equal(applyChangesReportFullRow(code), code, 'changes-report transform must be idempotent for release composition');
 
@@ -61,20 +61,21 @@ const plan = {
 const model = E.buildChangesReportModel(plan, structure);
 assert.deepEqual(
   model.detailHeaders,
-  ['Изменение', 'Excel row', 'TESSA row', 'Поле', 'Было', 'Стало', 'Причина'],
-  'the human report must have one field-level schema'
+  ['Действие', 'Строка Excel', 'Строка TESSA', 'Поле', 'Было', 'Стало'],
+  'the human report must be fully Russian and must not waste a separate reason column'
 );
-assert.deepEqual(model.operations.map(row => row.change), ['UPDATE', 'ADD', 'DELETE', 'SKIP']);
-assert.ok(!model.operations.some(row => row.change === 'KEEP' || row.change === 'NOOP'), 'KEEP/NOOP must never appear in changes report');
-assert.ok(model.details.some(row => row.change === 'UPDATE' && row.field === 'Организация' && row.before === 'Орг А' && row.after === 'Орг Б'));
-assert.ok(model.details.some(row => row.change === 'UPDATE' && row.field === 'Подписание' && /Иванов/.test(row.before) && /Петров/.test(row.after)));
-assert.ok(model.details.some(row => row.change === 'ADD' && row.field === 'Организация' && row.before === '—' && row.after === 'Орг В'), JSON.stringify(model.details));
-assert.ok(model.details.some(row => row.change === 'ADD' && row.field === 'Подписание' && row.before === '—' && /Сидоров/.test(row.after)), 'ADD must include the full new row');
-assert.ok(model.details.some(row => row.change === 'DELETE' && row.field === 'Организация' && row.before === 'Орг Г' && row.after === '—'), JSON.stringify(model.details));
-assert.ok(model.details.some(row => row.change === 'DELETE' && row.field === 'Подписание' && /Удаляемый/.test(row.before) && row.after === '—'), 'DELETE must include the full removed row');
-assert.ok(model.details.some(row => row.change === 'SKIP' && /Исполнитель/.test(row.reason)));
+assert.equal(model.detailHeaders.includes('Причина'), false, 'reason must not be a dedicated Excel column');
+assert.deepEqual(model.operations.map(row => row.change), ['Изменена', 'Добавлена', 'Удалена', 'Пропущена']);
+assert.ok(!model.operations.some(row => /^(KEEP|NOOP|UPDATE|ADD|DELETE|SKIP)$/.test(row.change)), 'technical action labels must never appear in the human report');
+assert.ok(model.details.some(row => row.change === 'Изменена' && row.field === 'Организация' && row.before === 'Орг А' && row.after === 'Орг Б'));
+assert.ok(model.details.some(row => row.change === 'Изменена' && row.field === 'Подписание' && /Иванов/.test(row.before) && /Петров/.test(row.after)));
+assert.ok(model.details.some(row => row.change === 'Добавлена' && row.field === 'Организация' && row.before === '—' && row.after === 'Орг В'), JSON.stringify(model.details));
+assert.ok(model.details.some(row => row.change === 'Добавлена' && row.field === 'Подписание' && row.before === '—' && /Сидоров/.test(row.after)), 'Добавлена must include the full new row');
+assert.ok(model.details.some(row => row.change === 'Удалена' && row.field === 'Организация' && row.before === 'Орг Г' && row.after === '—'), JSON.stringify(model.details));
+assert.ok(model.details.some(row => row.change === 'Удалена' && row.field === 'Подписание' && /Удаляемый/.test(row.before) && row.after === '—'), 'Удалена must include the full removed row');
+assert.ok(model.details.some(row => row.change === 'Пропущена' && row.field === 'Причина пропуска' && /Исполнитель/.test(row.after)), 'skip reason must stay visible as ordinary report data');
 assert.equal(model.reportOnly, true);
-assert.equal(model.format, 'TESSA_MATRIX_CHANGES_REPORT_V2');
+assert.equal(model.format, 'TESSA_MATRIX_CHANGES_REPORT_V3');
 
 const bytes = await E.createChangesReportXlsxBytes(plan, structure);
 assert.ok(bytes instanceof Uint8Array && bytes.length > 1000, `unexpected report XLSX size ${bytes?.length}`);
@@ -87,4 +88,4 @@ try {
 }
 assert.equal(rejected, true, 'report-only workbook must be rejected as an Apply source');
 
-console.log('TESSA Matrix Studio self-contained reviewed changes XLSX: OK');
+console.log('TESSA Matrix Studio Russian self-contained reviewed changes XLSX: OK');
