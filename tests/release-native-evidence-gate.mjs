@@ -1,5 +1,10 @@
 import crypto from 'node:crypto';
-import { assertReleaseNativeEvidence, makeNativeEvidenceAttestation } from '../tools/release-native-evidence-gate.mjs';
+import {
+  assertReleaseNativeEvidence,
+  makeNativeEvidenceAttestation,
+  validateFullUatNativeEvidence,
+  makeFullUatNativeEvidenceAttestation,
+} from '../tools/release-native-evidence-gate.mjs';
 
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const source = '// @version      1.12.2\n(function(){})();\n';
@@ -80,4 +85,131 @@ assert(unverifiedBlocked, 'non-verified attestation must block release');
 const legacy = assertReleaseNativeEvidence({ version: '1.12.1', userscriptSource: source, attestation: null });
 assert(legacy.ok === true && legacy.skipped === true, JSON.stringify(legacy));
 
-console.log('Release native-evidence gate: v2 split DeleteRow/Save contract + userscript hash binding: OK');
+// v1.14 Full UAT records the whole destructive phase in one native recorder window.
+// This is stronger than two manually split recordings, but it must still prove the same
+// native DELETE -> final Save -> refresh ordering and bind the exact release userscript.
+const v14Source = '// @version      1.14.0\n(function(){})();\n';
+const v14Sha256 = crypto.createHash('sha256').update(v14Source).digest('hex');
+const uatReport = {
+  format: 'TESSA_FULL_UAT_V1',
+  studioVersion: '1.14.0',
+  status: 'PASSED',
+  seed: 3439503818,
+  startedAt: '2026-09-15T10:50:00.000Z',
+  finishedAt: '2026-09-15T10:53:16.155Z',
+  matrix: { matrixId: '11111111-2222-3333-4444-555555555555' },
+  writesAttempted: 8,
+  writesCompleted: 8,
+  finalMatrixSave: { ok: true, method: 'editor-save' },
+  checks: [
+    { id: 'write-add-delete', status: 'PASS', required: true },
+    { id: 'write-update-delete', status: 'PASS', required: true },
+    { id: 'write-every-field', status: 'PASS', required: true },
+    { id: 'write-clear-delete', status: 'PASS', required: true },
+    { id: 'final-baseline', status: 'PASS', required: true },
+  ],
+  failedChecks: [],
+  functionalActionAudit: { missing: [] },
+  summary: {
+    pass: 33,
+    fail: 0,
+    warn: 0,
+    notRun: 0,
+    writesAttempted: 8,
+    writesCompleted: 8,
+    cleanupFailed: 0,
+    cleanupLedgerPending: 0,
+    cleanupLedgerFailed: 0,
+    restoreStatus: 'VERIFIED',
+  },
+};
+const nativeTrace = {
+  format: 'TESSA_NATIVE_OPERATION_RECORD_V1',
+  studioVersion: '1.14.0',
+  startedAt: '2026-09-15T10:50:10.000Z',
+  finishedAt: '2026-09-15T10:53:15.000Z',
+  beforeMembership: [{ rowRowID: 'row-a' }, { rowRowID: 'row-b' }],
+  afterMembership: [{ rowRowID: 'row-b' }, { rowRowID: 'row-a' }],
+  cardHasChangesAfterAction: false,
+  surface: { matrixId: '11111111-2222-3333-4444-555555555555' },
+  restoration: { failed: 0 },
+  truncatedCount: 0,
+  records: [
+    {
+      at: '2026-09-15T10:51:00.000Z', method: 'request', outcome: 'resolved', validationSuccessful: true,
+      requestType: 'd090417f-bf4b-45ed-9c82-33ef23acd96f', cardId: 'row-card-id',
+      info: { MatrixRowVersionID: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+    },
+    {
+      at: '2026-09-15T10:53:10.000Z', method: 'store', outcome: 'resolved', validationSuccessful: true,
+      cardId: '11111111-2222-3333-4444-555555555555',
+    },
+    {
+      at: '2026-09-15T10:53:11.000Z', method: 'get', outcome: 'resolved', validationSuccessful: true,
+      cardId: '11111111-2222-3333-4444-555555555555',
+    },
+  ],
+};
+
+const fullUatValidated = validateFullUatNativeEvidence(uatReport, nativeTrace);
+assert(fullUatValidated.status === 'verified', JSON.stringify(fullUatValidated));
+assert(fullUatValidated.fullUatPassed === true, JSON.stringify(fullUatValidated));
+assert(fullUatValidated.finalBaselinePassed === true, JSON.stringify(fullUatValidated));
+assert(fullUatValidated.finalSaveConfirmed === true, JSON.stringify(fullUatValidated));
+assert(fullUatValidated.deleteRequestObserved === true, JSON.stringify(fullUatValidated));
+assert(fullUatValidated.deleteInfoHasVersionId === true, JSON.stringify(fullUatValidated));
+assert(fullUatValidated.saveObserved === true && fullUatValidated.refreshGetObserved === true, JSON.stringify(fullUatValidated));
+assert(fullUatValidated.operationOrderValid === true, JSON.stringify(fullUatValidated));
+assert(fullUatValidated.localMembershipRestored === true, JSON.stringify(fullUatValidated));
+assert(fullUatValidated.localCardStayedClean === true, JSON.stringify(fullUatValidated));
+assert(fullUatValidated.restorationSafe === true && fullUatValidated.truncatedCount === 0, JSON.stringify(fullUatValidated));
+
+const uatBytes = Buffer.from(JSON.stringify(uatReport));
+const traceBytes = Buffer.from(JSON.stringify(nativeTrace));
+const fullUatAttestation = makeFullUatNativeEvidenceAttestation({
+  version: '1.14.0',
+  userscriptSource: v14Source,
+  uatReport,
+  nativeTrace,
+  uatEvidenceSha256: crypto.createHash('sha256').update(uatBytes).digest('hex'),
+  nativeTraceSha256: crypto.createHash('sha256').update(traceBytes).digest('hex'),
+});
+assert(fullUatAttestation.schemaVersion === 3, JSON.stringify(fullUatAttestation));
+assert(fullUatAttestation.version === '1.14.0', JSON.stringify(fullUatAttestation));
+assert(fullUatAttestation.userscriptSha256 === v14Sha256, JSON.stringify(fullUatAttestation));
+assert(fullUatAttestation.operation === 'full-uat-native-write-trace', JSON.stringify(fullUatAttestation));
+assert(fullUatAttestation.seed === 3439503818, JSON.stringify(fullUatAttestation));
+assert(fullUatAttestation.passCount === 33 && fullUatAttestation.failCount === 0 && fullUatAttestation.notRunCount === 0, JSON.stringify(fullUatAttestation));
+
+const fullUatAccepted = assertReleaseNativeEvidence({ version: '1.14.0', userscriptSource: v14Source, attestation: fullUatAttestation });
+assert(fullUatAccepted.ok === true && fullUatAccepted.schemaVersion === 3, JSON.stringify(fullUatAccepted));
+assert(fullUatAccepted.operation === 'full-uat-native-write-trace', JSON.stringify(fullUatAccepted));
+
+let fullUatNotRunBlocked = false;
+try {
+  validateFullUatNativeEvidence({ ...uatReport, summary: { ...uatReport.summary, notRun: 1 } }, nativeTrace);
+} catch (error) {
+  fullUatNotRunBlocked = /not.?run|full uat|pass/i.test(String(error?.message || error));
+}
+assert(fullUatNotRunBlocked, 'Full UAT evidence with NOT_RUN checks must be rejected');
+
+let orderingBlocked = false;
+try {
+  validateFullUatNativeEvidence(uatReport, {
+    ...nativeTrace,
+    records: [nativeTrace.records[1], nativeTrace.records[2], nativeTrace.records[0]],
+  });
+} catch (error) {
+  orderingBlocked = /order|delete|store|save|get/i.test(String(error?.message || error));
+}
+assert(orderingBlocked, 'Full UAT native evidence must prove DELETE -> Store -> Get ordering');
+
+let fullUatStaleBlocked = false;
+try {
+  assertReleaseNativeEvidence({ version: '1.14.0', userscriptSource: `${v14Source}// changed`, attestation: fullUatAttestation });
+} catch (error) {
+  fullUatStaleBlocked = /sha|source|userscript|stale/i.test(String(error?.message || error));
+}
+assert(fullUatStaleBlocked, 'Full UAT attestation for a different userscript must be rejected');
+
+console.log('Release native-evidence gate: v2 split evidence + v3 Full UAT native trace + userscript hash binding: OK');
