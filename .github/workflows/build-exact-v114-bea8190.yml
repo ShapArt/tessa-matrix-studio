@@ -5,7 +5,7 @@ on:
     branches: [uat/build-v1.14-bea8190]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -54,6 +54,11 @@ jobs:
           (cd dist && sha256sum tessa-matrix-studio.meta.js tessa-matrix-studio.user.js > SHA256SUMS.txt)
           USER_SHA="$(sha256sum dist/tessa-matrix-studio.user.js | awk '{print $1}')"
           printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "live-tessa-uat-before-release",\n  "fullUatSavePolicy": "one-consent-one-native-save",\n  "fullUatFailureEvidence": ["failed-checks.json", "FAILURES.txt"]\n}\n' "$VERSION" "$EXPECTED_SHA" "$USER_SHA" > dist/candidate-manifest.json
+
+          ZIP="tessa-matrix-studio-uat-v1.14.0-bea8190.zip"
+          (cd dist && zip -X -9 "../$ZIP" tessa-matrix-studio.user.js tessa-matrix-studio.meta.js SHA256SUMS.txt candidate-manifest.json)
+          test -s "$ZIP"
+          sha256sum "$ZIP" > "$ZIP.sha256"
       - name: Upload exact UAT candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -63,5 +68,26 @@ jobs:
             dist/tessa-matrix-studio.meta.js
             dist/SHA256SUMS.txt
             dist/candidate-manifest.json
+            tessa-matrix-studio-uat-v1.14.0-bea8190.zip
+            tessa-matrix-studio-uat-v1.14.0-bea8190.zip.sha256
           if-no-files-found: error
           retention-days: 14
+      - name: Publish persistent UAT prerelease asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="uat-v1.14.0-bea8190"
+          ZIP="tessa-matrix-studio-uat-v1.14.0-bea8190.zip"
+          SHA_FILE="$ZIP.sha256"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" "$SHA_FILE" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$ZIP" "$SHA_FILE" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "bea8190878e1c1008dbbf3b30cb88650473d05b9" \
+              --title "UAT candidate v1.14.0 (bea8190)" \
+              --notes "Pre-release live TESSA UAT candidate built from exact commit bea8190878e1c1008dbbf3b30cb88650473d05b9. Not a production release; PR #101 remains unmerged pending live UAT." \
+              --prerelease
+          fi
