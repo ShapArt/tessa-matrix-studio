@@ -1,8 +1,13 @@
 import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
+import { applyChangesReportFullRow } from '../hotfixes/v1.14.1-changes-report-full-row.mjs';
 
-const code = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
+const baseCode = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
+const code = applyChangesReportFullRow(baseCode);
+assert.ok(code.includes('REVIEWED_CHANGES_REPORT_V2'), 'v1.14.1 changes-report marker missing');
+assert.ok(!code.includes('Детали изменений'), 'changes workbook must contain only one visible report sheet');
+
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 globalThis.location = { origin: 'https://tessa.cherkizovsky.net' };
@@ -79,6 +84,7 @@ assert.ok(model.details.some(row => row.change === 'DELETE' && row.field === 'П
 // SKIP stays on the same human-readable field-level report with its reason.
 assert.ok(model.details.some(row => row.change === 'SKIP' && /Исполнитель/.test(row.reason)));
 assert.equal(model.reportOnly, true);
+assert.equal(model.format, 'TESSA_MATRIX_CHANGES_REPORT_V2');
 
 const bytes = await E.createChangesReportXlsxBytes(plan, structure);
 assert.ok(bytes instanceof Uint8Array && bytes.length > 1000, `unexpected report XLSX size ${bytes?.length}`);
