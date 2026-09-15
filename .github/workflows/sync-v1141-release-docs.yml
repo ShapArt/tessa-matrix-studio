@@ -1,0 +1,87 @@
+name: Sync v1.14.1 release docs
+
+on:
+  push:
+    branches: [release/v1.14.1-changes-report]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: release/v1.14.1-changes-report
+          fetch-depth: 0
+
+      - name: Sync public release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          readme = Path('README.md')
+          text = readme.read_text(encoding='utf-8')
+          replacements = {
+              'version-1.14.0-EF233C': 'version-1.14.1-EF233C',
+              '**v1.14.0 · Автор: Шаповалов Артём**': '**v1.14.1 · Автор: Шаповалов Артём**',
+              'Подтвердите установку версии **1.14.0**': 'Подтвердите установку версии **1.14.1**',
+              'Текущая версия: **1.14.0**': 'Текущая версия: **1.14.1**',
+              '- **Версия:** `1.13.0`': '- **Версия:** `1.14.1`',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'README marker missing: {old}')
+              text = text.replace(old, new, 1)
+          report_note = ('\nВ **1.14.1** Excel-отчёт изменений стал самодостаточным: UPDATE показывает изменённые поля, '
+                         'ADD и DELETE разворачивают все заполненные бизнес-поля строки, SKIP сохраняет причину, '
+                         'а книга содержит один лист «Изменения» и остаётся report-only.\n')
+          anchor = '\nПеред Apply Studio повторно читает актуальное состояние матрицы.'
+          if report_note.strip() not in text:
+              if anchor not in text:
+                  raise SystemExit('README report-note anchor missing')
+              text = text.replace(anchor, report_note + anchor, 1)
+          readme.write_text(text, encoding='utf-8')
+
+          changelog = Path('CHANGELOG.md')
+          text = changelog.read_text(encoding='utf-8')
+          entry = '''## 1.14.1 — 2026-09-15
+
+- «Скачать изменения в Excel» теперь формирует один самодостаточный лист «Изменения»: UPDATE содержит только реально изменённые поля, ADD — все заполненные бизнес-поля новой строки, DELETE — все заполненные бизнес-поля удаляемой строки, SKIP — причину пропуска.
+- Для ADD/DELETE отчёт больше не зависит только от сокращённого `action.changes`: используется полное безопасное представление строки Preview (`excelRow.flat` / `currentRow.flat`) с fallback для старых synthetic-планов.
+- Удалён второй лист «Детали изменений». Отчёт остаётся `report-only`, не содержит roundtrip identity/baseline и по-прежнему отклоняется как источник Apply.
+- Release-композиция теперь явно включает transform отчёта V2 и проверяет его маркер/однолистовую форму перед публикацией и после скачивания из `releases/latest`.
+
+'''
+          if '## 1.14.1 — 2026-09-15' not in text:
+              anchor = '# История изменений\n\n'
+              if anchor not in text:
+                  raise SystemExit('CHANGELOG title anchor missing')
+              text = text.replace(anchor, anchor + entry, 1)
+          changelog.write_text(text, encoding='utf-8')
+
+          bug = Path('.github/ISSUE_TEMPLATE/bug_report.yml')
+          text = bug.read_text(encoding='utf-8')
+          if 'placeholder: 1.14.0' in text:
+              text = text.replace('placeholder: 1.14.0', 'placeholder: 1.14.1', 1)
+          elif 'placeholder: 1.14.1' not in text:
+              raise SystemExit('bug template version placeholder missing')
+          bug.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit synchronized docs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml; then
+            echo "Release docs already synchronized."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml
+          git commit -m "docs: sync v1.14.1 release metadata"
+          git push origin HEAD:release/v1.14.1-changes-report
