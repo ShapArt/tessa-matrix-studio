@@ -7,6 +7,7 @@ const baseCode = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', impor
 const code = applyChangesReportFullRow(baseCode);
 assert.ok(code.includes('REVIEWED_CHANGES_REPORT_V2'), 'v1.14.1 changes-report marker missing');
 assert.ok(!code.includes('Детали изменений'), 'changes workbook must contain only one visible report sheet');
+assert.equal(applyChangesReportFullRow(code), code, 'changes-report transform must be idempotent for release composition');
 
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
@@ -32,8 +33,6 @@ const plan = {
       { key: 'criterion:org', label: 'Организация', before: ['Орг А'], after: ['Орг Б'] },
       { key: 'function:sign', label: 'Подписание', before: ['Иванов И.И. — Руководитель'], after: ['Петров П.П. — Директор'] },
     ] },
-    // Deliberately keep action.changes partial: the report must describe the WHOLE added row
-    // from excelRow.flat, otherwise a reviewer still has to reopen the source workbook.
     { type: 'add', excelRow: {
       excelRow: 16,
       flat: {
@@ -43,7 +42,6 @@ const plan = {
     }, currentRow: null, changes: [
       { key: 'criterion:org', label: 'Организация', before: [], after: ['Орг В'] },
     ] },
-    // Same for DELETE: the complete removed row lives in currentRow.flat even if changes is partial.
     { type: 'delete', excelRow: null, currentRow: {
       index: 3,
       flat: {
@@ -68,20 +66,12 @@ assert.deepEqual(
 );
 assert.deepEqual(model.operations.map(row => row.change), ['UPDATE', 'ADD', 'DELETE', 'SKIP']);
 assert.ok(!model.operations.some(row => row.change === 'KEEP' || row.change === 'NOOP'), 'KEEP/NOOP must never appear in changes report');
-
-// UPDATE stays a diff: only changed fields, with before -> after.
 assert.ok(model.details.some(row => row.change === 'UPDATE' && row.field === 'Организация' && row.before === 'Орг А' && row.after === 'Орг Б'));
 assert.ok(model.details.some(row => row.change === 'UPDATE' && row.field === 'Подписание' && /Иванов/.test(row.before) && /Петров/.test(row.after)));
-
-// ADD must be self-contained: every populated business field is shown, not only action.changes.
 assert.ok(model.details.some(row => row.change === 'ADD' && row.field === 'Организация' && row.before === '—' && row.after === 'Орг В'), JSON.stringify(model.details));
 assert.ok(model.details.some(row => row.change === 'ADD' && row.field === 'Подписание' && row.before === '—' && /Сидоров/.test(row.after)), 'ADD must include the full new row');
-
-// DELETE must be self-contained too: every populated field of currentRow.flat is visible.
 assert.ok(model.details.some(row => row.change === 'DELETE' && row.field === 'Организация' && row.before === 'Орг Г' && row.after === '—'), JSON.stringify(model.details));
 assert.ok(model.details.some(row => row.change === 'DELETE' && row.field === 'Подписание' && /Удаляемый/.test(row.before) && row.after === '—'), 'DELETE must include the full removed row');
-
-// SKIP stays on the same human-readable field-level report with its reason.
 assert.ok(model.details.some(row => row.change === 'SKIP' && /Исполнитель/.test(row.reason)));
 assert.equal(model.reportOnly, true);
 assert.equal(model.format, 'TESSA_MATRIX_CHANGES_REPORT_V2');
