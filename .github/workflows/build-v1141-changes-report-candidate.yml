@@ -1,0 +1,151 @@
+name: Build v1.14.1 Changes Report Candidate
+
+on:
+  push:
+    branches:
+      - uat/build-v1.14.1-report-667e771
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-v1141-changes-report-candidate
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact merged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 667e77106bea41ddf9d9f446d9e263eb0658bf8c
+
+      - name: Setup Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Full regression on exact merged source
+        run: npm test
+
+      - name: Compose report-only v1.14.1 candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14.1-changes-report-full-row.mjs dist/tessa-matrix-studio.user.js
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'dist/tessa-matrix-studio.user.js';
+          let source = fs.readFileSync(path, 'utf8');
+          function replaceOne(before, after, label) {
+            const count = source.split(before).length - 1;
+            if (count !== 1) throw new Error(`${label}: expected exactly 1 match, got ${count}`);
+            source = source.replace(before, after);
+          }
+          replaceOne('// @version      1.14.0', '// @version      1.14.1', 'userscript metadata version');
+          replaceOne("    version: '1.14.0',", "    version: '1.14.1',", 'APP version');
+          fs.writeFileSync(path, source, 'utf8');
+          NODE
+          node --check dist/tessa-matrix-studio.user.js
+          grep -F '// @version      1.14.1' dist/tessa-matrix-studio.user.js
+          grep -F "version: '1.14.1'" dist/tessa-matrix-studio.user.js
+          grep -F 'REVIEWED_CHANGES_REPORT_V2' dist/tessa-matrix-studio.user.js
+          if grep -Fq 'Детали изменений' dist/tessa-matrix-studio.user.js; then
+            echo 'obsolete second report sheet remains' >&2
+            exit 1
+          fi
+          if grep -Fq "['xl/worksheets/sheet2.xml', sheet2]" dist/tessa-matrix-studio.user.js; then
+            echo 'obsolete report sheet2 package entry remains' >&2
+            exit 1
+          fi
+
+      - name: Build immutable candidate package
+        shell: bash
+        run: |
+          set -euo pipefail
+          USER_SHA="$(sha256sum dist/tessa-matrix-studio.user.js | awk '{print $1}')"
+          cat > dist/CANDIDATE.json <<JSON
+          {
+            "version": "1.14.1",
+            "sourceCommit": "667e77106bea41ddf9d9f446d9e263eb0658bf8c",
+            "purpose": "report-only changes workbook UX candidate",
+            "userscriptSha256": "${USER_SHA}",
+            "changes": [
+              "one visible sheet: Изменения",
+              "UPDATE shows changed fields as Было -> Стало",
+              "ADD expands every populated business field of the new row",
+              "DELETE expands every populated business field of the removed row",
+              "SKIP remains on the same sheet with its reason"
+            ],
+            "writePathChanged": false,
+            "applyPlannerStoreDeleteChanged": false,
+            "manualCheck": "Preview -> Скачать изменения в Excel; no Apply required"
+          }
+          JSON
+          cat > dist/README.txt <<'TXT'
+          TESSA Matrix Studio v1.14.1 — changes report candidate
+
+          Проверка:
+          1. Установить tessa-matrix-studio.user.js в Tampermonkey.
+          2. Обновить TESSA (F5).
+          3. Открыть существующий Preview с UPDATE / ADD / DELETE.
+          4. Нажать «Скачать изменения в Excel».
+          5. Проверить один лист «Изменения»:
+             - UPDATE: только изменившиеся поля, Было -> Стало;
+             - ADD: все заполненные поля добавляемой строки;
+             - DELETE: все заполненные поля удаляемой строки;
+             - SKIP: причина на том же листе.
+
+          Apply для этой проверки не нужен: write-path не менялся.
+          TXT
+          (cd dist && sha256sum tessa-matrix-studio.user.js CANDIDATE.json README.txt > SHA256SUMS.txt)
+          (cd dist && zip -q tessa-matrix-studio-uat-v1.14.1-667e771.zip tessa-matrix-studio.user.js CANDIDATE.json README.txt SHA256SUMS.txt)
+          sha256sum dist/tessa-matrix-studio-uat-v1.14.1-667e771.zip > dist/ZIP_SHA256.txt
+
+      - name: Publish prerelease candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='uat-v1.14.1-667e771'
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists; refusing to overwrite immutable candidate" >&2
+            exit 1
+          fi
+          gh release create "$TAG" \
+            dist/tessa-matrix-studio.user.js \
+            dist/tessa-matrix-studio-uat-v1.14.1-667e771.zip \
+            dist/CANDIDATE.json \
+            dist/SHA256SUMS.txt \
+            dist/ZIP_SHA256.txt \
+            --target 667e77106bea41ddf9d9f446d9e263eb0658bf8c \
+            --prerelease \
+            --title 'UAT candidate v1.14.1 — self-contained changes report' \
+            --notes 'Report-only candidate. One sheet «Изменения»: UPDATE = changed fields, ADD = full populated new row, DELETE = full populated removed row, SKIP = reason. Apply/Planner/Store/Delete write-path is unchanged; manual verification requires Preview + report download only.'
+
+      - name: Verify published candidate assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='uat-v1.14.1-667e771'
+          gh release view "$TAG" --json isPrerelease,tagName,targetCommitish,assets > /tmp/release.json
+          node <<'NODE'
+          const fs = require('fs');
+          const release = JSON.parse(fs.readFileSync('/tmp/release.json', 'utf8'));
+          if (!release.isPrerelease) throw new Error('candidate must remain prerelease');
+          if (release.tagName !== 'uat-v1.14.1-667e771') throw new Error('unexpected tag');
+          const names = new Set((release.assets || []).map(x => x.name));
+          for (const name of ['tessa-matrix-studio.user.js','tessa-matrix-studio-uat-v1.14.1-667e771.zip','CANDIDATE.json','SHA256SUMS.txt','ZIP_SHA256.txt']) {
+            if (!names.has(name)) throw new Error(`missing release asset: ${name}`);
+          }
+          NODE
