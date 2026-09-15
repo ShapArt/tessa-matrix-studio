@@ -18,5 +18,9 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - run: npm ci --ignore-scripts --no-audit --no-fund
-      - run: node tests/v1.14-rc-contract.mjs
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Full regression
+        run: npm test
+      - name: Diff hygiene
+        run: git diff --check
