@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { createNativeEvidenceAttestation } from '../tools/create-native-evidence-attestation.mjs';
+import { createFullUatEvidenceAttestation } from '../tools/create-full-uat-evidence-attestation.mjs';
 
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const sha256 = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -62,4 +63,58 @@ assert(attestation.saveEvidenceSha256 === sha256(saveBytes), JSON.stringify(atte
 assert(attestation.deleteRequestType === 'd090417f-bf4b-45ed-9c82-33ef23acd96f', JSON.stringify(attestation));
 assert(attestation.truncatedCount === 0, JSON.stringify(attestation));
 
-console.log('Native evidence attestation creator: exact candidate hash + evidence hashes: OK');
+const v14Userscript = '// @version      1.14.0\n(function(){})();\n';
+const fullUatReport = {
+  format: 'TESSA_FULL_UAT_V1',
+  status: 'PASSED',
+  seed: 3439503818,
+  startedAt: '2026-09-15T10:50:00.000Z',
+  finishedAt: '2026-09-15T10:53:16.155Z',
+  matrix: { matrixId },
+  writesCompleted: 8,
+  finalMatrixSave: { ok: true, method: 'editor-save' },
+  checks: [{ id: 'final-baseline', status: 'PASS', required: true }],
+  failedChecks: [],
+  summary: {
+    pass: 33, fail: 0, notRun: 0, writesCompleted: 8,
+    cleanupFailed: 0, cleanupLedgerPending: 0, cleanupLedgerFailed: 0, restoreStatus: 'VERIFIED',
+  },
+};
+const fullTrace = {
+  format: 'TESSA_NATIVE_OPERATION_RECORD_V1',
+  startedAt: '2026-09-15T10:50:10.000Z',
+  finishedAt: '2026-09-15T10:53:15.000Z',
+  surface: { matrixId },
+  beforeMembership: [{ rowRowID: 'row-a' }],
+  afterMembership: [{ rowRowID: 'row-a' }],
+  cardHasChangesAfterAction: false,
+  truncatedCount: 0,
+  restoration: { restored: 5, failed: 0 },
+  records: [
+    {
+      at: '2026-09-15T10:51:00.000Z', method: 'request', outcome: 'resolved', validationSuccessful: true,
+      requestType: 'd090417f-bf4b-45ed-9c82-33ef23acd96f', info: { MatrixRowVersionID: '[REDACTED]' },
+    },
+    { at: '2026-09-15T10:53:10.000Z', method: 'store', outcome: 'resolved', validationSuccessful: true, cardId: matrixId },
+    { at: '2026-09-15T10:53:11.000Z', method: 'get', outcome: 'resolved', validationSuccessful: true, cardId: matrixId },
+  ],
+};
+const uatBytes = Buffer.from(JSON.stringify(fullUatReport) + '\n');
+const traceBytes = Buffer.from(JSON.stringify(fullTrace) + '\n');
+const fullAttestation = createFullUatEvidenceAttestation({
+  version: '1.14.0',
+  userscriptSource: v14Userscript,
+  uatReport: fullUatReport,
+  nativeTrace: fullTrace,
+  uatEvidenceBytes: uatBytes,
+  nativeTraceBytes: traceBytes,
+});
+assert(fullAttestation.schemaVersion === 3, JSON.stringify(fullAttestation));
+assert(fullAttestation.status === 'verified', JSON.stringify(fullAttestation));
+assert(fullAttestation.operation === 'full-uat-native-write-trace', JSON.stringify(fullAttestation));
+assert(fullAttestation.userscriptSha256 === sha256(v14Userscript), JSON.stringify(fullAttestation));
+assert(fullAttestation.uatEvidenceSha256 === sha256(uatBytes), JSON.stringify(fullAttestation));
+assert(fullAttestation.nativeTraceSha256 === sha256(traceBytes), JSON.stringify(fullAttestation));
+assert(fullAttestation.seed === 3439503818, JSON.stringify(fullAttestation));
+
+console.log('Native evidence attestation creators: split v2 + Full UAT v3 exact hashes: OK');
