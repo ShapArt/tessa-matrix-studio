@@ -7,6 +7,7 @@ const changelog = fs.readFileSync(new URL('../CHANGELOG.md', import.meta.url), '
 const readme = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 const communicationPath = new URL('../docs/communications/v1.14-colleague-test-message.md', import.meta.url);
 const fullUatFinalizer = fs.readFileSync(new URL('../hotfixes/v1.13.0-full-uat-live-finalize.mjs', import.meta.url), 'utf8');
+const lifecycleTransform = fs.readFileSync(new URL('../hotfixes/v1.13.0-user-row-lifecycle-transform.mjs', import.meta.url), 'utf8');
 
 assert.equal(pkg.version, '1.14.0', 'package candidate version must be 1.14.0');
 assert.match(source, /^\/\/ @version\s+1\.14\.0$/m, 'userscript metadata version must be 1.14.0');
@@ -29,6 +30,20 @@ assert.match(fullUatFinalizer, /FULL_UAT_FAILURE_SUMMARY_V1/,
 assert.match(fullUatFinalizer, /native-write-trace\.json/,
   'finalizer must package native write evidence after the final Save');
 
+// Live UAT is deterministic at 29 PASS / 4 FAIL across seeds. The three write scenarios
+// after ADD all build their plans from a fresh bridge/snapshot. applyPlan must use that
+// same runtime context for preflight instead of silently creating another context.
+assert.match(fullUatFinalizer, /FULL_UAT_RUNTIME_CONTEXT_V1/,
+  'Full UAT must pin Apply to the fresh runtime context used to build its update plan');
+assert.match(fullUatFinalizer, /runtimeBridge:\s*bridge/,
+  'Full UAT applySingle must forward the fresh bridge');
+assert.match(fullUatFinalizer, /runtimeStructure:\s*structure/,
+  'Full UAT applySingle must forward the matching structure');
+assert.match(lifecycleTransform, /bridge:\s*options\.runtimeBridge/,
+  'scoped applyPlan runtime bridge must be forwarded into preflight');
+assert.match(lifecycleTransform, /structure:\s*options\.runtimeStructure/,
+  'scoped applyPlan runtime structure must be forwarded into preflight');
+
 assert.match(changelog, /## 1\.14\.0 — 2026-09-11/);
 for (const token of ['session', 'touched', 'ФИО', 'Скачать изменения в Excel', 'Performance UAT']) {
   assert.ok(changelog.includes(token), `CHANGELOG must mention ${token}`);
@@ -49,4 +64,4 @@ assert.match(readme, /\*\*v1\.14\.0/);
 assert.ok(readme.includes('docs/assets/studio-panel.webp'), 'real README screenshot must be preserved');
 assert.ok(readme.includes('Скачать изменения в Excel'), 'README should mention reviewed-changes export');
 
-console.log('TESSA Matrix Studio v1.14 RC documentation/version/final-proof contract: OK');
+console.log('TESSA Matrix Studio v1.14 RC documentation/version/final-proof/runtime-context contract: OK');
