@@ -41,6 +41,12 @@ assert(!workflow.includes('git diff-tree --no-commit-id --name-only -r HEAD^ HEA
 assert(workflow.includes('tessa-matrix-studio.meta.js'), 'release must build and publish the metadata-only update asset');
 assert(workflow.includes('tessa-matrix-studio.user.js'), 'release must continue publishing the full userscript asset');
 
+// v1.14 production verification must track current artifact markers only. The historical
+// LIVE_UAT_2026_09_11 marker was removed from the canonical artifact long ago and must not
+// be able to block a release after the exact userscript has already passed live Full UAT.
+assert(workflow.includes('FULL_UAT_RUNTIME_CONTEXT_V1'), 'release must verify the current Full UAT runtime-context marker');
+assert(!workflow.includes('LIVE_UAT_2026_09_11'), 'release must not require the obsolete LIVE_UAT_2026_09_11 marker');
+
 // Release assets must be independently verifiable after download.
 assert(workflow.includes('sha256sum'), 'release must calculate SHA-256 checksums');
 assert(workflow.includes('SHA256SUMS.txt'), 'release must publish SHA256SUMS.txt');
