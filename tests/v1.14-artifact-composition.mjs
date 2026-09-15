@@ -26,6 +26,7 @@ try {
   run(['hotfixes/v1.13.0-user-row-lifecycle-transform.mjs', target]);
   fs.appendFileSync(target, `\n${fs.readFileSync(path.join(root, 'hotfixes/interval-add-valid-fallback.js'), 'utf8')}\n`);
   run(['hotfixes/v1.13.0-full-uat-live-finalize.mjs', target]);
+  run(['hotfixes/v1.14-full-uat-inline-failures.mjs', target]);
   run(['--check', target]);
 
   const source = fs.readFileSync(target, 'utf8');
@@ -73,11 +74,22 @@ try {
   assert.match(source, /failed-checks\.json/, 'FAILED package must contain machine-readable failed checks');
   assert.match(source, /FAILURES\.txt/, 'FAILED package must contain an immediately readable failure summary');
 
+  // Seeds 29768023 and 1346937433 both reproduced the same 29/4 result. The composed
+  // candidate must therefore surface exact failures without requiring ZIP extraction.
+  assert.match(source, /FULL_UAT_INLINE_FAILURES_V1/,
+    'composed artifact must render failed checks inline');
+  assert.match(source, /FAIL DETAILS/,
+    'Full UAT panel must include an explicit failure-details section');
+  assert.match(source, /TESSA_Full_UAT_FAILURES_/,
+    'failed UAT must emit a standalone text evidence download');
+  assert.match(source, /Array\.isArray\(result\.failedChecks\)/,
+    'inline UX must consume the finalized failedChecks array');
+
   run(['tests/user-copied-identity-regression.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/full-uat-runner-contract.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/live-uat-regressions.mjs'], { TMS_TEST_SOURCE: target });
 
-  console.log('v1.14 release/UAT artifact composition: canonical limits + live cleanup + final Save evidence ordering OK');
+  console.log('v1.14 release/UAT artifact composition: canonical limits + live cleanup + final Save evidence + inline failures OK');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
