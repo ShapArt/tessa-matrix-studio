@@ -3,6 +3,12 @@ import fs from 'node:fs';
 export function applyChangesReportFullRow(input) {
   let source = String(input ?? '');
 
+  if (source.includes('REVIEWED_CHANGES_REPORT_V2') && !source.includes('REVIEWED_CHANGES_REPORT_V1')) {
+    if (source.includes('Детали изменений')) throw new Error('v2 changes report unexpectedly contains obsolete second sheet');
+    if (source.includes("['xl/worksheets/sheet2.xml', sheet2]")) throw new Error('v2 changes report unexpectedly contains obsolete sheet2 package entry');
+    return source;
+  }
+
   const modelStart = source.indexOf('  // REVIEWED_CHANGES_REPORT_V1');
   const modelEnd = source.indexOf('  function changesReportStylesXml()', modelStart);
   if (modelStart < 0 || modelEnd < 0 || modelEnd <= modelStart) {
