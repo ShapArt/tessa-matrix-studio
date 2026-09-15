@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import './live-uat-final-four-regressions.mjs';
 import './live-uat-release-composition.mjs';
+import './v1.14.1-report-only-release-parity.mjs';
 
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const source = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
@@ -91,4 +92,4 @@ assert.match(readme, /\*\*v1\.14\.1/);
 assert.ok(readme.includes('docs/assets/studio-panel.webp'), 'real README screenshot must be preserved');
 assert.ok(readme.includes('Скачать изменения в Excel'), 'README should mention reviewed-changes export');
 
-console.log('TESSA Matrix Studio v1.14.1 RC documentation/final-proof/inline-failures/runtime-context/final-four contract: OK');
+console.log('TESSA Matrix Studio v1.14.1 RC documentation/final-proof/inline-failures/runtime-context/final-four/report-only-release contract: OK');
