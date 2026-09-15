@@ -28,8 +28,12 @@ assert.match(source, /FULL_UAT_DEFER_MAIN_SAVE_V1/,
   'Apply must expose a scoped deferred native-Save policy for Full UAT');
 assert.match(source, /reason:\s*'deferred-by-caller'/,
   'deferred main-card Save must be explicit in Apply accounting');
-assert.match(source, /E\.applyPlan\(plan, \{ confirm: \(\) => true, source: 'full-uat', deferMainMatrixSave: true \}\)/,
-  'Full UAT must auto-confirm its internal Apply calls and defer their native main-card Save');
+assert.match(source, /E\.applyPlan\(plan, \{ confirm: \(\) => true, source: 'full-uat', deferMainMatrixSave: true, runtimeBridge: bridge, runtimeStructure: structure \}\)/,
+  'Full UAT must auto-confirm internal Apply, defer native Save, and pin the fresh runtime context');
+assert.match(source, /FULL_UAT_RUNTIME_CONTEXT_V1/,
+  'Full UAT composed artifact must mark the scoped fresh runtime context path');
+assert.match(source, /preflightPlan\(plan, \{ bridge: options\.runtimeBridge \|\| undefined, structure: options\.runtimeStructure \|\| undefined \}\)/,
+  'Full UAT scoped runtime context must be forwarded into production preflight');
 assert.match(source, /FULL_UAT_SINGLE_MAIN_SAVE_V1/,
   'Full UAT must perform one final native Save after write/cleanup work');
 assert.match(source, /report\.writesCompleted\s*>\s*0[\s\S]{0,900}saveMainMatrixAfterApply\(\)/,
@@ -78,4 +82,4 @@ vm.runInThisContext(source);
 assert.ok(globalThis.__TESSA_MATRIX_SYNC_EXPORTS__?.applyPlan);
 assert.ok(globalThis.__TMS_FULL_UAT_V1__?.runFullUat);
 
-console.log('Live UAT regressions: selective XLSX, single-consent/single-save writes, native diagnostics and cleanup invariants: OK');
+console.log('Live UAT regressions: selective XLSX, scoped runtime context, single-consent/single-save writes, native diagnostics and cleanup invariants: OK');
