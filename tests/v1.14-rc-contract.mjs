@@ -45,6 +45,20 @@ assert.match(inlineFailureUx, /TESSA_Full_UAT_FAILURES_/,
 assert.match(inlineFailureUx, /FAIL DETAILS/,
   'inline failure UX must render explicit failure details in the panel');
 
+// The three post-ADD write scenarios build UPDATE plans from a fresh bridge/snapshot.
+// Apply/preflight must use that same runtime context, otherwise the temporary row can be
+// checked against another context between plan construction and Store.
+assert.match(fullUatFinalizer, /FULL_UAT_RUNTIME_CONTEXT_V1/,
+  'Full UAT must pin Apply to the fresh runtime context used to build update plans');
+assert.match(fullUatFinalizer, /runtimeBridge:\s*bridge/,
+  'Full UAT internal Apply must forward the fresh bridge');
+assert.match(fullUatFinalizer, /runtimeStructure:\s*structure/,
+  'Full UAT internal Apply must forward the matching structure');
+assert.match(fullUatFinalizer, /bridge:\s*options\.runtimeBridge\s*\|\|\s*undefined/,
+  'scoped runtime bridge must be forwarded into production preflight');
+assert.match(fullUatFinalizer, /structure:\s*options\.runtimeStructure\s*\|\|\s*undefined/,
+  'scoped runtime structure must be forwarded into production preflight');
+
 assert.match(changelog, /## 1\.14\.0 — 2026-09-11/);
 for (const token of ['session', 'touched', 'ФИО', 'Скачать изменения в Excel', 'Performance UAT']) {
   assert.ok(changelog.includes(token), `CHANGELOG must mention ${token}`);
@@ -65,4 +79,4 @@ assert.match(readme, /\*\*v1\.14\.0/);
 assert.ok(readme.includes('docs/assets/studio-panel.webp'), 'real README screenshot must be preserved');
 assert.ok(readme.includes('Скачать изменения в Excel'), 'README should mention reviewed-changes export');
 
-console.log('TESSA Matrix Studio v1.14 RC documentation/version/final-proof contract: OK');
+console.log('TESSA Matrix Studio v1.14 RC documentation/final-proof/inline-failures/runtime-context contract: OK');
