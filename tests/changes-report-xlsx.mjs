@@ -25,12 +25,27 @@ const plan = {
     { type: 'noop', excelRow: { excelRow: 14 }, currentRow: { index: 0 }, changes: [] },
     { type: 'update', excelRow: { excelRow: 15 }, currentRow: { index: 1 }, changes: [
       { key: 'criterion:org', label: 'Организация', before: ['Орг А'], after: ['Орг Б'] },
-      { key: 'function:sign', label: 'Подписание', before: ['Иванов И.И.'], after: ['Петров П.П.'] },
+      { key: 'function:sign', label: 'Подписание', before: ['Иванов И.И. — Руководитель'], after: ['Петров П.П. — Директор'] },
     ] },
-    { type: 'add', excelRow: { excelRow: 16 }, currentRow: null, changes: [
+    // Deliberately keep action.changes partial: the report must describe the WHOLE added row
+    // from excelRow.flat, otherwise a reviewer still has to reopen the source workbook.
+    { type: 'add', excelRow: {
+      excelRow: 16,
+      flat: {
+        'criterion:org': ['Орг В'],
+        'function:sign': ['Сидоров С.С. — Руководитель склада'],
+      },
+    }, currentRow: null, changes: [
       { key: 'criterion:org', label: 'Организация', before: [], after: ['Орг В'] },
     ] },
-    { type: 'delete', excelRow: null, currentRow: { index: 3, flat: { 'criterion:org': ['Орг Г'] } }, changes: [
+    // Same for DELETE: the complete removed row lives in currentRow.flat even if changes is partial.
+    { type: 'delete', excelRow: null, currentRow: {
+      index: 3,
+      flat: {
+        'criterion:org': ['Орг Г'],
+        'function:sign': ['Удаляемый У.У. — Специалист'],
+      },
+    }, changes: [
       { key: 'criterion:org', label: 'Организация', before: ['Орг Г'], after: [] },
     ] },
   ],
@@ -41,11 +56,27 @@ const plan = {
 };
 
 const model = E.buildChangesReportModel(plan, structure);
-assert.deepEqual(model.headers.slice(0, 3), ['Изменение', 'Excel row', 'Причина']);
+assert.deepEqual(
+  model.detailHeaders,
+  ['Изменение', 'Excel row', 'TESSA row', 'Поле', 'Было', 'Стало', 'Причина'],
+  'the human report must have one field-level schema'
+);
 assert.deepEqual(model.operations.map(row => row.change), ['UPDATE', 'ADD', 'DELETE', 'SKIP']);
 assert.ok(!model.operations.some(row => row.change === 'KEEP' || row.change === 'NOOP'), 'KEEP/NOOP must never appear in changes report');
-assert.equal(model.details.length, 5, JSON.stringify(model.details));
-assert.ok(model.details.some(row => row.field === 'Организация' && row.before === 'Орг А' && row.after === 'Орг Б'));
+
+// UPDATE stays a diff: only changed fields, with before -> after.
+assert.ok(model.details.some(row => row.change === 'UPDATE' && row.field === 'Организация' && row.before === 'Орг А' && row.after === 'Орг Б'));
+assert.ok(model.details.some(row => row.change === 'UPDATE' && row.field === 'Подписание' && /Иванов/.test(row.before) && /Петров/.test(row.after)));
+
+// ADD must be self-contained: every populated business field is shown, not only action.changes.
+assert.ok(model.details.some(row => row.change === 'ADD' && row.field === 'Организация' && row.before === '—' && row.after === 'Орг В'), JSON.stringify(model.details));
+assert.ok(model.details.some(row => row.change === 'ADD' && row.field === 'Подписание' && row.before === '—' && /Сидоров/.test(row.after)), 'ADD must include the full new row');
+
+// DELETE must be self-contained too: every populated field of currentRow.flat is visible.
+assert.ok(model.details.some(row => row.change === 'DELETE' && row.field === 'Организация' && row.before === 'Орг Г' && row.after === '—'), JSON.stringify(model.details));
+assert.ok(model.details.some(row => row.change === 'DELETE' && row.field === 'Подписание' && /Удаляемый/.test(row.before) && row.after === '—'), 'DELETE must include the full removed row');
+
+// SKIP stays on the same human-readable field-level report with its reason.
 assert.ok(model.details.some(row => row.change === 'SKIP' && /Исполнитель/.test(row.reason)));
 assert.equal(model.reportOnly, true);
 
@@ -60,4 +91,4 @@ try {
 }
 assert.equal(rejected, true, 'report-only workbook must be rejected as an Apply source');
 
-console.log('TESSA Matrix Studio reviewed changes XLSX: OK');
+console.log('TESSA Matrix Studio self-contained reviewed changes XLSX: OK');
