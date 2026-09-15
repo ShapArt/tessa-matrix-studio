@@ -29,13 +29,17 @@ try {
 
   // Seed 874674273: production picker has data (23 catalogs / 133763 entries), but Full UAT
   // called pickerColumns with the wrong two-argument shape. The UAT must use the same
-  // { schemaTokens, dictionaryCatalog } source contract as the real picker UI.
+  // production source contract as the real picker UI.
   assert.match(source, /FULL_UAT_PICKER_SOURCE_V2/,
     'composed Full UAT must mark the production-shaped picker source');
   assert.doesNotMatch(source, /E\.pickerColumns\(structure, catalog\)/,
     'Full UAT must not call pickerColumns with the obsolete two-argument shape');
-  assert.match(source, /E\.pickerColumns\(\{\s*schemaTokens:\s*base\.book\.schemaTokens,\s*dictionaryCatalog:\s*catalog\s*\}\)/,
-    'Full UAT picker checks must pass workbook schema tokens together with the live catalog');
+
+  // Seed 4056656365: after schemaTokens + dictionaryCatalog were fixed, both
+  // action-value-picker and dictionary-audit still crashed at source.headers[index].
+  // The Full UAT source must therefore carry all three production picker inputs.
+  assert.match(source, /E\.pickerColumns\(\{\s*schemaTokens:\s*base\.book\.schemaTokens,\s*headers:\s*base\.book\.headers,\s*dictionaryCatalog:\s*catalog\s*\}\)/,
+    'Full UAT picker checks must pass schema tokens, matching headers and the live catalog');
 
   // Seed 874674273: dictionary refresh generated a >128 MiB service worksheet and then
   // incorrectly fed its own trusted donor ZIP back through the untrusted XLSX reader.
@@ -78,8 +82,8 @@ try {
   globalThis.document = { body: { innerText: '' }, querySelector: () => null, querySelectorAll: () => [] };
   vm.runInThisContext(source, { filename: target });
   const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
-  assert.ok(E?.createRoundtripXlsxBytes && E?.readXlsxArrayBuffer && E?.refreshWorkbookDictionaries,
-    'refresh regression requires production XLSX exports');
+  assert.ok(E?.createRoundtripXlsxBytes && E?.readXlsxArrayBuffer && E?.refreshWorkbookDictionaries && E?.pickerColumns,
+    'regression requires production XLSX and picker exports');
 
   const structure = { templateId: 'tpl-final-four', conditions: [], functions: [{ id: 'sign', name: 'Подписание' }] };
   const snapshot = { matrixId: 'matrix-final-four', templateId: 'tpl-final-four', rows: [] };
@@ -105,6 +109,15 @@ try {
   });
 
   const smallCatalog = makeCatalog(3);
+  const picker = E.pickerColumns({
+    schemaTokens: ['function:sign'],
+    headers: ['Подписание'],
+    dictionaryCatalog: smallCatalog,
+  });
+  assert.equal(picker.length, 1, 'production picker contract must expose the live dictionary column');
+  assert.equal(picker[0].label, 'Подписание', 'picker label must come from the matching workbook header');
+  assert.equal(picker[0].catalog?.id, catalogId, 'picker must retain the mapped live catalog');
+
   const largeCatalog = makeCatalog(900);
   const sourceBytes = await E.createRoundtripXlsxBytes(structure, snapshot, { TemplateName: 'Final four refresh' }, smallCatalog);
   const sourceBook = await E.readXlsxArrayBuffer(
@@ -122,7 +135,7 @@ try {
   assert.equal(lean.rows.length, 0);
   assert.equal(lean.parsedSheets.has('Словари'), false);
 
-  console.log('Live UAT final-four regressions: picker source, direct dictionary refresh and Boolean semantics: OK');
+  console.log('Live UAT final-four regressions: complete picker source, direct dictionary refresh and Boolean semantics: OK');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

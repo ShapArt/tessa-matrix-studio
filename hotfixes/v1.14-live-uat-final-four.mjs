@@ -12,10 +12,12 @@ function replaceExact(before, after, label, expectedCount = 1) {
 // Live UAT seed 874674273 had 23 catalogs / 133763 entries but action-value-picker
 // reported zero values. pickerColumns accepts a single production-shaped source object;
 // the Full UAT was passing structure and catalog as two arguments, silently discarding
-// the catalog. Use the exact same source contract as the real picker UI.
+// the catalog. Seed 4056656365 then exposed the remaining contract gap: pickerColumns
+// also reads source.headers[index] for the visible label. Pass all three workbook inputs
+// used by the real picker UI: schemaTokens + headers + dictionaryCatalog.
 replaceExact(
   `E.pickerColumns(structure, catalog)`,
-  `E.pickerColumns({ schemaTokens: base.book.schemaTokens, dictionaryCatalog: catalog }) /* FULL_UAT_PICKER_SOURCE_V2 */`,
+  `E.pickerColumns({ schemaTokens: base.book.schemaTokens, headers: base.book.headers, dictionaryCatalog: catalog }) /* FULL_UAT_PICKER_SOURCE_V2 */`,
   'Full UAT production-shaped picker source',
   2,
 );
@@ -117,4 +119,4 @@ if (/const donorBytes = await createRoundtripXlsxBytes\(structure, \{ rows: \[\]
 }
 
 fs.writeFileSync(target, source, 'utf8');
-console.log('TESSA Matrix Studio v1.14 final-four live UAT fixes: picker source + direct dictionary XML + Boolean semantics OK');
+console.log('TESSA Matrix Studio v1.14 final-four live UAT fixes: complete picker source + direct dictionary XML + Boolean semantics OK');
