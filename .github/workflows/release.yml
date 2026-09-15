@@ -130,7 +130,7 @@ jobs:
           grep -Fq "version: '$VERSION'," dist/tessa-matrix-studio.user.js
           grep -Fq "__TMS_INSTALL_INTERVAL_ADD_VALID_FALLBACK__" dist/tessa-matrix-studio.user.js
           grep -Fq "__TMS_FULL_UAT_V1__" dist/tessa-matrix-studio.user.js
-          grep -Fq "DUPLICATE_IDENTITY_COPY_AS_ADD_V1" dist/tessa-matrix-studio.user.js
+          grep -Fq "FULL_UAT_RUNTIME_CONTEXT_V1" dist/tessa-matrix-studio.user.js
           grep -Fq "LIVE_UAT_2026_09_11" dist/tessa-matrix-studio.user.js
           grep -Fq "diagnosticNativeCardCache" dist/tessa-matrix-studio.user.js
           grep -Fq "source: 'full-uat'" dist/tessa-matrix-studio.user.js
@@ -254,7 +254,7 @@ jobs:
           grep -Fq "version: '$EXPECTED_VERSION'," "$PUBLIC_DIR/tessa-matrix-studio.user.js"
           grep -Fq "__TMS_INSTALL_INTERVAL_ADD_VALID_FALLBACK__" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
           grep -Fq "__TMS_FULL_UAT_V1__" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
-          grep -Fq "DUPLICATE_IDENTITY_COPY_AS_ADD_V1" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "FULL_UAT_RUNTIME_CONTEXT_V1" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
           grep -Fq "LIVE_UAT_2026_09_11" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
           grep -Fq "Numeric ranges have an exact grammar" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
           grep -Fq "FULL_UAT_INLINE_FAILURES_V1" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
