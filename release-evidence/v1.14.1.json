@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 4,
+  "version": "1.14.1",
+  "status": "verified",
+  "operation": "report-only-derivative",
+  "parentVersion": "1.14.0",
+  "parentUserscriptSha256": "811a3e7251cc0f89f632814b3ac49d5feb1e280670f34f31c6a631b22d960eff",
+  "allowedSurface": "changes-report-v3-and-version-metadata",
+  "parentLiveUat": {
+    "status": "PASSED",
+    "pass": 33,
+    "fail": 0,
+    "notRun": 0,
+    "seed": 3439503818
+  }
+}
