@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 const artifactComposition = fs.readFileSync(new URL('./v1.14-artifact-composition.mjs', import.meta.url), 'utf8');
 const releaseWorkflow = fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+const rcContract = fs.readFileSync(new URL('./v1.14-rc-contract.mjs', import.meta.url), 'utf8');
 
 assert.match(artifactComposition, /v1\.14-full-uat-inline-failures\.mjs/,
   'canonical composed artifact must keep inline Full UAT failure evidence');
@@ -21,9 +21,9 @@ assert.match(releaseWorkflow, /hotfixes\/v1\.14-live-uat-final-four\.mjs/,
 assert.match(releaseWorkflow, /hotfixes\/v1\.14-full-uat-inline-failures\.mjs/,
   'release change detection/package must track the inline-failure transform');
 
-assert.match(String(packageJson.scripts?.test || ''), /live-uat-final-four-regressions\.mjs/,
-  'full npm test must permanently execute the final-four behavioral regression');
-assert.match(String(packageJson.scripts?.test || ''), /live-uat-release-composition\.mjs/,
-  'full npm test must permanently execute release/UAT composition parity');
+assert.match(rcContract, /import ['"]\.\/live-uat-final-four-regressions\.mjs['"]/,
+  'npm-test RC contract must permanently execute the final-four behavioral regression');
+assert.match(rcContract, /import ['"]\.\/live-uat-release-composition\.mjs['"]/,
+  'npm-test RC contract must permanently execute release/UAT composition parity');
 
 console.log('Live UAT release composition parity: exact candidate and production build use the same final transforms: OK');
