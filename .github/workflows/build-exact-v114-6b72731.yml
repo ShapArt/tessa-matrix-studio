@@ -42,19 +42,23 @@ jobs:
           cat hotfixes/interval-add-valid-fallback.js >> dist/tessa-matrix-studio.user.js
           printf '\n' >> dist/tessa-matrix-studio.user.js
           node hotfixes/v1.13.0-full-uat-live-finalize.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14-full-uat-inline-failures.mjs dist/tessa-matrix-studio.user.js
 
           node --check dist/tessa-matrix-studio.user.js
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/user-copied-identity-regression.mjs
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/full-uat-runner-contract.mjs
-          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/full-uat-runtime-context.mjs
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/live-uat-regressions.mjs
           node tests/v1.14-artifact-composition.mjs
+
+          grep -q 'FULL_UAT_RUNTIME_CONTEXT_V1' dist/tessa-matrix-studio.user.js
+          grep -q 'FULL_UAT_INLINE_FAILURES_V1' dist/tessa-matrix-studio.user.js
+          grep -q 'FAIL DETAILS' dist/tessa-matrix-studio.user.js
 
           awk 'BEGIN { emit=0 } /^\/\/ ==UserScript==/ { emit=1 } emit { print } /^\/\/ ==\/UserScript==/ { exit }' dist/tessa-matrix-studio.user.js > dist/tessa-matrix-studio.meta.js
           test -s dist/tessa-matrix-studio.meta.js
           (cd dist && sha256sum tessa-matrix-studio.meta.js tessa-matrix-studio.user.js > SHA256SUMS.txt)
           USER_SHA="$(sha256sum dist/tessa-matrix-studio.user.js | awk '{print $1}')"
-          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "live-tessa-uat-before-release",\n  "fullUatSavePolicy": "one-consent-one-native-save",\n  "fullUatRuntimeContext": "fresh-bridge-and-structure",\n  "fullUatFailureEvidence": ["inline-summary", "failed-checks.json", "FAILURES.txt"]\n}\n' "$VERSION" "$EXPECTED_SHA" "$USER_SHA" > dist/candidate-manifest.json
+          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "live-tessa-uat-before-release",\n  "fullUatSavePolicy": "one-consent-one-native-save",\n  "fullUatRuntimeContext": "fresh-bridge-and-structure",\n  "fullUatFailureEvidence": ["inline-panel", "standalone-txt", "failed-checks.json", "FAILURES.txt"]\n}\n' "$VERSION" "$EXPECTED_SHA" "$USER_SHA" > dist/candidate-manifest.json
 
           ZIP="tessa-matrix-studio-uat-v1.14.0-6b72731.zip"
           (cd dist && zip -X -9 "../$ZIP" tessa-matrix-studio.user.js tessa-matrix-studio.meta.js SHA256SUMS.txt candidate-manifest.json)
@@ -89,6 +93,6 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --target "6b72731bb206b2ce310f7e1d9f30b164b48766cf" \
               --title "UAT candidate v1.14.0 (6b72731)" \
-              --notes "Pre-release live TESSA UAT candidate built from exact commit 6b72731bb206b2ce310f7e1d9f30b164b48766cf. Includes fresh runtime-context pinning for post-ADD UPDATE scenarios and inline FAIL details. Not a production release; PR #101 remains unmerged pending live UAT." \
+              --notes "Pre-release live TESSA UAT candidate built from exact commit 6b72731bb206b2ce310f7e1d9f30b164b48766cf. Includes fresh runtime-context pinning for post-ADD UPDATE scenarios plus inline and standalone FAIL details. Not a production release; PR #101 remains unmerged pending live UAT." \
               --prerelease
           fi
