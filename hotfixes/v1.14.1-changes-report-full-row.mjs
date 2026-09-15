@@ -18,6 +18,7 @@ export function applyChangesReportFullRow(input) {
   }
 
   const modelBlock = `  // REVIEWED_CHANGES_REPORT_V3
+  // REVIEWED_CHANGES_REPORT_V2
   // Human-facing Russian report. UPDATE shows changed fields only; ADD and DELETE
   // expand the complete populated business row. Technical action names and the mostly
   // empty standalone "reason" column are intentionally excluded from the workbook.
