@@ -8,6 +8,9 @@ const code = applyChangesReportFullRow(baseCode);
 assert.ok(code.includes('REVIEWED_CHANGES_REPORT_V2'), 'v1.14.1 changes-report marker missing');
 assert.ok(!code.includes('Детали изменений'), 'changes workbook must contain only one visible report sheet');
 assert.equal(applyChangesReportFullRow(code), code, 'changes-report transform must be idempotent for release composition');
+assert.equal((code.match(/function buildChangesReportModel\(/g) || []).length, 1, 'transformed source must contain exactly one report model implementation');
+assert.ok(code.includes('businessEntries(action.excelRow?.flat)'), 'transformed ADD path must read the full Excel row');
+assert.ok(code.includes('businessEntries(action.currentRow?.flat)'), 'transformed DELETE path must read the full TESSA row');
 
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
