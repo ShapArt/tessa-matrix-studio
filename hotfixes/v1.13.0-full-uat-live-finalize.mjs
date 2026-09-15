@@ -59,13 +59,13 @@ replaceExact(
   'pre-approved Full UAT Apply with deferred main Save and scoped runtime context',
 );
 
-// FULL_UAT_RUNTIME_CONTEXT_V1
 // The UPDATE plans below are built from freshSnapshot(). Keep their preflight bound to
 // that same bridge/structure instead of creating a second context between plan and Apply.
 // Ordinary Apply does not supply these options and therefore keeps the original path.
 replaceExact(
 `      preflight = await preflightPlan(plan);`,
-`      preflight = await preflightPlan(plan, { bridge: options.runtimeBridge || undefined, structure: options.runtimeStructure || undefined });`,
+`      // FULL_UAT_RUNTIME_CONTEXT_V1
+      preflight = await preflightPlan(plan, { bridge: options.runtimeBridge || undefined, structure: options.runtimeStructure || undefined });`,
   'scoped Full UAT preflight runtime context',
 );
 
