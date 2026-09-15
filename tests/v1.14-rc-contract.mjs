@@ -7,6 +7,7 @@ const changelog = fs.readFileSync(new URL('../CHANGELOG.md', import.meta.url), '
 const readme = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 const communicationPath = new URL('../docs/communications/v1.14-colleague-test-message.md', import.meta.url);
 const fullUatFinalizer = fs.readFileSync(new URL('../hotfixes/v1.13.0-full-uat-live-finalize.mjs', import.meta.url), 'utf8');
+const inlineFailureUxPath = new URL('../hotfixes/v1.14-full-uat-inline-failures.mjs', import.meta.url);
 
 assert.equal(pkg.version, '1.14.0', 'package candidate version must be 1.14.0');
 assert.match(source, /^\/\/ @version\s+1\.14\.0$/m, 'userscript metadata version must be 1.14.0');
@@ -28,6 +29,21 @@ assert.match(fullUatFinalizer, /FULL_UAT_FAILURE_SUMMARY_V1/,
   'Full UAT must surface failing check IDs/details in the immediate result');
 assert.match(fullUatFinalizer, /native-write-trace\.json/,
   'finalizer must package native write evidence after the final Save');
+
+// Live rerun on seed 1346937433 still produced the same 29 PASS / 4 FAIL while the
+// ChatGPT runtime could not unpack the package. The UAT UI must therefore show the exact
+// failed check IDs/details and download a tiny standalone text file in addition to the ZIP.
+assert.ok(fs.existsSync(inlineFailureUxPath),
+  'Full UAT must ship the inline failure UX transform');
+const inlineFailureUx = fs.readFileSync(inlineFailureUxPath, 'utf8');
+assert.match(inlineFailureUx, /FULL_UAT_INLINE_FAILURES_V1/,
+  'inline failure UX transform must have a stable marker');
+assert.match(inlineFailureUx, /result\.failedChecks/,
+  'inline failure UX must consume failedChecks from the finalized report');
+assert.match(inlineFailureUx, /TESSA_Full_UAT_FAILURES_/,
+  'inline failure UX must download standalone failure evidence');
+assert.match(inlineFailureUx, /FAIL DETAILS/,
+  'inline failure UX must render explicit failure details in the panel');
 
 assert.match(changelog, /## 1\.14\.0 — 2026-09-11/);
 for (const token of ['session', 'touched', 'ФИО', 'Скачать изменения в Excel', 'Performance UAT']) {
