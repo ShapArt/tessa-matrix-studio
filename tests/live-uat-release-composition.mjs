@@ -21,6 +21,14 @@ assert.match(releaseWorkflow, /hotfixes\/v1\.14-live-uat-final-four\.mjs/,
 assert.match(releaseWorkflow, /hotfixes\/v1\.14-full-uat-inline-failures\.mjs/,
   'release change detection/package must track the inline-failure transform');
 
+// v1.14 exact UAT/live composition no longer emits the old copy-as-add marker. The
+// production Release must validate markers that are actually present in the canonical
+// artifact, otherwise a verified build can fail before the native-evidence gate.
+assert.doesNotMatch(releaseWorkflow, /DUPLICATE_IDENTITY_COPY_AS_ADD_V1/,
+  'production release must not require an obsolete marker absent from the canonical v1.14 artifact');
+assert.match(releaseWorkflow, /grep -Fq "FULL_UAT_RUNTIME_CONTEXT_V1" dist\/tessa-matrix-studio\.user\.js/,
+  'production release must validate the current Full UAT runtime-context marker');
+
 assert.match(rcContract, /import ['"]\.\/live-uat-final-four-regressions\.mjs['"]/,
   'npm-test RC contract must permanently execute the final-four behavioral regression');
 assert.match(rcContract, /import ['"]\.\/live-uat-release-composition\.mjs['"]/,
