@@ -1,0 +1,105 @@
+name: Build exact v1.14 UAT fc9a373
+
+on:
+  push:
+    branches: [uat/build-v1.14-fc9a373]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fc9a37365aa19292ddabe6f94be55890c7db2202
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install locked test environment
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify exact source and full regression
+        run: npm test
+      - name: Build exact UAT candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_SHA="fc9a37365aa19292ddabe6f94be55890c7db2202"
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          [[ "$ACTUAL_SHA" == "$EXPECTED_SHA" ]] || { echo "Wrong checkout: $ACTUAL_SHA"; exit 1; }
+          VERSION="$(node -p "require('./package.json').version")"
+          mkdir -p dist
+
+          cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
+          node hotfixes/malformed-range-diagnostic-transform.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.13.0-user-row-lifecycle-transform.mjs dist/tessa-matrix-studio.user.js
+          sed -i -E "0,/^\/\/ @version[[:space:]]+[0-9.]+$/s//\/\/ @version      $VERSION/" dist/tessa-matrix-studio.user.js
+          sed -i -E "0,/^[[:space:]]+version: '[0-9.]+'[,]$/s//    version: '$VERSION',/" dist/tessa-matrix-studio.user.js
+          printf '\n' >> dist/tessa-matrix-studio.user.js
+          cat hotfixes/interval-add-valid-fallback.js >> dist/tessa-matrix-studio.user.js
+          printf '\n' >> dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.13.0-full-uat-live-finalize.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14-full-uat-inline-failures.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14-live-uat-final-four.mjs dist/tessa-matrix-studio.user.js
+
+          node --check dist/tessa-matrix-studio.user.js
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/user-copied-identity-regression.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/full-uat-runner-contract.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/live-uat-regressions.mjs
+          node tests/live-uat-final-four-regressions.mjs
+          node tests/live-uat-release-composition.mjs
+          node tests/v1.14-artifact-composition.mjs
+
+          grep -q 'FULL_UAT_RUNTIME_CONTEXT_V1' dist/tessa-matrix-studio.user.js
+          grep -q 'FULL_UAT_INLINE_FAILURES_V1' dist/tessa-matrix-studio.user.js
+          grep -q 'FULL_UAT_PICKER_SOURCE_V2' dist/tessa-matrix-studio.user.js
+          grep -q 'headers: base.book.headers' dist/tessa-matrix-studio.user.js
+          grep -q 'REFRESH_DICTIONARY_DIRECT_XML_V2' dist/tessa-matrix-studio.user.js
+          grep -q 'FULL_UAT_BOOLEAN_SEMANTIC_V2' dist/tessa-matrix-studio.user.js
+          grep -q 'FAIL DETAILS' dist/tessa-matrix-studio.user.js
+
+          awk 'BEGIN { emit=0 } /^\/\/ ==UserScript==/ { emit=1 } emit { print } /^\/\/ ==\/UserScript==/ { exit }' dist/tessa-matrix-studio.user.js > dist/tessa-matrix-studio.meta.js
+          test -s dist/tessa-matrix-studio.meta.js
+          (cd dist && sha256sum tessa-matrix-studio.meta.js tessa-matrix-studio.user.js > SHA256SUMS.txt)
+          USER_SHA="$(sha256sum dist/tessa-matrix-studio.user.js | awk '{print $1}')"
+          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "live-tessa-uat-before-release",\n  "fullUatSavePolicy": "one-consent-one-native-save",\n  "fullUatRuntimeContext": "fresh-bridge-and-structure",\n  "fullUatPickerSource": ["schemaTokens", "headers", "dictionaryCatalog"],\n  "fullUatFinalFour": ["production-picker-source", "direct-generated-dictionary-xml", "boolean-semantic-readback"],\n  "fullUatFailureEvidence": ["inline-panel", "standalone-txt", "failed-checks.json", "FAILURES.txt"]\n}\n' "$VERSION" "$EXPECTED_SHA" "$USER_SHA" > dist/candidate-manifest.json
+
+          ZIP="tessa-matrix-studio-uat-v1.14.0-fc9a373.zip"
+          (cd dist && zip -X -9 "../$ZIP" tessa-matrix-studio.user.js tessa-matrix-studio.meta.js SHA256SUMS.txt candidate-manifest.json)
+          test -s "$ZIP"
+          sha256sum "$ZIP" > "$ZIP.sha256"
+      - name: Upload exact UAT candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tessa-matrix-studio-uat-v1.14.0-fc9a373
+          path: |
+            dist/tessa-matrix-studio.user.js
+            dist/tessa-matrix-studio.meta.js
+            dist/SHA256SUMS.txt
+            dist/candidate-manifest.json
+            tessa-matrix-studio-uat-v1.14.0-fc9a373.zip
+            tessa-matrix-studio-uat-v1.14.0-fc9a373.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish persistent UAT prerelease asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="uat-v1.14.0-fc9a373"
+          ZIP="tessa-matrix-studio-uat-v1.14.0-fc9a373.zip"
+          SHA_FILE="$ZIP.sha256"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" "$SHA_FILE" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$ZIP" "$SHA_FILE" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "fc9a37365aa19292ddabe6f94be55890c7db2202" \
+              --title "UAT candidate v1.14.0 (fc9a373)" \
+              --notes "Pre-release live TESSA UAT candidate built from exact commit fc9a37365aa19292ddabe6f94be55890c7db2202. Fixes seed 4056656365 shared action-value-picker/dictionary-audit crash by passing workbook headers together with schema tokens and the live dictionary catalog. Not a production release; PR #101 remains unmerged pending live UAT." \
+              --prerelease
+          fi
