@@ -1,8 +1,14 @@
 import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
+import { applyChangesReportFullRow } from '../hotfixes/v1.14.1-changes-report-full-row.mjs';
 
-const code = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
+const baseCode = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
+const code = applyChangesReportFullRow(baseCode);
+assert.ok(code.includes('REVIEWED_CHANGES_REPORT_V2'), 'v1.14.1 changes-report marker missing');
+assert.ok(!code.includes('Детали изменений'), 'changes workbook must contain only one visible report sheet');
+assert.equal(applyChangesReportFullRow(code), code, 'changes-report transform must be idempotent for release composition');
+
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 globalThis.location = { origin: 'https://tessa.cherkizovsky.net' };
@@ -25,12 +31,24 @@ const plan = {
     { type: 'noop', excelRow: { excelRow: 14 }, currentRow: { index: 0 }, changes: [] },
     { type: 'update', excelRow: { excelRow: 15 }, currentRow: { index: 1 }, changes: [
       { key: 'criterion:org', label: 'Организация', before: ['Орг А'], after: ['Орг Б'] },
-      { key: 'function:sign', label: 'Подписание', before: ['Иванов И.И.'], after: ['Петров П.П.'] },
+      { key: 'function:sign', label: 'Подписание', before: ['Иванов И.И. — Руководитель'], after: ['Петров П.П. — Директор'] },
     ] },
-    { type: 'add', excelRow: { excelRow: 16 }, currentRow: null, changes: [
+    { type: 'add', excelRow: {
+      excelRow: 16,
+      flat: {
+        'criterion:org': ['Орг В'],
+        'function:sign': ['Сидоров С.С. — Руководитель склада'],
+      },
+    }, currentRow: null, changes: [
       { key: 'criterion:org', label: 'Организация', before: [], after: ['Орг В'] },
     ] },
-    { type: 'delete', excelRow: null, currentRow: { index: 3, flat: { 'criterion:org': ['Орг Г'] } }, changes: [
+    { type: 'delete', excelRow: null, currentRow: {
+      index: 3,
+      flat: {
+        'criterion:org': ['Орг Г'],
+        'function:sign': ['Удаляемый У.У. — Специалист'],
+      },
+    }, changes: [
       { key: 'criterion:org', label: 'Организация', before: ['Орг Г'], after: [] },
     ] },
   ],
@@ -41,13 +59,22 @@ const plan = {
 };
 
 const model = E.buildChangesReportModel(plan, structure);
-assert.deepEqual(model.headers.slice(0, 3), ['Изменение', 'Excel row', 'Причина']);
+assert.deepEqual(
+  model.detailHeaders,
+  ['Изменение', 'Excel row', 'TESSA row', 'Поле', 'Было', 'Стало', 'Причина'],
+  'the human report must have one field-level schema'
+);
 assert.deepEqual(model.operations.map(row => row.change), ['UPDATE', 'ADD', 'DELETE', 'SKIP']);
 assert.ok(!model.operations.some(row => row.change === 'KEEP' || row.change === 'NOOP'), 'KEEP/NOOP must never appear in changes report');
-assert.equal(model.details.length, 5, JSON.stringify(model.details));
-assert.ok(model.details.some(row => row.field === 'Организация' && row.before === 'Орг А' && row.after === 'Орг Б'));
+assert.ok(model.details.some(row => row.change === 'UPDATE' && row.field === 'Организация' && row.before === 'Орг А' && row.after === 'Орг Б'));
+assert.ok(model.details.some(row => row.change === 'UPDATE' && row.field === 'Подписание' && /Иванов/.test(row.before) && /Петров/.test(row.after)));
+assert.ok(model.details.some(row => row.change === 'ADD' && row.field === 'Организация' && row.before === '—' && row.after === 'Орг В'), JSON.stringify(model.details));
+assert.ok(model.details.some(row => row.change === 'ADD' && row.field === 'Подписание' && row.before === '—' && /Сидоров/.test(row.after)), 'ADD must include the full new row');
+assert.ok(model.details.some(row => row.change === 'DELETE' && row.field === 'Организация' && row.before === 'Орг Г' && row.after === '—'), JSON.stringify(model.details));
+assert.ok(model.details.some(row => row.change === 'DELETE' && row.field === 'Подписание' && /Удаляемый/.test(row.before) && row.after === '—'), 'DELETE must include the full removed row');
 assert.ok(model.details.some(row => row.change === 'SKIP' && /Исполнитель/.test(row.reason)));
 assert.equal(model.reportOnly, true);
+assert.equal(model.format, 'TESSA_MATRIX_CHANGES_REPORT_V2');
 
 const bytes = await E.createChangesReportXlsxBytes(plan, structure);
 assert.ok(bytes instanceof Uint8Array && bytes.length > 1000, `unexpected report XLSX size ${bytes?.length}`);
@@ -60,4 +87,4 @@ try {
 }
 assert.equal(rejected, true, 'report-only workbook must be rejected as an Apply source');
 
-console.log('TESSA Matrix Studio reviewed changes XLSX: OK');
+console.log('TESSA Matrix Studio self-contained reviewed changes XLSX: OK');
