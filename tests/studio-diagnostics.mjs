@@ -43,7 +43,7 @@ function fixture({ intervalFailure = false } = {}) {
     section: (c, name) => c.sections[name], rowValue: (r, key) => r.data[key], isDeleted: r => r.state === 2,
     addRow: section => { const r = row({}); section.rows.push(r); return r; },
     async requestStructure() { await this.cardService.request({ requestType: REQUEST.Structure, info: {} }); return structuredClone(structure); },
-    async loadSnapshot() { const response = await this.cardService.get({ cardId: 'saved-card' }); return { ...snapshot, rows: [{ ...original, card: response.card }] }; },
+    async loadSnapshot() { await this.cardService.get({ cardId: 'saved-card' }); return { ...snapshot, rows: [{ ...original }] }; },
     async loadDictionaryCatalog(s, snap, options) { assert.equal(options.transient, true); await this.queryViewSample('Roles', 100); return { catalogs: {}, columnCatalogIds: {}, stats: { catalogs: 0, entries: 0, errors: [] } }; },
     queryViewSample: async () => ({ rows: [], columns: [], complete: true }),
     async getCard(id) { return (await this.cardService.get({ cardId: id })).card; },
@@ -68,6 +68,10 @@ async function collect(f, overrides = {}) { return E.collectStudioDiagnostics({ 
 const f = fixture();
 const originalBytes = JSON.stringify(f.saved.getStorage()), workbookBefore = JSON.stringify(workbook);
 const result = await collect(f);
+const criterionFieldCheck = result.report.checks.find(c => c.id === 'field-criterion:pages');
+const functionFieldCheck = result.report.checks.find(c => c.id === 'field-function:sign');
+assert.notEqual(criterionFieldCheck?.status, 'not-run', 'criterion diagnostics must reopen the live row card instead of expecting it inside snapshot DTO');
+assert.notEqual(functionFieldCheck?.status, 'not-run', 'function diagnostics must reopen the live row card instead of expecting it inside snapshot DTO');
 assert.equal(result.report.status, 'passed', JSON.stringify(result.report.checks));
 assert.equal(result.report.checks.find(c => c.id === 'duplicate-control').status, 'pass');
 assert.equal(result.report.candidateCoverage.checked, 1);

@@ -1,5 +1,15 @@
 # История изменений
 
+## 1.14.0 — 2026-09-11
+
+- Добавлены tab-local session cache и performance telemetry. Кэш живёт только в текущей вкладке, привязан к MatrixID + TemplateID и инвалидируется при смене контекста; при сомнительной свежести Studio возвращается к полному безопасному пути.
+- Planner получил fingerprint fast path для неизменённых строк: KEEP больше не проходит тяжёлое разрешение всех справочников. Серверные preflight и reconciliation используют touched-only identities там, где runtime позволяет это доказать безопасно; stale/ambiguous state по-прежнему приводит к full fallback или блокировке, а не к догадке.
+- Для персональных ролей Excel и picker показывают **ФИО — должность**. RoleID/RoleTypeID остаются первичной identity; старое голое ФИО поддерживается только при однозначном совпадении, одноимённые сотрудники без уточнения блокируются fail-closed.
+- После Preview добавлена кнопка **«Скачать изменения в Excel»**: отдельная report-only книга содержит только ADD/UPDATE/DELETE/SKIP, без KEEP, и лист с деталями «было → стало». Такой отчёт нельзя случайно загрузить обратно как Apply-файл.
+- В диагностику добавлен **Performance UAT**: 10 synthetic read-only сценариев от 0 изменений до 3000 KEEP + 1 ADD/UPDATE, со временем planner-а, fully validated/preflight rows, baseline fast-path и cache hit/miss. В ZIP сохраняются полный и компактный performance-отчёты.
+- Контрольный GitHub Actions прогон на Node.js 24: synthetic Performance UAT — **6.36 с** standalone и **6.11 с** внутри полного regression suite; incremental-large 3000 строк — **365.4 мс** без изменений и **306.8 мс** для 3000 KEEP + 1 ADD. Это synthetic CI-измерения локального planner-а, а не подтверждённая задержка live TESSA.
+- Safety-инварианты не ослаблены: copied-row lifecycle, stale/version guards, cross-matrix atomicity, unsaved-editor guard, серверный ValidateDuplicate и verified read-back остаются обязательными. Версия 1.14.0 остаётся release candidate до live TESSA UAT; production 1.13.0 не заменяется автоматически.
+
 ## 1.13.0 — 2026-09-10
 
 - Добавлен явный безопасный перенос Excel между разными карточками одной матрицы/шаблона при совпадающем TemplateID: исходные RowID/VersionID не переиспользуются, а целевое состояние рассчитывается как KEEP/ADD/DELETE относительно открытой карточки.

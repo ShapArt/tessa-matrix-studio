@@ -21,8 +21,8 @@ const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 assert(typeof E.finalizeApplyResult === 'function', 'finalizeApplyResult is missing');
 assert(typeof E.applyResultMessage === 'function', 'applyResultMessage is missing');
 
-// Exact live-UAT shape: 11 requested mutations all stored successfully, while
-// 12 Excel rows had already been excluded by planner/source validation.
+// Recovery invariant: successful Store for the executable subset is not a green
+// overall result while user edits were silently excluded by source validation.
 const live = {
   rows: Array.from({ length: 11 }, (_, index) => ({
     type: index < 4 ? 'update' : 'add',
@@ -49,13 +49,13 @@ assert(live.appliedCount === 11, `appliedCount expected 11, got ${live.appliedCo
 assert(live.sourceSkippedCount === 12, `sourceSkippedCount expected 12, got ${live.sourceSkippedCount}`);
 assert(live.storeSkippedCount === 0, `storeSkippedCount expected 0, got ${live.storeSkippedCount}`);
 assert(live.notStartedCount === 0, `notStartedCount expected 0, got ${live.notStartedCount}`);
-assert(live.status === 'completed', `source-only skips must not make Apply partial: ${JSON.stringify(live)}`);
-assert(live.partial === false, `source-only skips must keep partial=false: ${JSON.stringify(live)}`);
-assert(live.success === true, `11/11 requested successful mutations must be success=true: ${JSON.stringify(live)}`);
+assert(live.status === 'attention', `source-skipped user edits must require attention: ${JSON.stringify(live)}`);
+assert(live.partial === true, `attention result must keep partial=true: ${JSON.stringify(live)}`);
+assert(live.success === false, `green success is forbidden while source-skipped user edits remain: ${JSON.stringify(live)}`);
 
 const message = E.applyResultMessage(live);
-assert(/11\s*(из|\/).*11|применено\s*:?\s*11/i.test(message), `success UX must show 11/11 applied: ${message}`);
-assert(/12/.test(message) && /(не вош|пропущ|оставлен)/i.test(message), `success UX must mention 12 source-excluded rows separately: ${message}`);
-assert(!/частич/i.test(message), `source-only skips must not be described as partial failure: ${message}`);
+assert(/11\s*(из|\/).*11|применено\s*:?\s*11/i.test(message), `attention UX must still show 11/11 executable mutations applied: ${message}`);
+assert(/12/.test(message) && /(не вош|пропущ|оставлен|вниман)/i.test(message), `attention UX must mention 12 excluded rows: ${message}`);
+assert(/вниман|проверь|исправ|пропущ/i.test(message), `attention UX must tell the user the run is not fully green: ${message}`);
 
-console.log('TESSA Matrix Studio source-skipped rows do not poison successful Apply: OK');
+console.log('TESSA Matrix Studio source-skipped user edits require attention: OK');

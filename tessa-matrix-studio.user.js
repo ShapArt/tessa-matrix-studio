@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.13.0
+// @version      1.14.0
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -44,7 +44,7 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.13.0',
+    version: '1.14.0',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -68,8 +68,20 @@
     lastSupportReport: null,
     lastIntervalDiagnostics: null,
     lastStudioDiagnostics: null,
+    lastPerformanceUat: null,
+    reviewedChangesArtifact: null,
+    reviewedChangesArtifactBuild: null,
+    reviewedChangesArtifactRequest: 0,
     nativeRecorder: null,
     dictionaryCatalog: null,
+    // INCREMENTAL_SESSION_CACHE_V1
+    // Ephemeral only: matrix rows/structure live in memory of the current tab and are
+    // never persisted to browser storage. Dictionary IndexedDB caching remains separate.
+    sessionCache: {
+      contextKey: '', matrixId: '', templateId: '', generation: 0, snapshot: null, structure: null,
+      rowByCardId: new Map(), hits: 0, misses: 0, invalidations: 0, lastInvalidationReason: '', updatedAt: null,
+    },
+    performanceTelemetry: { startedAt: new Date().toISOString(), stages: {}, events: [] },
     progress: { percent: 0, label: 'Готово', detail: '' },
   };
 
@@ -88,6 +100,7 @@
     HeaderRowKey: '__TESSA_HEADER_ROW',
     SchemaRowKey: '__TESSA_SCHEMA_ROW',
     TemplateModeKey: '__TESSA_TEMPLATE_MODE',
+    ReportOnlyKey: '__TESSA_REPORT_ONLY',
   });
 
   const DICTIONARY_CACHE = Object.freeze({
@@ -105,13 +118,32 @@
     ZipConcurrency: 4,
   });
 
+
+  // TASK8_ACTION_REGISTRY_V1
+  // Canonical list of end-user workflow actions covered by Full UAT.  The registry
+  // deliberately points at the real production controls instead of test-only hooks.
+  const STUDIO_ACTION_REGISTRY = Object.freeze([
+    Object.freeze({ id: 'download-current', selector: '#tms-download-current', event: 'click', uatCheckId: 'action-download-current', outcome: 'xlsx-artifact', destructive: false }),
+    Object.freeze({ id: 'value-picker', selector: '#tms-open-picker', event: 'click', uatCheckId: 'action-value-picker', outcome: 'picker-selection', destructive: false }),
+    Object.freeze({ id: 'file-ingest', selector: '#tms-file', event: 'change', uatCheckId: 'action-file-ingest', outcome: 'ingest-workbook', destructive: false }),
+    Object.freeze({ id: 'preview', selector: '#tms-analyze', event: 'click', uatCheckId: 'action-preview', outcome: 'preview-plan', destructive: false }),
+    Object.freeze({ id: 'changes-export', selector: '#tms-download-changes', event: 'click', uatCheckId: 'action-changes-export', outcome: 'changes-xlsx-artifact', destructive: false }),
+    Object.freeze({ id: 'dictionary-refresh', selector: '#tms-download-fresh', event: 'click', uatCheckId: 'action-dictionary-refresh', outcome: 'refreshed-workbook', destructive: false }),
+    Object.freeze({ id: 'merge-current', selector: '#tms-refresh-excel', event: 'click', uatCheckId: 'action-merge-current', outcome: 'merged-workbook', destructive: false }),
+    Object.freeze({ id: 'apply', selector: '#tms-apply', event: 'click', uatCheckId: 'action-apply', outcome: 'live-write-readback', destructive: true }),
+    Object.freeze({ id: 'reconcile', selector: '#tms-reconcile', event: 'click', uatCheckId: 'action-reconcile', outcome: 'reconciliation-readback', destructive: false }),
+    Object.freeze({ id: 'diagnostics', selector: '#tms-download-diagnostics', event: 'click', uatCheckId: 'action-diagnostics', outcome: 'diagnostic-artifact', destructive: false }),
+    Object.freeze({ id: 'performance-uat', selector: '#tms-run-tests', event: 'click', uatCheckId: 'action-performance-uat', outcome: 'performance-result', destructive: false }),
+    Object.freeze({ id: 'full-uat', selector: '#tms-full-uat', event: 'click', uatCheckId: 'action-full-uat', outcome: 'full-uat-package', destructive: true }),
+  ]);
+
   // XLSX is an OPC/ZIP package. These are hard browser-side resource ceilings, not
   // business limits: a workbook that exceeds them is rejected before XML parsing.
   const XLSX_ARCHIVE_LIMITS = Object.freeze({
     MaxInputBytes: 32 * 1024 * 1024,
     MaxEntries: 256,
     MaxEntryUncompressedBytes: 128 * 1024 * 1024,
-    MaxTotalUncompressedBytes: 256 * 1024 * 1024,
+    MaxTotalUncompressedBytes: 512 * 1024 * 1024,
     MaxCompressionRatio: 100,
   });
 
@@ -304,6 +336,333 @@
     return output;
   }
   const nowIso = () => new Date().toISOString();
+
+  function resetPerformanceTelemetry() {
+    APP.performanceTelemetry = { startedAt: nowIso(), stages: {}, events: [] };
+    return performanceSnapshot();
+  }
+
+  function recordPerformanceSample(name, elapsedMs, meta = {}, error = null) {
+    const key = String(name || 'unknown');
+    const ms = Math.max(0, Number(elapsedMs) || 0);
+    const state = APP.performanceTelemetry || (APP.performanceTelemetry = { startedAt: nowIso(), stages: {}, events: [] });
+    const previous = state.stages[key] || { count: 0, totalMs: 0, maxMs: 0, lastMs: 0, lastMeta: null, errors: 0 };
+    state.stages[key] = {
+      count: previous.count + 1,
+      totalMs: previous.totalMs + ms,
+      maxMs: Math.max(previous.maxMs || 0, ms),
+      lastMs: ms,
+      lastMeta: clonePlain(meta || {}),
+      errors: previous.errors + (error ? 1 : 0),
+    };
+    state.events.push({ at: nowIso(), name: key, elapsedMs: ms, meta: clonePlain(meta || {}), ok: !error });
+    if (state.events.length > 100) state.events.splice(0, state.events.length - 100);
+  }
+
+  async function performanceStage(name, fn, meta = {}) {
+    const started = monotonicNow();
+    try {
+      const value = await fn();
+      recordPerformanceSample(name, monotonicNow() - started, meta, null);
+      return value;
+    } catch (error) {
+      recordPerformanceSample(name, monotonicNow() - started, meta, error);
+      throw error;
+    }
+  }
+
+  function performanceSnapshot() {
+    return clonePlain(APP.performanceTelemetry || { startedAt: nowIso(), stages: {}, events: [] });
+  }
+
+  // PERFORMANCE_UAT_V1
+  // Local synthetic benchmark only: it builds the same roundtrip workbook and planner
+  // shapes as normal Studio work, but never calls TESSA services or mutation methods.
+  function performanceUatScenarioNames() {
+    return [
+      '0 changes', '1 ADD', '10 ADD', '100 ADD', '1 UPDATE', '10 UPDATE',
+      '1 DELETE', 'mixed 10', '3000 KEEP + 1 ADD', '3000 KEEP + 1 UPDATE',
+    ];
+  }
+
+  function performanceUatRow(index) {
+    const org = index % 100;
+    const person = index % 300;
+    const flat = {
+      'criterion:org': ['Орг ' + org],
+      'function:sign': ['Сотрудник ' + person],
+    };
+    return {
+      index,
+      rowCardId: 'perf-card-' + index,
+      versionId: 'perf-version-' + index,
+      fingerprint: fingerprintFlat(flat),
+      flat,
+      values: { org: [{ id: 'perf-org-' + org, display: 'Орг ' + org, kind: 'ReferenceGuid' }] },
+      roles: { sign: [{ id: 'perf-person-' + person, display: 'Сотрудник ' + person, roleTypeId: 1 }] },
+    };
+  }
+
+  function clonePerformanceWorkbook(workbook) {
+    const cloneRow = row => ({
+      ...row,
+      values: Array.isArray(row?.values) ? [...row.values] : [],
+      cellMeta: Array.isArray(row?.cellMeta) ? row.cellMeta.map(item => item && typeof item === 'object' ? { ...item } : item) : row?.cellMeta,
+    });
+    return {
+      ...workbook,
+      headers: [...(workbook?.headers || [])],
+      schemaTokens: [...(workbook?.schemaTokens || [])],
+      rows: (workbook?.rows || []).map(cloneRow),
+      roundtrip: {
+        ...(workbook?.roundtrip || {}),
+        baselineRows: (workbook?.roundtrip?.baselineRows || []).map(item => ({
+          ...item,
+          base: item?.base ? clonePlain(item.base) : item?.base,
+        })),
+      },
+    };
+  }
+
+  function buildPerformanceUatSummary(result = {}) {
+    return {
+      format: result.format || 'TESSA_PERFORMANCE_UAT_V1',
+      status: result.status || 'unknown',
+      scope: result.scope || 'synthetic-read-only',
+      baseRows: Math.max(0, Number(result.baseRows) || 0),
+      scenarios: Array.isArray(result.scenarios) ? result.scenarios.length : 0,
+      totalMs: Math.max(0, Number(result.totalMs) || 0),
+      cache: clonePlain(result.cache || { hits: 0, misses: 0 }),
+      liveTimings: clonePlain(result.liveTimings || {}),
+      failures: clonePlain(result.failures || []),
+      rows: (result.scenarios || []).map(item => ({
+        name: item.name,
+        plannerMs: Math.max(0, Number(item.plannerMs) || 0),
+        totalRows: Math.max(0, Number(item.totalRows) || 0),
+        fullyValidatedRows: Math.max(0, Number(item.fullyValidatedRows) || 0),
+        preflightRows: Math.max(0, Number(item.preflightRows) || 0),
+        baselineFastPathHits: Math.max(0, Number(item.baselineFastPathHits) || 0),
+        counts: clonePlain(item.counts || {}),
+      })),
+    };
+  }
+
+  async function runPerformanceUat(options = {}) {
+    const requested = Math.trunc(Number(options?.baseRows) || 3000);
+    const baseRows = Math.max(100, Math.min(10000, requested));
+    const started = monotonicNow();
+    const structure = {
+      templateId: 'performance-uat-template',
+      conditions: [{ criterionRowId: 'org', criterionName: 'Организация', operandTypeId: OPERAND.ReferenceGuid, refSection: 'GchPartners' }],
+      functions: [{ id: 'sign', name: 'Подписание', typeName: 'Подписание' }],
+    };
+    const snapshot = {
+      matrixId: 'performance-uat-matrix',
+      templateId: structure.templateId,
+      rows: Array.from({ length: baseRows }, (_, index) => performanceUatRow(index)),
+    };
+    const matrixInfo = { matrixId: snapshot.matrixId, TemplateID: snapshot.templateId, Name: 'Performance UAT' };
+    const catalog = mergeSnapshotIntoDictionaryCatalog(null, structure, snapshot);
+    const bytes = await createRoundtripXlsxBytes(structure, snapshot, matrixInfo, catalog, { includeActions: true });
+    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const baseWorkbook = await readXlsxArrayBuffer(buffer, 'performance-uat.xlsx');
+    const signer = baseWorkbook.headers.indexOf('Подписание');
+    const signerId = baseWorkbook.headers.indexOf('Подписание__ID');
+    if (signer < 0 || signerId < 0) throw new Error('Performance UAT: не найдены колонки функции Подписание.');
+
+    const changeSigner = (workbook, rowIndex, delta = 1) => {
+      const row = workbook.rows[rowIndex];
+      if (!row) throw new Error('Performance UAT: отсутствует строка ' + rowIndex + '.');
+      const person = (rowIndex + delta) % 300;
+      row.values[signer] = 'Сотрудник ' + person;
+      row.values[signerId] = 'perf-person-' + person + '|1';
+    };
+    const appendCopies = (workbook, count, sourceOffset = 0) => {
+      const maxExcelRow = Math.max(0, ...(workbook.rows || []).map(row => Number(row.excelRow) || 0));
+      for (let i = 0; i < count; i += 1) {
+        const sourceIndex = (sourceOffset + i) % baseWorkbook.rows.length;
+        const source = baseWorkbook.rows[sourceIndex];
+        const copy = {
+          ...source,
+          excelRow: maxExcelRow + i + 2,
+          values: [...source.values],
+          cellMeta: Array.isArray(source.cellMeta) ? source.cellMeta.map(item => item && typeof item === 'object' ? { ...item } : item) : source.cellMeta,
+        };
+        workbook.rows.push(copy);
+        changeSigner(workbook, workbook.rows.length - 1, 1);
+      }
+    };
+    const deleteRows = (workbook, indexes) => {
+      const remove = new Set(indexes);
+      workbook.rows = workbook.rows.filter((_, index) => !remove.has(index));
+    };
+
+    const scenarioBuilders = new Map([
+      ['0 changes', workbook => workbook],
+      ['1 ADD', workbook => { appendCopies(workbook, 1, 0); return workbook; }],
+      ['10 ADD', workbook => { appendCopies(workbook, 10, 20); return workbook; }],
+      ['100 ADD', workbook => { appendCopies(workbook, 100, 100); return workbook; }],
+      ['1 UPDATE', workbook => { changeSigner(workbook, 0, 1); return workbook; }],
+      ['10 UPDATE', workbook => { for (let i = 0; i < 10; i += 1) changeSigner(workbook, i, 1); return workbook; }],
+      ['1 DELETE', workbook => { deleteRows(workbook, [0]); return workbook; }],
+      ['mixed 10', workbook => {
+        for (let i = 0; i < 4; i += 1) changeSigner(workbook, i, 1);
+        deleteRows(workbook, [10, 11, 12]);
+        appendCopies(workbook, 3, 30);
+        return workbook;
+      }],
+      ['3000 KEEP + 1 ADD', workbook => { appendCopies(workbook, 1, 40); return workbook; }],
+      ['3000 KEEP + 1 UPDATE', workbook => { changeSigner(workbook, 42, 1); return workbook; }],
+    ]);
+
+    const expected = {
+      '0 changes': { noop: baseRows, fullyValidatedRows: 0, preflightRows: 0 },
+      '1 ADD': { add: 1 },
+      '10 ADD': { add: 10 },
+      '100 ADD': { add: 100 },
+      '1 UPDATE': { update: 1 },
+      '10 UPDATE': { update: 10 },
+      '1 DELETE': { delete: 1 },
+      'mixed 10': { preflightRows: 10 },
+      '3000 KEEP + 1 ADD': { add: 1, noop: baseRows, fullyValidatedRows: 1, baselineFastPathHits: baseRows },
+      '3000 KEEP + 1 UPDATE': { update: 1, noop: baseRows - 1, fullyValidatedRows: 1 },
+    };
+
+    const scenarios = [];
+    const failures = [];
+    for (const name of performanceUatScenarioNames()) {
+      const workbook = scenarioBuilders.get(name)(clonePerformanceWorkbook(baseWorkbook));
+      const planStarted = monotonicNow();
+      const plan = buildPlan(workbook, structure, snapshot, matrixInfo);
+      const plannerMs = Math.max(0, monotonicNow() - planStarted);
+      const counts = clonePlain(plan.counts || countActions(plan.actions || []));
+      const preflightRows = (plan.actions || []).filter(action => ['add', 'update', 'delete'].includes(action?.type)).length;
+      const item = {
+        name,
+        plannerMs,
+        totalRows: workbook.rows.length,
+        counts,
+        fullyValidatedRows: Math.max(0, Number(plan.incremental?.rowsFullyValidated) || 0),
+        preflightRows,
+        baselineFastPathHits: Math.max(0, Number(plan.incremental?.baselineFastPathHits) || 0),
+      };
+      scenarios.push(item);
+      const rule = expected[name] || {};
+      for (const [key, value] of Object.entries(rule)) {
+        const actual = Object.prototype.hasOwnProperty.call(counts, key) ? counts[key] : item[key];
+        if (Number(actual) !== Number(value)) failures.push({ scenario: name, metric: key, expected: value, actual });
+      }
+      await yieldToMain();
+    }
+
+    const cacheState = sessionCacheStats();
+    const telemetry = performanceSnapshot();
+    const result = {
+      format: 'TESSA_PERFORMANCE_UAT_V1',
+      scope: 'synthetic-read-only',
+      createdAt: nowIso(),
+      baseRows,
+      scenarios,
+      failures,
+      cache: {
+        hits: Math.max(0, Number(cacheState?.hits) || 0),
+        misses: Math.max(0, Number(cacheState?.misses) || 0),
+        invalidations: Math.max(0, Number(cacheState?.invalidations) || 0),
+      },
+      liveTimings: clonePlain(telemetry?.stages || {}),
+      totalMs: Math.max(0, monotonicNow() - started),
+    };
+    result.status = failures.length ? 'failed' : 'passed';
+    return result;
+  }
+
+  function sessionContextKey(matrixId, templateId) {
+    const matrix = canonicalValue(matrixId || '');
+    const template = canonicalValue(templateId || '');
+    return matrix && template ? `${matrix}::${template}` : '';
+  }
+
+  function createEmptySessionCache(previous = null, reason = '') {
+    return {
+      contextKey: '', matrixId: '', templateId: '',
+      generation: Math.max(0, Number(previous?.generation) || 0) + (previous ? 1 : 0),
+      snapshot: null, structure: null, rowByCardId: new Map(),
+      hits: Math.max(0, Number(previous?.hits) || 0),
+      misses: Math.max(0, Number(previous?.misses) || 0),
+      invalidations: Math.max(0, Number(previous?.invalidations) || 0) + (previous ? 1 : 0),
+      lastInvalidationReason: String(reason || ''), updatedAt: nowIso(),
+    };
+  }
+
+  function setSessionSnapshot(snapshot, structure = null) {
+    const matrixId = String(snapshot?.matrixId || '');
+    const templateId = String(snapshot?.templateId || structure?.templateId || '');
+    const key = sessionContextKey(matrixId, templateId);
+    if (!key) return null;
+    const previous = APP.sessionCache || createEmptySessionCache();
+    const rows = Array.isArray(snapshot?.rows) ? snapshot.rows : [];
+    const rowByCardId = new Map();
+    for (const row of rows) {
+      const id = canonicalValue(row?.rowCardId || '');
+      if (id) rowByCardId.set(id, row);
+    }
+    APP.sessionCache = {
+      contextKey: key, matrixId, templateId,
+      generation: Math.max(0, Number(previous.generation) || 0) + 1,
+      snapshot, structure: structure || previous.structure || null, rowByCardId,
+      hits: Math.max(0, Number(previous.hits) || 0), misses: Math.max(0, Number(previous.misses) || 0),
+      invalidations: Math.max(0, Number(previous.invalidations) || 0),
+      lastInvalidationReason: previous.lastInvalidationReason || '', updatedAt: nowIso(),
+    };
+    return snapshot;
+  }
+
+  function getSessionSnapshot(matrixId, templateId) {
+    const cache = APP.sessionCache || createEmptySessionCache();
+    const key = sessionContextKey(matrixId, templateId);
+    if (key && cache.contextKey === key && cache.snapshot) {
+      cache.hits += 1;
+      return cache.snapshot;
+    }
+    cache.misses += 1;
+    APP.sessionCache = cache;
+    return null;
+  }
+
+  function updateSessionRows({ matrixId, templateId, upsertRows = [], deleteRowIds = [] } = {}) {
+    const cache = APP.sessionCache || createEmptySessionCache();
+    const key = sessionContextKey(matrixId, templateId);
+    if (!key || key !== cache.contextKey || !cache.snapshot) {
+      cache.misses += 1;
+      APP.sessionCache = cache;
+      return null;
+    }
+    const byId = new Map((cache.snapshot.rows || []).map(row => [canonicalValue(row?.rowCardId || ''), row]).filter(([id]) => id));
+    for (const id of deleteRowIds || []) byId.delete(canonicalValue(id || ''));
+    for (const row of upsertRows || []) {
+      const id = canonicalValue(row?.rowCardId || '');
+      if (id) byId.set(id, row);
+    }
+    const next = { ...cache.snapshot, rows: Array.from(byId.values()), createdAt: nowIso() };
+    setSessionSnapshot(next, cache.structure);
+    APP.snapshot = next;
+    return next;
+  }
+
+  function invalidateSessionCache(reason = 'manual') {
+    APP.sessionCache = createEmptySessionCache(APP.sessionCache, reason);
+    return APP.sessionCache;
+  }
+
+  function sessionCacheStats() {
+    const cache = APP.sessionCache || createEmptySessionCache();
+    return {
+      contextKey: cache.contextKey || '', generation: cache.generation || 0,
+      rows: cache.snapshot?.rows?.length || 0, hits: cache.hits || 0, misses: cache.misses || 0,
+      invalidations: cache.invalidations || 0, lastInvalidationReason: cache.lastInvalidationReason || '',
+      updatedAt: cache.updatedAt || null,
+    };
+  }
 
   // ---------------------------------------------------------------------------
   // 2. БАЗОВЫЕ УТИЛИТЫ
@@ -984,9 +1343,13 @@
     return output;
   }
 
-  async function unzipArrayBuffer(arrayBuffer) {
+  async function unzipArrayBuffer(arrayBuffer, options = {}) {
     const bytes = new Uint8Array(arrayBuffer);
     const limits = effectiveXlsxArchiveLimits();
+    const normalizeSelectionKey = value => String(value || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+    const includeEntryNames = new Set((options.includeEntryNames || []).map(normalizeSelectionKey).filter(Boolean));
+    const skipEntryNames = new Set((options.skipEntryNames || []).map(normalizeSelectionKey).filter(Boolean));
+    const hasIncludeFilter = includeEntryNames.size > 0;
     if (bytes.byteLength > limits.MaxInputBytes) {
       throw xlsxArchiveError(`размер файла превышает безопасный лимит ${archiveLimitLabel(limits.MaxInputBytes)}.`);
     }
@@ -1056,18 +1419,21 @@
       seenPaths.add(pathInfo.key);
       const centralExtra = bytes.slice(nameStart + nameLength, nameStart + nameLength + extraLength);
       parseZipExtra(centralExtra, name);
+      const materializeEntry = (!hasIncludeFilter || includeEntryNames.has(pathInfo.key)) && !skipEntryNames.has(pathInfo.key);
 
-      if (uncompressedSize > limits.MaxEntryUncompressedBytes) {
-        throw xlsxArchiveError(`распакованный размер файла ${name} превышает безопасный лимит ${archiveLimitLabel(limits.MaxEntryUncompressedBytes)}.`);
-      }
-      declaredTotal += uncompressedSize;
-      declaredCompressedTotal += compressedSize;
-      if (declaredTotal > limits.MaxTotalUncompressedBytes) {
-        throw xlsxArchiveError(`суммарный распакованный размер превышает безопасный лимит ${archiveLimitLabel(limits.MaxTotalUncompressedBytes)}.`);
-      }
-      const declaredRatio = compressedSize > 0 ? uncompressedSize / compressedSize : (uncompressedSize ? Infinity : 1);
-      if (declaredRatio > limits.MaxCompressionRatio) {
-        throw xlsxArchiveError(`подозрительная степень сжатия файла ${name} превышает ${limits.MaxCompressionRatio}×.`);
+      if (materializeEntry) {
+        if (uncompressedSize > limits.MaxEntryUncompressedBytes) {
+          throw xlsxArchiveError(`распакованный размер файла ${name} превышает безопасный лимит ${archiveLimitLabel(limits.MaxEntryUncompressedBytes)}.`);
+        }
+        declaredTotal += uncompressedSize;
+        declaredCompressedTotal += compressedSize;
+        if (declaredTotal > limits.MaxTotalUncompressedBytes) {
+          throw xlsxArchiveError(`суммарный распакованный размер превышает безопасный лимит ${archiveLimitLabel(limits.MaxTotalUncompressedBytes)}.`);
+        }
+        const declaredRatio = compressedSize > 0 ? uncompressedSize / compressedSize : (uncompressedSize ? Infinity : 1);
+        if (declaredRatio > limits.MaxCompressionRatio) {
+          throw xlsxArchiveError(`подозрительная степень сжатия файла ${name} превышает ${limits.MaxCompressionRatio}×.`);
+        }
       }
 
       ensureZipRange(bytes.length, localOffset, 30, `локальный заголовок ${name}`);
@@ -1090,13 +1456,15 @@
       ensureZipRange(bytes.length, dataStart, compressedSize, `сжатые данные ${name}`);
       if (dataStart + compressedSize > centralOffset) throw xlsxArchiveError(`сжатые данные файла ${name} пересекают центральный ZIP-каталог.`);
 
-      descriptors.push({
-        name,
-        method,
-        compressedSize,
-        uncompressedSize,
-        compressed: bytes.slice(dataStart, dataStart + compressedSize),
-      });
+      if (materializeEntry) {
+        descriptors.push({
+          name,
+          method,
+          compressedSize,
+          uncompressedSize,
+          compressed: bytes.slice(dataStart, dataStart + compressedSize),
+        });
+      }
       offset += recordLength;
     }
 
@@ -1482,14 +1850,29 @@
 
   const WORKBOOK_ARCHIVES = new WeakMap();
 
-  async function readXlsxArrayBuffer(arrayBuffer, fileName = 'matrix.xlsx') {
-    const entries = await unzipArrayBuffer(arrayBuffer);
+  async function readXlsxArrayBuffer(arrayBuffer, fileName = 'matrix.xlsx', options = {}) {
+    const skipSheetNames = new Set((options.skipSheetNames || []).map(name => String(name).trim()).filter(Boolean));
     const decoder = new TextDecoder('utf-8');
+    let entries;
+    if (options.selectiveInflate === true && skipSheetNames.size) {
+      const metadataEntries = await unzipArrayBuffer(arrayBuffer, {
+        includeEntryNames: ['xl/workbook.xml', 'xl/_rels/workbook.xml.rels'],
+      });
+      const metadataDescriptors = parseWorkbookSheets(metadataEntries, decoder);
+      const skipEntryNames = metadataDescriptors
+        .filter(descriptor => skipSheetNames.has(String(descriptor.name || '').trim()))
+        .map(descriptor => descriptor.path)
+        .filter(Boolean);
+      entries = await unzipArrayBuffer(arrayBuffer, { skipEntryNames });
+    } else {
+      entries = await unzipArrayBuffer(arrayBuffer);
+    }
     const shared = parseSharedStrings(entries.has('xl/sharedStrings.xml') ? decoder.decode(entries.get('xl/sharedStrings.xml')) : '');
     const styles = parseStylesXml(entries.has('xl/styles.xml') ? decoder.decode(entries.get('xl/styles.xml')) : '');
     const sheetDescriptors = parseWorkbookSheets(entries, decoder);
     const parsedSheets = new Map();
     for (const descriptor of sheetDescriptors) {
+      if (skipSheetNames.has(descriptor.name)) continue;
       const raw = entries.get(descriptor.path);
       if (!raw) continue;
       parsedSheets.set(descriptor.name, parseSheetXml(decoder.decode(raw), shared, styles));
@@ -1503,6 +1886,9 @@
     const parsed = parsedSheets.get(matrixDescriptor.name);
     if (!parsed) throw new Error(`Не найден лист ${matrixDescriptor.path} в XLSX.`);
     const preliminaryMetadata = readMetadataPairs(parsed.rows, 40);
+    if (preliminaryMetadata[ROUNDTRIP.ReportOnlyKey]) {
+      throw new Error('Это Excel-отчёт только для просмотра. Его нельзя использовать как источник изменений или Apply. Выберите рабочую выгрузку, созданную кнопкой «Скачать Excel».');
+    }
     const declaredHeaderRow = Number(preliminaryMetadata[ROUNDTRIP.HeaderRowKey] || 0);
     const headerRowIndex = declaredHeaderRow > 0 && declaredHeaderRow <= parsed.rows.length
       ? declaredHeaderRow - 1
@@ -1537,7 +1923,7 @@
       rows: data,
       metadata,
       parsedSheets,
-      dictionaryCatalog: parseEmbeddedDictionaryCatalog(parsedSheets),
+      dictionaryCatalog: options.dictionaryCatalog || parseEmbeddedDictionaryCatalog(parsedSheets),
       roundtrip: {
         enabled: ROUNDTRIP.AcceptedFormats.includes(format),
         format,
@@ -1548,8 +1934,12 @@
         baselineRows: parseBaselineRows(parsedSheets),
       },
     };
-    WORKBOOK_ARCHIVES.set(workbook, entries);
+    if (options.retainArchive !== false) WORKBOOK_ARCHIVES.set(workbook, entries);
     return workbook;
+  }
+
+  function releaseWorkbookArchive(workbook) {
+    return Boolean(workbook && WORKBOOK_ARCHIVES.delete(workbook));
   }
 
 
@@ -1716,6 +2106,64 @@
     return Array.from(columns || []).findIndex(column => accepted.has(searchCanonical(column)));
   }
 
+  // EMPLOYEE_ROLE_PROJECTION_V1
+  // RoleID/RoleTypeID remain the identity. Employee fields below are presentation/search
+  // metadata read from explicit MtxRoles projection columns; position is never guessed
+  // from RoleName or free-form details.
+  const PERSONAL_ROLE_TYPE_ID = 1;
+
+  function exactProjectionColumnIndex(columns, aliases) {
+    const accepted = new Set((aliases || []).map(searchCanonical));
+    return Array.from(columns || []).findIndex(column => accepted.has(searchCanonical(column)));
+  }
+
+  function projectionText(row, columns, aliases, localize = value => value) {
+    const index = exactProjectionColumnIndex(columns, aliases);
+    if (index < 0) return '';
+    const raw = row?.[index];
+    if (raw === null || raw === undefined || typeof raw === 'object') return '';
+    return normalizeSpace(localize(raw));
+  }
+
+  function employeeProjectionFields(row, columns, roleTypeId, nativeDisplay, localize = value => value) {
+    if (Number(roleTypeId) !== PERSONAL_ROLE_TYPE_ID) return null;
+    const explicitShort = projectionText(row, columns, [
+      'ShortName', 'RoleShortName', 'UserShortName', 'EmployeeShortName', 'PersonalRoleShortName',
+    ], localize);
+    const shortName = explicitShort || normalizeSpace(nativeDisplay);
+    const fullName = projectionText(row, columns, [
+      'FullName', 'RoleFullName', 'UserFullName', 'EmployeeFullName', 'PersonalRoleFullName', 'PersonFullName',
+    ], localize);
+    const position = projectionText(row, columns, [
+      'PositionName', 'Position', 'RolePositionName', 'UserPositionName', 'EmployeePositionName',
+      'PersonalRolePositionName', 'JobTitle', 'JobTitleName', 'PostName',
+    ], localize);
+    const department = projectionText(row, columns, [
+      'DepartmentName', 'Department', 'RoleDepartmentName', 'UserDepartmentName', 'EmployeeDepartmentName',
+      'PersonalRoleDepartmentName', 'SubdivisionName', 'UnitName',
+    ], localize);
+    const displayName = position && shortName ? `${shortName} — ${position}` : (shortName || fullName || normalizeSpace(nativeDisplay));
+    return { shortName, fullName, position, department, displayName, nativeDisplay: normalizeSpace(nativeDisplay) };
+  }
+
+  function employeeResolvableAliases(item) {
+    if (!item || Number(item.roleTypeId) !== PERSONAL_ROLE_TYPE_ID) return [];
+    return [...new Set([
+      item.displayName, item.shortName, item.fullName, item.nativeDisplay,
+      ...(item.previousSelectors || []),
+    ].map(normalizeSpace).filter(Boolean))];
+  }
+
+  function dictionaryRoleDisplay(catalog, item) {
+    if (!catalog || !item) return item?.display || '';
+    const lookup = dictionaryLookup(catalog);
+    const id = canonicalValue(item.id);
+    const roleType = canonicalValue(item.roleTypeId);
+    const candidates = lookup?.byId?.get(`${id}|${roleType}`) || lookup?.byId?.get(`${id}|`) || [];
+    const found = candidates.find(entry => !roleType || canonicalValue(entry.roleTypeId) === roleType) || candidates[0];
+    return found?.displayName || found?.display || item.display || '';
+  }
+
   function finalizeDictionaryEntries(entries) {
     const byIdentity = new Map();
     for (const source of entries || []) {
@@ -1735,7 +2183,11 @@
       if (!display || !id) continue;
       const identity = `${canonicalValue(id)}|${canonicalValue(roleTypeId)}`;
       const qualifier = normalizeSpace(source.qualifier || humanQualifierFromDetails(source.details, display));
-      if (!byIdentity.has(identity)) byIdentity.set(identity, { ...source, id, display, roleTypeId, qualifier });
+      const previousSelectors = [...new Set([
+        ...(source.previousSelectors || []),
+        ...(Number(roleTypeId) === PERSONAL_ROLE_TYPE_ID && source.nativeDisplay && canonicalValue(source.nativeDisplay) !== canonicalValue(display) ? [source.nativeDisplay] : []),
+      ].map(normalizeSpace).filter(Boolean))];
+      if (!byIdentity.has(identity)) byIdentity.set(identity, { ...source, id, display, roleTypeId, qualifier, previousSelectors });
       else if (!byIdentity.get(identity).qualifier && qualifier) byIdentity.get(identity).qualifier = qualifier;
     }
     const values = [...byIdentity.values()];
@@ -1809,7 +2261,7 @@
 
   function dictionaryStructureSignature(structure) {
     const compact = {
-      projectionVersion: 4,
+      projectionVersion: 5,
       templateId: canonicalValue(structure?.templateId),
       conditions: (structure?.conditions || []).map(item => [
         canonicalValue(item.criterionRowId), canonicalValue(item.operandTypeId),
@@ -1918,6 +2370,15 @@
       const firstDisplay = captions.get(identity);
       if (!firstDisplay) captions.set(identity, display);
       if (current?.display === display || (firstDisplay && (current?.previousSelectors || []).includes(display))) return;
+      const employeeAliasMatch = current && Number(current.roleTypeId) === PERSONAL_ROLE_TYPE_ID
+        && employeeResolvableAliases(current).some(alias => canonicalValue(alias) === canonicalValue(display));
+      if (employeeAliasMatch) {
+        const aliases = [...new Set([...(current.previousSelectors || []), display].map(normalizeSpace).filter(Boolean))];
+        if ((current.previousSelectors || []).map(canonicalValue).includes(canonicalValue(display))) return;
+        if (!changesByCatalog.has(catalogId)) changesByCatalog.set(catalogId, new Map());
+        changesByCatalog.get(catalogId).set(identity, { ...current, previousSelectors: aliases });
+        return;
+      }
       if (!changesByCatalog.has(catalogId)) changesByCatalog.set(catalogId, new Map());
       // Every caption emitted into a matrix cell must survive XLSX serialization;
       // truncating this list makes an untouched row fail its ID-and-text check.
@@ -2007,6 +2468,7 @@
     const byId = new Map();
     const bySelector = new Map();
     const byDisplay = new Map();
+    const byEmployeeAlias = new Map();
     const searchRows = [];
     const append = (map, key, item) => {
       if (!key) return;
@@ -2023,6 +2485,7 @@
       }
       append(bySelector, canonicalValue(item.selector), item);
       append(byDisplay, canonicalValue(item.display), item);
+      for (const alias of employeeResolvableAliases(item)) append(byEmployeeAlias, canonicalValue(alias), item);
       searchRows.push({
         item,
         haystack: searchCanonical(`${item.selector || ''} ${item.display || ''} ${item.qualifier || ''} ${item.searchText || ''} ${item.details || ''} ${(item.previousSelectors || []).join(' ')}`),
@@ -2031,7 +2494,7 @@
 
     const isBoolean = canonicalValue(catalog.sourceView || '') === 'boolean'
       || (items.length > 0 && items.every(item => item.kind === 'Boolean' || ['true', 'false'].includes(canonicalValue(item.id))));
-    const lookup = { items, byId, bySelector, byDisplay, searchRows, isBoolean, resolutionCache: new Map() };
+    const lookup = { items, byId, bySelector, byDisplay, byEmployeeAlias, searchRows, isBoolean, resolutionCache: new Map() };
     DICTIONARY_LOOKUP_CACHE.set(catalog, lookup);
     return lookup;
   }
@@ -2077,12 +2540,16 @@
         || [];
       explicitMatch = candidates.find(item => !explicitRoleType || canonicalValue(item.roleTypeId) === explicitRoleType) || null;
     }
-    if (explicitMatch && [explicitMatch.selector, explicitMatch.display, ...(explicitMatch.previousSelectors || [])].map(canonicalValue).includes(visibleCanonical)) {
+    if (explicitMatch && [
+      explicitMatch.selector, explicitMatch.display, ...(explicitMatch.previousSelectors || []),
+      ...employeeResolvableAliases(explicitMatch),
+    ].map(canonicalValue).includes(visibleCanonical)) {
       return resolvedItem(explicitMatch, 'id-and-text');
     }
 
     let matches = lookup.bySelector.get(visibleCanonical) || [];
     if (!matches.length) matches = lookup.byDisplay.get(visibleCanonical) || [];
+    if (!matches.length) matches = lookup.byEmployeeAlias.get(visibleCanonical) || [];
     if (matches.length === 1) return resolvedItem(matches[0], 'exact');
     if (matches.length > 1) {
       const variants = matches.slice(0, 8).map(item => item.selector).join('; ');
@@ -2110,6 +2577,63 @@
       const partial = lookup.searchRows
         .filter(row => tokens.length ? tokens.every(token => row.haystack.includes(token)) : row.haystack.includes(needle))
         .map(row => row.item);
+
+      // EMPLOYEE_POSITION_ONLY_RESOLUTION_V1
+      // For personal roles, position/department are searchable hints, never identity.
+      // A fragment may auto-resolve only when the typed text carries a real name signal.
+      // Do NOT use displayName here: it deliberately contains the position for UX and
+      // would make a position-only query look like a person-name match.
+      const personalPartial = column.kind === 'function'
+        ? partial.filter(item => Number(item?.roleTypeId) === PERSONAL_ROLE_TYPE_ID)
+        : [];
+      if (personalPartial.length) {
+        const candidateDto = item => ({
+          id: item.id,
+          roleTypeId: item.roleTypeId,
+          display: item.displayName || item.display || item.selector || '',
+          selector: item.selector || item.display || '',
+          shortName: item.shortName || '',
+          fullName: item.fullName || '',
+          position: item.position || '',
+          department: item.department || '',
+        });
+        const hasNameSignal = item => {
+          const nameText = searchCanonical([
+            item.shortName,
+            item.fullName,
+            item.nativeDisplay,
+          ].filter(Boolean).join(' '));
+          if (!nameText) return false;
+          return tokens.length
+            ? tokens.some(token => token.length >= 2 && nameText.includes(token))
+            : Boolean(needle && nameText.includes(needle));
+        };
+        const nameCandidates = personalPartial.filter(hasNameSignal);
+        if (!nameCandidates.length) {
+          const candidates = personalPartial.slice(0, 20).map(candidateDto);
+          return cacheResolution({
+            display: visibleText,
+            explicit: '',
+            resolved: false,
+            resolution: 'employee-position-only',
+            candidates,
+            issue: `«${visibleText}» похоже на должность, а не на ФИО сотрудника. Выберите сотрудника явно из актуального справочника «${column.excelHeader}».`,
+          });
+        }
+        if (nameCandidates.length === 1) return cacheResolution(resolvedItem(nameCandidates[0], 'unique-name-fragment'));
+        const candidates = nameCandidates.slice(0, 20).map(candidateDto);
+        const variants = candidates.slice(0, 10).map(item => item.selector).join('; ');
+        const suffix = nameCandidates.length > 10 ? `; … ещё ${nameCandidates.length - 10}` : '';
+        return cacheResolution({
+          display: visibleText,
+          explicit: '',
+          resolved: false,
+          resolution: 'employee-name-ambiguous',
+          candidates,
+          issue: `Значение «${visibleText}» в столбце «${column.excelHeader}» неоднозначно. Выберите сотрудника явно: ${variants}${suffix}.`,
+        });
+      }
+
       if (partial.length === 1) return cacheResolution(resolvedItem(partial[0], 'unique-fragment'));
       if (partial.length > 1) {
         const variants = partial.slice(0, 10).map(item => item.selector).join('; ');
@@ -2191,7 +2715,7 @@
         const key = definitionKey('function', fn.id);
         const dict = catalog.catalogs?.[catalog.columnCatalogIds?.[key]];
         const items = snapshotRow.roles?.[fn.id] || [];
-        values.push(items.map(item => item.display || dictionarySelector(dict, item.id, item.roleTypeId, '')).join('\n'));
+        values.push(items.map(item => dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, '')).join('\n'));
         values.push(items.map(item => `${item.id}|${item.roleTypeId}`).join('\n'));
       }
       for (let customIndex = 0; customIndex < customColumns.length; customIndex += 1) {
@@ -2415,6 +2939,142 @@
     return await makeZip(entries);
   }
 
+  // REVIEWED_CHANGES_REPORT_V1
+  // This workbook is a human-readable, report-only projection of Preview. It deliberately
+  // contains no roundtrip service IDs or baseline ledger and can never become an Apply source.
+  function buildChangesReportModel(plan, structure = null) {
+    const definitionLabels = new Map();
+    for (const condition of structure?.conditions || []) definitionLabels.set(`criterion:${condition.criterionRowId}`, condition.criterionName || condition.criterionRowId);
+    for (const fn of structure?.functions || []) definitionLabels.set(`function:${fn.id}`, fn.name || fn.id);
+    const headers = ['Изменение', 'Excel row', 'Причина', 'TESSA row', 'Поля', 'Было', 'Стало'];
+    const detailHeaders = ['Изменение', 'Excel row', 'TESSA row', 'Поле', 'Было', 'Стало', 'Причина'];
+    const operations = [];
+    const details = [];
+    const stringifyValues = values => Array.isArray(values) ? values.map(value => String(value ?? '')).filter(Boolean).join(' · ') : String(values ?? '');
+    const actionLabel = type => ({ update: 'UPDATE', add: 'ADD', delete: 'DELETE' }[type] || String(type || '').toUpperCase());
+
+    for (const action of plan?.actions || []) {
+      if (!['update', 'add', 'delete'].includes(action?.type)) continue;
+      const change = actionLabel(action.type);
+      const excelRow = action.excelRow?.excelRow ?? '';
+      const tessaRow = action.currentRow?.index !== undefined ? Number(action.currentRow.index) + 1 : '';
+      const changes = Array.isArray(action.changes) ? action.changes : [];
+      const reason = normalizeSpace(action.reason || action.match?.reason || '');
+      const fields = changes.map(item => item.label || definitionLabels.get(item.key) || item.key || '').filter(Boolean);
+      const beforeParts = changes.map(item => {
+        const label = item.label || definitionLabels.get(item.key) || item.key || '';
+        const value = stringifyValues(item.before);
+        return label ? `${label}: ${value || "(пусто)"}` : value;
+      });
+      const afterParts = changes.map(item => {
+        const label = item.label || definitionLabels.get(item.key) || item.key || '';
+        const value = stringifyValues(item.after);
+        return label ? `${label}: ${value || "(пусто)"}` : value;
+      });
+      operations.push({
+        change, excelRow, reason, tessaRow,
+        fields: fields.join(' · '), before: beforeParts.join('\n'), after: afterParts.join('\n'),
+        error: false,
+      });
+      if (changes.length) {
+        for (const item of changes) {
+          details.push({
+            change, excelRow, tessaRow,
+            field: item.label || definitionLabels.get(item.key) || item.key || '',
+            before: stringifyValues(item.before), after: stringifyValues(item.after), reason, error: false,
+          });
+        }
+      } else {
+        details.push({ change, excelRow, tessaRow, field: '', before: '', after: '', reason, error: false });
+      }
+    }
+
+    for (const skip of plan?.skippedRows || []) {
+      const reason = normalizeSpace(skip?.reason || 'Строка пропущена.');
+      const excelRow = skip?.excelRow ?? '';
+      const tessaRow = skip?.tessaRow ?? '';
+      const error = Boolean(normalizeSpace(skip?.code || ''));
+      operations.push({ change: 'SKIP', excelRow, reason, tessaRow, fields: '', before: '', after: '', error });
+      details.push({ change: 'SKIP', excelRow, tessaRow, field: '', before: '', after: '', reason, error });
+    }
+
+    return {
+      format: 'TESSA_MATRIX_CHANGES_REPORT_V1', reportOnly: true,
+      matrixId: plan?.matrixId || '', templateId: plan?.templateId || structure?.templateId || '',
+      createdAt: nowIso(), headers, detailHeaders, operations, details,
+    };
+  }
+
+  function changesReportStylesXml() {
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Aptos"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/></font></fonts><fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1F4E78"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2F0D9"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF4CCCC"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFCE5CD"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border/><border><left style="thin"><color rgb="FFD9E1F2"/></left><right style="thin"><color rgb="FFD9E1F2"/></right><top style="thin"><color rgb="FFD9E1F2"/></top><bottom style="thin"><color rgb="FFD9E1F2"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="8"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="center"/></xf><xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="6" borderId="1" xfId="0" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="1" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"><alignment wrapText="1" vertical="top"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+  }
+
+  function changesReportRowStyle(row) {
+    if (row?.change === 'ADD') return 4;
+    if (row?.change === 'UPDATE') return 3;
+    if (row?.change === 'DELETE') return 5;
+    if (row?.change === 'SKIP') return row?.error ? 7 : 6;
+    return 1;
+  }
+
+  function changesReportWorksheetXml(headers, rows, metadata = null) {
+    const sheetRows = [];
+    let rowNumber = 1;
+    if (metadata) {
+      for (const pair of metadata) {
+        sheetRows.push(`<row r="${rowNumber}" hidden="1">${xlsxStringCell(rowNumber, 0, pair[0], 1)}${xlsxStringCell(rowNumber, 1, pair[1], 1)}</row>`);
+        rowNumber += 1;
+      }
+      rowNumber += 1;
+    }
+    const headerRow = rowNumber;
+    sheetRows.push(`<row r="${rowNumber}" ht="34" customHeight="1">${headers.map((value, index) => xlsxStringCell(rowNumber, index, value, 2)).join("")}</row>`);
+    rowNumber += 1;
+    for (const row of rows) {
+      const style = changesReportRowStyle(row);
+      const values = headers.map(header => ({
+        'Изменение': row.change, 'Excel row': row.excelRow, 'Причина': row.reason, 'TESSA row': row.tessaRow,
+        'Поля': row.fields, 'Было': row.before, 'Стало': row.after, 'Поле': row.field,
+      })[header] ?? '');
+      const lines = Math.max(1, ...values.map(value => String(value ?? '').split(/\r?\n/).length));
+      const height = Math.min(240, Math.max(28, lines * 16 + 8));
+      sheetRows.push(`<row r="${rowNumber}" ht="${height}" customHeight="1">${values.map((value, index) => xlsxStringCell(rowNumber, index, value, style)).join("")}</row>`);
+      rowNumber += 1;
+    }
+    const lastRow = Math.max(headerRow, rowNumber - 1);
+    const lastCol = indexToCol(headers.length - 1);
+    const widths = headers.map(header => ({ 'Изменение': 14, 'Excel row': 12, 'Причина': 52, 'TESSA row': 12, 'Поля': 34, 'Было': 58, 'Стало': 58, 'Поле': 34 })[header] || 30);
+    const cols = widths.map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`).join('');
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastCol}${lastRow}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="${headerRow}" topLeftCell="A${headerRow + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols>${cols}</cols><sheetData>${sheetRows.join("")}</sheetData><autoFilter ref="A${headerRow}:${lastCol}${lastRow}"/></worksheet>`;
+  }
+
+  async function createChangesReportXlsxBytes(plan, structure = null) {
+    const model = buildChangesReportModel(plan, structure);
+    const metadata = [
+      [ROUNDTRIP.ReportOnlyKey, model.format],
+      [ROUNDTRIP.MatrixIdKey, model.matrixId],
+      [ROUNDTRIP.TemplateIdKey, model.templateId],
+      ['__TESSA_CREATED_AT', model.createdAt],
+    ];
+    const operationRows = model.operations.map(row => ({ ...row }));
+    const detailRows = model.details.map(row => ({ ...row }));
+    const sheet1 = changesReportWorksheetXml(model.headers, operationRows, metadata);
+    const sheet2 = changesReportWorksheetXml(model.detailHeaders, detailRows, null);
+    const sheetNames = ['Изменения', 'Детали изменений'];
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>`;
+    const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`;
+    const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${xmlEscape(sheetNames[0])}" sheetId="1" r:id="rId1"/><sheet name="${xmlEscape(sheetNames[1])}" sheetId="2" r:id="rId2"/></sheets></workbook>`;
+    const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
+    const created = new Date().toISOString();
+    const core = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:creator>TESSA Matrix Studio</dc:creator><dc:title>Отчёт изменений матрицы</dc:title><dcterms:created xsi:type="dcterms:W3CDTF">${created}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${created}</dcterms:modified></cp:coreProperties>`;
+    const app = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Microsoft Excel</Application><HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Листы</vt:lpstr></vt:variant><vt:variant><vt:i4>2</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector size="2" baseType="lpstr"><vt:lpstr>Изменения</vt:lpstr><vt:lpstr>Детали изменений</vt:lpstr></vt:vector></TitlesOfParts><Company>ПАО «Группа Черкизово»</Company></Properties>`;
+    return await makeZip([
+      ['[Content_Types].xml', contentTypes], ['_rels/.rels', rels], ['docProps/core.xml', core], ['docProps/app.xml', app],
+      ['xl/workbook.xml', workbook], ['xl/_rels/workbook.xml.rels', workbookRels], ['xl/styles.xml', changesReportStylesXml()],
+      ['xl/worksheets/sheet1.xml', sheet1], ['xl/worksheets/sheet2.xml', sheet2],
+    ]);
+  }
+
   function sanitizeFileName(value) {
     return normalizeSpace(value || 'Матрица')
       .replace(/[\\/:*?"<>|]+/g, '_')
@@ -2443,23 +3103,24 @@
     if (!templateId) throw new Error('У матрицы не найден TemplateID.');
     setProgress(24, 'Читаю структуру', 'Критерии и функции матрицы');
     log('Выгрузка текущей матрицы: читаю структуру.');
-    const structure = await bridge.requestStructure(templateId);
+    const structure = await performanceStage('export.structure', () => bridge.requestStructure(templateId), { operation: 'export' });
     setProgress(38, 'Читаю строки', 'Загружаю текущее состояние матрицы');
     log('Выгрузка текущей матрицы: читаю строки.');
-    const snapshot = await bridge.loadSnapshot(structure);
+    const snapshot = await performanceStage('export.snapshot', () => bridge.loadSnapshot(structure), { operation: 'export' });
     setProgress(62, 'Обновляю справочники', 'Читаю свежие значения и роли из TESSA');
     log(options.forceDictionaryRefresh ? 'Выгрузка текущей матрицы: принудительно обновляю словари и роли.' : 'Выгрузка текущей матрицы: подключаю словари и роли.');
-    const dictionaryCatalog = await bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true });
+    const dictionaryCatalog = await performanceStage('export.dictionaries', () => bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true }), { operation: 'export', rows: snapshot.rows.length });
     APP.dictionaryCatalog = dictionaryCatalog;
     const matrixInfo = bridge.matrixInfo();
     setProgress(84, 'Формирую Excel', `${snapshot.rows.length} строк`);
-    const bytes = await createRoundtripXlsxBytes(structure, snapshot, matrixInfo, dictionaryCatalog, { includeActions: true });
+    const bytes = await performanceStage('export.xlsx-build', () => createRoundtripXlsxBytes(structure, snapshot, matrixInfo, dictionaryCatalog, { includeActions: true }), { operation: 'export', rows: snapshot.rows.length });
     const shortId = String(snapshot.matrixId || '').slice(0, 8);
     const name = `TESSA_Матрица_${sanitizeFileName(matrixInfo.TemplateName)}_${shortId}.xlsx`;
     downloadBlob(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name);
     APP.bridge = bridge;
     APP.structure = structure;
     APP.snapshot = snapshot;
+    setSessionSnapshot(snapshot, structure);
     log(`Текущая матрица выгружена: ${snapshot.rows.length} строк, ${dictionaryCatalog.stats.entries} значений в ${dictionaryCatalog.stats.catalogs} словарях.`);
     setProgress(100, 'Excel готов', `${snapshot.rows.length} строк · ${dictionaryCatalog.stats.entries} значений справочников`);
     return { name, structure, snapshot, matrixInfo, dictionaryCatalog, bytes };
@@ -2594,7 +3255,77 @@
       }
       base.versionId = current.versionId; base.baseFingerprint = current.fingerprint; base.base = { flat: current.flat, values: current.values, roles: current.roles };
     }
-    return { workbook: { ...workbook, dictionaryCatalog: mergeCatalog, rows, roundtrip: { ...workbook.roundtrip, baselineRows: outputBases.filter(base => byCard.has(canonicalValue(base.rowCardId))) } }, conflicts, unresolved: conflicts.filter(c => !['mine', 'server'].includes(choices[c.id])), highlights };
+    const unresolved = conflicts.filter(c => !['mine', 'server'].includes(choices[c.id]));
+    // Until every BASE/MINE/TESSA conflict has an explicit decision, keep the original
+    // workbook and its BASE metadata untouched. The prepared rows above are provisional
+    // only; publishing a fresh VersionID/fingerprint early would make a later Preview
+    // treat an unresolved user decision as already rebased.
+    if (unresolved.length) return { workbook, conflicts, unresolved, highlights };
+    return { workbook: { ...workbook, dictionaryCatalog: mergeCatalog, rows, roundtrip: { ...workbook.roundtrip, baselineRows: outputBases.filter(base => byCard.has(canonicalValue(base.rowCardId))) } }, conflicts, unresolved, highlights };
+  }
+
+  function mergeConflictsToResolutionItems(conflicts) {
+    return (conflicts || []).map((conflict, index) => ({
+      ...conflict,
+      source: 'three-way-merge',
+      issue: conflict.kind === 'local-delete' || conflict.kind === 'remote-delete'
+        ? 'Строка была удалена с одной стороны и изменена с другой. Выберите итог явно.'
+        : 'Это поле изменено и в Excel, и в TESSA. Выберите итоговое значение.',
+      candidates: [
+        { id: 'mine', display: conflict.mine, selector: `Оставить мой Excel: ${conflict.mine}` },
+        { id: 'server', display: conflict.server, selector: `Использовать TESSA: ${conflict.server}` },
+      ],
+      resolutionIndex: index,
+    }));
+  }
+
+  function resolveMergeConflictsInResolutionCenter(conflicts) {
+    const host = document.querySelector('#tms-resolution-center');
+    if (!host) throw new Error('Не удалось открыть Центр разрешения конфликтов.');
+    const items = mergeConflictsToResolutionItems(conflicts);
+    if (!items.length) return Promise.resolve({});
+    APP.abortRequested = false;
+    host.hidden = false;
+    host.innerHTML = '<div class="tms-review-note"><b>Конфликты Excel ↔ TESSA: ' + items.length + '</b><br>Это тот же Центр разрешения, что и для неоднозначных значений. Для каждого конфликта явно выберите, что сохранить.</div>'
+      + items.map((item, itemIndex) => {
+        const title = item.excelRow ? 'Excel ' + item.excelRow + ' · ' + (item.column || 'поле') : (item.column || 'Конфликт строки');
+        const base = item.base == null ? '' : '<div>BASE: ' + escapeHtml(item.base) + '</div>';
+        return '<details class="tms-action" open><summary><b>' + escapeHtml(title) + '</b></summary><div class="tms-action-body"><div class="tms-warning">' + escapeHtml(item.issue) + '</div>' + base
+          + '<div class="tms-resolution-choice"><span>' + escapeHtml(item.candidates[0].selector) + '</span><button type="button" data-resolution-choice="' + itemIndex + ':mine">Оставить мой Excel</button></div>'
+          + '<div class="tms-resolution-choice"><span>' + escapeHtml(item.candidates[1].selector) + '</span><button type="button" data-resolution-choice="' + itemIndex + ':server">Использовать TESSA</button></div>'
+          + '<div data-merge-resolution-status="' + itemIndex + '" class="tms-step-caption"></div></div></details>';
+      }).join('')
+      + '<div class="tms-row"><button type="button" id="tms-resolution-merge-cancel">Отмена</button></div>';
+
+    return new Promise(resolve => {
+      const choices = {};
+      const finishIfReady = () => {
+        if (Object.keys(choices).length !== items.length) return;
+        host.hidden = true;
+        host.innerHTML = '';
+        resolve(choices);
+      };
+      host.querySelectorAll('button[data-resolution-choice]').forEach(button => button.addEventListener('click', () => {
+        const [itemIndexText, choice] = String(button.dataset.resolutionChoice || '').split(':');
+        const itemIndex = Number(itemIndexText);
+        const item = items[itemIndex];
+        if (!item || !['mine', 'server'].includes(choice)) return;
+        choices[item.id] = choice;
+        const status = host.querySelector('[data-merge-resolution-status="' + itemIndex + '"]');
+        if (status) status.textContent = choice === 'mine' ? 'Выбрано: мой Excel' : 'Выбрано: TESSA';
+        host.querySelectorAll('button[data-resolution-choice^="' + itemIndex + ':"]').forEach(candidateButton => {
+          candidateButton.disabled = candidateButton.dataset.resolutionChoice !== itemIndex + ':' + choice;
+        });
+        finishIfReady();
+      }));
+      host.querySelector('#tms-resolution-merge-cancel')?.addEventListener('click', () => {
+        APP.abortRequested = true;
+        host.hidden = true;
+        host.innerHTML = '';
+        resolve({});
+      });
+      host.querySelector('button[data-resolution-choice]')?.focus();
+    });
   }
 
   function resolveMergeConflicts(conflicts) {
@@ -2887,7 +3618,7 @@
     setProgress(62, 'Переношу ваши изменения', 'Сохраняю значения и пользовательские столбцы');
     let prepared = prepareThreeWayMerge(workbook, structure, snapshot);
     if (prepared.unresolved.length) {
-      const choices = await resolveMergeConflicts(prepared.unresolved);
+      const choices = await resolveMergeConflictsInResolutionCenter(prepared.unresolved);
       if (APP.abortRequested) throw new Error('Объединение остановлено.');
       const freshBridge = await TessaBridge.create();
       if (canonicalValue(freshBridge.mainCard.id) !== canonicalValue(snapshot.matrixId) || canonicalValue(freshBridge.templateId()) !== canonicalValue(structure.templateId)) throw new Error('Матрица изменилась. Повторите обновление.');
@@ -2982,15 +3713,30 @@
     return makeZip([...entries]);
   }
 
+  async function readSelectedWorkbookWithLiveCatalog(file, { needBridge = false } = {}) {
+    if (!file) throw new Error('Выберите файл .xlsx.');
+    const workbook = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name, {
+      skipSheetNames: ['Словари'],
+      selectiveInflate: true,
+    });
+    if (!needBridge) return { workbook, bridge: null, structure: null, dictionaryCatalog: null };
+    const bridge = await TessaBridge.create();
+    const templateId = bridge.templateId();
+    if (!templateId) throw new Error('В карточке матрицы не найден TemplateID.');
+    const structure = await bridge.requestStructure(templateId);
+    const dictionaryCatalog = await bridge.loadDictionaryCatalog(structure, { rows: [] }, { forceRefresh: true });
+    workbook.dictionaryCatalog = dictionaryCatalog;
+    return { workbook, bridge, structure, dictionaryCatalog };
+  }
+
   async function refreshSelectedWorkbookDictionaries(file) {
     if (!file) throw new Error('Сначала выберите изменённый Excel в шаге 2.');
     setProgress(10, 'Читаю ваш Excel', 'Матрица и ваши правки сохранятся');
-    const workbook = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
-    const bridge = await TessaBridge.create(), matrixInfo = bridge.matrixInfo();
+    const selected = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true });
+    const { workbook, bridge, structure, dictionaryCatalog: catalog } = selected;
+    const matrixInfo = bridge.matrixInfo();
     if (canonicalValue(workbook.roundtrip?.templateId) !== canonicalValue(matrixInfo.TemplateID)) throw new Error('Excel относится к другому шаблону.');
-    const structure = await bridge.requestStructure(bridge.templateId());
-    setProgress(35, 'Обновляю справочники', 'Читаю актуальные значения TESSA');
-    const catalog = await bridge.loadDictionaryCatalog(structure, { rows: [] }, { forceRefresh: true });
+    setProgress(35, 'Обновляю справочники', 'Использую актуальные значения TESSA');
     const bytes = await refreshWorkbookDictionaries(workbook, structure, catalog);
     downloadBlob(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), file.name.replace(/\.xlsx$/i, '') + '_СПРАВОЧНИКИ.xlsx');
     setProgress(100, 'Справочники обновлены', catalog.stats.errors.length ? `Есть неполные справочники: ${catalog.stats.errors.length}. Запустите диагностику.` : 'Матрица и ваши изменения сохранены в новом файле');
@@ -2999,7 +3745,7 @@
 
   async function refreshSelectedWorkbook(file) {
     if (!file) throw new Error('Выберите Excel, который нужно обновить.');
-    const workbook = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
+    const { workbook } = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true });
     return refreshWorkbookSchema(workbook, file.name);
   }
 
@@ -4070,6 +4816,9 @@
         if (hidden || inactive) continue;
         if (options.recordKeepingOnly && recordKeepingIndex >= 0 && booleanSemantic(row[recordKeepingIndex]) !== true) continue;
         const roleTypeId = roleTypeIndex >= 0 && row[roleTypeIndex] !== null && row[roleTypeIndex] !== undefined && row[roleTypeIndex] !== '' ? Number(row[roleTypeIndex]) : '';
+        const nativeDisplay = display;
+        const employee = roleMode ? employeeProjectionFields(row, columns, roleTypeId, nativeDisplay, value => this.localizeValue(value)) : null;
+        if (employee?.displayName) display = employee.displayName;
         const details = columns.map((alias, index) => {
           if (index === idIndex || index === displayIndex || index === roleTypeIndex) return '';
           const value = this.localizeValue(row[index]);
@@ -4079,7 +4828,11 @@
         }).filter(Boolean).join(' | ').slice(0, 4000);
         const qualifier = humanQualifierFromDetails(details, display);
         const searchText = searchCanonical(`${display} ${qualifier} ${details} ${row.map(value => typeof value === 'object' ? '' : normalizeSpace(this.localizeValue(value))).join(' ')}`);
-        entries.push({ id: String(id), display, qualifier, roleTypeId: Number.isFinite(roleTypeId) ? roleTypeId : '', source: result.alias, status: 'Доступно', details, searchText });
+        entries.push({
+          id: String(id), display, qualifier, roleTypeId: Number.isFinite(roleTypeId) ? roleTypeId : '',
+          source: result.alias, status: 'Доступно', details, searchText,
+          ...(employee || {}),
+        });
       }
       return entries;
     }
@@ -5145,8 +5898,99 @@
   // копирование в новую свободную строку — как ДОБАВЛЕНИЕ.
   // ---------------------------------------------------------------------------
 
+  // INCREMENTAL_BASELINE_FAST_PATH_V1
+  // A V6 baseline contains the exact normalized row that was exported. If both visible
+  // values and companion IDs are still byte-semantically equivalent, do not resolve the
+  // same dictionaries again. Any doubt (formula, duplicate identity, moved duplicate,
+  // changed ID or value) falls through to the original full validation path.
+  function baselineExplicitValues(baseRow, column) {
+    if (!baseRow?.base) return [];
+    if (column.kind === 'function') {
+      return (baseRow.base.roles?.[column.id] || []).map(item => {
+        const id = item?.id == null ? '' : String(item.id);
+        const roleTypeId = item?.roleTypeId == null ? '' : String(item.roleTypeId);
+        return id ? `${id}|${roleTypeId}` : '';
+      });
+    }
+    return (baseRow.base.values?.[column.id] || []).map(item => item?.id == null ? '' : String(item.id));
+  }
+
+  function workbookBaselineFastPathIndex(workbook, columnMap) {
+    const bases = workbook.roundtrip?.baselineRows || [];
+    const byCard = new Map();
+    const byVersion = new Map();
+    bases.forEach((base, index) => {
+      const entry = { ...base, baselineIndex: index };
+      const card = canonicalValue(base?.rowCardId || '');
+      const version = canonicalValue(base?.versionId || '');
+      if (card) byCard.set(card, entry);
+      if (version) byVersion.set(version, entry);
+    });
+    const identityCounts = new Map();
+    for (const row of workbook.rows || []) {
+      const card = canonicalValue(columnMap.system.rowCardId === undefined ? '' : row.values[columnMap.system.rowCardId]);
+      const version = canonicalValue(columnMap.system.versionId === undefined ? '' : row.values[columnMap.system.versionId]);
+      const key = version || card ? `v:${version}|c:${card}` : '';
+      if (key) identityCounts.set(key, (identityCounts.get(key) || 0) + 1);
+    }
+    return { byCard, byVersion, identityCounts };
+  }
+
+  function unchangedDesiredRowFromBaseline(workbook, row, columnMap, baselineIndex) {
+    if (!workbook.roundtrip?.enabled || !workbook.roundtrip?.baselineRows?.length) return null;
+    const system = {
+      action: normalizeAction(columnMap.system.action === undefined ? '' : row.values[columnMap.system.action]),
+      rowCardId: normalizeSpace(columnMap.system.rowCardId === undefined ? '' : row.values[columnMap.system.rowCardId]),
+      versionId: normalizeSpace(columnMap.system.versionId === undefined ? '' : row.values[columnMap.system.versionId]),
+      baseFingerprint: normalizeSpace(columnMap.system.baseFingerprint === undefined ? '' : row.values[columnMap.system.baseFingerprint]),
+    };
+    if (system.action !== 'keep' || (!system.rowCardId && !system.versionId)) return null;
+    const cardKey = canonicalValue(system.rowCardId);
+    const versionKey = canonicalValue(system.versionId);
+    const base = (cardKey ? baselineIndex.byCard.get(cardKey) : null) || (versionKey ? baselineIndex.byVersion.get(versionKey) : null);
+    if (!base?.base) return null;
+    if (cardKey && canonicalValue(base.rowCardId) !== cardKey) return null;
+    if (versionKey && canonicalValue(base.versionId) !== versionKey) return null;
+    if (canonicalValue(system.baseFingerprint || '') !== canonicalValue(base.baseFingerprint || '')) return null;
+
+    const identityKey = `v:${versionKey}|c:${cardKey}`;
+    if ((baselineIndex.identityCounts.get(identityKey) || 0) > 1) {
+      const expectedExcelRow = Number(workbook.headerRow || 0) + 1 + Number(base.baselineIndex || 0);
+      if (Number(row.excelRow) !== expectedExcelRow) return null;
+    }
+
+    const flat = clonePlain(base.base.flat || {});
+    const ids = {};
+    const compare = {};
+    const columns = new Map();
+    for (const [id, column] of columnMap.columns.entries()) {
+      const meta = row.cellMeta?.[column.index];
+      if (meta?.hasFormula) return null;
+      const visible = splitCell(row.values[column.index]);
+      const expectedVisible = flat[column.key] || [];
+      if (!arraysEqual(visible, expectedVisible)) return null;
+      const expectedIds = baselineExplicitValues(base, column);
+      if (column.idIndex !== null) {
+        const actualIds = splitCell(row.values[column.idIndex]);
+        if (!arraysEqual(actualIds, expectedIds)) return null;
+      }
+      ids[column.key] = expectedIds;
+      compare[column.key] = currentCompareValues(base.base, column);
+      columns.set(id, column);
+    }
+    const hasData = [...columns.values()].some(column => (flat[column.key] || []).length > 0);
+    return {
+      excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, clearedForDeletion: false,
+      issues: [], fieldIssues: [], resolutions: [], fingerprint: base.baseFingerprint || fingerprintFlat(flat),
+      compareFingerprint: fingerprintFlat(compare), fastPath: 'baseline-unchanged',
+    };
+  }
+
   function workbookRowsToDesired(workbook, columnMap) {
+    const baselineFastPathIndex = workbookBaselineFastPathIndex(workbook, columnMap);
     return workbook.rows.map(row => {
+      const fastPath = unchangedDesiredRowFromBaseline(workbook, row, columnMap, baselineFastPathIndex);
+      if (fastPath) return fastPath;
       const flat = {};
       const ids = {};
       const compare = {};
@@ -5154,6 +5998,7 @@
       const issues = [];
       const fieldIssues = [];
       const resolutions = [];
+      const resolutionItems = [];
       for (const [id, column] of columnMap.columns.entries()) {
         const issueStart = issues.length;
         const cellOperandKind = operandKind(column);
@@ -5187,6 +6032,25 @@
           resolvedIds.push(result.explicit);
           if (result.issue) {
             issues.push(`Excel ${row.excelRow}: ${result.issue}`);
+            if (result.resolution && Array.isArray(result.candidates) && result.candidates.length) {
+              resolutionItems.push({
+                id: `excel-${row.excelRow}-${column.key}-${index}`,
+                source: 'excel-validation',
+                excelRow: row.excelRow,
+                columnKey: column.key,
+                column: column.excelHeader,
+                columnIndex: column.index,
+                idIndex: column.idIndex,
+                valueIndex: index,
+                base: null,
+                mine: visible,
+                server: null,
+                visible,
+                resolution: result.resolution,
+                issue: result.issue,
+                candidates: clonePlain(result.candidates),
+              });
+            }
             compareValues.push(`invalid:${canonicalValue(visible)}`);
             return;
           }
@@ -5237,7 +6101,7 @@
           && canonicalValue(item.versionId) === canonicalValue(system.versionId));
         if (!system.baseFingerprint && base) system.baseFingerprint = base.baseFingerprint;
       }
-      return { excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, clearedForDeletion, issues, fieldIssues, resolutions, fingerprint: fingerprintFlat(flat), compareFingerprint: fingerprintFlat(compare) };
+      return { excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, clearedForDeletion, issues, fieldIssues, resolutions, resolutionItems, fingerprint: fingerprintFlat(flat), compareFingerprint: fingerprintFlat(compare) };
     });
   }
 
@@ -5937,6 +6801,12 @@
   function buildPlan(workbook, structure, snapshot, matrixInfo = null) {
     const columnMap = buildColumnMap(workbook, structure);
     const desired = workbookRowsToDesired(workbook, columnMap);
+    const baselineFastPathHits = desired.reduce((sum, row) => sum + Number(row?.fastPath === 'baseline-unchanged'), 0);
+    const incremental = {
+      rowsCompared: desired.length,
+      baselineFastPathHits,
+      rowsFullyValidated: Math.max(0, desired.length - baselineFastPathHits),
+    };
     const workbookContext = columnMap.mode === 'roundtrip' && matrixInfo
       ? classifyWorkbookContext(workbook, matrixInfo)
       : null;
@@ -6073,6 +6943,7 @@
       structure,
       columnMap,
       desired,
+      incremental,
       actions,
       issues: fatalIssues,
       fatalIssues,
@@ -6126,6 +6997,7 @@
     const started = Math.max(0, Number(result?.startedCount || 0));
     const applied = Math.max(0, Number(result?.appliedCount || 0));
     if (!started && !applied) return false;
+    clearReviewedChangesArtifact(state);
     state.plan = null;
     state.snapshot = null;
     state.bridge = null;
@@ -6694,52 +7566,58 @@
           };
         }
 
-        try {
-          const snapshot = await bridge.loadSnapshot(structure);
-          const snapshotMatrixId = canonicalValue(snapshot?.matrixId || directMatrixId || '');
-          const snapshotTemplateId = canonicalValue(snapshot?.templateId || directTemplateId || structure?.templateId || '');
-          if (snapshotMatrixId !== expectedMatrixId || snapshotTemplateId !== expectedTemplateId) {
-            return {
-              status: 'incomplete',
-              checkedCount: 0,
-              verifiedCount: 0,
-              divergentCount: 0,
-              missingCount: 0,
-              unknownCount: receiptContext?.receipts?.length || 0,
-              rows: [],
-              attempts: attempt,
-              retryable: false,
-              reasonCode: 'reconcile-context-mismatch',
-              startedAt,
-              finishedAt: nowIso(),
-            };
+        // RECEIPT_FIRST_RECONCILIATION_V1
+        // Verify only the identities that were actually mutated. A complete matrix
+        // snapshot is a correctness fallback, not the default cost of one changed row.
+        if (directMatrixId && directTemplateId) {
+          try {
+            const targeted = await performanceStage('reconcile.targeted', () => buildTargetedReconciliationSnapshot(bridge, receiptContext, structure), { operation: 'reconcile', receipts: receiptContext?.receipts?.length || 0 });
+            const targetedResult = reconcileMutationReceipts(receiptContext?.receipts || [], targeted, structure);
+            if (targetedResult.status === 'verified') {
+              return {
+                ...targetedResult,
+                mode: 'targeted-receipts',
+                attempts: attempt,
+                retryable: false,
+                startedAt,
+                finishedAt: nowIso(),
+              };
+            }
+            log('Точечная проверка не смогла доказать весь результат. Перепроверяю полным снимком.', 'warn');
+          } catch (error) {
+            if (isWriterLockError(error)) throw error;
+            log(`Точечная проверка результата недоступна: ${error.message || error}. Перепроверяю полным снимком.`, 'warn');
           }
+        }
+
+        const snapshot = await performanceStage('reconcile.fullSnapshot', () => bridge.loadSnapshot(structure), { operation: 'reconcile', fallback: true });
+        const snapshotMatrixId = canonicalValue(snapshot?.matrixId || directMatrixId || '');
+        const snapshotTemplateId = canonicalValue(snapshot?.templateId || directTemplateId || structure?.templateId || '');
+        if (snapshotMatrixId !== expectedMatrixId || snapshotTemplateId !== expectedTemplateId) {
           return {
-            ...reconcileMutationReceipts(receiptContext?.receipts || [], snapshot, structure),
-            mode: 'full-snapshot',
+            status: 'incomplete',
+            checkedCount: 0,
+            verifiedCount: 0,
+            divergentCount: 0,
+            missingCount: 0,
+            unknownCount: receiptContext?.receipts?.length || 0,
+            rows: [],
             attempts: attempt,
             retryable: false,
-            startedAt,
-            finishedAt: nowIso(),
-          };
-        } catch (error) {
-          if (isWriterLockError(error) || !isNativeIdentitySnapshotError(error)) throw error;
-          // Targeted fallback may bypass full snapshot identity, so the open card itself
-          // must prove the matrix/template context first. Legacy/fake bridges without
-          // direct context keep the old fail-closed full-snapshot behavior.
-          if (!directMatrixId || !directTemplateId) throw error;
-          log(`Полный снимок для проверки результата недоступен: ${error.message || error}. Проверяю только изменённые строки по receipt ID.`, 'warn');
-          const targeted = await buildTargetedReconciliationSnapshot(bridge, receiptContext, structure);
-          return {
-            ...reconcileMutationReceipts(receiptContext?.receipts || [], targeted, structure),
-            mode: 'targeted-receipts',
-            fallbackReasonCode: 'reconcile-full-snapshot-failed',
-            attempts: attempt,
-            retryable: false,
+            reasonCode: 'reconcile-context-mismatch',
             startedAt,
             finishedAt: nowIso(),
           };
         }
+        return {
+          ...reconcileMutationReceipts(receiptContext?.receipts || [], snapshot, structure),
+          mode: 'full-snapshot',
+          fallbackReasonCode: directMatrixId && directTemplateId ? 'reconcile-targeted-incomplete' : 'reconcile-targeted-unavailable',
+          attempts: attempt,
+          retryable: false,
+          startedAt,
+          finishedAt: nowIso(),
+        };
       } catch (error) {
         lastError = error;
         if (!isWriterLockError(error) || attempt === maxAttempts) break;
@@ -6897,15 +7775,14 @@
     APP.abortRequested = false;
     setProgress(5, '1/6 · Читаю Excel', file.name);
     log(`Читаю ${file.name}`);
-    const workbook = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
+    const selected = await performanceStage('preview.xlsx-read', async () => readSelectedWorkbookWithLiveCatalog(file, { needBridge: true }), { operation: 'preview', fileName: file.name });
+    const { workbook, bridge, structure } = selected;
     setProgress(18, '1/6 · Excel прочитан', `${workbook.rows.length} строк данных`);
     log(`Excel: ${workbook.headers.filter(Boolean).length} столбцов, ${workbook.rows.length} строк данных.`);
-    setProgress(22, '2/6 · Подключаюсь к TESSA', 'Проверяю открытую матрицу');
-    const bridge = await TessaBridge.create();
+    setProgress(22, '2/6 · TESSA подключена', 'Открытая матрица определена');
     const templateId = bridge.templateId();
     if (!templateId) throw new Error('В карточке матрицы не найден TemplateID.');
-    setProgress(32, '3/6 · Читаю структуру TESSA', 'Критерии и функции');
-    const structure = await bridge.requestStructure(templateId);
+    setProgress(32, '3/6 · Структура TESSA прочитана', 'Критерии, функции и актуальные справочники');
     log(`Структура TESSA: ${structure.conditions.length} критериев, ${structure.functions.length} функций.`);
     const cachedSnapshot = APP.snapshot;
     const currentSectionSignature = bridge.matrixSectionSignature();
@@ -6919,10 +7796,13 @@
     // Обычный сценарий «скачал → изменил → проверил» не должен второй раз читать сотни карточек.
     // Перед Apply всё равно выполняется свежая серверная проверка, поэтому reuse безопасен для preview.
     setProgress(canReuseSnapshot ? 48 : 40, canReuseSnapshot ? '3/6 · Использую свежий снимок' : '3/6 · Читаю строки TESSA', canReuseSnapshot ? 'Повторная загрузка не нужна' : 'Сверяю текущие строки');
-    const snapshot = canReuseSnapshot ? cachedSnapshot : await bridge.loadSnapshot(structure);
+    const sessionSnapshot = getSessionSnapshot(bridge.mainCard?.id, structure.templateId);
+    const reusableSnapshot = canReuseSnapshot ? cachedSnapshot : sessionSnapshot;
+    const snapshot = reusableSnapshot || await performanceStage('preview.snapshot', () => bridge.loadSnapshot(structure), { operation: 'preview' });
+    if (!reusableSnapshot) setSessionSnapshot(snapshot, structure);
     setProgress(55, '4/6 · Сопоставляю Excel и TESSA', `${snapshot.rows.length} строк в TESSA`);
-    log(`Текущее состояние TESSA: ${snapshot.rows.length} строк${canReuseSnapshot ? ' (из текущей сессии)' : ''}.`);
-    const plan = buildPlan(workbook, structure, snapshot, bridge.matrixInfo());
+    log(`Текущее состояние TESSA: ${snapshot.rows.length} строк${reusableSnapshot ? ' (из текущей сессии)' : ''}.`);
+    const plan = await performanceStage('preview.plan', () => buildPlan(workbook, structure, snapshot, bridge.matrixInfo()), { operation: 'preview', rows: snapshot.rows.length, excelRows: workbook.rows.length });
     setProgress(62, '5/6 · Проверяю безопасность', 'Дубли, права, удаления и неоднозначности');
     plan.safety = evaluatePlanSafety(plan, bridge);
     plan.matrixInfo = plan.safety.matrixInfo;
@@ -6955,12 +7835,13 @@
     APP.workbook = workbook;
     if (workbook.dictionaryCatalog && workbook.roundtrip?.enabled) {
       APP.dictionaryCatalog = normalizeDictionaryCatalog(clonePlain(workbook.dictionaryCatalog));
-      APP.dictionaryCatalog.stats.cache = { hit: true, key: dictionaryCacheKey(structure), savedAt: Date.now(), ageMs: 0, source: 'workbook' };
+      APP.dictionaryCatalog.stats.cache = { hit: true, key: dictionaryCacheKey(structure), savedAt: Date.now(), ageMs: 0, source: 'live-tessa' };
       writeDictionaryCache(dictionaryCacheKey(structure), APP.dictionaryCatalog).catch(() => {});
     }
     APP.bridge = bridge;
     APP.structure = structure;
     APP.snapshot = snapshot;
+    setSessionSnapshot(snapshot, structure);
     APP.review = createPlanReviewState();
     APP.previewView = createPreviewViewState();
     APP.plan = previewPlan;
@@ -6977,6 +7858,7 @@
 
   function resetFilePreview() {
     clearTimeout(APP.previewSearchTimer);
+    clearReviewedChangesArtifact(APP);
     APP.plan = null;
     APP.workbook = null;
     APP.review = createPlanReviewState();
@@ -6985,8 +7867,15 @@
     APP.reviewedApplyEnabled = false;
     APP.lastIntervalDiagnostics = null;
     APP.lastStudioDiagnostics = null;
+    APP.lastPerformanceUat = null;
     APP.lastReport = null;
     APP.lastSupportReport = null;
+    const changesButton = document.querySelector?.('#tms-download-changes');
+    if (changesButton) {
+      changesButton.hidden = true;
+      changesButton.title = '';
+      setControlDisabled(changesButton, true);
+    }
     const reportButton = document.querySelector?.('#tms-download-report');
     if (reportButton) {
       reportButton.hidden = true;
@@ -7213,6 +8102,94 @@
     }
   }
 
+  // TOUCHED_ONLY_PREFLIGHT_V1
+  // Incremental server validation is allowed only for ordinary row mutations whose
+  // target identities were already proven by the planner. Cross-matrix replacement,
+  // overwrite semantics and globally blocked plans stay on the full fail-closed path.
+  function incrementalSafetyMode(plan) {
+    if (!plan || plan.safety?.blocked || plan.crossMatrixReplacement?.enabled) return 'full-fallback';
+    const actions = (plan.actions || []).filter(action => action?.type && action.type !== 'noop');
+    if (!actions.length) return 'full-fallback';
+    if (actions.some(action => !['add', 'update', 'delete'].includes(action.type))) return 'full-fallback';
+    if (actions.some(action => isOverwriteMatch(action.match))) return 'full-fallback';
+    const types = new Set(actions.map(action => action.type));
+    if (types.size === 1) {
+      const only = [...types][0];
+      return only === 'add' ? 'add-only' : only;
+    }
+    return 'mixed';
+  }
+
+  function collectTouchedIdentities(plan) {
+    const targets = new Map();
+    const remember = (rowCardId, versionId, source = 'target') => {
+      const cardKey = canonicalValue(rowCardId || '');
+      const versionKey = canonicalValue(versionId || '');
+      if (!cardKey || !versionKey) return;
+      const key = cardKey + '|' + versionKey;
+      if (!targets.has(key)) targets.set(key, { rowCardId, versionId, source });
+    };
+    for (const action of plan?.actions || []) {
+      if (!action?.type || action.type === 'noop') continue;
+      if (action.type === 'update' || action.type === 'delete') {
+        remember(action.currentRow?.rowCardId, action.currentRow?.versionId, 'target');
+      }
+      if (action.type === 'add' && action.match?.matchedBy === 'copied-row-auto-add') {
+        remember(action.match?.sourceRowCardId, action.match?.sourceVersionId, 'source');
+      }
+    }
+    const rows = [...targets.values()];
+    return {
+      targets: rows,
+      rowCardIds: [...new Set(rows.map(item => item.rowCardId).filter(Boolean))],
+      versionIds: [...new Set(rows.map(item => item.versionId).filter(Boolean))],
+    };
+  }
+
+  async function buildTargetedPreflightSnapshot(bridge, plan, structure) {
+    const mode = incrementalSafetyMode(plan);
+    if (mode === 'full-fallback') return null;
+
+    // Targeted reads must be anchored to the actually open matrix card and template.
+    // A legacy/fake bridge without those direct facts falls back to the proven full path.
+    const directMatrixId = canonicalValue(bridge?.mainCard?.id || '');
+    const directTemplateId = canonicalValue(bridge?.templateId?.() || structure?.templateId || '');
+    const expectedMatrixId = canonicalValue(plan?.matrixId || '');
+    const expectedTemplateId = canonicalValue(plan?.templateId || structure?.templateId || '');
+    if (!directMatrixId || !directTemplateId || !expectedMatrixId || !expectedTemplateId) return null;
+    if (directMatrixId !== expectedMatrixId || directTemplateId !== expectedTemplateId) return null;
+
+    const criterionIdCache = new Map();
+    const roleIdCache = new Map();
+    const roleIdByFunctionCache = new Map();
+    const cardsByRowCardId = new Map();
+    const touched = collectTouchedIdentities(plan);
+    const rows = await mapConcurrent(touched.targets, PERFORMANCE.SnapshotCardGetConcurrency, async (target, index) => {
+      if (APP.abortRequested) throw preflightAbortError();
+      const card = await awaitPreflightAbortable(bridge.getCard(target.rowCardId));
+      cardsByRowCardId.set(canonicalValue(target.rowCardId), card);
+      return bridge.readMatrixRowFromCard(card, {
+        index,
+        rowCardId: target.rowCardId,
+        versionId: target.versionId,
+        rowName: target.source === 'source' ? 'Исходная строка' : 'Изменяемая строка',
+        source: 'preflight-targeted',
+      }, structure, { criterionIdCache, roleIdCache, roleIdByFunctionCache });
+    });
+
+    return {
+      matrixId: String(bridge.mainCard.id),
+      templateId: structure?.templateId || plan?.templateId || '',
+      rows,
+      criterionIdCache,
+      roleIdCache,
+      roleIdByFunctionCache,
+      cardsByRowCardId,
+      targeted: true,
+      createdAt: nowIso(),
+    };
+  }
+
   async function preflightPlan(plan, options = {}) {
     const previewOnly = Boolean(options.previewOnly);
     const preflightProgress = typeof options.onProgress === 'function'
@@ -7227,10 +8204,31 @@
     const bridge = options.bridge || await awaitPreflightAbortable(TessaBridge.create());
     assertWritableMatrixDraft(bridge);
     if (!previewOnly) assertNativeEditMode();
-    const structure = options.structure || await awaitPreflightAbortable(bridge.requestStructure(bridge.templateId()));
-    const fresh = options.fresh || await awaitPreflightAbortable(bridge.loadSnapshot(structure));
-    preflightProgress(18, 'Сверяю актуальное состояние', `${fresh.rows.length} строк в TESSA`);
-    if (fresh.matrixId !== plan.matrixId) throw new Error('Открыта другая матрица. Нажмите «Проверить изменения» ещё раз.');
+    const structure = options.structure || await performanceStage('preflight.structure', () => awaitPreflightAbortable(bridge.requestStructure(bridge.templateId())), { operation: 'preflight' });
+    const executableCount = (plan.actions || []).filter(action => action?.type && action.type !== 'noop').length;
+    const requestedIncrementalMode = incrementalSafetyMode(plan);
+    let fresh = options.fresh || null;
+    let incremental = { mode: options.fresh ? 'provided-snapshot' : 'full-fallback', preflightRows: executableCount, snapshotRows: fresh?.rows?.length || 0, fullSnapshot: Boolean(options.fresh) };
+    if (!fresh && requestedIncrementalMode !== 'full-fallback') {
+      try {
+        const targeted = await performanceStage('preflight.targeted', () => buildTargetedPreflightSnapshot(bridge, plan, structure), { operation: 'preflight', mode: requestedIncrementalMode });
+        if (targeted) {
+          fresh = targeted;
+          incremental = { mode: requestedIncrementalMode, preflightRows: executableCount, snapshotRows: targeted.rows.length, fullSnapshot: false };
+        }
+      } catch (error) {
+        if (isPreflightAbortError(error)) throw error;
+        log(`Точечная предварительная проверка недоступна: ${error.message || error}. Использую полный безопасный снимок.`, 'warn');
+      }
+    }
+    if (!fresh) {
+      fresh = await performanceStage('preflight.snapshot', () => awaitPreflightAbortable(bridge.loadSnapshot(structure)), { operation: 'preflight', fallbackFrom: requestedIncrementalMode });
+      incremental = { mode: 'full-fallback', requestedMode: requestedIncrementalMode, preflightRows: executableCount, snapshotRows: fresh?.rows?.length || 0, fullSnapshot: true };
+    }
+    preflightProgress(18, 'Сверяю актуальное состояние', incremental.fullSnapshot
+      ? `${fresh.rows.length} строк в TESSA`
+      : `точечно: ${incremental.snapshotRows} прочитано / ${incremental.preflightRows} операций`);
+    if (canonicalValue(fresh.matrixId) !== canonicalValue(plan.matrixId)) throw new Error('Открыта другая матрица. Нажмите «Проверить изменения» ещё раз.');
     // Template changes can happen between Preview and Apply without changing the
     // card ID. Never rebuild an old plan against a different set of field IDs.
     if (plan.templateId && canonicalValue(plan.templateId) !== canonicalValue(fresh.templateId || structure.templateId)) {
@@ -7321,7 +8319,10 @@
           displays.forEach((display, i) => { bridge.resolveRole(fn, display, ids[i] || null, fresh); roleCount += 1; });
         }
         if (!roleCount) throw new Error(`В строке Excel ${action.excelRow.excelRow} после изменений не останется исполнителей.`);
-        const card = await awaitPreflightAbortable(bridge.getCard(current.rowCardId));
+        const cachedCard = fresh?.cardsByRowCardId instanceof Map
+          ? fresh.cardsByRowCardId.get(canonicalValue(current.rowCardId))
+          : null;
+        const card = cachedCard || await awaitPreflightAbortable(bridge.getCard(current.rowCardId));
         bridge.rebuildRowCard(card, current.versionId, action.excelRow, structure, fresh);
         await awaitPreflightAbortable(bridge.validateDuplicate(card, current.versionId));
         preparedUpdates.set(action.excelRow.excelRow, { action, card, current });
@@ -7486,7 +8487,7 @@
       skipServerAddValidation
         ? `Локально проверено: ${preparedUpdates.size + preparedAdds.size + readyDeletes.length} · глубокая ADD-проверка будет после разделения пакета`
         : `Готово к записи: ${preparedUpdates.size + preparedAdds.size + readyDeletes.length}`);
-    return { bridge, structure, fresh, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips, runtimeSkippedActions, previewPolicy };
+    return { bridge, structure, fresh, preparedUpdates, preparedAdds, readyDeletes, runtimeSkips, runtimeSkippedActions, previewPolicy, incremental };
   }
 
   /**
@@ -7608,6 +8609,161 @@
    * и не являются частью requested mutation-plan, поэтому сами по себе не делают
    * успешный Apply частичным.
    */
+  // RESOLUTION_CENTER_V1
+  function collectPlanResolutionItems(plan) {
+    const collected = [];
+    const append = (item, defaults = {}) => {
+      if (!item || typeof item !== 'object') return;
+      const normalized = {
+        ...clonePlain(item),
+        source: item.source || defaults.source || 'excel-validation',
+        actionType: item.actionType || defaults.actionType || null,
+        excelRow: Number(item.excelRow || defaults.excelRow) || null,
+        base: item.base ?? null,
+        mine: item.mine ?? item.visible ?? '',
+        server: item.server ?? null,
+        candidates: Array.isArray(item.candidates) ? clonePlain(item.candidates) : [],
+      };
+      normalized.id = normalizeSpace(normalized.id)
+        || ['resolution', normalized.excelRow || 'row', normalized.columnKey || normalized.column || 'field', normalized.valueIndex || 0].join('-');
+      collected.push(normalized);
+    };
+    for (const skip of plan?.skippedRows || []) {
+      for (const item of skip?.resolutionItems || []) append(item, skip);
+    }
+    for (const row of plan?.desired || []) {
+      for (const item of row?.resolutionItems || []) append(item, { excelRow: row?.excelRow, source: 'excel-validation' });
+    }
+    const seen = new Set();
+    return collected.filter(item => {
+      const key = normalizeSpace(item.id);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function applyResolutionChoiceToWorkbook(workbook, resolution, choice) {
+    if (!workbook || !Array.isArray(workbook.rows)) throw new Error('Книга Excel для исправления недоступна.');
+    if (!resolution || typeof resolution !== 'object') throw new Error('Не передан вариант исправления.');
+    const excelRow = Number(resolution.excelRow);
+    const row = workbook.rows.find(item => Number(item?.excelRow) === excelRow);
+    if (!row || !Array.isArray(row.values)) throw new Error('Строка Excel для исправления не найдена.');
+    const candidates = Array.isArray(resolution.candidates) ? resolution.candidates : [];
+    const requestedId = canonicalValue(choice?.id || '');
+    const requestedRoleType = canonicalValue(choice?.roleTypeId ?? '');
+    const selected = candidates.find(candidate => {
+      if (canonicalValue(candidate?.id || '') !== requestedId) return false;
+      const candidateRoleType = canonicalValue(candidate?.roleTypeId ?? '');
+      return !requestedRoleType || !candidateRoleType || candidateRoleType === requestedRoleType;
+    });
+    if (!selected) throw new Error('Выбранный вариант отсутствует в актуальном наборе кандидатов.');
+
+    // Display text is user-visible roundtrip data. Keep its punctuation exactly as the
+    // dictionary returned it (notably the em dash in "ФИО — должность"). The generic
+    // normalizeSpace() intentionally folds Unicode dashes for matching and therefore
+    // must not be used when writing the selected label back to Excel.
+    const cleanCellToken = value => String(value ?? '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const valueIndex = Math.max(0, Math.trunc(Number(resolution.valueIndex) || 0));
+    const writeToken = (cellIndex, value) => {
+      const index = Number(cellIndex);
+      if (!Number.isInteger(index) || index < 0) return false;
+      const parts = splitCell(row.values[index] || '');
+      while (parts.length <= valueIndex) parts.push('');
+      parts[valueIndex] = cleanCellToken(value);
+      row.values[index] = parts.join('; ');
+      return true;
+    };
+
+    const display = cleanCellToken(selected.selector || selected.display || selected.shortName || selected.fullName || '');
+    if (!display) throw new Error('У выбранного кандидата отсутствует отображаемое значение.');
+    const explicit = normalizeSpace(selected.explicit || (selected.roleTypeId === undefined || selected.roleTypeId === null || selected.roleTypeId === ''
+      ? String(selected.id || '')
+      : String(selected.id || '') + '|' + String(selected.roleTypeId)));
+    const changedVisible = writeToken(resolution.columnIndex, display);
+    const changedExplicit = writeToken(resolution.idIndex, explicit);
+    if (!changedVisible) throw new Error('Не удалось определить колонку Excel для исправления.');
+    return { changed: changedVisible || changedExplicit, excelRow, display, explicit, candidate: clonePlain(selected) };
+  }
+
+  async function recheckResolutionCenterPlan() {
+    if (!APP.workbook || !APP.structure || !APP.bridge) throw new Error('Сначала выполните проверку выбранного Excel.');
+    APP.abortRequested = false;
+    setProgress(20, 'Перепроверяю исправление', 'Перечитываю актуальную матрицу TESSA');
+    const bridge = APP.bridge;
+    const structure = APP.structure;
+    const snapshot = await bridge.loadSnapshot(structure);
+    const plan = buildPlan(APP.workbook, structure, snapshot, bridge.matrixInfo());
+    plan.safety = evaluatePlanSafety(plan, bridge);
+    plan.matrixInfo = plan.safety.matrixInfo;
+    let previewPlan = plan;
+    if (!plan.safety.blocked && plan.actions.some(action => action.type !== 'noop')) {
+      const previewPreflight = await preflightPlan(plan, { previewOnly: true, bridge, structure, onProgress: () => {} });
+      previewPlan = applyPreflightPreview(plan, previewPreflight);
+    }
+    APP.snapshot = snapshot;
+    setSessionSnapshot(snapshot, structure);
+    APP.review = createPlanReviewState();
+    APP.previewView = createPreviewViewState();
+    APP.plan = previewPlan;
+    renderPlan(previewPlan);
+    const unresolved = collectPlanResolutionItems(previewPlan).length;
+    setProgress(100, unresolved ? 'Нужно ещё уточнение' : 'Исправление проверено', unresolved ? 'Остались неоднозначные значения: ' + unresolved : 'Preview пересобран по актуальной TESSA.');
+    return previewPlan;
+  }
+
+  function renderResolutionCenter(plan) {
+    const host = document.querySelector?.('#tms-resolution-center');
+    if (!host) return;
+    const items = collectPlanResolutionItems(plan);
+    if (!items.length) {
+      host.hidden = true;
+      host.innerHTML = '';
+      return;
+    }
+    host.hidden = false;
+    host.innerHTML = '<div class="tms-review-note"><b>Нужно уточнить значения: ' + items.length + '</b><br>Studio не будет угадывать сотрудника или справочник. Выберите точное значение и перепроверьте Preview.</div>'
+      + items.map((item, itemIndex) => {
+        const title = item.excelRow ? 'Excel ' + item.excelRow + ' · ' + (item.column || item.columnKey || 'поле') : (item.column || item.columnKey || 'Конфликт');
+        const candidates = (item.candidates || []).map((candidate, candidateIndex) => {
+          const label = candidate.selector || candidate.display || candidate.shortName || candidate.fullName || candidate.id || 'Вариант';
+          return '<div class="tms-resolution-choice"><span>' + escapeHtml(label) + '</span><button type="button" data-resolution-choice="' + itemIndex + ':' + candidateIndex + '">Выбрать и перепроверить</button></div>';
+        }).join('');
+        return '<details class="tms-action" open><summary><b>' + escapeHtml(title) + '</b></summary><div class="tms-action-body"><div class="tms-warning">' + escapeHtml(item.issue || 'Требуется явный выбор.') + '</div>' + candidates + '<button type="button" data-resolution-skip="' + itemIndex + '">Пропустить осознанно</button></div></details>';
+      }).join('');
+
+    host.querySelectorAll?.('button[data-resolution-choice]')?.forEach(button => button.addEventListener('click', async () => {
+      if (APP.busy) return;
+      const [itemIndexText, candidateIndexText] = String(button.dataset.resolutionChoice || '').split(':');
+      const item = items[Number(itemIndexText)];
+      const candidate = item?.candidates?.[Number(candidateIndexText)];
+      if (!item || !candidate) return;
+      setBusy(true);
+      try {
+        const outcome = applyResolutionChoiceToWorkbook(APP.workbook, item, candidate);
+        log('Resolution Center: Excel ' + outcome.excelRow + ' → ' + outcome.display + '.');
+        await recheckResolutionCenterPlan();
+      } catch (error) {
+        const message = friendlyErrorMessage(error);
+        log(message, 'error', error);
+        setProgress(100, 'Не удалось применить уточнение', message);
+      } finally {
+        setBusy(false);
+      }
+    }));
+
+    host.querySelectorAll?.('button[data-resolution-skip]')?.forEach(button => button.addEventListener('click', () => {
+      const item = items[Number(button.dataset.resolutionSkip)];
+      if (!item) return;
+      button.disabled = true;
+      button.textContent = 'Пропуск подтверждён';
+      log('Resolution Center: пользователь осознанно пропустил Excel ' + (item.excelRow || '?') + ' · ' + (item.column || item.columnKey || 'поле') + '.', 'warn');
+    }));
+  }
+
   function finalizeApplyResult(result, options = {}) {
     const cancelled = Boolean(options.cancelled ?? result?.cancelled);
     result.acceptedCount = (result.rows || []).filter(row => row.status === 'ok').length;
@@ -7635,7 +8791,10 @@
       || result.storeSkippedCount > 0
       || result.failedCount > 0
       || result.notStartedCount > 0;
-    result.status = cancelled ? 'cancelled' : (mutationIncomplete ? 'partial' : 'completed');
+    const sourceNeedsAttention = result.sourceSkippedCount > 0;
+    result.status = cancelled
+      ? 'cancelled'
+      : (mutationIncomplete ? 'partial' : (sourceNeedsAttention ? 'attention' : 'completed'));
     result.partial = result.status !== 'completed';
     result.success = result.status === 'completed';
     return result;
@@ -7668,6 +8827,14 @@
         : (result?.viewRefresh && !result.viewRefresh.skipped ? '\nЗапись завершена, но отображение TESSA не удалось обновить автоматически.' : '');
       const verifyNote = result?.reconciliation ? `\nПовторная проверка: подтверждено ${verified} из ${accepted}.` : '';
       return `Готово. Применено: ${applied} из ${requested}.\nВсе подготовленные изменения применены.${matrixSaveNote}${verifyNote}${sourceNote}${result.skippedFields?.length ? `\nНе применено отдельных полей: ${result.skippedFields.length}. Причины указаны в отчёте.` : ''}${refreshNote}\nПеред следующим Apply нужна свежая проверка или свежая выгрузка Excel.`;
+    }
+    if (result?.status === 'attention') {
+      return `Требуется внимание.\
+\
+Применено: ${applied} из ${requested}.\
+Отдельно не вошли в Apply: ${sourceSkipped}.\
+\
+Исправьте неоднозначные значения в Resolution Center и перепроверьте Preview либо подтвердите осознанный пропуск. Зелёный результат возможен только без неразрешённых пользовательских изменений.`;
     }
     const mutationSkipped = preflightSkipped + storeSkipped;
     if (result?.verificationIncomplete && mutationSkipped === 0 && notStarted === 0 && applied === requested) {
@@ -8760,12 +9927,29 @@
   }
 
   // Diagnostics runs on a separate bridge and never returns an Apply plan.
+  function sampleDiagnosticDictionaryEntries(entries, limit = 400) {
+    const list = Array.isArray(entries) ? entries : [];
+    const cap = Math.max(0, Math.floor(Number(limit) || 0));
+    if (!list.length || !cap) return [];
+    if (list.length <= cap) return list.slice();
+    if (cap === 1) return [list[0]];
+    const sampled = [];
+    let previousIndex = -1;
+    for (let index = 0; index < cap; index++) {
+      const sourceIndex = Math.round(index * (list.length - 1) / (cap - 1));
+      if (sourceIndex === previousIndex) continue;
+      sampled.push(list[sourceIndex]);
+      previousIndex = sourceIndex;
+    }
+    return sampled;
+  }
+
   // Explicit allowlists protect the test path if ordinary bridge code changes.
   // Capture only selected business data, never page HTML, browser storage,
   // HTTP headers, credentials or arbitrary application objects.
   async function collectStudioDiagnostics({ connect, probe, file = null, workbook = null, previous = {}, assertContext, onProgress = () => {}, limits = {} }) {
     if (typeof assertContext !== 'function') throw new Error('Не задан контроль контекста диагностики.');
-    const bounds = { calls: 2000, candidates: 20, bytes: 48 * 1024 * 1024, itemBytes: 8 * 1024 * 1024, requestMs: 20000, ...limits };
+    const bounds = { calls: 2000, candidates: 20, bytes: 64 * 1024 * 1024, itemBytes: 32 * 1024 * 1024, dictionaryEvidencePerCatalog: 400, dictionaryEvidenceTotalEntries: 5000, requestMs: 20000, ...limits };
     const report = {
       format: 'TESSA_STUDIO_DIAGNOSTICS_V1', studioVersion: APP.version, startedAt: nowIso(),
       scope: 'read-only', writesAttempted: 0, blockedWrites: 0, containsBusinessData: true,
@@ -8929,13 +10113,43 @@
     }, schemaOk);
     await run('dictionaries', 'Чтение справочников', async () => {
       catalog = await bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true, transient: true });
-      // Search text is reproducible. Shard large reference data so one large
-      // dictionary cannot discard every catalog from a diagnostic package.
-      capture('dictionaries.json', { columnCatalogIds: catalog.columnCatalogIds, stats: catalog.stats, catalogs: Object.fromEntries(Object.entries(catalog.catalogs).map(([id,c]) => [id, { id, label:c.label, sourceView:c.sourceView, projection:c.projection, sourceCount:c.sourceCount, entries:c.entries.length }])) });
+      // Full counts/metadata stay in dictionaries.json, while raw values are a deterministic
+      // diagnostic sample. The support bundle must not become incomplete merely because a
+      // valid production dictionary contains hundreds of thousands of values.
+      const dictionaryPairs = Object.entries(catalog.catalogs || {});
+      const totalEvidenceBudget = Math.max(0, Math.floor(Number(bounds.dictionaryEvidenceTotalEntries) || 0));
+      const perCatalogConfigured = Math.max(0, Math.floor(Number(bounds.dictionaryEvidencePerCatalog) || 0));
+      const fairShare = dictionaryPairs.length ? Math.max(1, Math.floor(totalEvidenceBudget / dictionaryPairs.length)) : 0;
+      const perCatalogBudget = Math.min(perCatalogConfigured, fairShare || perCatalogConfigured);
+      const evidencePlans = dictionaryPairs.map(([id, dictionary]) => {
+        const allEntries = Array.isArray(dictionary.entries) ? dictionary.entries : [];
+        const sampledEntries = sampleDiagnosticDictionaryEntries(allEntries, perCatalogBudget);
+        return { id, dictionary, allEntries, sampledEntries };
+      });
+      report.dictionaryEvidence = evidencePlans.map(({ id, dictionary, allEntries, sampledEntries }) => ({
+        id,
+        label: dictionary.label,
+        totalEntries: allEntries.length,
+        capturedEntries: sampledEntries.length,
+        mode: sampledEntries.length < allEntries.length ? 'sampled' : 'full',
+      }));
+      capture('dictionaries.json', {
+        columnCatalogIds: catalog.columnCatalogIds,
+        stats: catalog.stats,
+        evidence: report.dictionaryEvidence,
+        catalogs: Object.fromEntries(dictionaryPairs.map(([id,c]) => [id, { id, label:c.label, sourceView:c.sourceView, projection:c.projection, sourceCount:c.sourceCount, entries:Array.isArray(c.entries) ? c.entries.length : 0 }]))
+      });
       let dictionaryIndex = 0;
-      for (const [id, dictionary] of Object.entries(catalog.catalogs)) {
+      for (const { id, sampledEntries } of evidencePlans) {
         dictionaryIndex++;
-        for (let offset = 0; offset < dictionary.entries.length; offset += 500) capture(`dictionaries/${dictionaryIndex}-${offset}.json`, { id, offset, entries: dictionary.entries.slice(offset, offset + 500).map(({ searchText, ...entry }) => entry) });
+        for (let offset = 0; offset < sampledEntries.length; offset += 500) {
+          capture(`dictionaries/${dictionaryIndex}-${offset}.json`, {
+            id,
+            offset,
+            sampled: true,
+            entries: sampledEntries.slice(offset, offset + 500).map(({ searchText, ...entry }) => entry),
+          });
+        }
       }
       return { status: catalog.stats.errors?.length ? 'fail' : 'pass', detail: catalog.stats.errors?.join('\n') || `${catalog.stats.entries} значений в ${catalog.stats.catalogs} справочниках.` };
     }, snapshotOk);
@@ -8981,14 +10195,24 @@
         return { detail: `Проверено названий: ${checked}; одинаковых названий с уточнением: ${ambiguous}. Источник: ${dictionary.sourceView || 'текущая матрица'}.` };
       });
     }
+    const diagnosticNativeCardCache = new Map();
+    const getDiagnosticNativeCard = async row => {
+      const key = canonicalValue(row?.rowCardId);
+      if (!key) throw new Error('У контрольной строки отсутствует CardID.');
+      if (!diagnosticNativeCardCache.has(key)) diagnosticNativeCardCache.set(key, await bridge.getCard(row.rowCardId));
+      return diagnosticNativeCardCache.get(key);
+    };
     if (generated && columns) for (const column of columns.values()) {
-      await run(`field-${column.key}`, `Поле: ${column.name || column.excelHeader}`, async () => {
+      await run(`field-${column.key}`, `Поле «${column.name || column.excelHeader}»`, async () => {
         const controlRow = snapshot.rows.find(row => (column.kind === 'function' ? row.roles?.[column.id] : row.values?.[column.id])?.length);
         if (!controlRow) return { status: 'not-run', detail: 'В матрице нет заполненного примера этого поля.' };
-        if (!controlRow.card?.clone) return { status: 'not-run', detail: 'Карточка для проверки перестройки недоступна.' };
+        // Snapshot rows are deliberately plain DTOs and must never retain a live TESSA Card.
+        // Reopen only the control rows needed by diagnostics and reuse them within this run.
+        const nativeCard = await getDiagnosticNativeCard(controlRow);
+        if (typeof nativeCard?.clone !== 'function') return { status: 'not-run', detail: 'Нативная карточка строки не поддерживает clone().' };
         const desired = desiredFromRow(controlRow);
         desired.flat[column.key] = []; desired.ids[column.key] = [];
-        const cloned = controlRow.card.clone();
+        const cloned = nativeCard.clone();
         const removesLastRole = column.kind === 'function' && !Object.entries(controlRow.roles || {}).some(([id,items]) => id !== column.id && items.length);
         try { bridge.rebuildRowCard(cloned, controlRow.versionId, desired, structure, snapshot); }
         catch (error) {
@@ -9155,7 +10379,12 @@
       ['interval/TESSA_Interval_Diagnostics.json', JSON.stringify(interval, null, 2)],
       ['interval/interval-summary.json', JSON.stringify(buildIntervalDiagnosticSummary(interval), null, 2)],
     ] : [];
-    return makeZip([['README.txt', readme], ['report.json', JSON.stringify(result.report, null, 2)], ...result.entries, ...intervalEntries]);
+    const performanceUat = result?.performanceUat || APP.lastPerformanceUat;
+    const performanceEntries = performanceUat ? [
+      ['performance/performance-uat.json', JSON.stringify(performanceUat, null, 2)],
+      ['performance/performance-uat-summary.json', JSON.stringify(buildPerformanceUatSummary(performanceUat), null, 2)],
+    ] : [];
+    return makeZip([['README.txt', readme], ['report.json', JSON.stringify(result.report, null, 2)], ...result.entries, ...intervalEntries, ...performanceEntries]);
   }
 
   function renderStudioDiagnostics(report = APP.lastStudioDiagnostics?.report) {
@@ -9230,6 +10459,31 @@
         delete result.intervalDiagnostics;
         result.report.intervalDiagnostics = { included: false, status: 'not-needed', writesAttempted: 0 };
       }
+      // Performance UAT is deliberately synthetic/read-only. Real touched-only server
+      // timings are copied from this session's telemetry and are never fabricated.
+      let performanceUat;
+      try {
+        setProgress(95, 'Performance UAT', 'Локальные сценарии 0/1/10/100/3000 строк');
+        performanceUat = await runPerformanceUat({ baseRows: 3000 });
+      } catch (error) {
+        performanceUat = {
+          format: 'TESSA_PERFORMANCE_UAT_V1', scope: 'synthetic-read-only', status: 'failed',
+          createdAt: nowIso(), baseRows: 3000, scenarios: [], cache: { hits: 0, misses: 0 },
+          liveTimings: clonePlain(performanceSnapshot()?.stages || {}), totalMs: 0,
+          failures: [{ scenario: 'setup', metric: 'exception', expected: 'success', actual: friendlyErrorMessage(error) }],
+        };
+      }
+      APP.lastPerformanceUat = performanceUat;
+      result.performanceUat = performanceUat;
+      result.report.performanceUat = buildPerformanceUatSummary(performanceUat);
+      result.report.checks.push({
+        status: performanceUat.status === 'passed' ? 'pass' : 'fail',
+        title: 'Performance UAT',
+        detail: performanceUat.status === 'passed'
+          ? performanceUat.scenarios.length + ' synthetic read-only сценариев · ' + Math.round(performanceUat.totalMs) + ' мс'
+          : 'Не пройдено: ' + (performanceUat.failures || []).length + '. См. performance/performance-uat.json',
+      });
+      if (performanceUat.status !== 'passed') result.report.status = 'failed';
       // References stay in memory only; package serialization uses report/entries.
       result.source = { plan: originalPlan, workbook: originalWorkbook, file };
       APP.lastStudioDiagnostics = result;
@@ -9682,6 +10936,169 @@
     };
   }
 
+  function reviewedChangesArtifactDescriptor(reviewed, structure) {
+    const model = buildChangesReportModel(reviewed, structure);
+    const payload = {
+      matrixId: model.matrixId || '',
+      templateId: model.templateId || '',
+      operations: model.operations || [],
+      details: model.details || [],
+    };
+    return {
+      model,
+      key: `${Number(model.operations?.length || 0)}:${hashText(JSON.stringify(payload))}`,
+    };
+  }
+
+  function revokeReviewedChangesArtifact(state = APP) {
+    if (!state) return;
+    const artifact = state.reviewedChangesArtifact;
+    state.reviewedChangesArtifact = null;
+    if (!artifact?.url) return;
+    try { URL.revokeObjectURL(artifact.url); } catch (_) { /* best effort */ }
+  }
+
+  function clearReviewedChangesArtifact(state = APP) {
+    if (!state) return;
+    state.reviewedChangesArtifactRequest = Number(state.reviewedChangesArtifactRequest || 0) + 1;
+    state.reviewedChangesArtifactBuild = null;
+    revokeReviewedChangesArtifact(state);
+  }
+
+  function updateReviewedChangesDownloadControl({ hasChanges = false, ready = false, error = '' } = {}) {
+    const button = document.querySelector?.('#tms-download-changes');
+    if (!button) return;
+    button.hidden = !hasChanges;
+    setControlDisabled(button, !ready);
+    button.title = ready
+      ? 'Скачать только операции из текущего Preview'
+      : hasChanges
+        ? (error || 'Формирую Excel изменений…')
+        : '';
+  }
+
+  async function prepareReviewedChangesArtifact(plan = APP.plan, reviewedSnapshot = null) {
+    const structure = APP.structure;
+    if (!plan || !structure) {
+      clearReviewedChangesArtifact(APP);
+      updateReviewedChangesDownloadControl();
+      return null;
+    }
+
+    const reviewed = reviewedSnapshot || buildReviewedPlan(plan, APP.review);
+    const descriptor = reviewedChangesArtifactDescriptor(reviewed, structure);
+    if (!descriptor.model.operations.length) {
+      clearReviewedChangesArtifact(APP);
+      updateReviewedChangesDownloadControl();
+      return null;
+    }
+
+    if (APP.reviewedChangesArtifact?.key === descriptor.key) {
+      updateReviewedChangesDownloadControl({ hasChanges: true, ready: true });
+      return APP.reviewedChangesArtifact;
+    }
+    if (APP.reviewedChangesArtifactBuild?.key === descriptor.key) {
+      updateReviewedChangesDownloadControl({ hasChanges: true, ready: false });
+      return APP.reviewedChangesArtifactBuild.promise;
+    }
+
+    clearReviewedChangesArtifact(APP);
+    const token = APP.reviewedChangesArtifactRequest;
+    const shortId = String(reviewed.matrixId || '').slice(0, 8);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const name = `TESSA_Изменения_${shortId || 'matrix'}_${stamp}.xlsx`;
+    updateReviewedChangesDownloadControl({ hasChanges: true, ready: false });
+
+    const promise = (async () => {
+      const bytes = await performanceStage(
+        'changes-report.xlsx-build',
+        () => createChangesReportXlsxBytes(reviewed, structure),
+        { operation: 'changes-report', rows: descriptor.model.operations.length },
+      );
+      const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+
+      // Preview/review may have changed while ZIP/XML generation yielded to the event loop.
+      // Never publish an artifact that belongs to an obsolete selection.
+      if (token !== APP.reviewedChangesArtifactRequest || APP.plan !== plan || APP.structure !== structure) {
+        try { URL.revokeObjectURL(url); } catch (_) { /* best effort */ }
+        return null;
+      }
+      const currentReviewed = buildReviewedPlan(APP.plan, APP.review);
+      const currentDescriptor = reviewedChangesArtifactDescriptor(currentReviewed, APP.structure);
+      if (currentDescriptor.key !== descriptor.key) {
+        try { URL.revokeObjectURL(url); } catch (_) { /* best effort */ }
+        return null;
+      }
+
+      revokeReviewedChangesArtifact(APP);
+      const artifact = {
+        key: descriptor.key,
+        url,
+        blob,
+        name,
+        operationCount: descriptor.model.operations.length,
+        preparedAt: nowIso(),
+      };
+      APP.reviewedChangesArtifact = artifact;
+      if (APP.reviewedChangesArtifactBuild?.token === token) APP.reviewedChangesArtifactBuild = null;
+      updateReviewedChangesDownloadControl({ hasChanges: true, ready: true });
+      return artifact;
+    })().catch(error => {
+      if (token === APP.reviewedChangesArtifactRequest) {
+        APP.reviewedChangesArtifactBuild = null;
+        revokeReviewedChangesArtifact(APP);
+        updateReviewedChangesDownloadControl({
+          hasChanges: true,
+          ready: false,
+          error: `Не удалось подготовить Excel: ${friendlyErrorMessage(error)}`,
+        });
+      }
+      return null;
+    });
+
+    APP.reviewedChangesArtifactBuild = { key: descriptor.key, token, promise };
+    return promise;
+  }
+
+  // The actual anchor activation is deliberately synchronous. The expensive XLSX build
+  // happens after Preview; the click only consumes the already prepared Blob URL, so the
+  // browser still sees the download as part of the user's gesture.
+  function downloadReviewedChangesXlsx() {
+    if (APP.busy || !APP.plan || !APP.structure) return;
+    const reviewed = buildReviewedPlan(APP.plan, APP.review);
+    const descriptor = reviewedChangesArtifactDescriptor(reviewed, APP.structure);
+    if (!descriptor.model.operations.length) {
+      setProgress(100, 'Нет изменений для выгрузки', 'Текущий Preview не содержит операций или пропущенных строк.');
+      return;
+    }
+
+    const artifact = APP.reviewedChangesArtifact;
+    if (!artifact?.url || artifact.key !== descriptor.key) {
+      updateReviewedChangesDownloadControl({ hasChanges: true, ready: false });
+      void prepareReviewedChangesArtifact(APP.plan, reviewed);
+      setProgress(100, 'Excel изменений ещё готовится', 'Дождитесь, пока кнопка станет доступна, и нажмите её ещё раз.');
+      return;
+    }
+
+    const host = document.body || document.documentElement;
+    const anchor = document.createElement('a');
+    anchor.href = artifact.url;
+    anchor.download = artifact.name;
+    anchor.rel = 'noopener';
+    anchor.hidden = true;
+    if (anchor.style) anchor.style.display = 'none';
+    if (host?.appendChild) host.appendChild(anchor);
+    try {
+      anchor.click();
+      setProgress(100, 'Excel изменений готов', `${artifact.operationCount} операций · файл только для просмотра`);
+    } catch (error) {
+      setProgress(100, 'Не удалось скачать изменения', friendlyErrorMessage(error));
+    } finally {
+      try { anchor.remove?.(); } catch (_) { /* best effort */ }
+    }
+  }
+
   function cherkizovoLogoSvg() {
     return `<svg viewBox="0 0 192.756 192.756" aria-hidden="true" focusable="false"><path fill="#E31E24" d="M162.854 63.44c10.303 20.271 11.299 48.019-.664 67.957-16.449 26.752-46.689 41.541-77.263 37.719-26.086-2.492-52.505-21.104-61.81-46.357-9.637-23.76-3.655-53.502 14.123-72.278 21.268-23.262 56.659-31.902 86.567-19.772 15.951 6.478 30.24 16.78 39.047 32.731z"/><path fill="#fff" d="M117.66 53.471c.996 3.323 1.494 6.646-.5 9.471-5.98 6.48-15.451 8.806-24.258 6.646-4.486-.831-9.305-3.656-11.465-7.81-1.33-4.154.831-7.976 3.157-10.8 8.806-6.646 24.591-7.145 32.235 2.493z"/><path fill="#fff" d="M79.277 69.255c6.646 13.292-1.495 29.077 3.656 40.209.831 2.326 3.489 1.33 5.316 1.496 6.813-3.324 5.317-10.635 9.471-15.453 4.154-9.637 14.289-15.951 24.426-16.616 11.631-.665 23.428 5.982 28.246 17.114 4.486 9.471 4.154 23.096-2.824 31.57-4.986 8.807-14.291 12.295-23.262 13.957-8.309.166-15.951-4.818-19.607-12.295-2.16-5.484-3.82-12.463 0-17.779 4.652-9.139 23.428-9.139 16.615-23.096-2.99-2.327-6.314-5.151-10.467-3.324-13.293 7.976-13.625 23.761-19.607 35.89-4.486 9.305-9.471 22.264-21.767 22.93-8.972 1.494-16.117-2.99-20.77-10.469-6.812-16.615-6.812-37.219-9.471-54.997.332-7.975 4.818-15.951 12.462-19.606 10.47-4.651 22.266.334 27.583 10.469z"/></svg>`;
   }
@@ -9695,6 +11112,21 @@
     const applySection = document.querySelector('#tms-apply-section');
     if (applySection) applySection.hidden = false;
     const reviewed = buildReviewedPlan(plan, APP.review);
+    const changesButton = document.querySelector?.('#tms-download-changes');
+    const hasReviewedChanges = (reviewed.actions || []).some(action => ['update', 'add', 'delete'].includes(action?.type)) || Boolean(reviewed.skippedRows?.length);
+    if (changesButton) {
+      if (hasReviewedChanges) {
+        const descriptor = reviewedChangesArtifactDescriptor(reviewed, APP.structure);
+        const ready = Boolean(APP.reviewedChangesArtifact?.url && APP.reviewedChangesArtifact.key === descriptor.key);
+        updateReviewedChangesDownloadControl({ hasChanges: true, ready });
+        if (!ready && APP.reviewedChangesArtifactBuild?.key !== descriptor.key) {
+          void prepareReviewedChangesArtifact(plan, reviewed);
+        }
+      } else {
+        clearReviewedChangesArtifact(APP);
+        updateReviewedChangesDownloadControl();
+      }
+    }
     APP.capabilityActions = reviewed.actions;
     const applyState = applyAvailability(plan, APP.review);
     APP.reviewedApplyEnabled = applyState.canApply;
@@ -9724,6 +11156,8 @@
       ${applyState.batchBlocked ? `<div class="tms-fatal"><b>Слишком много изменений за один раз</b><br>Сейчас: ${applyState.count} · максимум: 2000. Раскройте «Выбрать часть изменений» и уменьшите число операций.</div>` : ''}
       ${warnings.length ? `<details class="tms-warning"><summary>Нужно проверить</summary><div>${warnings.map(item => `<div>${escapeHtml(item)}</div>`).join('')}</div></details>` : ''}
     `;
+
+    renderResolutionCenter(plan);
 
     // Не теряем раскрытую строку после клика по review-кнопке и повторного renderPlan().
     const openActionKeys = new Set([...table.querySelectorAll('details[open][data-review-action-key]')].map(item => item.dataset.reviewActionKey));
@@ -10089,6 +11523,7 @@
     const nextTemplateId = probe?.matrix?.templateId || null;
     if (!APP.busy && previousCardId && (previousCardId !== nextCardId || APP.capabilityCheckedTemplateId !== nextTemplateId)) {
       resetFilePreview();
+      invalidateSessionCache('matrix-or-template-changed');
       APP.structure = null; APP.snapshot = null; APP.bridge = null; APP.dictionaryCatalog = null;
       APP.lastMutationReceipts = null; APP.lastReconciliation = null;
       renderReconciliationResult(null);
@@ -10375,19 +11810,73 @@
     }
   }
 
-  // Only read a local workbook or the already downloaded dictionary. This picker
-  // never writes to Excel or TESSA; the user reviews the resulting workbook.
+  // Load fresh matrix metadata and dictionaries straight from TESSA for the value
+  // picker. This is deliberately read-only: no Excel is generated and no matrix rows are
+  // written. A bridge override exists only for deterministic Node regressions.
+  async function loadLivePickerSource(bridgeOverride = null) {
+    setProgress(8, 'Подключаюсь к TESSA', 'Готовлю справочники для выбора значений');
+    const bridge = bridgeOverride || await TessaBridge.create();
+    const templateId = bridge.templateId();
+    if (!templateId) throw new Error('У матрицы не найден TemplateID.');
+
+    setProgress(28, 'Читаю структуру', 'Критерии и функции текущей матрицы');
+    const structure = await performanceStage(
+      'picker.structure',
+      () => bridge.requestStructure(templateId),
+      { operation: 'picker' },
+    );
+
+    setProgress(48, 'Читаю матрицу', 'Получаю текущее состояние из TESSA');
+    const snapshot = await performanceStage(
+      'picker.snapshot',
+      () => bridge.loadSnapshot(structure),
+      { operation: 'picker' },
+    );
+
+    setProgress(70, 'Обновляю справочники', 'Получаю актуальные значения и роли из TESSA');
+    const dictionaryCatalog = await performanceStage(
+      'picker.dictionaries',
+      () => bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true }),
+      { operation: 'picker', rows: snapshot.rows.length },
+    );
+
+    APP.bridge = bridge;
+    APP.structure = structure;
+    APP.snapshot = snapshot;
+    APP.dictionaryCatalog = dictionaryCatalog;
+
+    const grid = buildRoundtripGrid(structure, snapshot, {}, dictionaryCatalog);
+    setProgress(92, 'Справочники готовы', 'Открываю выбор значений');
+    return {
+      headers: grid.columns.map(column => column.header),
+      schemaTokens: grid.columns.map(column => column.schema),
+      dictionaryCatalog: grid.dictionaryCatalog,
+    };
+  }
+
+  // Excel remains supported when a workbook is explicitly selected. In production, no
+  // workbook means a fresh TESSA read every time so Active -> Draft transitions and stale
+  // in-memory catalogs cannot make the picker depend on a previous export. Node DOM tests
+  // may intentionally inject APP state so they can exercise rendering without a TESSA host.
   async function openValuePicker() {
     const file = document.querySelector('#tms-file')?.files?.[0];
     let source;
-    if (file) source = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
-    else if (APP.structure && APP.snapshot && APP.dictionaryCatalog) {
+    if (file) {
+      source = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
+    } else if (window.__TESSA_MATRIX_SYNC_TEST_MODE__ && APP.structure && APP.snapshot && APP.dictionaryCatalog) {
       const grid = buildRoundtripGrid(APP.structure, APP.snapshot, {}, APP.dictionaryCatalog);
-      source = { headers: grid.columns.map(c => c.header), schemaTokens: grid.columns.map(c => c.schema), dictionaryCatalog: grid.dictionaryCatalog };
+      source = {
+        headers: grid.columns.map(column => column.header),
+        schemaTokens: grid.columns.map(column => column.schema),
+        dictionaryCatalog: grid.dictionaryCatalog,
+      };
+    } else {
+      source = await loadLivePickerSource();
     }
-    if (!source) throw new Error('Сначала скачайте Excel или выберите рабочую книгу со справочниками.');
     const columns = pickerColumns(source);
-    if (!columns.length) throw new Error('В книге нет справочников для выбора. Скачайте Excel со справочниками.');
+    if (!columns.length) throw new Error(file
+      ? 'В выбранной книге нет справочников для выбора. Выберите актуальную рабочую книгу.'
+      : 'В текущей матрице не удалось получить справочники для выбора. Обновите карточку матрицы и повторите.');
     closeValuePicker();
     APP.picker = {
       columns,
@@ -10629,6 +12118,9 @@
       #tms-panel .tms-action-body{padding:0 12px 12px}
       #tms-panel .tms-review-row-actions{display:flex;gap:8px;flex-wrap:wrap;padding:4px 0 8px}
       #tms-panel .tms-review-state{font-size:12px;color:var(--tms-muted)}
+      #tms-panel #tms-resolution-center{margin:12px 0}
+      #tms-panel .tms-resolution-choice{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid var(--tms-line)}
+      #tms-panel .tms-resolution-choice span{flex:1;overflow-wrap:anywhere}
       #tms-panel .tms-review-btn[aria-pressed=true]{background:#e9edf1}
       #tms-panel .tms-review-row-excluded{background:var(--tms-soft)}
       #tms-panel .tms-diff{padding:10px 0;border-top:1px solid var(--tms-line)}
@@ -10747,10 +12239,10 @@
               <details><summary>Проверка с записью</summary><p>Сначала проверьте Excel и выберите операции в Preview. Кнопка применяет именно эти изменения после обычного подтверждения, затем перечитывает результат. Для испытаний используйте отдельный тестовый черновик. Добавление, изменение и удаление проверяются только если есть в выбранном наборе.</p><button id="tms-test-write" type="button">Применить выбранное и проверить запись</button></details><div id="tms-tests-result" role="status" aria-live="polite">Проверки ещё не запускались.</div>
             </details>
           </div></details>
-          <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-download-report" hidden disabled>Скачать результат</button><button id="tms-download-support-report" hidden disabled>Скачать отчёт для поддержки</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
+          <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-download-changes" hidden disabled>Скачать изменения в Excel</button><button id="tms-download-report" hidden disabled>Скачать результат</button><button id="tms-download-support-report" hidden disabled>Скачать отчёт для поддержки</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
           <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
         </div>
-        <div id="tms-summary"></div><div id="tms-plan"></div>
+        <div id="tms-summary"></div><section id="tms-resolution-center" hidden aria-label="Разрешение неоднозначностей"></section><div id="tms-plan"></div>
       </div>`;
     document.body.appendChild(panel);
 
@@ -10859,6 +12351,7 @@
       catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); setProgress(100, 'Проверка не завершена', message); }
       finally { setBusy(false); }
     });
+    panel.querySelector('#tms-download-changes').addEventListener('click', () => { downloadReviewedChangesXlsx(); });
     panel.querySelector('#tms-download-report').addEventListener('click', () => { downloadLastReport(); });
     panel.querySelector('#tms-download-support-report').addEventListener('click', () => {
       if (APP.busy) return;
@@ -10973,6 +12466,7 @@
     });
     APP.runtimeMonitor.start();
     window.addEventListener('pagehide', () => {
+      clearReviewedChangesArtifact(APP);
       restoreNativeRecorderMethods(APP.nativeRecorder);
       APP.nativeRecorder = null;
       APP.runtimeMonitor?.stop();
@@ -10996,25 +12490,1031 @@
   }
 
   window.__TESSA_MATRIX_SYNC_EXPORTS__ = {
+    STUDIO_ACTION_REGISTRY,
+    sampleDiagnosticDictionaryEntries,
     applyIntervalStructuralProbe, applyCardNewTopologyProbe, applyCardNewEnvelopeProbe, summarizeCardIdentityTopology, collectIntervalDiagnostics, buildIntervalDiagnosticSummary, resolveStudioIntervalDiagnostics, collectStudioDiagnostics, makeStudioDiagnosticPackage,
     classifyIntervalDiagnosticError, collectNativeRuntimeSurface, sanitizeNativeOperationRecord, stageMatrixRowDelete, applyResultSummary, buildNativeRuntimeSurfaceReport, restoreNativeRecorderMethods, startNativeOperationRecorder, stopNativeOperationRecorder,
-    createRuntimeMonitor, pickerColumns, pickerEntryKey, pickerRoleTypeOptions, pickerDefaultRoleFilter, searchPickerPage, searchPickerEntries, pickerEntryPresentation, bulkSelectPickerItems, bulkSelectPickerMatches, pickerSelectionText,
+    createRuntimeMonitor, loadLivePickerSource, pickerColumns, pickerEntryKey, pickerRoleTypeOptions, pickerDefaultRoleFilter, searchPickerPage, searchPickerEntries, pickerEntryPresentation, bulkSelectPickerItems, bulkSelectPickerMatches, pickerSelectionText,
     probeRuntimeEnvironment, inspectNativeViewCapabilitiesReadOnly, inspectMatrixCapabilitiesReadOnly,
     evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, triggerBlobDownload, downloadJson, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport, buildApplySupportReport,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
-    readXlsxArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
-    buildRoundtripGrid, createRoundtripXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
-    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, replacementConfirmationModel, confirmCrossMatrixReplacement, isWriterLockError, persistMainMatrixAfterApply, refreshNativeMatrixViewAfterApply, finalizeApplyResult, applyResultMessage,
+    readXlsxArrayBuffer, releaseWorkbookArchive, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
+    buildRoundtripGrid, createRoundtripXlsxBytes, buildChangesReportModel, createChangesReportXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
+    parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, replacementConfirmationModel, confirmCrossMatrixReplacement, isWriterLockError, persistMainMatrixAfterApply, refreshNativeMatrixViewAfterApply, collectPlanResolutionItems, applyResolutionChoiceToWorkbook, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, classifyWorkbookContext, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
     preflightPlan, applyPreflightPreview, crossMatrixReplacementIntegrity, verifyCrossMatrixRollback, finalizeCrossMatrixTransferVerification, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
+    incrementalSafetyMode, collectTouchedIdentities, buildTargetedPreflightSnapshot, buildTargetedReconciliationSnapshot,
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, partnerRecordKeepingColumnIndex, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport,
+    performanceStage, performanceSnapshot, resetPerformanceTelemetry, performanceUatScenarioNames, runPerformanceUat, buildPerformanceUatSummary, makeZip, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,
+    baselineExplicitValues, workbookBaselineFastPathIndex, unchangedDesiredRowFromBaseline,
     TessaBridge,
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },
   };
 
   bootstrap();
+})();
+
+(() => {
+  'use strict';
+
+  const INSTALL_KEY = '__TMS_FULL_UAT_V1__';
+  if (window[INSTALL_KEY]) return;
+  const E = window.__TESSA_MATRIX_SYNC_EXPORTS__;
+  if (!E) return;
+
+  const VERSION = '1.0.0';
+  const utf8 = value => new TextEncoder().encode(typeof value === 'string' ? value : JSON.stringify(value, null, 2));
+  const now = () => new Date().toISOString();
+
+  function actionCoverageFromChecks(checks = [], actions = E.STUDIO_ACTION_REGISTRY || []) {
+    const byId = new Map((checks || []).map(check => [check?.id, check]));
+    const actionRows = (actions || []).map(action => {
+      const check = byId.get(action.uatCheckId) || null;
+      const outcomeVerified = Boolean(check && check.status === 'PASS' && check.data?.outcome === action.outcome);
+      return {
+        id: action.id,
+        selector: action.selector,
+        event: action.event,
+        uatCheckId: action.uatCheckId,
+        outcome: action.outcome,
+        destructive: Boolean(action.destructive),
+        status: check?.status || 'MISSING',
+        outcomeVerified,
+        detail: check?.detail || '',
+        evidence: check?.data || null,
+      };
+    });
+    return {
+      total: actionRows.length,
+      covered: actionRows.filter(item => item.outcomeVerified).length,
+      missing: actionRows.filter(item => !item.outcomeVerified).map(item => item.id),
+      actions: actionRows,
+    };
+  }
+
+  const canon = value => E.canonicalValue ? E.canonicalValue(value || '') : String(value || '').trim().toLowerCase();
+
+  function seededRandom(seed) {
+    let state = (Number(seed) >>> 0) || 0x9E3779B9;
+    return () => {
+      state ^= state << 13; state >>>= 0;
+      state ^= state >>> 17; state >>>= 0;
+      state ^= state << 5; state >>>= 0;
+      return (state >>> 0) / 0x100000000;
+    };
+  }
+
+  function hashSeed(text) {
+    let h = 2166136261 >>> 0;
+    for (const ch of String(text || '')) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }
+    return h >>> 0;
+  }
+
+  function cloneWorkbook(book) {
+    return { ...book, rows: (book.rows || []).map(row => ({ ...row, values: [...(row.values || [])] })) };
+  }
+
+  function snapshotSignature(snapshot) {
+    return (snapshot?.rows || []).map(row => `${canon(row.rowCardId)}|${canon(row.fingerprint || E.fingerprintFlat(row.flat || {}))}`).sort();
+  }
+
+  function sameArray(a, b) {
+    return a.length === b.length && a.every((value, index) => value === b[index]);
+  }
+
+  // TASK9_SELF_RESTORING_UAT_V1
+  // A destructive UAT write is not considered safe merely because its local test
+  // finished. Every write leaves a durable cleanup obligation which is settled only
+  // after a fresh server read proves the temporary state is gone/restored.
+  function createCleanupLedger(baselineSignature = []) {
+    const frozenBaseline = [...(baselineSignature || [])];
+    const obligations = [];
+    let sequence = 0;
+    const safeCopy = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+    const snapshot = () => {
+      const rows = obligations.map(item => safeCopy(item));
+      const verifiedStatuses = new Set(['verified', 'already-absent']);
+      const failedStatuses = new Set(['failed', 'error']);
+      return {
+        baselineSignature: [...frozenBaseline],
+        total: rows.length,
+        pending: rows.filter(item => item.status === 'pending').length,
+        verified: rows.filter(item => verifiedStatuses.has(item.status)).length,
+        failed: rows.filter(item => failedStatuses.has(item.status)).length,
+        obligations: rows,
+      };
+    };
+    return {
+      baselineSignature: [...frozenBaseline],
+      register(input = {}) {
+        sequence += 1;
+        const item = {
+          id: `cleanup-${String(sequence).padStart(4, '0')}`,
+          status: 'pending',
+          registeredAt: now(),
+          ...safeCopy(input),
+        };
+        if (!item.status) item.status = 'pending';
+        obligations.push(item);
+        return safeCopy(item);
+      },
+      resolve(id, result = {}) {
+        const item = obligations.find(candidate => candidate.id === id);
+        if (!item) throw new Error(`Cleanup obligation ${id} не найдена.`);
+        Object.assign(item, safeCopy(result));
+        if (!item.status) item.status = 'verified';
+        return safeCopy(item);
+      },
+      snapshot,
+    };
+  }
+
+  function baselineRestoreProof(baselineSignature = [], afterSignature = [], ledgerSnapshot = {}) {
+    const baseline = [...(baselineSignature || [])];
+    const after = [...(afterSignature || [])];
+    const baselineEquivalent = sameArray(baseline, after);
+    const pendingObligations = Number(ledgerSnapshot?.pending || 0);
+    const failedObligations = Number(ledgerSnapshot?.failed || 0);
+    return {
+      status: baselineEquivalent && pendingObligations === 0 && failedObligations === 0 ? 'VERIFIED' : 'UNSAFE',
+      baselineEquivalent,
+      pendingObligations,
+      failedObligations,
+      baselineSignature: baseline,
+      afterSignature: after,
+      checkedAt: now(),
+    };
+  }
+
+
+  function directTokenIndexes(book) {
+    const out = [];
+    (book.schemaTokens || []).forEach((token, index) => {
+      if (/^(criterion|function):/.test(String(token || ''))) out.push(index);
+    });
+    return out;
+  }
+
+  function tokenIndex(book, token) { return (book.schemaTokens || []).indexOf(token); }
+  function companionIndex(book, key) { return tokenIndex(book, `companion:${key}`); }
+  function maxExcelRow(book) { return Math.max(Number(book.headerRow || 14), ...(book.rows || []).map(row => Number(row.excelRow || 0))); }
+
+  function rowHasRole(book, row) {
+    return (book.schemaTokens || []).some((token, index) => String(token || '').startsWith('function:') && String(row.values?.[index] || '').trim());
+  }
+
+  function rowIdentity(book, row) {
+    const card = tokenIndex(book, 'system:rowCardId');
+    const version = tokenIndex(book, 'system:versionId');
+    return {
+      rowCardId: card >= 0 ? String(row.values?.[card] || '') : '',
+      versionId: version >= 0 ? String(row.values?.[version] || '') : '',
+    };
+  }
+
+  function clearSystemIdentity(book, row, action = 'add') {
+    for (const token of ['system:rowCardId', 'system:versionId', 'system:baseFingerprint']) {
+      const index = tokenIndex(book, token); if (index >= 0) row.values[index] = '';
+    }
+    const actionIndex = tokenIndex(book, 'system:action');
+    if (actionIndex >= 0) row.values[actionIndex] = action;
+    return row;
+  }
+
+  function authoritativeEntries(catalog, key) {
+    const id = catalog?.columnCatalogIds?.[key];
+    const entries = id ? catalog?.catalogs?.[id]?.entries || [] : [];
+    return entries.filter(entry => {
+      if (!String(entry?.id || '').trim()) return false;
+      if (!String(entry?.selector || entry?.display || '').trim()) return false;
+      if (canon(entry?.status) === canon('Текущее значение')) return false;
+      return true;
+    });
+  }
+
+  function setDictionaryValue(book, row, key, entry, keepCompanion = false) {
+    const index = tokenIndex(book, key);
+    if (index < 0) throw new Error(`Не найден столбец ${key}`);
+    row.values[index] = String(entry.selector || entry.display || '');
+    const idIndex = companionIndex(book, key);
+    if (idIndex >= 0 && !keepCompanion) {
+      const raw = String(entry.id || '');
+      row.values[idIndex] = String(key).startsWith('function:') && entry.roleTypeId !== '' && entry.roleTypeId !== null && entry.roleTypeId !== undefined
+        ? `${raw}|${entry.roleTypeId}` : raw;
+    }
+    return row;
+  }
+
+  function mutableCriterionColumns(book, catalog, minimum = 2) {
+    return (book.schemaTokens || []).map((key, index) => ({ key, index, entries: String(key || '').startsWith('criterion:') ? authoritativeEntries(catalog, key) : [] }))
+      .filter(item => item.entries.length >= minimum);
+  }
+
+  function buildWritableFieldInventory(book, structure, currentCatalog) {
+    const criterionById = new Map();
+    for (const definition of structure?.conditions || []) {
+      const id = definition?.criterionRowId || definition?.id || definition?.rowId || definition?.criterionId;
+      if (id !== undefined && id !== null && String(id).trim()) criterionById.set(canon(id), definition);
+    }
+    const functionById = new Map();
+    for (const definition of structure?.functions || []) {
+      const id = definition?.id || definition?.functionId || definition?.rowId;
+      if (id !== undefined && id !== null && String(id).trim()) functionById.set(canon(id), definition);
+    }
+    const strategyForKind = kind => ({
+      Function: 'dictionary', ReferenceGuid: 'dictionary', ReferenceInt: 'dictionary', Boolean: 'boolean',
+      Int: 'integer', Decimal: 'decimal', Date: 'date', DateTime: 'datetime', String: 'string',
+    })[kind] || null;
+    const inventory = [];
+    for (let index = 0; index < (book?.schemaTokens || []).length; index += 1) {
+      const token = String(book.schemaTokens[index] || '');
+      if (!/^(criterion|function):/.test(token)) continue;
+      const [scope, ...tail] = token.split(':');
+      const id = tail.join(':');
+      const definition = scope === 'criterion' ? criterionById.get(canon(id)) : functionById.get(canon(id));
+      if (!definition) continue;
+      const kind = scope === 'function' ? 'Function' : E.operandKind({ kind: 'criterion', ...definition });
+      const strategy = strategyForKind(kind);
+      if (!strategy) continue;
+      inventory.push({
+        token,
+        index,
+        label: String(scope === 'function'
+          ? (definition.name || definition.functionName || definition.typeName || token)
+          : (definition.criterionName || definition.name || token)),
+        kind,
+        strategy,
+        definition,
+        entries: strategy === 'dictionary' ? authoritativeEntries(currentCatalog, token) : [],
+      });
+    }
+    return inventory;
+  }
+
+  function parseSimpleNumber(text) {
+    const value = Number(String(text ?? '').trim().replace(',', '.'));
+    return Number.isFinite(value) ? value : null;
+  }
+
+  function splitSimpleRange(text) {
+    const match = String(text ?? '').trim().match(/^(.+?)\s+(?:-|–|—|\.\.|до)\s+(.+)$/i);
+    return match ? [match[1].trim(), match[2].trim()] : null;
+  }
+
+  function formatCandidateNumber(value, integer, comma) {
+    const rendered = integer ? String(Math.trunc(value)) : String(Math.round(value * 1000) / 1000);
+    return comma ? rendered.replace('.', ',') : rendered;
+  }
+
+  function parseUatDate(text) {
+    const raw = String(text ?? '').trim();
+    let match = raw.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (match) {
+      const date = new Date(Date.UTC(Number(match[3]), Number(match[2]) - 1, Number(match[1]), Number(match[4] || 0), Number(match[5] || 0), Number(match[6] || 0)));
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+    match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (!match) return null;
+    const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4] || 0), Number(match[5] || 0), Number(match[6] || 0)));
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function formatUatDate(date, withTime) {
+    const pad = value => String(value).padStart(2, '0');
+    const day = pad(date.getUTCDate()), month = pad(date.getUTCMonth() + 1), year = date.getUTCFullYear();
+    if (!withTime) return `${day}.${month}.${year}`;
+    return `${day}.${month}.${year} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`;
+  }
+
+  function shiftedDateCandidate(text, withTime, days = 1) {
+    const parsed = parseUatDate(text);
+    if (!parsed) return null;
+    parsed.setUTCDate(parsed.getUTCDate() + days);
+    return formatUatDate(parsed, withTime);
+  }
+
+  function fieldCandidateValues(item, currentValue) {
+    const currentText = String(currentValue ?? '').trim();
+    if (!item) return [];
+    if (item.strategy === 'dictionary') {
+      return [...(item.entries || [])]
+        .sort((a, b) => String(a.selector || a.display || a.id || '').localeCompare(String(b.selector || b.display || b.id || ''), 'ru'))
+        .filter(entry => canon(entry.selector || entry.display || '') !== canon(currentText));
+    }
+    if (item.strategy === 'boolean') {
+      const current = canon(currentText);
+      if (['да', 'true', '1'].includes(current)) return ['Нет'];
+      if (['нет', 'false', '0'].includes(current)) return ['Да'];
+      return ['Да', 'Нет'];
+    }
+    if (item.strategy === 'integer' || item.strategy === 'decimal') {
+      const integer = item.strategy === 'integer';
+      const comma = currentText.includes(',');
+      const range = splitSimpleRange(currentText);
+      if (range) {
+        const from = parseSimpleNumber(range[0]), to = parseSimpleNumber(range[1]);
+        if (from !== null && to !== null) {
+          return [`${formatCandidateNumber(from + 1, integer, comma)} – ${formatCandidateNumber(to + 1, integer, comma)}`];
+        }
+      }
+      const current = parseSimpleNumber(currentText);
+      if (current === null) return integer ? ['1', '2'] : ['1,5', '2,5'];
+      return [formatCandidateNumber(current + 1, integer, comma), formatCandidateNumber(current - 1, integer, comma)]
+        .filter(value => canon(value) !== canon(currentText));
+    }
+    if (item.strategy === 'date' || item.strategy === 'datetime') {
+      const withTime = item.strategy === 'datetime';
+      const range = splitSimpleRange(currentText);
+      if (range) {
+        const from = shiftedDateCandidate(range[0], withTime, 1), to = shiftedDateCandidate(range[1], withTime, 1);
+        if (from && to) return [`${from} – ${to}`];
+      }
+      const shifted = shiftedDateCandidate(currentText, withTime, 1);
+      const fallbacks = withTime ? ['01.01.2030 12:00', '02.01.2030 12:00'] : ['01.01.2030', '02.01.2030'];
+      return [shifted, ...fallbacks].filter((value, index, array) => value && canon(value) !== canon(currentText) && array.indexOf(value) === index);
+    }
+    if (item.strategy === 'string') {
+      const base = currentText ? currentText.slice(0, 70) : 'TMS UAT';
+      return [`${base} · UAT`, `${base} · UAT 2`].filter(value => canon(value) !== canon(currentText));
+    }
+    return [];
+  }
+
+  function setFieldCandidate(book, row, item, candidate) {
+    if (item.strategy === 'dictionary') return setDictionaryValue(book, row, item.token, candidate);
+    row.values[item.index] = String(candidate ?? '');
+    const idIndex = companionIndex(book, item.token);
+    if (idIndex >= 0) row.values[idIndex] = '';
+    return row;
+  }
+
+  function canonicalFieldValues(values) {
+    const list = Array.isArray(values) ? values : (values === null || values === undefined || values === '' ? [] : [values]);
+    return list.map(value => canon(value)).filter(Boolean).sort();
+  }
+
+  function candidateEvidenceValue(candidate) {
+    if (candidate && typeof candidate === 'object') return {
+      id: candidate.id ?? null,
+      roleTypeId: candidate.roleTypeId ?? null,
+      display: String(candidate.selector || candidate.display || ''),
+    };
+    return String(candidate ?? '');
+  }
+
+  function shuffled(array, rng) {
+    const out = [...array];
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+  }
+
+  function compactPlan(plan) {
+    return {
+      counts: plan?.counts || null,
+      warnings: plan?.warnings || [],
+      issues: plan?.issues || [],
+      skippedRows: (plan?.skippedRows || []).slice(0, 30),
+      skippedFields: (plan?.skippedFields || []).slice(0, 30),
+      safety: plan?.safety ? { blocked: Boolean(plan.safety.blocked), blockedReasons: plan.safety.blockedReasons || [] } : null,
+    };
+  }
+
+  function applySafety(plan, bridge) {
+    plan.safety = E.evaluatePlanSafety(plan, bridge);
+    plan.matrixInfo = plan.safety?.matrixInfo || bridge.matrixInfo();
+    return plan;
+  }
+
+  async function workbookFromSnapshot(structure, snapshot, bridge, catalog) {
+    const bytes = await E.createRoundtripXlsxBytes(structure, snapshot, bridge.matrixInfo(), catalog, { includeActions: true });
+    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const book = await E.readXlsxArrayBuffer(buffer, 'TESSA_UAT_CURRENT.xlsx', {
+      skipSheetNames: ['Словари'],
+      dictionaryCatalog: catalog,
+      selectiveInflate: true,
+    });
+    return { bytes, book };
+  }
+
+  function chooseSourceRow(book, rng) {
+    const candidates = (book.rows || []).filter(row => rowHasRole(book, row));
+    if (!candidates.length) throw new Error('В матрице нет строки с исполнителем, которую можно безопасно использовать как шаблон временной строки.');
+    return candidates[Math.floor(rng() * candidates.length)];
+  }
+
+  function findUniqueAddCandidate(book, structure, snapshot, bridge, catalog, rng, options = {}) {
+    const source = options.source || chooseSourceRow(book, rng);
+    const columns = shuffled(mutableCriterionColumns(book, catalog, 2), rng);
+    if (!columns.length) throw new Error('Не найден справочник критерия минимум с двумя актуальными значениями.');
+    const startRow = maxExcelRow(book) + Math.max(1, Number(options.gap || 1));
+    for (const column of columns) {
+      const current = canon(source.values?.[column.index] || '');
+      const entries = shuffled(column.entries.filter(entry => canon(entry.selector || entry.display) !== current), rng).slice(0, 40);
+      for (const entry of entries) {
+        const candidateBook = cloneWorkbook(book);
+        const candidate = { ...source, excelRow: startRow, values: [...source.values] };
+        clearSystemIdentity(candidateBook, candidate, 'add');
+        setDictionaryValue(candidateBook, candidate, column.key, entry);
+        candidateBook.rows.push(candidate);
+        const plan = E.buildPlan(candidateBook, structure, snapshot, bridge.matrixInfo());
+        if ((plan.counts?.add || 0) === 1 && (plan.counts?.skip || 0) === 0 && (plan.counts?.update || 0) === 0 && (plan.counts?.delete || 0) === 0) {
+          return { book: candidateBook, row: candidate, column, entry, plan };
+        }
+      }
+    }
+    throw new Error('Не удалось подобрать уникальную временную строку из актуальных справочников без конфликтов.');
+  }
+
+  function findRowByCard(book, rowCardId) {
+    const cardIndex = tokenIndex(book, 'system:rowCardId');
+    if (cardIndex < 0) return null;
+    return (book.rows || []).find(row => canon(row.values?.[cardIndex]) === canon(rowCardId)) || null;
+  }
+
+  async function runFullUat(options = {}) {
+    const startedAt = now();
+    const seed = Number.isFinite(Number(options.seed)) ? Number(options.seed) >>> 0 : hashSeed(`${Date.now()}|${location?.href || ''}`);
+    const rng = seededRandom(seed);
+    const report = {
+      format: 'TESSA_FULL_UAT_V1', studioVersion: '1.14.0', runnerVersion: VERSION, seed, startedAt,
+      status: 'INCOMPLETE', matrix: null, checks: [], timeline: [], cleanup: [], cleanupLedger: null, restoreProof: null, dictionaryAudit: null, functionalActionAudit: null,
+      rolePresentationAudit: null, recordKeepingAudit: null, fieldMutationAudit: null, liveConfirmation: options.liveConfirmation === 'full-uat-confirmed' ? 'full-uat-confirmed' : null, writesAttempted: 0, writesCompleted: 0,
+    };
+    const packageEntries = [];
+    let baseline = null, structure = null, catalog = null, bridge = null, baselineSignature = null;
+    let cleanupLedgerController = null;
+    let cleanupUnsafe = false;
+    const timeline = (stage, detail, extra = null) => report.timeline.push({ at: now(), stage, detail, ...(extra ? { extra } : {}) });
+    const addCheck = (id, title, status, detail, extra = {}) => {
+      const item = { id, title, status, detail, ...extra }; report.checks.push(item); timeline(id, `${status}: ${detail}`); return item;
+    };
+
+    const registerCleanupObligation = input => {
+      if (!cleanupLedgerController) throw new Error('Cleanup ledger ещё не инициализирован baseline-сигнатурой.');
+      const item = cleanupLedgerController.register(input);
+      report.cleanupLedger = cleanupLedgerController.snapshot();
+      timeline('cleanup-register', `${item.kind || 'unknown'} ${item.id}`, { scenarioId: item.scenarioId || null, rowCardId: item.rowCardId || null, token: item.token || null });
+      return item;
+    };
+    const resolveCleanupObligation = (id, result = {}) => {
+      if (!cleanupLedgerController || !id) return null;
+      const item = cleanupLedgerController.resolve(id, result);
+      report.cleanupLedger = cleanupLedgerController.snapshot();
+      timeline('cleanup-resolve', `${item.id}: ${item.status}`, { scenarioId: item.scenarioId || null, rowCardId: item.rowCardId || null, token: item.token || null });
+      return item;
+    };
+    const pendingCleanupForRow = rowCardId => cleanupLedgerController
+      ? cleanupLedgerController.snapshot().obligations.filter(item => item.status === 'pending' && canon(item.rowCardId) === canon(rowCardId))
+      : [];
+    const resolveCleanupForAbsentRow = (rowCardId, status = 'already-absent', extra = {}) => {
+      for (const obligation of pendingCleanupForRow(rowCardId)) {
+        resolveCleanupObligation(obligation.id, { status, resolvedAt: now(), ...extra });
+      }
+    };
+    const registerFieldMutationObligations = (plan, scenarioId, rowCardId) => {
+      const executable = (plan?.actions || []).filter(action => action.type === 'update' && canon(action.currentRow?.rowCardId) === canon(rowCardId));
+      const ids = [];
+      for (const action of executable) {
+        for (const change of action.changes || []) {
+          const obligation = registerCleanupObligation({
+            kind: 'field-mutation',
+            scenarioId,
+            rowCardId,
+            token: String(change.key || ''),
+            before: E.safePlain(change.before || [], { maxDepth: 4, maxKeys: 50, maxArray: 50 }),
+            candidate: E.safePlain(change.after || [], { maxDepth: 4, maxKeys: 50, maxArray: 50 }),
+            restoreStrategy: 'restore-or-delete-temporary-row',
+            createdAt: now(),
+          });
+          ids.push(obligation.id);
+        }
+      }
+      return ids;
+    };
+    const runCheck = async (id, title, fn, required = true) => {
+      try {
+        const value = await fn(); const status = value?.status || 'PASS'; const detail = value?.detail || 'Проверка пройдена.';
+        return addCheck(id, title, status, detail, { required, ...(value?.data !== undefined ? { data: value.data } : {}) });
+      } catch (error) {
+        return addCheck(id, title, 'FAIL', String(error?.message || error), { required, errorClass: error?.name || 'Error' });
+      }
+    };
+    async function freshSnapshot() {
+      const freshBridge = await E.TessaBridge.create();
+      if (canon(freshBridge.matrixInfo().matrixId) !== canon(report.matrix?.matrixId)) throw new Error('Во время UAT открыта другая матрица.');
+      return { bridge: freshBridge, snapshot: await freshBridge.loadSnapshot(structure) };
+    }
+    async function applySingle(plan, label) {
+      applySafety(plan, bridge);
+      if (plan.safety?.blocked) throw new Error(plan.safety.blockedReasons?.join(' ') || `${label}: Apply заблокирован.`);
+      const executable = (plan.actions || []).filter(action => action.type !== 'noop');
+      if (executable.length !== 1) throw new Error(`${label}: ожидалась 1 операция, получено ${executable.length}.`);
+      report.writesAttempted += 1;
+      const result = await E.applyPlan(plan);
+      if (!result) throw new Error(`${label}: применение отменено.`);
+      report.writesCompleted += 1;
+      return result;
+    }
+    async function cleanupCreatedRow(rowCardId, scenarioId) {
+      try {
+        const current = await freshSnapshot();
+        const target = current.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
+        if (!target) { report.cleanup.push({ scenarioId, rowCardId, status: 'already-absent', at: now() }); resolveCleanupForAbsentRow(rowCardId, 'already-absent', { resolvedBy: scenarioId }); return true; }
+        const currentCatalog = await current.bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true });
+        const { book } = await workbookFromSnapshot(structure, current.snapshot, current.bridge, currentCatalog);
+        const cardIndex = tokenIndex(book, 'system:rowCardId');
+        book.rows = book.rows.filter(row => canon(row.values?.[cardIndex]) !== canon(rowCardId));
+        let plan = E.buildPlan(book, structure, current.snapshot, current.bridge.matrixInfo()); plan = applySafety(plan, current.bridge);
+        const deletes = plan.actions.filter(action => action.type === 'delete' && canon(action.currentRow?.rowCardId) === canon(rowCardId));
+        if (deletes.length !== 1 || plan.actions.filter(action => action.type !== 'noop').length !== 1) throw new Error(`Cleanup не построил единственный DELETE временной строки: ${JSON.stringify(plan.counts)}.`);
+        bridge = current.bridge; const result = await applySingle(plan, `${scenarioId}: cleanup DELETE`);
+        const verified = await freshSnapshot();
+        if (verified.snapshot.rows.some(row => canon(row.rowCardId) === canon(rowCardId))) throw new Error('Временная строка осталась после DELETE/read-back.');
+        report.cleanup.push({ scenarioId, rowCardId, status: 'verified', at: now(), result: E.safePlain(result, { maxDepth: 5, maxKeys: 200, maxArray: 100 }) });
+        resolveCleanupForAbsentRow(rowCardId, 'verified', { resolvedBy: scenarioId });
+        return true;
+      } catch (error) {
+        cleanupUnsafe = true; report.cleanup.push({ scenarioId, rowCardId, status: 'FAILED', at: now(), error: String(error?.message || error) }); return false;
+      }
+    }
+
+    async function recoverCleanupObligations() {
+      if (!cleanupLedgerController || !baselineSignature || !structure || !report.matrix?.matrixId) return;
+      const pendingRows = cleanupLedgerController.snapshot().obligations
+        .filter(item => item.status === 'pending' && item.kind === 'temporary-row' && String(item.rowCardId || '').trim())
+        .reverse();
+      for (const obligation of pendingRows) {
+        const cleaned = await cleanupCreatedRow(obligation.rowCardId, `${obligation.scenarioId || 'uat'}: global-finally`);
+        if (!cleaned) timeline('cleanup-retry-failed', obligation.id, { rowCardId: obligation.rowCardId });
+      }
+      const state = await freshSnapshot();
+      for (const obligation of cleanupLedgerController.snapshot().obligations.filter(item => item.status === 'pending' && item.kind === 'field-mutation')) {
+        const exists = state.snapshot.rows.some(row => canon(row.rowCardId) === canon(obligation.rowCardId));
+        if (!exists) resolveCleanupObligation(obligation.id, { status: 'already-absent', resolvedAt: now(), resolvedBy: 'global-finally-row-absence' });
+      }
+      report.cleanupLedger = cleanupLedgerController.snapshot();
+    }
+    async function createTemporaryRow(scenarioId) {
+      const current = await freshSnapshot(); bridge = current.bridge;
+      const currentCatalog = await bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true });
+      const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog);
+      const candidate = findUniqueAddCandidate(book, structure, current.snapshot, bridge, currentCatalog, rng, { gap: 3 });
+      let plan = applySafety(candidate.plan, bridge); const beforeIds = new Set(current.snapshot.rows.map(row => canon(row.rowCardId)));
+      const rowObligation = registerCleanupObligation({
+        kind: 'temporary-row',
+        scenarioId,
+        rowCardId: null,
+        beforeRowIds: [...beforeIds],
+        excelRow: candidate.row?.excelRow || null,
+        restoreStrategy: 'delete-temporary-row',
+        createdAt: now(),
+      });
+      let result;
+      try {
+        result = await applySingle(plan, `${scenarioId}: ADD`);
+      } catch (error) {
+        try {
+          const verification = await freshSnapshot();
+          const extras = verification.snapshot.rows.filter(row => !beforeIds.has(canon(row.rowCardId)));
+          if (extras.length === 0) resolveCleanupObligation(rowObligation.id, { status: 'already-absent', resolvedAt: now(), resolvedBy: 'add-failed-fresh-read' });
+          else if (extras.length === 1) resolveCleanupObligation(rowObligation.id, { status: 'pending', rowCardId: extras[0].rowCardId, discoveredAfterApplyError: true });
+        } catch (_) { /* leave pending: global proof must become UNSAFE rather than guess */ }
+        throw error;
+      }
+      const after = await freshSnapshot();
+      const created = after.snapshot.rows.filter(row => !beforeIds.has(canon(row.rowCardId)));
+      if (created.length !== 1) {
+        resolveCleanupObligation(rowObligation.id, { status: 'pending', discoveredRowIds: created.map(row => row.rowCardId) });
+        throw new Error(`После ADD ожидалась 1 новая строка, найдено ${created.length}.`);
+      }
+      resolveCleanupObligation(rowObligation.id, { status: 'pending', rowCardId: created[0].rowCardId, identifiedAt: now() });
+      return { created: created[0], after: after.snapshot, bridge: after.bridge, catalog: currentCatalog, candidate, result, cleanupObligationId: rowObligation.id };
+    }
+
+    try {
+      timeline('start', `Full UAT seed=${seed}`);
+      bridge = await E.TessaBridge.create(); E.assertWritableMatrixDraft(bridge); E.assertNativeEditMode();
+      structure = await bridge.requestStructure(bridge.templateId()); baseline = await bridge.loadSnapshot(structure); baselineSignature = snapshotSignature(baseline);
+      cleanupLedgerController = createCleanupLedger(baselineSignature); report.cleanupLedger = cleanupLedgerController.snapshot();
+      catalog = await bridge.loadDictionaryCatalog(structure, baseline, { forceRefresh: true, transient: true });
+      const info = bridge.matrixInfo(); report.matrix = { matrixId: info.matrixId, templateId: info.TemplateID, name: info.TemplateName, state: info.StateName, rows: baseline.rows.length };
+      const base = await workbookFromSnapshot(structure, baseline, bridge, catalog); packageEntries.push(['matrix-current.xlsx', base.bytes]);
+
+      await runCheck('action-download-current', 'Действие: скачать текущий Excel', async () => {
+        if (!(base.bytes instanceof Uint8Array) || base.bytes.length < 4 || base.bytes[0] !== 0x50 || base.bytes[1] !== 0x4b) throw new Error('Текущая выгрузка не является XLSX/ZIP артефактом.');
+        return { detail: `Сформирован matrix-current.xlsx (${base.bytes.length} байт).`, data: { outcome: 'xlsx-artifact', artifact: 'matrix-current.xlsx', bytes: base.bytes.length } };
+      });
+      await runCheck('action-value-picker', 'Действие: собрать значения', async () => {
+        const columns = E.pickerColumns(structure, catalog);
+        const column = columns.find(item => item?.catalog?.entries?.length);
+        if (!column) throw new Error('В текущем шаблоне нет ни одного выбираемого справочного значения для picker.');
+        const entry = column.catalog.entries[0];
+        const text = E.pickerSelectionText([entry]);
+        if (!String(text || '').trim()) throw new Error('Picker не сформировал значение для Excel.');
+        return { detail: `Picker сформировал значение для «${column.label || column.key}».`, data: { outcome: 'picker-selection', column: column.key, value: text } };
+      });
+      await runCheck('action-file-ingest', 'Действие: загрузить изменённый Excel', async () => {
+        const buffer = base.bytes.buffer.slice(base.bytes.byteOffset, base.bytes.byteOffset + base.bytes.byteLength);
+        const ingested = await E.readXlsxArrayBuffer(buffer, 'TESSA_UAT_INGEST.xlsx');
+        if (!ingested || (ingested.rows || []).length !== (base.book.rows || []).length) throw new Error('Повторный ingest изменил число строк roundtrip-книги.');
+        return { detail: `Excel прочитан обратно: ${(ingested.rows || []).length} строк.`, data: { outcome: 'ingest-workbook', rows: (ingested.rows || []).length } };
+      });
+      await runCheck('action-preview', 'Действие: Preview изменений', async () => {
+        const previewPlan = E.buildPlan(base.book, structure, baseline, info);
+        if (!previewPlan?.counts) throw new Error('Preview не построил план.');
+        if (previewPlan.counts.skip || previewPlan.counts.add || previewPlan.counts.update || previewPlan.counts.delete) throw new Error(`Неизменённый roundtrip дал ложные изменения: ${JSON.stringify(previewPlan.counts)}`);
+        return { detail: 'Production planner построил нулевой Preview для неизменённой книги.', data: { outcome: 'preview-plan', counts: previewPlan.counts } };
+      });
+      await runCheck('action-changes-export', 'Действие: скачать изменения в Excel', async () => {
+        const candidate = findUniqueAddCandidate(base.book, structure, baseline, bridge, catalog, rng, { gap: 5 });
+        const bytes = await E.createChangesReportXlsxBytes(candidate.plan, structure);
+        if (!(bytes instanceof Uint8Array) || bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error('Отчёт изменений не сформировал XLSX/ZIP артефакт.');
+        packageEntries.push(['changes-preview.xlsx', bytes]);
+        return { detail: `Сформирован changes-preview.xlsx (${bytes.length} байт).`, data: { outcome: 'changes-xlsx-artifact', artifact: 'changes-preview.xlsx', bytes: bytes.length } };
+      });
+
+      await runCheck('runtime', 'Контекст и доступ на запись', async () => ({ detail: `Черновик «${info.TemplateName}», строк: ${baseline.rows.length}.` }));
+      await runCheck('roundtrip', 'Выгрузка → обратное чтение', async () => {
+        const plan = E.buildPlan(base.book, structure, baseline, info);
+        if (plan.counts.skip || plan.counts.add || plan.counts.update || plan.counts.delete) throw new Error(`Roundtrip дал изменения: ${JSON.stringify(plan.counts)}`);
+        return { detail: `${baseline.rows.length} строк вернулись без изменений.`, data: compactPlan(plan) };
+      });
+      await runCheck('row-physical-delete', 'Физическое удаление строки Excel', async () => {
+        if (!base.book.rows.length) return { status: 'NOT_RUN', detail: 'В матрице нет строк.' };
+        const test = cloneWorkbook(base.book); const index = Math.floor(rng() * test.rows.length); const target = test.rows[index]; const identity = rowIdentity(test, target); test.rows.splice(index, 1);
+        const plan = E.buildPlan(test, structure, baseline, info);
+        if (!plan.actions.find(action => action.type === 'delete' && canon(action.currentRow?.rowCardId) === canon(identity.rowCardId))) throw new Error(`DELETE не распознан: ${JSON.stringify(compactPlan(plan))}`);
+        return { detail: `Строка ${target.excelRow} распознана как DELETE.` };
+      });
+      await runCheck('row-clear-visible', 'Очистка всех рабочих ячеек строки', async () => {
+        if (!base.book.rows.length) return { status: 'NOT_RUN', detail: 'В матрице нет строк.' };
+        const test = cloneWorkbook(base.book); const row = test.rows[Math.floor(rng() * test.rows.length)]; const identity = rowIdentity(test, row); for (const index of directTokenIndexes(test)) row.values[index] = '';
+        const plan = E.buildPlan(test, structure, baseline, info);
+        if (!plan.actions.some(action => action.type === 'delete' && canon(action.currentRow?.rowCardId) === canon(identity.rowCardId))) throw new Error(`Очистка не стала DELETE: ${JSON.stringify(compactPlan(plan))}`);
+        return { detail: `Очистка строки ${row.excelRow} распознана как DELETE.` };
+      });
+      await runCheck('row-clear-all', 'Полная очистка строки вместе со скрытыми ID', async () => {
+        if (!base.book.rows.length) return { status: 'NOT_RUN', detail: 'В матрице нет строк.' };
+        const test = cloneWorkbook(base.book); const index = Math.floor(rng() * test.rows.length); const target = test.rows[index]; const identity = rowIdentity(test, target); target.values.fill('');
+        const plan = E.buildPlan(test, structure, baseline, info);
+        if (!plan.actions.some(action => action.type === 'delete' && canon(action.currentRow?.rowCardId) === canon(identity.rowCardId))) throw new Error(`Полная очистка не стала DELETE: ${JSON.stringify(compactPlan(plan))}`);
+        return { detail: `Строка ${target.excelRow} удаляется даже после очистки скрытых ID.` };
+      });
+      await runCheck('row-gap-add', 'Новая строка после пустого промежутка', async () => {
+        const candidate = findUniqueAddCandidate(base.book, structure, baseline, bridge, catalog, rng, { gap: 7 });
+        if (candidate.plan.counts.add !== 1 || candidate.plan.counts.skip) throw new Error(JSON.stringify(compactPlan(candidate.plan)));
+        return { detail: `Excel ${candidate.row.excelRow}: распознано ADD после пустого промежутка.` };
+      });
+      await runCheck('row-copied-identities', 'Изменённые копии строки с одинаковыми скрытыми ID', async () => {
+        if (base.book.rows.length < 3) return { status: 'NOT_RUN', detail: 'Нужно минимум 3 исходные строки.' };
+        const columns = mutableCriterionColumns(base.book, catalog, 5); if (!columns.length) return { status: 'NOT_RUN', detail: 'Нет критерия минимум с 5 значениями.' };
+        const column = shuffled(columns, rng)[0], source = chooseSourceRow(base.book, rng), sourceIdentity = rowIdentity(base.book, source);
+        const remove = base.book.rows.filter(row => canon(rowIdentity(base.book, row).rowCardId) !== canon(sourceIdentity.rowCardId)).slice(0, 2);
+        const removedIds = new Set(remove.map(row => canon(rowIdentity(base.book, row).rowCardId))); const test = cloneWorkbook(base.book);
+        test.rows = test.rows.filter(row => !removedIds.has(canon(rowIdentity(test, row).rowCardId)) && canon(rowIdentity(test, row).rowCardId) !== canon(sourceIdentity.rowCardId));
+        const entries = shuffled(column.entries.filter(entry => canon(entry.selector || entry.display) !== canon(source.values[column.index])), rng).slice(0, 4); const start = maxExcelRow(base.book) + 1;
+        entries.forEach((entry, index) => { const copy = { ...source, excelRow: start + index * 2, values: [...source.values] }; setDictionaryValue(test, copy, column.key, entry); test.rows.push(copy); });
+        const plan = E.buildPlan(test, structure, baseline, info);
+        if (plan.counts.skip !== 0 || plan.counts.add !== 3 || plan.counts.update !== 1 || plan.counts.delete !== 2) throw new Error(`Ожидалось UPDATE 1 / ADD 3 / DELETE 2 / SKIP 0; получено ${JSON.stringify(plan.counts)}. ${JSON.stringify(plan.skippedRows || [])}`);
+        return { detail: 'Одна копия стала UPDATE, остальные три — ADD; два отсутствующих оригинала — DELETE.', data: compactPlan(plan) };
+      });
+      await runCheck('dictionary-stale-companion', 'Изменение текста при старом скрытом ID', async () => {
+        const columns = mutableCriterionColumns(base.book, catalog, 2); if (!columns.length) return { status: 'NOT_RUN', detail: 'Нет подходящего справочника.' };
+        const test = cloneWorkbook(base.book), row = chooseSourceRow(test, rng), column = shuffled(columns, rng)[0];
+        const oldHidden = companionIndex(test, column.key) >= 0 ? row.values[companionIndex(test, column.key)] : '';
+        const entry = shuffled(column.entries.filter(item => canon(item.selector || item.display) !== canon(row.values[column.index])), rng)[0]; setDictionaryValue(test, row, column.key, entry, true);
+        const plan = E.buildPlan(test, structure, baseline, info); if (plan.counts.skip) throw new Error(JSON.stringify(plan.skippedRows));
+        const update = plan.actions.find(action => action.type === 'update'); if (!update) throw new Error(`Изменение не распознано как UPDATE: ${JSON.stringify(plan.counts)}`);
+        const resolved = update.excelRow?.ids?.[column.key]?.[0] || ''; if (!resolved || canon(resolved) === canon(oldHidden)) throw new Error('Старый companion ID не был пересопоставлен по новому видимому значению.');
+        return { detail: 'Видимое значение победило устаревший companion ID; ID пересобран из справочника.' };
+      });
+      await runCheck('dictionary-invalid', 'Некорректное значение справочника', async () => {
+        const columns = mutableCriterionColumns(base.book, catalog, 2); if (!columns.length) return { status: 'NOT_RUN', detail: 'Нет подходящего справочника.' };
+        const test = cloneWorkbook(base.book), row = chooseSourceRow(test, rng), column = shuffled(columns, rng)[0]; row.values[column.index] = `__UAT_INVALID_${seed}__`; const idIndex = companionIndex(test, column.key); if (idIndex >= 0) row.values[idIndex] = '';
+        const plan = E.buildPlan(test, structure, baseline, info); if (!plan.counts.skip && !(plan.issues || []).length) throw new Error('Некорректное значение не было отклонено.');
+        return { detail: 'Неизвестное значение остановлено до Store.', data: compactPlan(plan) };
+      });
+      await runCheck('dictionary-refresh', 'Обновление справочников без потери строк', async () => {
+        const refreshedBytes = await E.refreshWorkbookDictionaries(base.book, structure, catalog);
+        E.releaseWorkbookArchive(base.book);
+        const refreshed = await E.readXlsxArrayBuffer(
+          refreshedBytes.buffer.slice(refreshedBytes.byteOffset, refreshedBytes.byteOffset + refreshedBytes.byteLength),
+          'TESSA_UAT_REFRESHED.xlsx',
+          { skipSheetNames: ['Словари'], dictionaryCatalog: catalog, retainArchive: false, selectiveInflate: true },
+        );
+        const plan = E.buildPlan(refreshed, structure, baseline, info); if (plan.counts.skip || plan.counts.add || plan.counts.update || plan.counts.delete) throw new Error(`После refresh появились изменения: ${JSON.stringify(plan.counts)}`);
+        packageEntries.push(['dictionary-refreshed.xlsx', refreshedBytes]); return { detail: 'Справочники обновились; матрица и скрытые identity сохранились.' };
+      });
+      await runCheck('merge-current', 'Объединение с актуальной TESSA', async () => {
+        const merged = E.mergeWorkbookIntoCurrentSnapshot(base.book, structure, baseline); if ((merged.snapshot?.rows || []).length !== baseline.rows.length) throw new Error(`После merge строк ${merged.snapshot?.rows?.length}, ожидалось ${baseline.rows.length}.`);
+        const mergedBytes = await E.createRoundtripXlsxBytes(structure, merged.snapshot, info, catalog, { baselineRows: baseline.rows, includeActions: true, schemaChanges: merged.schemaChanges, customColumns: merged.customColumns });
+        const parsed = await E.readXlsxArrayBuffer(
+          mergedBytes.buffer.slice(mergedBytes.byteOffset, mergedBytes.byteOffset + mergedBytes.byteLength),
+          'TESSA_UAT_MERGED.xlsx',
+          { skipSheetNames: ['Словари'], dictionaryCatalog: catalog, retainArchive: false, selectiveInflate: true },
+        ); const plan = E.buildPlan(parsed, structure, baseline, info);
+        if (plan.counts.skip || plan.counts.add || plan.counts.update || plan.counts.delete) throw new Error(`Merge дал ложные изменения: ${JSON.stringify(plan.counts)}`);
+        packageEntries.push(['merged-current.xlsx', mergedBytes]); return { detail: 'Объединение roundtrip с неизменившейся TESSA идемпотентно.' };
+      });
+
+      const dictionaryRefreshEvidence = report.checks.find(check => check.id === 'dictionary-refresh');
+      addCheck('action-dictionary-refresh', 'Действие: обновить справочники', dictionaryRefreshEvidence?.status === 'PASS' ? 'PASS' : 'FAIL', dictionaryRefreshEvidence?.detail || 'Нет доказательства обновления справочников.', { required: true, data: { outcome: 'refreshed-workbook', artifact: 'dictionary-refreshed.xlsx', sourceCheck: 'dictionary-refresh' } });
+      const mergeEvidence = report.checks.find(check => check.id === 'merge-current');
+      addCheck('action-merge-current', 'Действие: объединить с актуальной TESSA', mergeEvidence?.status === 'PASS' ? 'PASS' : 'FAIL', mergeEvidence?.detail || 'Нет доказательства merge.', { required: true, data: { outcome: 'merged-workbook', artifact: 'merged-current.xlsx', sourceCheck: 'merge-current' } });
+
+      await runCheck('dictionary-audit', 'Связь столбцов со справочниками', async () => {
+        const columns = E.pickerColumns(structure, catalog); const audit = columns.map(column => ({ key: column.key, label: column.label, catalogId: column.catalog?.id || catalog.columnCatalogIds?.[column.key] || null, sourceView: column.catalog?.sourceView || null, entries: column.catalog?.entries?.length || 0 }));
+        const missing = audit.filter(item => !item.catalogId || !item.entries); report.dictionaryAudit = { columns: audit, missing, stats: E.safePlain(catalog.stats || {}, { maxDepth: 4, maxKeys: 200, maxArray: 200 }) };
+        if (missing.length) throw new Error(`Пустые/непривязанные справочники: ${missing.map(item => item.label).join(', ')}`); return { detail: `Проверено ${audit.length} picker-столбцов; пустых привязок нет.` };
+      });
+      await runCheck('record-keeping', 'Фильтр юридических лиц IsRecordKeeping', async () => {
+        const partner = Object.values(catalog.catalogs || {}).filter(item => canon(item.sourceView) === canon('GchPartners')); if (!partner.length) return { status: 'NOT_RUN', detail: 'В шаблоне нет GchPartners.' };
+        const rows = partner.flatMap(item => (item.entries || []).map(entry => ({ catalog: item.label, entry }))); const invalid = rows.filter(({ entry }) => canon(entry.status) !== canon('Текущее значение') && entry.details && !/IsRecordKeeping\s*:\s*true/i.test(entry.details)); const overlays = rows.filter(({ entry }) => canon(entry.status) === canon('Текущее значение') || !entry.details);
+        report.recordKeepingAudit = { catalogs: partner.map(item => ({ id: item.id, label: item.label, entries: item.entries?.length || 0 })), invalid: invalid.slice(0, 20).map(x => x.entry.display), historicalOverlays: overlays.slice(0, 20).map(x => x.entry.display), warnings: catalog.stats?.warnings || [] };
+        if (invalid.length) throw new Error(`В актуальном GchPartners найдено ${invalid.length} записей без IsRecordKeeping=true.`); return { detail: 'Актуальные GchPartners отфильтрованы; historical snapshot-overlay не считаются новыми допустимыми значениями.' };
+      });
+      await runCheck('role-presentation', 'ФИО + должность в picker', async () => {
+        const roleCatalogs = Object.values(catalog.catalogs || {}).filter(item => canon(item.sourceView) === canon('MtxRoles')); const people = roleCatalogs.flatMap(item => item.entries || []).filter(entry => String(entry.roleTypeId) === '1' && /RolePositionName\s*:/i.test(String(entry.details || '')));
+        const sample = shuffled(people, rng).slice(0, 25).map(entry => ({ raw: entry.display, ...E.pickerEntryPresentation(entry) })); if (!sample.length) return { status: 'NOT_RUN', detail: 'TESSA не вернула Personal role с должностью.' };
+        const bad = sample.filter(item => !/\s—\s/.test(item.title || '')); report.rolePresentationAudit = { tested: sample.length, bad: bad.length, sample }; if (bad.length) throw new Error(`${bad.length} персональных ролей показаны без должности.`);
+        return { detail: `${sample.length} случайных сотрудников показаны как «Фамилия И.О. — должность».` };
+      });
+
+
+      let task8PerformanceUat = null;
+      await runCheck('action-performance-uat', 'Действие: Performance UAT', async () => {
+        task8PerformanceUat = await E.runPerformanceUat({ baseRows: 300 });
+        if (task8PerformanceUat?.status !== 'passed') throw new Error(`Performance UAT: ${task8PerformanceUat?.status || 'unknown'}.`);
+        return { detail: `${task8PerformanceUat.scenarios?.length || 0} performance-сценариев пройдено.`, data: { outcome: 'performance-result', status: task8PerformanceUat.status, totalMs: task8PerformanceUat.totalMs } };
+      });
+      await runCheck('action-diagnostics', 'Действие: скачать диагностику', async () => {
+        const diagnosticResult = { report: { format: 'TESSA_STUDIO_DIAGNOSTICS_V1', studioVersion: report.studioVersion, status: 'passed', checks: [], omitted: [] }, entries: [['matrix-current.xlsx', base.bytes]], performanceUat: task8PerformanceUat };
+        const zip = await E.makeStudioDiagnosticPackage(diagnosticResult);
+        if (!(zip instanceof Uint8Array) || zip.length < 4 || zip[0] !== 0x50 || zip[1] !== 0x4b) throw new Error('Диагностика не сформировала ZIP артефакт.');
+        packageEntries.push(['studio-diagnostics.zip', zip]);
+        return { detail: `Сформирован studio-diagnostics.zip (${zip.length} байт).`, data: { outcome: 'diagnostic-artifact', artifact: 'studio-diagnostics.zip', bytes: zip.length } };
+      });
+
+      addCheck('full-uat-confirmed', 'Подтверждение live write-фазы', report.liveConfirmation === 'full-uat-confirmed' ? 'PASS' : 'FAIL', report.liveConfirmation === 'full-uat-confirmed' ? 'Пользователь явно подтвердил реальные операции Full UAT.' : 'Реальные операции Full UAT не подтверждены.', { required: true, data: { confirmation: report.liveConfirmation } });
+      if (report.liveConfirmation !== 'full-uat-confirmed') throw new Error('Full UAT остановлен до write-фазы: требуется явное подтверждение реальных операций.');
+
+      try { await E.startNativeOperationRecorder(); timeline('native-recorder', 'started'); }
+      catch (error) { addCheck('native-recorder', 'Нативная запись write-фазы', 'WARN', String(error?.message || error), { required: false }); }
+
+      await runCheck('write-add-delete', 'Сервер: ADD → read-back → DELETE → восстановление', async () => {
+        const temp = await createTemporaryRow('write-add-delete'), rowCardId = temp.created.rowCardId;
+        try { if (!await cleanupCreatedRow(rowCardId, 'write-add-delete')) throw new Error('Cleanup временной строки не подтверждён.'); const final = await freshSnapshot(); if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) throw new Error('После ADD/DELETE исходная матрица отличается от baseline.'); return { detail: `Временная строка ${rowCardId} добавлена, прочитана и удалена; baseline восстановлен.` }; }
+        catch (error) { await cleanupCreatedRow(rowCardId, 'write-add-delete-finally'); throw error; }
+      });
+      await runCheck('write-update-delete', 'Сервер: ADD → UPDATE → read-back → cleanup', async () => {
+        const temp = await createTemporaryRow('write-update-delete'), rowCardId = temp.created.rowCardId;
+        try {
+          const current = await freshSnapshot(); bridge = current.bridge; const currentCatalog = await bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true }); const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog); const target = findRowByCard(book, rowCardId); if (!target) throw new Error('Временная строка не найдена после ADD.');
+          let updatePlan = null; for (const column of shuffled(mutableCriterionColumns(book, currentCatalog, 3), rng)) { for (const entry of shuffled(column.entries.filter(entry => canon(entry.selector || entry.display) !== canon(target.values[column.index])), rng).slice(0, 20)) { const attempt = cloneWorkbook(book), row = findRowByCard(attempt, rowCardId); setDictionaryValue(attempt, row, column.key, entry); const plan = E.buildPlan(attempt, structure, current.snapshot, bridge.matrixInfo()); const exec = plan.actions.filter(action => action.type !== 'noop'); if (exec.length === 1 && exec[0].type === 'update' && canon(exec[0].currentRow?.rowCardId) === canon(rowCardId) && !plan.counts.skip) { updatePlan = plan; break; } } if (updatePlan) break; }
+          if (!updatePlan) throw new Error('Не удалось подобрать безопасное UPDATE временной строки.'); registerFieldMutationObligations(updatePlan, 'write-update-delete', rowCardId); await applySingle(updatePlan, 'write-update-delete: UPDATE'); const afterUpdate = await freshSnapshot(); if (!afterUpdate.snapshot.rows.some(row => canon(row.rowCardId) === canon(rowCardId))) throw new Error('Временная строка исчезла после UPDATE.'); if (!await cleanupCreatedRow(rowCardId, 'write-update-delete')) throw new Error('Cleanup после UPDATE не подтверждён.'); const final = await freshSnapshot(); if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) throw new Error('После UPDATE cleanup baseline не восстановлен.'); return { detail: 'Временная строка изменена через штатный Store/read-back и полностью удалена.' };
+        } catch (error) { await cleanupCreatedRow(rowCardId, 'write-update-delete-finally'); throw error; }
+      });
+      await runCheck('write-every-field', 'Сервер: каждое доступное поле → read-back → restore', async () => {
+        const temp = await createTemporaryRow('write-every-field'), rowCardId = temp.created.rowCardId;
+        const audit = { rowCardId, inventory: [], evidence: [] };
+        report.fieldMutationAudit = audit;
+        let fatalRestore = null;
+        try {
+          let initial = await freshSnapshot(); bridge = initial.bridge;
+          let currentCatalog = await bridge.loadDictionaryCatalog(structure, initial.snapshot, { forceRefresh: true, transient: true });
+          const initialPackage = await workbookFromSnapshot(structure, initial.snapshot, bridge, currentCatalog);
+          const initialBook = initialPackage.book;
+          const initialTarget = findRowByCard(initialBook, rowCardId);
+          if (!initialTarget) throw new Error('Временная строка не найдена перед проверкой полей.');
+          const inventory = buildWritableFieldInventory(initialBook, structure, currentCatalog);
+          audit.inventory = inventory.map(item => ({ token: item.token, label: item.label, kind: item.kind, strategy: item.strategy, index: item.index }));
+          if (!inventory.length) return { status: 'NOT_RUN', detail: 'В текущей структуре нет доступных для записи criterion/function полей.' };
+
+          for (const inventoryItem of inventory) {
+            let mutationApplied = false;
+            let mutationObligationIds = [];
+            let original = null;
+            let originalSemantic = [];
+            const evidence = {
+              token: inventoryItem.token,
+              label: inventoryItem.label,
+              kind: inventoryItem.kind,
+              before: null,
+              candidate: null,
+              observedAfter: null,
+              restoreResult: 'not-needed',
+              status: 'NOT_RUN',
+            };
+            audit.evidence.push(evidence);
+            try {
+              const current = await freshSnapshot(); bridge = current.bridge;
+              currentCatalog = await bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true });
+              const prepared = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog);
+              const book = prepared.book;
+              const target = findRowByCard(book, rowCardId);
+              const snapshotRow = current.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
+              if (!target || !snapshotRow) throw new Error('Временная строка не найдена перед изолированной мутацией.');
+              const liveItem = buildWritableFieldInventory(book, structure, currentCatalog).find(item => item.token === inventoryItem.token);
+              if (!liveItem) {
+                evidence.status = 'NOT_RUN'; evidence.restoreResult = 'not-needed'; evidence.reason = 'Поле исчезло из актуальной структуры.';
+                continue;
+              }
+              const hiddenIndex = companionIndex(book, liveItem.token);
+              original = { visible: String(target.values?.[liveItem.index] ?? ''), hidden: hiddenIndex >= 0 ? String(target.values?.[hiddenIndex] ?? '') : '' };
+              originalSemantic = canonicalFieldValues(snapshotRow.flat?.[liveItem.token] || []);
+              evidence.before = { visible: original.visible, hidden: original.hidden, semantic: [...originalSemantic] };
+
+              let selected = null;
+              for (const candidate of fieldCandidateValues(liveItem, original.visible).slice(0, 24)) {
+                const attempt = cloneWorkbook(book);
+                const attemptRow = findRowByCard(attempt, rowCardId);
+                setFieldCandidate(attempt, attemptRow, liveItem, candidate);
+                let plan = E.buildPlan(attempt, structure, current.snapshot, bridge.matrixInfo());
+                plan = applySafety(plan, bridge);
+                const executable = (plan.actions || []).filter(action => action.type !== 'noop');
+                const update = executable.length === 1 && executable[0].type === 'update' && canon(executable[0].currentRow?.rowCardId) === canon(rowCardId) ? executable[0] : null;
+                const change = update?.changes?.find(item => item.key === liveItem.token);
+                if (update && change && !plan.counts?.skip && !plan.safety?.blocked) {
+                  selected = { candidate, plan, expectedAfter: canonicalFieldValues(change.after || []) };
+                  break;
+                }
+              }
+              if (!selected) {
+                evidence.status = 'NOT_RUN'; evidence.restoreResult = 'not-needed'; evidence.reason = 'Не найдено безопасное альтернативное значение, дающее единственный UPDATE.';
+                continue;
+              }
+
+              evidence.candidate = candidateEvidenceValue(selected.candidate);
+              mutationObligationIds = registerFieldMutationObligations(selected.plan, `write-every-field:${liveItem.token}`, rowCardId);
+              await applySingle(selected.plan, `write-every-field ${liveItem.token}: UPDATE`);
+              mutationApplied = true;
+              const after = await freshSnapshot(); bridge = after.bridge;
+              const afterRow = after.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
+              if (!afterRow) throw new Error('Временная строка исчезла после мутации поля.');
+              const observedAfter = canonicalFieldValues(afterRow.flat?.[liveItem.token] || []);
+              evidence.observedAfter = [...observedAfter];
+              if (!sameArray(observedAfter, selected.expectedAfter)) {
+                throw new Error(`Read-back ${liveItem.token} не совпал с ожидаемым значением: expected=${JSON.stringify(selected.expectedAfter)} actual=${JSON.stringify(observedAfter)}.`);
+              }
+              evidence.status = 'PASS';
+            } catch (error) {
+              evidence.status = 'FAIL';
+              evidence.error = String(error?.message || error);
+            } finally {
+              if (mutationApplied && original) {
+                try {
+                  const restoreState = await freshSnapshot(); bridge = restoreState.bridge;
+                  const restoreCatalog = await bridge.loadDictionaryCatalog(structure, restoreState.snapshot, { forceRefresh: true, transient: true });
+                  const restorePackage = await workbookFromSnapshot(structure, restoreState.snapshot, bridge, restoreCatalog);
+                  const restoreBook = restorePackage.book;
+                  const restoreRow = findRowByCard(restoreBook, rowCardId);
+                  const restoreItem = buildWritableFieldInventory(restoreBook, structure, restoreCatalog).find(item => item.token === inventoryItem.token);
+                  if (!restoreRow || !restoreItem) throw new Error('Поле или временная строка недоступны для restore.');
+                  restoreRow.values[restoreItem.index] = original.visible;
+                  const restoreHiddenIndex = companionIndex(restoreBook, restoreItem.token);
+                  if (restoreHiddenIndex >= 0) restoreRow.values[restoreHiddenIndex] = original.hidden;
+                  let restorePlan = E.buildPlan(restoreBook, structure, restoreState.snapshot, bridge.matrixInfo());
+                  restorePlan = applySafety(restorePlan, bridge);
+                  const restoreExecutable = (restorePlan.actions || []).filter(action => action.type !== 'noop');
+                  const beforeRestoreRow = restoreState.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
+                  if (!sameArray(canonicalFieldValues(beforeRestoreRow?.flat?.[restoreItem.token] || []), originalSemantic)) {
+                    if (restoreExecutable.length !== 1 || restoreExecutable[0].type !== 'update' || canon(restoreExecutable[0].currentRow?.rowCardId) !== canon(rowCardId) || restorePlan.counts?.skip || restorePlan.safety?.blocked) {
+                      throw new Error(`restore не построил единственный безопасный UPDATE для ${restoreItem.token}.`);
+                    }
+                    await applySingle(restorePlan, `write-every-field ${restoreItem.token}: restore`);
+                  }
+                  const restored = await freshSnapshot(); bridge = restored.bridge;
+                  const restoredRow = restored.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
+                  const restoredSemantic = canonicalFieldValues(restoredRow?.flat?.[restoreItem.token] || []);
+                  if (!sameArray(restoredSemantic, originalSemantic)) throw new Error(`restore read-back ${restoreItem.token} не совпал с исходным значением.`);
+                  evidence.restoreResult = 'verified';
+                  for (const obligationId of mutationObligationIds) resolveCleanupObligation(obligationId, { status: 'verified', resolvedAt: now(), resolvedBy: 'field-readback-restore' });
+                } catch (restoreError) {
+                  cleanupUnsafe = true;
+                  evidence.restoreResult = `FAILED: ${String(restoreError?.message || restoreError)}`;
+                  evidence.status = 'FAIL';
+                  fatalRestore = restoreError;
+                }
+              }
+            }
+            if (fatalRestore) break;
+          }
+
+          const passCount = audit.evidence.filter(item => item.status === 'PASS').length;
+          const failCount = audit.evidence.filter(item => item.status === 'FAIL').length;
+          const notRunCount = audit.evidence.filter(item => item.status === 'NOT_RUN').length;
+          if (fatalRestore) throw new Error(`Не удалось доказать restore одного из полей: ${String(fatalRestore?.message || fatalRestore)}.`);
+          if (failCount) throw new Error(`Каждое поле проверено не полностью: PASS ${passCount}, FAIL ${failCount}, NOT_RUN ${notRunCount}.`);
+          if (!passCount) return { status: 'NOT_RUN', detail: `Ни для одного из ${inventory.length} полей не найдено безопасной альтернативы.`, data: audit };
+          return { status: 'PASS', detail: `Изолированно проверено ${passCount} полей; NOT_RUN ${notRunCount}. Для каждой записи выполнен read-back и restore.`, data: audit };
+        } finally {
+          const cleaned = await cleanupCreatedRow(rowCardId, 'write-every-field');
+          if (!cleaned) cleanupUnsafe = true;
+          const final = await freshSnapshot();
+          if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) {
+            cleanupUnsafe = true;
+            throw new Error('После every-field UAT исходная матрица отличается от baseline.');
+          }
+        }
+      });
+      await runCheck('write-clear-delete', 'Сервер: ADD → очистка поля → read-back → cleanup', async () => {
+        const temp = await createTemporaryRow('write-clear-delete'), rowCardId = temp.created.rowCardId;
+        try {
+          const current = await freshSnapshot(); bridge = current.bridge; const currentCatalog = await bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true }); const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog); const target = findRowByCard(book, rowCardId); if (!target) throw new Error('Временная строка не найдена после ADD.');
+          const candidateIndexes = directTokenIndexes(book).filter(index => String(book.schemaTokens[index]).startsWith('criterion:') && String(target.values[index] || '').trim()); let clearPlan = null;
+          for (const index of shuffled(candidateIndexes, rng)) { const key = book.schemaTokens[index]; if (!(book.rows || []).some(row => canon(rowIdentity(book, row).rowCardId) !== canon(rowCardId) && !String(row.values[index] || '').trim())) continue; const attempt = cloneWorkbook(book), row = findRowByCard(attempt, rowCardId); row.values[index] = ''; const idIndex = companionIndex(attempt, key); if (idIndex >= 0) row.values[idIndex] = ''; const plan = E.buildPlan(attempt, structure, current.snapshot, bridge.matrixInfo()); const exec = plan.actions.filter(action => action.type !== 'noop'); if (exec.length === 1 && exec[0].type === 'update' && canon(exec[0].currentRow?.rowCardId) === canon(rowCardId) && !plan.counts.skip) { clearPlan = plan; break; } }
+          if (!clearPlan) return { status: 'NOT_RUN', detail: 'Не найдено доказанно необязательное заполненное поле временной строки.' }; registerFieldMutationObligations(clearPlan, 'write-clear-delete', rowCardId); await applySingle(clearPlan, 'write-clear-delete: CLEAR'); if (!await cleanupCreatedRow(rowCardId, 'write-clear-delete')) throw new Error('Cleanup после очистки не подтверждён.'); const final = await freshSnapshot(); if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) throw new Error('После очистки cleanup baseline не восстановлен.'); return { detail: 'Очистка значения применена на временной строке, подтверждена и откатана.' };
+        } catch (error) { await cleanupCreatedRow(rowCardId, 'write-clear-delete-finally'); throw error; }
+      });
+
+
+      const applyEvidence = report.checks.find(check => check.id === 'write-add-delete' && check.status === 'PASS') || report.checks.find(check => check.id === 'write-update-delete' && check.status === 'PASS');
+      addCheck('action-apply', 'Действие: применить к TESSA', applyEvidence ? 'PASS' : 'FAIL', applyEvidence ? `Live write/read-back доказан проверкой ${applyEvidence.id}.` : 'Нет успешного live write/read-back.', { required: true, data: { outcome: 'live-write-readback', sourceCheck: applyEvidence?.id || null, writesCompleted: report.writesCompleted } });
+      const actionReconcileState = await freshSnapshot();
+      const actionReconcileMatches = sameArray(snapshotSignature(actionReconcileState.snapshot), baselineSignature);
+      addCheck('action-reconcile', 'Действие: проверить результат', actionReconcileMatches ? 'PASS' : 'FAIL', actionReconcileMatches ? 'Fresh read-back после write/cleanup совпадает с baseline.' : 'Fresh read-back расходится с baseline.', { required: true, data: { outcome: 'reconciliation-readback', rows: actionReconcileState.snapshot.rows.length, baselineEquivalent: actionReconcileMatches } });
+      if (!actionReconcileMatches) cleanupUnsafe = true;
+
+      if (typeof E.stopNativeOperationRecorder === 'function') { try { const nativeRecord = await E.stopNativeOperationRecorder(false); if (nativeRecord) packageEntries.push(['native-write-trace.json', utf8(nativeRecord)]); } catch (error) { addCheck('native-recorder-stop', 'Остановка нативной записи', 'WARN', String(error?.message || error), { required: false }); } }
+      const final = await freshSnapshot(); if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) { cleanupUnsafe = true; addCheck('final-baseline', 'Финальное состояние матрицы', 'FAIL', 'После UAT исходные строки/значения отличаются от baseline.', { required: true }); } else addCheck('final-baseline', 'Финальное состояние матрицы', 'PASS', 'Исходная матрица полностью восстановлена.', { required: true });
+      report.status = cleanupUnsafe ? 'UNSAFE' : report.checks.some(check => check.required !== false && check.status === 'FAIL') ? 'FAILED' : 'PASSED';
+    } catch (error) {
+      report.fatalError = String(error?.message || error); report.status = cleanupUnsafe ? 'UNSAFE' : 'INCOMPLETE'; timeline('fatal', report.fatalError); try { if (typeof E.stopNativeOperationRecorder === 'function') await E.stopNativeOperationRecorder(false); } catch (_) { /* best effort */ }
+    } finally {
+
+      try {
+        await recoverCleanupObligations();
+        if (cleanupLedgerController && baselineSignature && structure && report.matrix?.matrixId) {
+          const restoredState = await freshSnapshot();
+          report.cleanupLedger = cleanupLedgerController.snapshot();
+          report.restoreProof = baselineRestoreProof(baselineSignature, snapshotSignature(restoredState.snapshot), report.cleanupLedger);
+          addCheck('final-restore-proof', 'Task9: восстановление baseline', report.restoreProof.status === 'VERIFIED' ? 'PASS' : 'FAIL', report.restoreProof.status === 'VERIFIED'
+            ? `Baseline подтверждён fresh read; cleanup ${report.cleanupLedger.verified}/${report.cleanupLedger.total}.`
+            : `UNSAFE: baselineEquivalent=${report.restoreProof.baselineEquivalent}, pending=${report.restoreProof.pendingObligations}, failed=${report.restoreProof.failedObligations}.`,
+            { required: true, data: report.restoreProof });
+          if (report.restoreProof.status === 'UNSAFE') { cleanupUnsafe = true; report.status = 'UNSAFE'; }
+        }
+      } catch (recoveryError) {
+        cleanupUnsafe = true;
+        report.status = 'UNSAFE';
+        report.cleanupLedger = cleanupLedgerController ? cleanupLedgerController.snapshot() : report.cleanupLedger;
+        report.restoreProof = {
+          status: 'UNSAFE', baselineEquivalent: false,
+          pendingObligations: Number(report.cleanupLedger?.pending || 0),
+          failedObligations: Number(report.cleanupLedger?.failed || 0),
+          error: String(recoveryError?.message || recoveryError), checkedAt: now(),
+        };
+        addCheck('final-restore-proof', 'Task9: восстановление baseline', 'FAIL', `UNSAFE: ${report.restoreProof.error}`, { required: true, data: report.restoreProof });
+      }
+
+      try {
+        const packageProbe = await E.makeZip([...packageEntries, ['task8-package-probe.txt', utf8('TESSA Full UAT package probe')]]);
+        if (!(packageProbe instanceof Uint8Array) || packageProbe.length < 4 || packageProbe[0] !== 0x50 || packageProbe[1] !== 0x4b) throw new Error('Full UAT package probe не является ZIP.');
+        addCheck('action-full-uat', 'Действие: полный UAT', 'PASS', `Full UAT package path сформировал ZIP (${packageProbe.length} байт).`, { required: true, data: { outcome: 'full-uat-package', artifact: 'TESSA_Full_UAT_*.zip', bytes: packageProbe.length } });
+      } catch (packageProbeError) {
+        addCheck('action-full-uat', 'Действие: полный UAT', 'FAIL', String(packageProbeError?.message || packageProbeError), { required: true, data: { outcome: null } });
+      }
+      report.functionalActionAudit = actionCoverageFromChecks(report.checks, E.STUDIO_ACTION_REGISTRY || []);
+      if (cleanupUnsafe || report.restoreProof?.status === 'UNSAFE') report.status = 'UNSAFE';
+      else if (report.functionalActionAudit.missing.length && report.status === 'PASSED') report.status = 'FAILED';
+      report.finishedAt = now(); report.durationMs = new Date(report.finishedAt).getTime() - new Date(startedAt).getTime(); report.summary = { pass: report.checks.filter(x => x.status === 'PASS').length, fail: report.checks.filter(x => x.status === 'FAIL').length, warn: report.checks.filter(x => x.status === 'WARN').length, notRun: report.checks.filter(x => x.status === 'NOT_RUN').length, writesAttempted: report.writesAttempted, writesCompleted: report.writesCompleted, cleanupVerified: report.cleanup.filter(x => x.status === 'verified' || x.status === 'already-absent').length, cleanupFailed: report.cleanup.filter(x => x.status === 'FAILED').length, cleanupLedgerPending: Number(report.cleanupLedger?.pending || 0), cleanupLedgerFailed: Number(report.cleanupLedger?.failed || 0), restoreStatus: report.restoreProof?.status || 'NOT_RUN' };
+      const summary = { format: 'TESSA_FULL_UAT_SUMMARY_V1', status: report.status, seed: report.seed, studioVersion: report.studioVersion, runnerVersion: report.runnerVersion, matrix: report.matrix, startedAt: report.startedAt, finishedAt: report.finishedAt, summary: report.summary };
+      const readme = `TESSA Matrix Studio — Full UAT\n\nСтатус: ${report.status}\nSeed: ${report.seed}\nМатрица: ${report.matrix?.name || ''} (${report.matrix?.matrixId || ''})\n\nPASSED — обязательные проверки прошли и cleanup подтверждён.\nFAILED — есть функциональная ошибка, cleanup подтверждён.\nUNSAFE — cleanup или восстановление исходного состояния не подтверждены.\nINCOMPLETE — UAT не дошёл до полного набора проверок.\n`;
+      packageEntries.push(['cleanup-ledger.json', utf8(report.cleanupLedger || {})], ['restore-proof.json', utf8(report.restoreProof || {})], ['summary.json', utf8(summary)], ['uat-report.json', utf8(report)], ['timeline.json', utf8(report.timeline)], ['dictionary-audit.json', utf8({ dictionaryAudit: report.dictionaryAudit, rolePresentationAudit: report.rolePresentationAudit, recordKeepingAudit: report.recordKeepingAudit })], ['README.txt', utf8(readme)]);
+      try { const zip = await E.makeZip(packageEntries); const stamp = report.finishedAt.replace(/[:.]/g, '-'); E.triggerBlobDownload(new Blob([zip], { type: 'application/zip' }), `TESSA_Full_UAT_${report.status}_${stamp}.zip`); }
+      catch (error) { console.error('[TESSA Full UAT] package error', error); try { E.downloadJson(report, `TESSA_Full_UAT_${report.status}.json`, null); } catch (_) { /* best effort */ } }
+    }
+    return report;
+  }
+
+  function installUi() {
+    if (globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__) return;
+    const styleId = 'tms-full-uat-style';
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement('style'); style.id = styleId;
+      style.textContent = `.tms-picker-import-block{margin-top:12px;padding:12px;border:1px solid rgba(128,128,128,.22);border-radius:10px;background:rgba(128,128,128,.035)}.tms-picker-import-block>summary{font-weight:600;cursor:pointer}.tms-picker-import-hint{margin:8px 0;color:var(--tms-muted,#6b7280);font-size:12px;line-height:1.45}.tms-picker-import-block textarea{display:block;width:100%;box-sizing:border-box;min-height:92px;margin:8px 0;resize:vertical}.tms-picker-import-actions{justify-content:flex-end}.tms-uat-card{margin-top:12px;padding:14px;border:1px solid rgba(128,128,128,.22);border-radius:12px;background:rgba(128,128,128,.035)}.tms-uat-card h4{margin:0 0 6px;font-size:14px}.tms-uat-card p{margin:5px 0 10px;line-height:1.45}.tms-uat-status{margin-top:10px;padding:9px 11px;border-radius:8px;background:rgba(128,128,128,.08);font-size:12px;white-space:pre-wrap}.tms-uat-status[data-state="running"],.tms-uat-status[data-state="PASSED"],.tms-uat-status[data-state="FAILED"],.tms-uat-status[data-state="UNSAFE"]{font-weight:600}`;
+      document.head?.appendChild(style);
+    }
+    const host = document.querySelector('#tms-test-tools'); if (!host || host.querySelector('#tms-full-uat')) return false;
+    const card = document.createElement('div'); card.className = 'tms-uat-card'; card.innerHTML = `<h4>Полный UAT</h4><p>Автоматически проверяет Excel-сценарии, справочники, объединение и реальные ADD/UPDATE/DELETE на временных строках. Исходные строки не меняются; после каждого write-сценария временная строка удаляется и состояние перечитывается.</p><button id="tms-full-uat" type="button">Запустить полный UAT</button><div id="tms-full-uat-status" class="tms-uat-status" data-state="idle">Не запускался.</div>`; host.appendChild(card);
+    const button = card.querySelector('#tms-full-uat'), status = card.querySelector('#tms-full-uat-status');
+    button.addEventListener('click', async () => {
+      if (!window.confirm('Полный UAT выполнит реальные операции только с временными строками в текущем черновике TESSA и будет удалять их после каждого сценария. Запустить?')) return;
+      button.disabled = true; status.dataset.state = 'running'; status.textContent = 'Выполняю Full UAT… Не закрывайте вкладку до скачивания итогового ZIP.';
+      try { const result = await runFullUat({ liveConfirmation: 'full-uat-confirmed' }); status.dataset.state = result.status; status.textContent = `${result.status} · PASS ${result.summary?.pass || 0} · FAIL ${result.summary?.fail || 0} · NOT RUN ${result.summary?.notRun || 0}\nИтоговый ZIP скачан. Seed: ${result.seed}`; }
+      catch (error) { status.dataset.state = 'UNSAFE'; status.textContent = `UNSAFE · ${String(error?.message || error)}`; }
+      finally { button.disabled = false; }
+    });
+    return true;
+  }
+
+  window[INSTALL_KEY] = { version: VERSION, seededRandom, hashSeed, snapshotSignature, cloneWorkbook, buildWritableFieldInventory, fieldCandidateValues, actionCoverageFromChecks, createCleanupLedger, baselineRestoreProof, runFullUat, installUi };
+  if (!globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__) { let attempts = 0; const timer = setInterval(() => { attempts += 1; if (installUi() || attempts > 120) clearInterval(timer); }, 250); installUi(); }
 })();

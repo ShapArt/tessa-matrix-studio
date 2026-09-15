@@ -1,0 +1,62 @@
+name: v1.14 live diagnostics snapshot-card regression
+
+on:
+  push:
+    branches: [feat/incremental-performance-v1.14]
+    paths:
+      - tools/patch-v1.14-live-diagnostics-snapshot-card.mjs
+      - .github/workflows/v1.14-live-diagnostics-snapshot-card.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  red-green:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/incremental-performance-v1.14
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Add regression test first
+        run: node tools/patch-v1.14-live-diagnostics-snapshot-card.mjs --test
+      - name: Verify RED on current implementation
+        shell: bash
+        run: |
+          set +e
+          node tests/studio-diagnostics.mjs > /tmp/tms-red.log 2>&1
+          code=$?
+          cat /tmp/tms-red.log
+          if [ "$code" -eq 0 ]; then
+            echo "Expected the new regression test to fail before the implementation patch."
+            exit 1
+          fi
+          grep -q "must reopen the live row card" /tmp/tms-red.log || {
+            echo "Regression failed for an unexpected reason."
+            exit 1
+          }
+          echo "RED confirmed: Studio diagnostics still expects a live Card inside the serializable snapshot DTO."
+      - name: Apply minimal implementation fix
+        run: node tools/patch-v1.14-live-diagnostics-snapshot-card.mjs --implementation
+      - name: Verify focused GREEN
+        run: |
+          node tests/studio-diagnostics.mjs
+          node tests/snapshot-dto-boundary.mjs
+      - name: Verify full regression suite
+        run: npm test
+      - name: Verify diff hygiene
+        run: git diff --check
+      - name: Commit verified fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tessa-matrix-studio.user.js tests/studio-diagnostics.mjs
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: reopen live row cards in Studio diagnostics"
+          git push origin HEAD:feat/incremental-performance-v1.14
