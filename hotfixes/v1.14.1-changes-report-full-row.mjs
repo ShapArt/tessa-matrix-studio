@@ -3,22 +3,24 @@ import fs from 'node:fs';
 export function applyChangesReportFullRow(input) {
   let source = String(input ?? '');
 
-  if (source.includes('REVIEWED_CHANGES_REPORT_V2') && !source.includes('REVIEWED_CHANGES_REPORT_V1')) {
-    if (source.includes('Детали изменений')) throw new Error('v2 changes report unexpectedly contains obsolete second sheet');
-    if (source.includes("['xl/worksheets/sheet2.xml', sheet2]")) throw new Error('v2 changes report unexpectedly contains obsolete sheet2 package entry');
+  if (source.includes('REVIEWED_CHANGES_REPORT_V3')) {
+    if (source.includes('Детали изменений')) throw new Error('v3 changes report unexpectedly contains obsolete second sheet');
+    if (source.includes("['xl/worksheets/sheet2.xml', sheet2]")) throw new Error('v3 changes report unexpectedly contains obsolete sheet2 package entry');
     return source;
   }
 
-  const modelStart = source.indexOf('  // REVIEWED_CHANGES_REPORT_V1');
+  const v2Start = source.indexOf('  // REVIEWED_CHANGES_REPORT_V2');
+  const v1Start = source.indexOf('  // REVIEWED_CHANGES_REPORT_V1');
+  const modelStart = v2Start >= 0 ? v2Start : v1Start;
   const modelEnd = source.indexOf('  function changesReportStylesXml()', modelStart);
   if (modelStart < 0 || modelEnd < 0 || modelEnd <= modelStart) {
     throw new Error('changes report model boundaries not found');
   }
 
-  const modelBlock = `  // REVIEWED_CHANGES_REPORT_V2
-  // One self-contained, field-level report: UPDATE shows the changed fields, while ADD
-  // and DELETE expand the complete populated business row so reviewers never have to
-  // reopen the source workbook just to understand what is being added or removed.
+  const modelBlock = `  // REVIEWED_CHANGES_REPORT_V3
+  // Human-facing Russian report. UPDATE shows changed fields only; ADD and DELETE
+  // expand the complete populated business row. Technical action names and the mostly
+  // empty standalone "reason" column are intentionally excluded from the workbook.
   function buildChangesReportModel(plan, structure = null) {
     const definitionLabels = new Map();
     const businessFieldOrder = [];
@@ -33,14 +35,14 @@ export function applyChangesReportFullRow(input) {
       businessFieldOrder.push(key);
     }
 
-    const headers = ['Изменение', 'Excel row', 'Причина', 'TESSA row', 'Поля', 'Было', 'Стало'];
-    const detailHeaders = ['Изменение', 'Excel row', 'TESSA row', 'Поле', 'Было', 'Стало', 'Причина'];
+    const headers = ['Действие', 'Строка Excel', 'Строка TESSA', 'Поле', 'Было', 'Стало'];
+    const detailHeaders = [...headers];
     const operations = [];
     const details = [];
     const stringifyValues = values => Array.isArray(values)
       ? values.map(value => String(value ?? '').trim()).filter(Boolean).join(' · ')
       : String(values ?? '').trim();
-    const actionLabel = type => ({ update: 'UPDATE', add: 'ADD', delete: 'DELETE' }[type] || String(type || '').toUpperCase());
+    const actionLabel = type => ({ update: 'Изменена', add: 'Добавлена', delete: 'Удалена' }[type] || String(type || ''));
     const displayValue = values => stringifyValues(values) || '—';
     const fieldLabel = key => definitionLabels.get(key) || key || '';
     const businessEntries = flat => {
@@ -59,7 +61,6 @@ export function applyChangesReportFullRow(input) {
       const change = actionLabel(action.type);
       const excelRow = action.excelRow?.excelRow ?? '';
       const tessaRow = action.currentRow?.index !== undefined ? Number(action.currentRow.index) + 1 : '';
-      const reason = normalizeSpace(action.reason || action.match?.reason || '');
       let fieldRows = [];
 
       if (action.type === 'update') {
@@ -92,16 +93,16 @@ export function applyChangesReportFullRow(input) {
       for (const item of fieldRows) {
         details.push({
           change, excelRow, tessaRow, field: item.label || item.key || '',
-          before: item.before, after: item.after, reason, error: false,
+          before: item.before, after: item.after, error: false,
         });
       }
-      if (!fieldRows.length) details.push({ change, excelRow, tessaRow, field: '', before: '—', after: '—', reason, error: false });
+      if (!fieldRows.length) details.push({ change, excelRow, tessaRow, field: '', before: '—', after: '—', error: false });
 
       const fields = fieldRows.map(item => item.label || item.key || '').filter(Boolean);
       const beforeParts = fieldRows.map(item => item.label ? \`\${item.label}: \${item.before}\` : item.before);
       const afterParts = fieldRows.map(item => item.label ? \`\${item.label}: \${item.after}\` : item.after);
       operations.push({
-        change, excelRow, reason, tessaRow,
+        change, excelRow, tessaRow,
         fields: fields.join(' · '), before: beforeParts.join('\\n'), after: afterParts.join('\\n'),
         error: false,
       });
@@ -112,12 +113,18 @@ export function applyChangesReportFullRow(input) {
       const excelRow = skip?.excelRow ?? '';
       const tessaRow = skip?.tessaRow ?? '';
       const error = Boolean(normalizeSpace(skip?.code || ''));
-      operations.push({ change: 'SKIP', excelRow, reason, tessaRow, fields: '', before: '', after: '', error });
-      details.push({ change: 'SKIP', excelRow, tessaRow, field: '', before: '—', after: '—', reason, error });
+      operations.push({
+        change: 'Пропущена', excelRow, tessaRow,
+        fields: 'Причина пропуска', before: '—', after: reason, error,
+      });
+      details.push({
+        change: 'Пропущена', excelRow, tessaRow,
+        field: 'Причина пропуска', before: '—', after: reason, error,
+      });
     }
 
     return {
-      format: 'TESSA_MATRIX_CHANGES_REPORT_V2', reportOnly: true,
+      format: 'TESSA_MATRIX_CHANGES_REPORT_V3', reportOnly: true,
       matrixId: plan?.matrixId || '', templateId: plan?.templateId || structure?.templateId || '',
       createdAt: nowIso(), headers, detailHeaders, operations, details,
     };
@@ -125,6 +132,72 @@ export function applyChangesReportFullRow(input) {
 
 `;
   source = source.slice(0, modelStart) + modelBlock + source.slice(modelEnd);
+
+  const rowStyleStart = source.indexOf('  function changesReportRowStyle(row) {');
+  const worksheetStart = source.indexOf('  function changesReportWorksheetXml(headers, rows, metadata = null) {', rowStyleStart);
+  if (rowStyleStart < 0 || worksheetStart < 0 || worksheetStart <= rowStyleStart) {
+    throw new Error('changes report row-style boundaries not found');
+  }
+  const rowStyleBlock = `  function changesReportRowStyle(row) {
+    if (row?.change === 'Добавлена') return 4;
+    if (row?.change === 'Изменена') return 3;
+    if (row?.change === 'Удалена') return 5;
+    if (row?.change === 'Пропущена') return row?.error ? 7 : 6;
+    return 1;
+  }
+
+`;
+  source = source.slice(0, rowStyleStart) + rowStyleBlock + source.slice(worksheetStart);
+
+  const worksheetBlockStart = source.indexOf('  function changesReportWorksheetXml(headers, rows, metadata = null) {');
+  const worksheetBlockEnd = source.indexOf('  async function createChangesReportXlsxBytes(plan, structure = null) {', worksheetBlockStart);
+  if (worksheetBlockStart < 0 || worksheetBlockEnd < 0 || worksheetBlockEnd <= worksheetBlockStart) {
+    throw new Error('changes report worksheet boundaries not found');
+  }
+  const worksheetBlock = `  function changesReportWorksheetXml(headers, rows, metadata = null) {
+    const sheetRows = [];
+    let rowNumber = 1;
+    if (metadata) {
+      for (const pair of metadata) {
+        sheetRows.push(\`<row r="\${rowNumber}" hidden="1">\${xlsxStringCell(rowNumber, 0, pair[0], 1)}\${xlsxStringCell(rowNumber, 1, pair[1], 1)}</row>\`);
+        rowNumber += 1;
+      }
+      rowNumber += 1;
+    }
+    const headerRow = rowNumber;
+    sheetRows.push(\`<row r="\${rowNumber}" ht="34" customHeight="1">\${headers.map((value, index) => xlsxStringCell(rowNumber, index, value, 2)).join("")}</row>\`);
+    rowNumber += 1;
+    for (const row of rows) {
+      const style = changesReportRowStyle(row);
+      const values = headers.map(header => ({
+        'Действие': row.change,
+        'Строка Excel': row.excelRow,
+        'Строка TESSA': row.tessaRow,
+        'Поле': row.field,
+        'Было': row.before,
+        'Стало': row.after,
+      })[header] ?? '');
+      const lines = Math.max(1, ...values.map(value => String(value ?? '').split(/\\r?\\n/).length));
+      const height = Math.min(240, Math.max(28, lines * 16 + 8));
+      sheetRows.push(\`<row r="\${rowNumber}" ht="\${height}" customHeight="1">\${values.map((value, index) => xlsxStringCell(rowNumber, index, value, style)).join("")}</row>\`);
+      rowNumber += 1;
+    }
+    const lastRow = Math.max(headerRow, rowNumber - 1);
+    const lastCol = indexToCol(headers.length - 1);
+    const widths = headers.map(header => ({
+      'Действие': 16,
+      'Строка Excel': 14,
+      'Строка TESSA': 14,
+      'Поле': 38,
+      'Было': 56,
+      'Стало': 56,
+    })[header] || 30);
+    const cols = widths.map((width, index) => \`<col min="\${index + 1}" max="\${index + 1}" width="\${width}" customWidth="1"/>\`).join('');
+    return \`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:\${lastCol}\${lastRow}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="\${headerRow}" topLeftCell="A\${headerRow + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols>\${cols}</cols><sheetData>\${sheetRows.join("")}</sheetData><autoFilter ref="A\${headerRow}:\${lastCol}\${lastRow}"/></worksheet>\`;
+  }
+
+`;
+  source = source.slice(0, worksheetBlockStart) + worksheetBlock + source.slice(worksheetBlockEnd);
 
   const createStart = source.indexOf('  async function createChangesReportXlsxBytes(plan, structure = null) {');
   const createEnd = source.indexOf('  function sanitizeFileName(value)', createStart);
@@ -159,7 +232,7 @@ export function applyChangesReportFullRow(input) {
 `;
   source = source.slice(0, createStart) + createBlock + source.slice(createEnd);
 
-  if (!source.includes('REVIEWED_CHANGES_REPORT_V2')) throw new Error('changes report V2 marker missing');
+  if (!source.includes('REVIEWED_CHANGES_REPORT_V3')) throw new Error('changes report V3 marker missing');
   if (source.includes('Детали изменений')) throw new Error('obsolete second changes-report sheet remains');
   if (source.includes("['xl/worksheets/sheet2.xml', sheet2]")) throw new Error('obsolete sheet2 package entry remains');
   return source;
@@ -171,5 +244,5 @@ if (invoked) {
   const input = fs.readFileSync(target, 'utf8');
   const output = applyChangesReportFullRow(input);
   fs.writeFileSync(target, output, 'utf8');
-  console.log('TESSA Matrix Studio v1.14.1 changes report: one self-contained full-row sheet OK');
+  console.log('TESSA Matrix Studio v1.14.1 changes report: Russian one-sheet full-row report OK');
 }
