@@ -212,4 +212,87 @@ try {
 }
 assert(fullUatStaleBlocked, 'Full UAT attestation for a different userscript must be rejected');
 
-console.log('Release native-evidence gate: v2 split evidence + v3 Full UAT native trace + userscript hash binding: OK');
+// A report-only patch may inherit native write evidence only when the exact tested parent
+// can be supplied and the candidate differs exclusively inside the reviewed report surface
+// plus version metadata. This must never be a generic bypass for write-path changes.
+const reportParentSource = `// @version      1.14.0
+(function(){
+  const CONFIG = {
+    version: '1.14.0',
+  };
+  // REVIEWED_CHANGES_REPORT_V1
+  function buildChangesReportModel() { return { format: 'TESSA_MATRIX_CHANGES_REPORT_V1', reportOnly: true }; }
+  function changesReportStylesXml() { return ''; }
+  function changesReportRowStyle() { return 1; }
+  function changesReportWorksheetXml() { return ''; }
+  async function createChangesReportXlsxBytes() { return new Uint8Array(); }
+  function sanitizeFileName(value) { return String(value); }
+  function writeCriticalPath() { return 'unchanged'; }
+})();
+`;
+const reportCandidateSource = `// @version      1.14.1
+(function(){
+  const CONFIG = {
+    version: '1.14.1',
+  };
+  // REVIEWED_CHANGES_REPORT_V3
+  function buildChangesReportModel() {
+    const detailHeaders = ['Действие', 'Строка Excel', 'Строка TESSA', 'Поле', 'Было', 'Стало'];
+    const actionLabel = type => ({ update: 'Изменена', add: 'Добавлена', delete: 'Удалена' }[type]);
+    return { format: 'TESSA_MATRIX_CHANGES_REPORT_V3', reportOnly: true, detailHeaders, actionLabel };
+  }
+  function changesReportStylesXml() { return '<styles />'; }
+  function changesReportRowStyle() { return 4; }
+  function changesReportWorksheetXml() { return '<sheet />'; }
+  async function createChangesReportXlsxBytes() { return new Uint8Array([1]); }
+  function sanitizeFileName(value) { return String(value); }
+  function writeCriticalPath() { return 'unchanged'; }
+})();
+`;
+const reportDerivativeAttestation = {
+  schemaVersion: 4,
+  version: '1.14.1',
+  status: 'verified',
+  operation: 'report-only-derivative',
+  parentVersion: '1.14.0',
+  parentUserscriptSha256: crypto.createHash('sha256').update(reportParentSource).digest('hex'),
+  allowedSurface: 'changes-report-v3-and-version-metadata',
+  parentLiveUat: { status: 'PASSED', pass: 33, fail: 0, notRun: 0, seed: 3439503818 },
+};
+const reportDerivativeAccepted = assertReleaseNativeEvidence({
+  version: '1.14.1',
+  userscriptSource: reportCandidateSource,
+  parentUserscriptSource: reportParentSource,
+  attestation: reportDerivativeAttestation,
+});
+assert(reportDerivativeAccepted.ok === true && reportDerivativeAccepted.schemaVersion === 4, JSON.stringify(reportDerivativeAccepted));
+assert(reportDerivativeAccepted.operation === 'report-only-derivative', JSON.stringify(reportDerivativeAccepted));
+assert(reportDerivativeAccepted.parentVersion === '1.14.0', JSON.stringify(reportDerivativeAccepted));
+
+let reportDerivativeWriteChangeBlocked = false;
+try {
+  assertReleaseNativeEvidence({
+    version: '1.14.1',
+    userscriptSource: reportCandidateSource.replace("return 'unchanged';", "return 'CHANGED';"),
+    parentUserscriptSource: reportParentSource,
+    attestation: reportDerivativeAttestation,
+  });
+} catch (error) {
+  reportDerivativeWriteChangeBlocked = /report.?only|surface|derivative|outside|parent/i.test(String(error?.message || error));
+}
+assert(reportDerivativeWriteChangeBlocked, 'report-only derivative must reject any change outside the report/version surface');
+
+let reportDerivativeWrongParentBlocked = false;
+try {
+  assertReleaseNativeEvidence({
+    version: '1.14.1',
+    userscriptSource: reportCandidateSource,
+    parentUserscriptSource: `${reportParentSource}// tampered parent`,
+    attestation: reportDerivativeAttestation,
+  });
+} catch (error) {
+  reportDerivativeWrongParentBlocked = /parent|sha|hash|evidence/i.test(String(error?.message || error));
+}
+assert(reportDerivativeWrongParentBlocked, 'report-only derivative must reject a parent that does not match the attested live-tested hash');
+
+console.log('Release native-evidence gate: v2 split + v3 Full UAT + v4 report-only derivative parity: OK');
