@@ -7,7 +7,6 @@ const changelog = fs.readFileSync(new URL('../CHANGELOG.md', import.meta.url), '
 const readme = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 const communicationPath = new URL('../docs/communications/v1.14-colleague-test-message.md', import.meta.url);
 const fullUatFinalizer = fs.readFileSync(new URL('../hotfixes/v1.13.0-full-uat-live-finalize.mjs', import.meta.url), 'utf8');
-const lifecycleTransform = fs.readFileSync(new URL('../hotfixes/v1.13.0-user-row-lifecycle-transform.mjs', import.meta.url), 'utf8');
 
 assert.equal(pkg.version, '1.14.0', 'package candidate version must be 1.14.0');
 assert.match(source, /^\/\/ @version\s+1\.14\.0$/m, 'userscript metadata version must be 1.14.0');
@@ -39,9 +38,9 @@ assert.match(fullUatFinalizer, /runtimeBridge:\s*bridge/,
   'Full UAT applySingle must forward the fresh bridge');
 assert.match(fullUatFinalizer, /runtimeStructure:\s*structure/,
   'Full UAT applySingle must forward the matching structure');
-assert.match(lifecycleTransform, /bridge:\s*options\.runtimeBridge/,
+assert.match(fullUatFinalizer, /bridge:\s*options\.runtimeBridge\s*\|\|\s*undefined/,
   'scoped applyPlan runtime bridge must be forwarded into preflight');
-assert.match(lifecycleTransform, /structure:\s*options\.runtimeStructure/,
+assert.match(fullUatFinalizer, /structure:\s*options\.runtimeStructure\s*\|\|\s*undefined/,
   'scoped applyPlan runtime structure must be forwarded into preflight');
 
 assert.match(changelog, /## 1\.14\.0 — 2026-09-11/);
