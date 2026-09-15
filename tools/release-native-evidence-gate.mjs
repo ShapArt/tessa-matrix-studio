@@ -413,7 +413,8 @@ function assertSchema4ReleaseEvidence(attestation, version, userscriptSource, pa
     throw new Error('Report-only derivative requires a parent with PASSED live UAT, FAIL = 0 and NOT_RUN = 0.');
   }
   const candidate = String(userscriptSource ?? '');
-  if (!candidate.includes(`// @version      ${version}`) || !new RegExp(`version:\\s*'${String(version).replace(/\./g, '\\.')}'`).test(candidate)) {
+  const runtimeVersionToken = `version: '${version}',`;
+  if (!candidate.includes(`// @version      ${version}`) || !candidate.includes(runtimeVersionToken)) {
     throw new Error(`Report-only derivative userscript metadata does not identify release ${version}.`);
   }
   if (!candidate.includes('REVIEWED_CHANGES_REPORT_V3')
