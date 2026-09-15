@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const DELETE_ROW_REQUEST_TYPE = 'd090417f-bf4b-45ed-9c82-33ef23acd96f';
@@ -371,7 +373,106 @@ function assertSchema3ReleaseEvidence(attestation) {
   };
 }
 
-export function assertReleaseNativeEvidence({ version, userscriptSource, attestation }) {
+export function normalizeReportOnlyReleaseSource(input) {
+  let source = String(input ?? '').replace(/\r\n/g, '\n');
+  source = source.replace(/^\/\/ @version\s+[0-9.]+$/m, '// @version      <VERSION>');
+  source = source.replace(/^(\s*)version:\s*'[0-9.]+'\s*,$/m, "$1version: '<VERSION>',");
+  const marker = source.match(/  \/\/ REVIEWED_CHANGES_REPORT_V[123]\b/);
+  if (!marker || marker.index === undefined) throw new Error('Report-only derivative source is missing a reviewed changes-report marker.');
+  const start = marker.index;
+  const end = source.indexOf('  function sanitizeFileName(value)', start);
+  if (end < 0 || end <= start) throw new Error('Report-only derivative source has an invalid reviewed report surface.');
+  return `${source.slice(0, start)}  // <REVIEWED_CHANGES_REPORT_SURFACE>\n${source.slice(end)}`;
+}
+
+function assertSchema4ReleaseEvidence(attestation, version, userscriptSource, parentUserscriptSource) {
+  if (attestation.operation !== 'report-only-derivative') {
+    throw new Error(`Report-only evidence operation must be report-only-derivative, got ${attestation.operation || 'missing'}.`);
+  }
+  if (attestation.allowedSurface !== 'changes-report-v3-and-version-metadata') {
+    throw new Error(`Unsupported report-only derivative surface: ${attestation.allowedSurface || 'missing'}.`);
+  }
+  if (!parentUserscriptSource) {
+    throw new Error('Report-only derivative evidence requires the exact live-tested parent userscript.');
+  }
+  const parentVersion = String(attestation.parentVersion || '');
+  parseVersion(parentVersion);
+  if (compareVersions(parentVersion, version) >= 0) {
+    throw new Error(`Report-only derivative parent ${parentVersion} must be older than release ${version}.`);
+  }
+  assertHash(attestation.parentUserscriptSha256, 'attestation.parentUserscriptSha256');
+  const actualParentSha256 = sha256(String(parentUserscriptSource));
+  if (String(attestation.parentUserscriptSha256).toLowerCase() !== actualParentSha256) {
+    throw new Error(`Report-only derivative parent SHA-256 ${attestation.parentUserscriptSha256} does not match supplied parent ${actualParentSha256}.`);
+  }
+  const parentLiveUat = attestation.parentLiveUat || {};
+  if (canonical(parentLiveUat.status) !== 'passed'
+      || Number(parentLiveUat.pass || 0) <= 0
+      || Number(parentLiveUat.fail || 0) !== 0
+      || Number(parentLiveUat.notRun || 0) !== 0) {
+    throw new Error('Report-only derivative requires a parent with PASSED live UAT, FAIL = 0 and NOT_RUN = 0.');
+  }
+  const candidate = String(userscriptSource ?? '');
+  const runtimeVersionToken = `version: '${version}',`;
+  if (!candidate.includes(`// @version      ${version}`) || !candidate.includes(runtimeVersionToken)) {
+    throw new Error(`Report-only derivative userscript metadata does not identify release ${version}.`);
+  }
+  if (!candidate.includes('REVIEWED_CHANGES_REPORT_V3')
+      || !candidate.includes('TESSA_MATRIX_CHANGES_REPORT_V3')
+      || !/reportOnly:\s*true/.test(candidate)) {
+    throw new Error('Report-only derivative candidate must contain the reviewed V3 report-only implementation.');
+  }
+  if (candidate.includes('Детали изменений') || candidate.includes("['xl/worksheets/sheet2.xml', sheet2]")) {
+    throw new Error('Report-only derivative candidate still contains the obsolete second changes-report sheet.');
+  }
+  const parentNormalized = normalizeReportOnlyReleaseSource(parentUserscriptSource);
+  const candidateNormalized = normalizeReportOnlyReleaseSource(candidate);
+  const parentNormalizedSha256 = sha256(parentNormalized);
+  const candidateNormalizedSha256 = sha256(candidateNormalized);
+  if (candidateNormalizedSha256 !== parentNormalizedSha256) {
+    throw new Error('Report-only derivative changed code outside the reviewed report/version surface.');
+  }
+  return {
+    operation: 'report-only-derivative',
+    schemaVersion: 4,
+    parentVersion,
+    parentUserscriptSha256: actualParentSha256,
+    parentSeed: Number(parentLiveUat.seed) >>> 0,
+    normalizedNonReportSha256: candidateNormalizedSha256,
+  };
+}
+
+function runTransform(root, target, relativeScript) {
+  const script = path.join(root, relativeScript);
+  const result = spawnSync(process.execPath, [script, target], { cwd: root, encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(`Failed to rebuild live-tested parent with ${relativeScript}: ${result.stderr || result.stdout || `exit ${result.status}`}`);
+  }
+}
+
+function buildRepositoryParentUserscript(parentVersion) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tms-report-parent-'));
+  const target = path.join(tmp, 'tessa-matrix-studio.user.js');
+  try {
+    fs.copyFileSync(path.join(root, 'tessa-matrix-studio.user.js'), target);
+    runTransform(root, target, 'hotfixes/malformed-range-diagnostic-transform.mjs');
+    runTransform(root, target, 'hotfixes/v1.13.0-user-row-lifecycle-transform.mjs');
+    let source = fs.readFileSync(target, 'utf8');
+    source = source.replace(/^\/\/ @version\s+[0-9.]+$/m, `// @version      ${parentVersion}`);
+    source = source.replace(/^(\s*)version:\s*'[0-9.]+'\s*,$/m, `$1version: '${parentVersion}',`);
+    fs.writeFileSync(target, source, 'utf8');
+    fs.appendFileSync(target, `\n${fs.readFileSync(path.join(root, 'hotfixes/interval-add-valid-fallback.js'), 'utf8')}\n`, 'utf8');
+    runTransform(root, target, 'hotfixes/v1.13.0-full-uat-live-finalize.mjs');
+    runTransform(root, target, 'hotfixes/v1.14-full-uat-inline-failures.mjs');
+    runTransform(root, target, 'hotfixes/v1.14-live-uat-final-four.mjs');
+    return fs.readFileSync(target, 'utf8');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+export function assertReleaseNativeEvidence({ version, userscriptSource, attestation, parentUserscriptSource = null }) {
   if (compareVersions(version, '1.12.2') < 0) {
     return { ok: true, skipped: true, version: String(version), reason: 'legacy-release-before-native-evidence-gate' };
   }
@@ -379,20 +480,32 @@ export function assertReleaseNativeEvidence({ version, userscriptSource, attesta
   if (!attestation || typeof attestation !== 'object') {
     throw new Error(`Native evidence attestation is required for release ${version}. Keep this build as RC until live TESSA evidence is verified.`);
   }
-  if (![2, 3].includes(Number(attestation.schemaVersion))) {
-    throw new Error('Native evidence attestation schemaVersion must be 2 or 3.');
+  if (![2, 3, 4].includes(Number(attestation.schemaVersion))) {
+    throw new Error('Native evidence attestation schemaVersion must be 2, 3 or 4.');
   }
   if (String(attestation.version) !== String(version)) {
     throw new Error(`Native evidence attestation version ${attestation.version || 'missing'} does not match release ${version}.`);
   }
   if (attestation.status !== 'verified') throw new Error(`Native evidence attestation status must be verified, got ${attestation.status || 'missing'}.`);
 
-  const evidence = Number(attestation.schemaVersion) === 3
+  const schemaVersion = Number(attestation.schemaVersion);
+  const actualUserscriptSha256 = sha256(String(userscriptSource ?? ''));
+  if (schemaVersion === 4) {
+    const evidence = assertSchema4ReleaseEvidence(attestation, version, userscriptSource, parentUserscriptSource);
+    return {
+      ok: true,
+      skipped: false,
+      version: String(version),
+      userscriptSha256: actualUserscriptSha256,
+      ...evidence,
+    };
+  }
+
+  const evidence = schemaVersion === 3
     ? assertSchema3ReleaseEvidence(attestation)
     : assertSchema2ReleaseEvidence(attestation);
 
   assertHash(attestation.userscriptSha256, 'attestation.userscriptSha256');
-  const actualUserscriptSha256 = sha256(String(userscriptSource ?? ''));
   if (String(attestation.userscriptSha256).toLowerCase() !== actualUserscriptSha256) {
     throw new Error(`Native evidence attestation is stale: userscript SHA-256 ${attestation.userscriptSha256} does not match current source ${actualUserscriptSha256}.`);
   }
@@ -416,7 +529,10 @@ function cli() {
   }
   const userscriptSource = fs.readFileSync(path.resolve(userscriptPath), 'utf8');
   const attestation = attestationPath ? JSON.parse(fs.readFileSync(path.resolve(attestationPath), 'utf8')) : null;
-  const result = assertReleaseNativeEvidence({ version, userscriptSource, attestation });
+  const parentUserscriptSource = Number(attestation?.schemaVersion) === 4
+    ? buildRepositoryParentUserscript(String(attestation.parentVersion || ''))
+    : null;
+  const result = assertReleaseNativeEvidence({ version, userscriptSource, attestation, parentUserscriptSource });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 

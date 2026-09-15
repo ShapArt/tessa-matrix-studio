@@ -6,6 +6,7 @@ import './native-evidence-attestation-cli.mjs';
 
 const workflow = fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
 const canary = fs.readFileSync(new URL('../.github/workflows/delivery-canary.yml', import.meta.url), 'utf8');
+const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
 };
@@ -18,6 +19,18 @@ assert(workflow.includes("github.event.workflow_run.conclusion == 'success'"), '
 assert(workflow.includes('workflow_dispatch:'), 'manual release fallback must stay available');
 assert(workflow.includes('github.event.workflow_run.head_sha'), 'release must checkout the exact verified commit');
 assert(workflow.includes('tessa-matrix-studio.user.js'), 'release change gate must watch the userscript');
+
+// v1.14.1 is a report-only production transform. It must participate in the exact release
+// composition instead of living dormant in the repository while /latest still serves v1.14.0.
+assert(packageJson.version === '1.14.1', `release package version must be 1.14.1, got ${packageJson.version}`);
+assert(workflow.includes('hotfixes/v1.14.1-changes-report-full-row.mjs'),
+  'release change detection/package must track the v1.14.1 changes-report transform');
+assert(workflow.includes('node hotfixes/v1.14.1-changes-report-full-row.mjs dist/tessa-matrix-studio.user.js'),
+  'release build must compose the v1.14.1 changes-report transform into the public userscript');
+assert(workflow.includes('REVIEWED_CHANGES_REPORT_V2'),
+  'release build/public verification must require the self-contained report V2 marker');
+assert(workflow.includes('! grep -Fq "Детали изменений"'),
+  'release must prove the obsolete second changes-report sheet is absent');
 
 // Release verification executes the same npm suite as Quality & Security. It must install the
 // lockfile-pinned devDependencies first, otherwise tests that require jsdom fail only at publish time.
