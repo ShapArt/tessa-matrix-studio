@@ -12,9 +12,11 @@ const fullUatFinalizer = fs.readFileSync(new URL('../hotfixes/v1.13.0-full-uat-l
 const inlineFailureUxPath = new URL('../hotfixes/v1.14-full-uat-inline-failures.mjs', import.meta.url);
 const finalFourPath = new URL('../hotfixes/v1.14-live-uat-final-four.mjs', import.meta.url);
 
-assert.equal(pkg.version, '1.14.0', 'package candidate version must be 1.14.0');
-assert.match(source, /^\/\/ @version\s+1\.14\.0$/m, 'userscript metadata version must be 1.14.0');
-assert.match(source, /version:\s*'1\.14\.0'/, 'runtime version must be 1.14.0');
+assert.equal(pkg.version, '1.14.1', 'package candidate version must be 1.14.1');
+// The checked-in userscript remains the verified v1.14.0 baseline. Release composition bumps
+// metadata/runtime version only after applying the report-only v1.14.1 transform.
+assert.match(source, /^\/\/ @version\s+1\.14\.0$/m, 'canonical userscript baseline must remain 1.14.0');
+assert.match(source, /version:\s*'1\.14\.0'/, 'canonical runtime baseline must remain 1.14.0');
 
 assert.match(source, /__TMS_FULL_UAT_V1__/, 'canonical userscript must ship the Full UAT runner');
 assert.match(source, /Запустить полный UAT/, 'canonical userscript must expose the Full UAT action');
@@ -68,6 +70,7 @@ assert.match(fullUatFinalizer, /bridge:\s*options\.runtimeBridge\s*\|\|\s*undefi
 assert.match(fullUatFinalizer, /structure:\s*options\.runtimeStructure\s*\|\|\s*undefined/,
   'scoped runtime structure must be forwarded into production preflight');
 
+assert.match(changelog, /## 1\.14\.1 — 2026-09-15/);
 assert.match(changelog, /## 1\.14\.0 — 2026-09-11/);
 for (const token of ['session', 'touched', 'ФИО', 'Скачать изменения в Excel', 'Performance UAT']) {
   assert.ok(changelog.includes(token), `CHANGELOG must mention ${token}`);
@@ -83,9 +86,9 @@ for (const token of ['0 изменений', 'ADD', 'UPDATE', 'DELETE', '3000', 
 assert.match(communication, /не.*подтвержден.*live TESSA/is, 'message must not claim live speedup before live UAT');
 assert.match(communication, /1\.14\.0/);
 
-assert.match(readme, /version-1\.14\.0/);
-assert.match(readme, /\*\*v1\.14\.0/);
+assert.match(readme, /version-1\.14\.1/);
+assert.match(readme, /\*\*v1\.14\.1/);
 assert.ok(readme.includes('docs/assets/studio-panel.webp'), 'real README screenshot must be preserved');
 assert.ok(readme.includes('Скачать изменения в Excel'), 'README should mention reviewed-changes export');
 
-console.log('TESSA Matrix Studio v1.14 RC documentation/final-proof/inline-failures/runtime-context/final-four contract: OK');
+console.log('TESSA Matrix Studio v1.14.1 RC documentation/final-proof/inline-failures/runtime-context/final-four contract: OK');
