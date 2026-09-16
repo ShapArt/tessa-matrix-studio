@@ -44,17 +44,25 @@ const skippedRows = Array.from({ length: fixture.preview.skippedRows }, (_, i) =
   reason: i < 12 ? `Некорректное значение ${i + 1}` : `Строка ${i + 1} не будет применена`,
 }));
 const resolutionItems = Array.from({ length: fixture.preview.resolutionValues }, (_, i) => ({
+  id: `live-resolution-${i}`,
   excelRow: 15 + (i % fixture.preview.skippedRows),
   column: 'Ознакомление',
   issue: fixture.preview.sample.issue,
   resolution: 'employee-position-only',
   candidates: [{ id: `candidate-${i}`, selector: `Сотрудник ${i}` }],
 }));
+const resolutionByRow = new Map();
+for (const item of resolutionItems) {
+  if (!resolutionByRow.has(item.excelRow)) resolutionByRow.set(item.excelRow, []);
+  resolutionByRow.get(item.excelRow).push(item);
+}
+const desired = [...resolutionByRow.entries()].map(([excelRow, items]) => ({ excelRow, resolutionItems: items }));
 const plan = {
   actions: [],
   counts: { update: 0, add: 0, delete: 0, noop: 100, skip: fixture.preview.skippedRows },
   skippedRows,
-  skippedFields: resolutionItems,
+  desired,
+  skippedFields: [],
   safety: { blocked: false, blockedReasons: [] },
 };
 const summary = E.previewAttentionSummary(plan, E.createPlanReviewState());
@@ -72,10 +80,14 @@ assert.equal(windowed.items.length, fixture.expected.resolutionPageSize);
 assert.equal(windowed.hidden, fixture.preview.resolutionValues - fixture.expected.resolutionPageSize);
 assert.equal(windowed.page, 1);
 assert.ok(windowed.pageCount > 1);
+const lastPage = E.resolutionCenterWindow(resolutionItems, 999, fixture.expected.resolutionPageSize);
+assert.equal(lastPage.page, lastPage.pageCount, 'out-of-range page must clamp safely');
+assert.ok(lastPage.items.length > 0 && lastPage.items.length <= fixture.expected.resolutionPageSize);
 
 assert.match(source, /Ошибки \$\{attention\.errors\}/, 'error filter must carry its count');
 assert.match(source, /Не будет применено \$\{attention\.notApplied\}/, 'skip filter must explain that rows are not applied');
 assert.doesNotMatch(source, /<details class=\\"tms-action\\" open><summary><b>/, 'large Resolution Center entries must be collapsed by default');
+assert.match(source, /data-resolution-page/, 'large Resolution Center must have bounded pagination');
 assert.match(source, /live-colleague-picker-multi-position/);
 assert.match(source, /live-colleague-preview-attention/);
 
