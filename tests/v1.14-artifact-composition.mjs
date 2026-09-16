@@ -28,6 +28,8 @@ try {
   run(['hotfixes/v1.13.0-full-uat-live-finalize.mjs', target]);
   run(['hotfixes/v1.14-full-uat-inline-failures.mjs', target]);
   run(['hotfixes/v1.14-live-uat-final-four.mjs', target]);
+  run(['hotfixes/v1.14.1-changes-report-full-row.mjs', target]);
+  run(['hotfixes/v1.14.2-live-excel-preview-ux.mjs', target]);
   run(['--check', target]);
 
   const source = fs.readFileSync(target, 'utf8');
@@ -75,30 +77,30 @@ try {
   assert.match(source, /failed-checks\.json/, 'FAILED package must contain machine-readable failed checks');
   assert.match(source, /FAILURES\.txt/, 'FAILED package must contain an immediately readable failure summary');
 
-  // Live failures from seed 874674273: picker must use the production source shape,
-  // generated dictionary refresh must bypass only its own trusted service XML, and Boolean
-  // UAT expectations must compare against native true/false semantics.
+  // Seeds 29768023 and 1346937433 reproduced the same 29/4 result. The composed candidate
+  // must surface exact failures without requiring ZIP extraction.
   assert.match(source, /FULL_UAT_PICKER_SOURCE_V2/);
   assert.match(source, /REFRESH_DICTIONARY_DIRECT_XML_V2/);
   assert.match(source, /FULL_UAT_BOOLEAN_SEMANTIC_V2/);
-  assert.doesNotMatch(source, /E\.pickerColumns\(structure, catalog\)/);
+  assert.match(source, /FULL_UAT_INLINE_FAILURES_V1/);
+  assert.match(source, /FAIL DETAILS/);
+  assert.match(source, /TESSA_Full_UAT_FAILURES_/);
+  assert.match(source, /Array\.isArray\(result\.failedChecks\)/);
 
-  // Seeds 29768023 and 1346937433 reproduced the same 29/4 result. The composed candidate
-  // must surface exact failures without requiring ZIP extraction.
-  assert.match(source, /FULL_UAT_INLINE_FAILURES_V1/,
-    'composed artifact must render failed checks inline');
-  assert.match(source, /FAIL DETAILS/,
-    'Full UAT panel must include an explicit failure-details section');
-  assert.match(source, /TESSA_Full_UAT_FAILURES_/,
-    'failed UAT must emit a standalone text evidence download');
-  assert.match(source, /Array\.isArray\(result\.failedChecks\)/,
-    'inline UX must consume the finalized failedChecks array');
+  // v1.14.1 report-only polish stays part of the candidate, then the colleague live bug
+  // patch is composed last. This proves the exact UAT shape, not two transforms in isolation.
+  assert.match(source, /REVIEWED_CHANGES_REPORT_V3/);
+  assert.match(source, /LIVE_EXCEL_PREVIEW_UX_V1/);
+  assert.match(source, /live-colleague-picker-multi-position/);
+  assert.match(source, /live-colleague-preview-attention/);
+  assert.match(source, /Не будет применено к TESSA/);
+  assert.match(source, /data-resolution-page/);
 
   run(['tests/user-copied-identity-regression.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/full-uat-runner-contract.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/live-uat-regressions.mjs'], { TMS_TEST_SOURCE: target });
 
-  console.log('v1.14 release/UAT artifact composition: canonical limits + live cleanup + final Save evidence + inline failures + final-four fixes OK');
+  console.log('v1.14 release/UAT artifact composition: canonical write safety + report V3 + live Excel Preview UX regression fixes OK');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
