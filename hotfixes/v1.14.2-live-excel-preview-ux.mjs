@@ -1,31 +1,33 @@
 import fs from 'node:fs';
 
-const nextTopLevelFunction = (source, start) => {
-  const next = source.indexOf('\n  function ', start + 12);
-  if (next < 0) throw new Error('next top-level function boundary not found');
-  return next + 1;
+const replaceFunction = (source, signature, replacement) => {
+  const start = source.indexOf(signature);
+  if (start < 0) throw new Error(`${signature} boundary not found`);
+  const next = source.indexOf('\n  function ', start + signature.length);
+  if (next < 0) throw new Error(`${signature} end boundary not found`);
+  return source.slice(0, start) + replacement + source.slice(next + 1);
 };
 
 export function applyLiveExcelPreviewUx(input) {
   let source = String(input ?? '');
   if (source.includes('LIVE_EXCEL_PREVIEW_UX_V1')) return source;
 
-  const aliasesStart = source.indexOf('  function employeeResolvableAliases(item) {');
-  if (aliasesStart < 0) throw new Error('employeeResolvableAliases boundary not found');
-  const aliasesEnd = nextTopLevelFunction(source, aliasesStart);
-  const aliasesBlock = `  // LIVE_EXCEL_PREVIEW_UX_V1
-  // A person may carry several TESSA positions separated by semicolons. Semicolon is
-  // also an Excel multi-value delimiter, so the picker must copy a compact, resolvable
-  // single-value alias instead of disabling Copy or splitting one employee into values.
+  source = replaceFunction(source, '  function employeeResolvableAliases(item) {', `  // LIVE_EXCEL_PREVIEW_UX_V1
+  // One employee can have several TESSA positions separated by semicolons. A semicolon is
+  // also the Excel multi-value delimiter, so a selected employee must be copied as one
+  // compact alias and remain resolvable to the same dictionary identity.
   function employeeSafeSelector(item) {
     const raw = String(item?.selector || item?.display || '').trim();
     if (!raw || Number(item?.roleTypeId) !== PERSONAL_ROLE_TYPE_ID) return raw;
     if (!/[;\\r\\n\\t]/.test(raw)) return raw;
-    const presentation = pickerEntryPresentation(item);
-    const compact = normalizeSpace(presentation?.title || '');
-    if (compact && !/[;\\r\\n\\t]/.test(compact)) return compact;
     const fullName = normalizeSpace(item?.fullName || pickerDetailValue(item, ['RoleFullName', 'UserFullName']));
-    if (fullName && !/[;\\r\\n\\t]/.test(fullName)) return fullName;
+    const shortName = normalizeSpace(item?.shortName || '');
+    const positionRaw = normalizeSpace(item?.position || pickerDetailValue(item, ['RolePositionName', 'UserPosition', 'PositionName', 'Position']));
+    const position = pickerPrimaryValue(positionRaw);
+    const rawBase = normalizeSpace(raw.split(/\\s+[—–-]\\s+/)[0] || '');
+    const base = shortName || fullName || rawBase;
+    const compact = base && position ? \`\${base} — \${position}\` : (fullName || shortName || rawBase);
+    if (compact && !/[;\\r\\n\\t]/.test(compact)) return compact;
     return raw;
   }
 
@@ -38,13 +40,9 @@ export function applyLiveExcelPreviewUx(input) {
     ].map(normalizeSpace).filter(Boolean))];
   }
 
-`;
-  source = source.slice(0, aliasesStart) + aliasesBlock + source.slice(aliasesEnd);
+`);
 
-  const pickerStart = source.indexOf('  function pickerSelectionValue(item) {');
-  if (pickerStart < 0) throw new Error('pickerSelectionValue boundary not found');
-  const pickerEnd = nextTopLevelFunction(source, pickerStart);
-  const pickerBlock = `  function pickerSelectionValue(item) {
+  source = replaceFunction(source, '  function pickerSelectionValue(item) {', `  function pickerSelectionValue(item) {
     const raw = String(item?.selector || item?.display || '').trim();
     const value = Number(item?.roleTypeId) === PERSONAL_ROLE_TYPE_ID ? employeeSafeSelector(item) : raw;
     if (/[\\n\\r;\\t]/.test(value)) throw new Error('В названии есть разделитель. Такое значение нельзя собрать автоматически. Выберите его в штатном редакторе TESSA.');
@@ -52,10 +50,10 @@ export function applyLiveExcelPreviewUx(input) {
     return value;
   }
 
-`;
-  source = source.slice(0, pickerStart) + pickerBlock + source.slice(pickerEnd);
+`);
 
-  const resolutionStart = source.indexOf('  function renderResolutionCenter(plan) {');
+  const resolutionSignature = '  function renderResolutionCenter(plan) {';
+  const resolutionStart = source.indexOf(resolutionSignature);
   if (resolutionStart < 0) throw new Error('renderResolutionCenter boundary not found');
   const helpers = `  function resolutionCenterWindow(items, page = 0, pageSize = 50) {
     const all = Array.isArray(items) ? items : [];
@@ -68,9 +66,10 @@ export function applyLiveExcelPreviewUx(input) {
   }
 
   function previewAttentionSummary(plan, review = APP.review) {
-    const reviewed = buildReviewedPlan(plan, review || createPlanReviewState());
+    const effectiveReview = review || createPlanReviewState();
+    const reviewed = buildReviewedPlan(plan, effectiveReview);
     const notApplied = Number(reviewed?.counts?.skip || reviewed?.skippedRows?.length || 0);
-    const errors = selectPreviewItems(plan, review || createPlanReviewState(), { filter: 'error', pageSize: 1 }).total;
+    const errors = selectPreviewItems(plan, effectiveReview, { filter: 'error', pageSize: 1 }).total;
     const resolutionItems = collectPlanResolutionItems(plan);
     const resolutionRows = new Set(resolutionItems.map(item => Number(item?.excelRow)).filter(Number.isFinite)).size;
     return {
@@ -78,7 +77,7 @@ export function applyLiveExcelPreviewUx(input) {
       errors,
       resolutionValues: resolutionItems.length,
       resolutionRows,
-      notAppliedLabel: notApplied ? \`Не будет применено к TESSA: \${notApplied}\` : 'Не будет применено к TESSA: 0',
+      notAppliedLabel: \`Не будет применено к TESSA: \${notApplied}\`,
       resolutionLabel: resolutionItems.length
         ? \`Требуют уточнения: \${resolutionItems.length} значений\${resolutionRows ? \` в \${resolutionRows} строках\` : ''}\`
         : 'Уточнений не требуется',
@@ -88,32 +87,101 @@ export function applyLiveExcelPreviewUx(input) {
 `;
   source = source.slice(0, resolutionStart) + helpers + source.slice(resolutionStart);
 
-  const oldResolutionHeader = "    host.hidden = false;\n    host.innerHTML = '<div class=\\\"tms-review-note\\\"><b>Нужно уточнить значения: ' + items.length + '</b><br>Studio не будет угадывать сотрудника или справочник. Выберите точное значение и перепроверьте Preview.</div>'\n      + items.map((item, itemIndex) => {";
-  const newResolutionHeader = "    host.hidden = false;\n    const resolutionWindow = resolutionCenterWindow(items, 0, 50);\n    const resolutionRows = new Set(items.map(item => Number(item?.excelRow)).filter(Number.isFinite)).size;\n    host.innerHTML = '<div class=\\\"tms-review-note\\\"><b>Требуют уточнения: ' + items.length + ' значений' + (resolutionRows ? ' в ' + resolutionRows + ' строках' : '') + '</b><br>Эти значения не будут применены автоматически. Studio не угадывает сотрудника или справочник. Показаны первые ' + resolutionWindow.items.length + (resolutionWindow.hidden ? ' из ' + resolutionWindow.total + '; после уточнения Preview пересоберётся и покажет следующие.' : '.') + '</div>'\n      + resolutionWindow.items.map((item, itemIndex) => {";
-  if (!source.includes(oldResolutionHeader)) throw new Error('resolution center header block not found');
-  source = source.replace(oldResolutionHeader, newResolutionHeader);
-  source = source.replace("return '<details class=\\\"tms-action\\\" open><summary><b>' + escapeHtml(title) + '</b></summary>", "return '<details class=\\\"tms-action\\\"><summary><b>' + escapeHtml(title) + '</b></summary>");
+  source = replaceFunction(source, resolutionSignature, `  function renderResolutionCenter(plan) {
+    const host = document.querySelector?.('#tms-resolution-center');
+    if (!host) return;
+    const items = collectPlanResolutionItems(plan);
+    if (!items.length) {
+      host.hidden = true;
+      host.innerHTML = '';
+      if (host.dataset) delete host.dataset.resolutionPage;
+      return;
+    }
+    host.hidden = false;
+    const requestedPage = Math.max(0, Number(host.dataset?.resolutionPage || 0));
+    const windowed = resolutionCenterWindow(items, requestedPage, 50);
+    if (host.dataset) host.dataset.resolutionPage = String(windowed.page - 1);
+    const resolutionRows = new Set(items.map(item => Number(item?.excelRow)).filter(Number.isFinite)).size;
+    const rangeStart = windowed.total ? windowed.start + 1 : 0;
+    const rangeEnd = windowed.start + windowed.items.length;
+    const pager = windowed.pageCount > 1
+      ? '<div class="tms-preview-pager"><button type="button" data-resolution-page="' + Math.max(0, windowed.page - 2) + '" ' + (windowed.page <= 1 ? 'disabled' : '') + '>←</button><span>Показано ' + rangeStart + '–' + rangeEnd + ' из ' + windowed.total + ' · стр. ' + windowed.page + '/' + windowed.pageCount + '</span><button type="button" data-resolution-page="' + Math.min(windowed.pageCount - 1, windowed.page) + '" ' + (windowed.page >= windowed.pageCount ? 'disabled' : '') + '>→</button></div>'
+      : '';
+    host.innerHTML = '<div class="tms-review-note"><b>Требуют уточнения: ' + items.length + ' значений' + (resolutionRows ? ' в ' + resolutionRows + ' строках' : '') + '</b><br>Эти значения не будут применены автоматически. Studio не угадывает сотрудника или справочник — выберите точное значение и перепроверьте Preview.</div>'
+      + pager
+      + windowed.items.map((item, localIndex) => {
+        const itemIndex = windowed.start + localIndex;
+        const title = item.excelRow ? 'Excel ' + item.excelRow + ' · ' + (item.column || item.columnKey || 'поле') : (item.column || item.columnKey || 'Конфликт');
+        const candidates = (item.candidates || []).map((candidate, candidateIndex) => {
+          const label = candidate.selector || candidate.display || candidate.shortName || candidate.fullName || candidate.id || 'Вариант';
+          return '<div class="tms-resolution-choice"><span>' + escapeHtml(label) + '</span><button type="button" data-resolution-choice="' + itemIndex + ':' + candidateIndex + '">Выбрать и перепроверить</button></div>';
+        }).join('');
+        return '<details class="tms-action"><summary><b>' + escapeHtml(title) + '</b></summary><div class="tms-action-body"><div class="tms-warning">' + escapeHtml(item.issue || 'Требуется явный выбор.') + '</div>' + candidates + '<button type="button" data-resolution-skip="' + itemIndex + '">Пропустить осознанно</button></div></details>';
+      }).join('')
+      + pager;
+
+    host.querySelectorAll?.('button[data-resolution-page]')?.forEach(button => button.addEventListener('click', () => {
+      if (APP.busy) return;
+      if (host.dataset) host.dataset.resolutionPage = String(Math.max(0, Number(button.dataset.resolutionPage) || 0));
+      renderResolutionCenter(plan);
+    }));
+
+    host.querySelectorAll?.('button[data-resolution-choice]')?.forEach(button => button.addEventListener('click', async () => {
+      if (APP.busy) return;
+      const [itemIndexText, candidateIndexText] = String(button.dataset.resolutionChoice || '').split(':');
+      const item = items[Number(itemIndexText)];
+      const candidate = item?.candidates?.[Number(candidateIndexText)];
+      if (!item || !candidate) return;
+      setBusy(true);
+      try {
+        const outcome = applyResolutionChoiceToWorkbook(APP.workbook, item, candidate);
+        log('Resolution Center: Excel ' + outcome.excelRow + ' → ' + outcome.display + '.');
+        await recheckResolutionCenterPlan();
+      } catch (error) {
+        const message = friendlyErrorMessage(error);
+        log(message, 'error', error);
+        setProgress(100, 'Не удалось применить уточнение', message);
+      } finally {
+        setBusy(false);
+      }
+    }));
+
+    host.querySelectorAll?.('button[data-resolution-skip]')?.forEach(button => button.addEventListener('click', () => {
+      const item = items[Number(button.dataset.resolutionSkip)];
+      if (!item) return;
+      button.disabled = true;
+      button.textContent = 'Пропуск подтверждён';
+      log('Resolution Center: пользователь осознанно пропустил Excel ' + (item.excelRow || '?') + ' · ' + (item.column || item.columnKey || 'поле') + '.', 'warn');
+    }));
+  }
+
+`);
 
   const attentionNeedle = "    const c = reviewed.counts;\n    const skipped = reviewed.skippedRows || [];";
   if (!source.includes(attentionNeedle)) throw new Error('Preview count block not found');
   source = source.replace(attentionNeedle, "    const c = reviewed.counts;\n    const attention = previewAttentionSummary(plan, APP.review);\n    const skipped = reviewed.skippedRows || [];");
 
-  const oldCounters = `        <span class=\"tms-count tms-noop\">без изменений <b>\${c.noop}</b></span>
-        <span class=\"tms-count tms-skip\">пропустить <b>\${c.skip || 0}</b></span>`;
-  const newCounters = `        <span class=\"tms-count tms-noop\">без изменений <b>\${c.noop}</b></span>
-        <span class=\"tms-count tms-skip\">не будет применено <b>\${attention.notApplied}</b></span>
-        <span class=\"tms-count tms-error\">из них ошибки <b>\${attention.errors}</b></span>`;
+  const oldCounters = `        <span class="tms-count tms-noop">без изменений <b>\${c.noop}</b></span>
+        <span class="tms-count tms-skip">пропустить <b>\${c.skip || 0}</b></span>`;
+  const newCounters = `        <span class="tms-count tms-noop">без изменений <b>\${c.noop}</b></span>
+        <span class="tms-count tms-skip">не будет применено <b>\${attention.notApplied}</b></span>
+        <span class="tms-count tms-error">из них ошибки <b>\${attention.errors}</b></span>`;
   if (!source.includes(oldCounters)) throw new Error('Preview counters block not found');
   source = source.replace(oldCounters, newCounters);
+
+  const oldSkipNote = '}</b> Пропущено строк: ${skipped.length}. Причины указаны в списке ниже.</div>` : \'\'}';
+  const newSkipNote = '}</b> Не будет применено к TESSA: ${skipped.length} строк. Эти строки не записываются; причины указаны в списке ниже.</div>` : \'\'}';
+  if (!source.includes(oldSkipNote)) throw new Error('Preview skipped-row explanation not found');
+  source = source.replace(oldSkipNote, newSkipNote);
 
   const oldFilters = "        ${filterButton('all', 'Все')}${filterButton('update', 'Изменить')}${filterButton('add', 'Добавить')}${filterButton('delete', 'Удалить')}${filterButton('skip', 'Пропустить')}${filterButton('error', 'Ошибки')}";
   const newFilters = "        ${filterButton('all', 'Все')}${filterButton('update', `Изменить ${c.update}`)}${filterButton('add', `Добавить ${c.add}`)}${filterButton('delete', `Удалить ${c.delete}`)}${filterButton('skip', `Не будет применено ${attention.notApplied}`)}${filterButton('error', `Ошибки ${attention.errors}`)}";
   if (!source.includes(oldFilters)) throw new Error('Preview filter block not found');
   source = source.replace(oldFilters, newFilters);
 
-  source = source.replace('#tms-panel .tms-counters{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));', '#tms-panel .tms-counters{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));');
-
-  source = source.replace('} Пропущено строк: ${skipped.length}. Причины указаны в списке ниже.</div>` : \'\'}', '} Не будет применено к TESSA: ${skipped.length} строк. Эти строки не записываются; причины указаны в списке ниже.</div>` : \'\'}');
+  const cssNeedle = '#tms-panel .tms-counters{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));';
+  if (!source.includes(cssNeedle)) throw new Error('Preview counter CSS not found');
+  source = source.replace(cssNeedle, '#tms-panel .tms-counters{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));');
 
   const exportNeedle = '    createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage,';
   if (!source.includes(exportNeedle)) throw new Error('test export block not found');
@@ -135,12 +203,12 @@ export function applyLiveExcelPreviewUx(input) {
       });
       await runCheck('live-colleague-preview-attention', 'Регрессия: крупный Preview показывает понятные счётчики и ограничивает список уточнений', async () => {
         const syntheticSkips = Array.from({ length: 196 }, (_, index) => ({ excelRow: index + 15, code: index < 12 ? 'invalid-value' : '', reason: 'synthetic' }));
-        const syntheticPlan = { actions: [], counts: { update: 0, add: 0, delete: 0, noop: 100, skip: 196 }, skippedRows: syntheticSkips, skippedFields: [], safety: { blocked: false, blockedReasons: [] } };
+        const syntheticPlan = { actions: [], counts: { update: 0, add: 0, delete: 0, noop: 100, skip: 196 }, skippedRows: syntheticSkips, desired: [], safety: { blocked: false, blockedReasons: [] } };
         const summary = previewAttentionSummary(syntheticPlan, createPlanReviewState());
         const windowed = resolutionCenterWindow(Array.from({ length: 747 }, (_, index) => ({ excelRow: 15 + (index % 196) })), 0, 50);
         if (summary.notApplied !== 196 || summary.errors !== 12) throw new Error('Preview attention counters do not match the synthetic 196/12 case.');
         if (windowed.items.length !== 50 || windowed.total !== 747 || windowed.hidden !== 697) throw new Error('Resolution Center is not bounded to 50 visible items.');
-        return { detail: '196 not-applied rows and 12 errors are explicit; 747-item Resolution Center renders only first 50.', data: { outcome: 'preview-plan', notApplied: summary.notApplied, errors: summary.errors, totalClarifications: windowed.total, visibleClarifications: windowed.items.length } };
+        return { detail: '196 not-applied rows and 12 errors are explicit; 747-item Resolution Center renders only 50 per page.', data: { outcome: 'preview-plan', notApplied: summary.notApplied, errors: summary.errors, totalClarifications: windowed.total, visibleClarifications: windowed.items.length } };
       });
 `;
   source = source.replace(uatNeedle, uatChecks + uatNeedle);
