@@ -4,8 +4,11 @@ import assert from 'node:assert/strict';
 import { applyLiveExcelPreviewUx } from '../hotfixes/v1.14.2-live-excel-preview-ux.mjs';
 
 const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/live-ord-main-78792326-regression.json', import.meta.url), 'utf8'));
-const baseline = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
-const source = applyLiveExcelPreviewUx(baseline);
+const configuredSource = process.env.TMS_TEST_SOURCE;
+const baseline = configuredSource
+  ? fs.readFileSync(configuredSource, 'utf8')
+  : fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
+const source = baseline.includes('LIVE_EXCEL_PREVIEW_UX_V1') ? baseline : applyLiveExcelPreviewUx(baseline);
 assert.match(source, /LIVE_EXCEL_PREVIEW_UX_V1/);
 
 globalThis.window = globalThis;
@@ -14,7 +17,7 @@ globalThis.location = { origin: 'https://tessa.cherkizovsky.net' };
 globalThis.alert = () => {};
 globalThis.confirm = () => true;
 globalThis.document = { body: { innerText: '' }, querySelector: () => null, querySelectorAll: () => [] };
-vm.runInThisContext(source, { filename: 'tessa-matrix-studio-live-excel-preview-ux.user.js' });
+vm.runInThisContext(source, { filename: configuredSource || 'tessa-matrix-studio-live-excel-preview-ux.user.js' });
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 
 assert.ok(E, 'test exports must exist');
