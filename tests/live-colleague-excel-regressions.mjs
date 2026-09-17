@@ -100,17 +100,17 @@ assert.equal(E.previewCounterFilterTarget('all', 'add'), 'add', 'clicking Add fr
 assert.equal(E.previewCounterFilterTarget('add', 'add'), 'all', 'clicking the active Add counter again must return to All');
 assert.equal(E.previewCounterFilterTarget('delete', 'error'), 'error', 'clicking another counter must switch filters directly');
 assert.equal(E.previewCounterFilterTarget('skip', 'update'), 'update', 'counter navigation must work from not-applied view');
-assert.match(source, /data-preview-counter-filter=\\"update\\"/, 'Update counter must be an actionable filter button');
-assert.match(source, /data-preview-counter-filter=\\"add\\"/, 'Add counter must be an actionable filter button');
-assert.match(source, /data-preview-counter-filter=\\"delete\\"/, 'Delete counter must be an actionable filter button');
-assert.match(source, /data-preview-counter-filter=\\"skip\\"/, 'Not-applied counter must be an actionable filter button');
-assert.match(source, /data-preview-counter-filter=\\"error\\"/, 'Error counter must be an actionable filter button');
+assert.match(source, /data-preview-counter-filter="update"/, 'Update counter must be an actionable filter button');
+assert.match(source, /data-preview-counter-filter="add"/, 'Add counter must be an actionable filter button');
+assert.match(source, /data-preview-counter-filter="delete"/, 'Delete counter must be an actionable filter button');
+assert.match(source, /data-preview-counter-filter="skip"/, 'Not-applied counter must be an actionable filter button');
+assert.match(source, /data-preview-counter-filter="error"/, 'Error counter must be an actionable filter button');
 assert.match(source, /aria-pressed=/, 'Counter filters must expose their active state accessibly');
 assert.match(source, /button\[data-preview-counter-filter\]/, 'Preview click delegation must handle counter filters');
-assert.doesNotMatch(source, /class=\\"tms-preview-filters\\"/, 'Duplicated lower Preview filter bar must be removed');
+assert.doesNotMatch(source, /class="tms-preview-filters"/, 'Duplicated lower Preview filter bar must be removed');
 
 assert.match(source, /Не будет применено \$\{attention\.notApplied\}/, 'skip semantics must explain that rows are not applied');
-assert.doesNotMatch(source, /<details class=\\"tms-action\\" open><summary><b>/, 'large Resolution Center entries must be collapsed by default');
+assert.doesNotMatch(source, /<details class=\"tms-action\" open><summary><b>/, 'large Resolution Center entries must be collapsed by default');
 assert.match(source, /data-resolution-page/, 'large Resolution Center must have bounded pagination');
 assert.match(source, /live-colleague-picker-multi-position/);
 assert.match(source, /live-colleague-preview-attention/);
