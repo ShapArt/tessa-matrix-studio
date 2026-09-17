@@ -8,6 +8,7 @@ on:
       - 'hotfixes/v1.14.2-preview-counter-filters.mjs'
       - 'hotfixes/v1.14.2-full-uat-scope-fix.mjs'
       - 'tests/live-colleague-excel-regressions.mjs'
+      - 'tests/v1.14.2-full-uat-clear-regression.mjs'
       - 'tests/fixtures/live-ord-main-78792326-regression.json'
       - 'tests/v1.14-artifact-composition.mjs'
       - '.github/workflows/live-excel-preview-uat-candidate.yml'
@@ -90,6 +91,7 @@ jobs:
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/full-uat-runner-contract.mjs
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/live-uat-regressions.mjs
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/live-colleague-excel-regressions.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.14.2-full-uat-clear-regression.mjs
 
           awk 'BEGIN { emit=0 } /^\/\/ ==UserScript==/ { emit=1 } emit { print } /^\/\/ ==\/UserScript==/ { exit }' \
             dist/tessa-matrix-studio.user.js > dist/tessa-matrix-studio.meta.js
@@ -103,7 +105,7 @@ jobs:
 
           USER_SHA="$(sha256sum dist/tessa-matrix-studio.user.js | awk '{print $1}')"
           COMMIT_SHA="$(git rev-parse HEAD)"
-          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "live-colleague-excel-preview-uat",\n  "sourceWorkbook": "TESSA_Матрица_ОРД-основная_78792326_СПРАВОЧНИКИ.xlsx",\n  "expectedChecks": ["multi-position-picker-copy", "visible-preview-error-count", "explicit-not-applied-count", "bounded-resolution-center", "counter-driven-preview-filters", "full-uat-export-scope"]\n}\n' \
+          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "live-colleague-excel-preview-uat",\n  "sourceWorkbook": "TESSA_Матрица_ОРД-основная_78792326_СПРАВОЧНИКИ.xlsx",\n  "expectedChecks": ["multi-position-picker-copy", "visible-preview-error-count", "explicit-not-applied-count", "bounded-resolution-center", "counter-driven-preview-filters", "full-uat-export-scope", "deterministic-live-clear"]\n}\n' \
             "$CANDIDATE_VERSION" "$COMMIT_SHA" "$USER_SHA" > dist/candidate-manifest.json
 
       - name: Upload exact UAT candidate
