@@ -90,12 +90,28 @@ const lastPage = E.resolutionCenterWindow(resolutionItems, 999, fixture.expected
 assert.equal(lastPage.page, lastPage.pageCount, 'out-of-range page must clamp safely');
 assert.ok(lastPage.items.length > 0 && lastPage.items.length <= fixture.expected.resolutionPageSize);
 
-assert.match(source, /Ошибки \$\{attention\.errors\}/, 'error filter must carry its count');
-assert.match(source, /Не будет применено \$\{attention\.notApplied\}/, 'skip filter must explain that rows are not applied');
+// Preview counters are the filters. This removes the duplicated filter bar and makes
+// the main counts themselves actionable without changing the planner/safety semantics.
+assert.equal(typeof E.previewCounterFilterTarget, 'function', 'Preview must expose canonical counter-filter toggle behavior');
+assert.equal(E.previewCounterFilterTarget('all', 'add'), 'add', 'clicking Add from All must show additions');
+assert.equal(E.previewCounterFilterTarget('add', 'add'), 'all', 'clicking the active Add counter again must return to All');
+assert.equal(E.previewCounterFilterTarget('delete', 'error'), 'error', 'clicking another counter must switch filters directly');
+assert.equal(E.previewCounterFilterTarget('skip', 'update'), 'update', 'counter navigation must work from not-applied view');
+assert.match(source, /data-preview-counter-filter=\\"update\\"/, 'Update counter must be an actionable filter button');
+assert.match(source, /data-preview-counter-filter=\\"add\\"/, 'Add counter must be an actionable filter button');
+assert.match(source, /data-preview-counter-filter=\\"delete\\"/, 'Delete counter must be an actionable filter button');
+assert.match(source, /data-preview-counter-filter=\\"skip\\"/, 'Not-applied counter must be an actionable filter button');
+assert.match(source, /data-preview-counter-filter=\\"error\\"/, 'Error counter must be an actionable filter button');
+assert.match(source, /aria-pressed=/, 'Counter filters must expose their active state accessibly');
+assert.match(source, /button\[data-preview-counter-filter\]/, 'Preview click delegation must handle counter filters');
+assert.doesNotMatch(source, /class=\\"tms-preview-filters\\"/, 'Duplicated lower Preview filter bar must be removed');
+
+assert.match(source, /Не будет применено \$\{attention\.notApplied\}/, 'skip semantics must explain that rows are not applied');
 assert.doesNotMatch(source, /<details class=\\"tms-action\\" open><summary><b>/, 'large Resolution Center entries must be collapsed by default');
 assert.match(source, /data-resolution-page/, 'large Resolution Center must have bounded pagination');
 assert.match(source, /live-colleague-picker-multi-position/);
 assert.match(source, /live-colleague-preview-attention/);
+assert.match(source, /live-colleague-preview-counter-filters/, 'Full UAT must cover counter-driven Preview filtering');
 
 // The Full UAT runner is appended outside the production IIFE and can only reach
 // production helpers through the exported E bridge. The real live UAT seed 2970132379
@@ -108,4 +124,4 @@ assert.doesNotMatch(source, /const text = pickerSelectionText\(\[item\]\);/, 'ba
 assert.doesNotMatch(source, /const summary = previewAttentionSummary\(syntheticPlan, createPlanReviewState\(\)\);/, 'bare Preview helper calls must never re-enter Full UAT');
 assert.doesNotMatch(source, /const windowed = resolutionCenterWindow\(Array\.from\(/, 'bare paging helper call must never re-enter Full UAT');
 
-console.log('Live colleague regression: multi-position picker copy + visible Preview counts + bounded Resolution Center + exported Full UAT scope: OK');
+console.log('Live colleague regression: picker copy + Preview counts + bounded Resolution Center + counter-driven filters + exported Full UAT scope: OK');
