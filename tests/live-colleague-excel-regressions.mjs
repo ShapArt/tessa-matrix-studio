@@ -94,4 +94,11 @@ assert.match(source, /data-resolution-page/, 'large Resolution Center must have 
 assert.match(source, /live-colleague-picker-multi-position/);
 assert.match(source, /live-colleague-preview-attention/);
 
-console.log('Live colleague regression: multi-position picker copy + visible Preview counts + bounded Resolution Center + Full UAT checks: OK');
+// The Full UAT runner is appended outside the production IIFE and can only reach
+// production helpers through the exported E bridge. The real live UAT caught this exact
+// scope boundary: direct helper calls produced ReferenceError despite synthetic UI tests passing.
+assert.match(source, /const text = E\.pickerSelectionText\(\[item\]\);/, 'Full UAT picker check must call exported picker helper through E');
+assert.match(source, /const summary = E\.previewAttentionSummary\(syntheticPlan, E\.createPlanReviewState\(\)\);/, 'Full UAT Preview check must call exported summary helpers through E');
+assert.match(source, /const windowed = E\.resolutionCenterWindow\(/, 'Full UAT Resolution Center check must call exported paging helper through E');
+
+console.log('Live colleague regression: multi-position picker copy + visible Preview counts + bounded Resolution Center + Full UAT scope contract: OK');
