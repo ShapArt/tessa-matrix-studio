@@ -108,8 +108,8 @@ assert.match(source, /data-preview-counter-filter="error"/, 'Error counter must 
 assert.match(source, /aria-pressed=/, 'Counter filters must expose their active state accessibly');
 assert.match(source, /button\[data-preview-counter-filter\]/, 'Preview click delegation must handle counter filters');
 assert.doesNotMatch(source, /class="tms-preview-filters"/, 'Duplicated lower Preview filter bar must be removed');
+assert.match(source, /не будет применено <b>\$\{attention\.notApplied\}<\/b>/i, 'summary counter must retain explicit not-applied semantics');
 
-assert.match(source, /Не будет применено \$\{attention\.notApplied\}/, 'skip semantics must explain that rows are not applied');
 assert.doesNotMatch(source, /<details class=\"tms-action\" open><summary><b>/, 'large Resolution Center entries must be collapsed by default');
 assert.match(source, /data-resolution-page/, 'large Resolution Center must have bounded pagination');
 assert.match(source, /live-colleague-picker-multi-position/);
