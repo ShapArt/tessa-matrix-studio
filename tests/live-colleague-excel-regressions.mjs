@@ -2,14 +2,17 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import { applyLiveExcelPreviewUx } from '../hotfixes/v1.14.2-live-excel-preview-ux.mjs';
+import { applyFullUatScopeFix } from '../hotfixes/v1.14.2-full-uat-scope-fix.mjs';
 
 const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/live-ord-main-78792326-regression.json', import.meta.url), 'utf8'));
 const configuredSource = process.env.TMS_TEST_SOURCE;
 const baseline = configuredSource
   ? fs.readFileSync(configuredSource, 'utf8')
   : fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
-const source = baseline.includes('LIVE_EXCEL_PREVIEW_UX_V1') ? baseline : applyLiveExcelPreviewUx(baseline);
+const liveUxSource = baseline.includes('LIVE_EXCEL_PREVIEW_UX_V1') ? baseline : applyLiveExcelPreviewUx(baseline);
+const source = liveUxSource.includes('LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1') ? liveUxSource : applyFullUatScopeFix(liveUxSource);
 assert.match(source, /LIVE_EXCEL_PREVIEW_UX_V1/);
+assert.match(source, /LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1/);
 
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
@@ -95,10 +98,14 @@ assert.match(source, /live-colleague-picker-multi-position/);
 assert.match(source, /live-colleague-preview-attention/);
 
 // The Full UAT runner is appended outside the production IIFE and can only reach
-// production helpers through the exported E bridge. The real live UAT caught this exact
-// scope boundary: direct helper calls produced ReferenceError despite synthetic UI tests passing.
+// production helpers through the exported E bridge. The real live UAT seed 2970132379
+// caught this exact scope boundary: direct helper calls produced ReferenceError despite
+// the product-level synthetic behavior being correct.
 assert.match(source, /const text = E\.pickerSelectionText\(\[item\]\);/, 'Full UAT picker check must call exported picker helper through E');
 assert.match(source, /const summary = E\.previewAttentionSummary\(syntheticPlan, E\.createPlanReviewState\(\)\);/, 'Full UAT Preview check must call exported summary helpers through E');
 assert.match(source, /const windowed = E\.resolutionCenterWindow\(/, 'Full UAT Resolution Center check must call exported paging helper through E');
+assert.doesNotMatch(source, /const text = pickerSelectionText\(\[item\]\);/, 'bare picker helper call must never re-enter Full UAT');
+assert.doesNotMatch(source, /const summary = previewAttentionSummary\(syntheticPlan, createPlanReviewState\(\)\);/, 'bare Preview helper calls must never re-enter Full UAT');
+assert.doesNotMatch(source, /const windowed = resolutionCenterWindow\(Array\.from\(/, 'bare paging helper call must never re-enter Full UAT');
 
-console.log('Live colleague regression: multi-position picker copy + visible Preview counts + bounded Resolution Center + Full UAT scope contract: OK');
+console.log('Live colleague regression: multi-position picker copy + visible Preview counts + bounded Resolution Center + exported Full UAT scope: OK');
