@@ -28,6 +28,10 @@ try {
   run(['hotfixes/v1.13.0-full-uat-live-finalize.mjs', target]);
   run(['hotfixes/v1.14-full-uat-inline-failures.mjs', target]);
   run(['hotfixes/v1.14-live-uat-final-four.mjs', target]);
+  run(['hotfixes/v1.14.1-changes-report-full-row.mjs', target]);
+  run(['hotfixes/v1.14.2-live-excel-preview-ux.mjs', target]);
+  run(['hotfixes/v1.14.2-preview-counter-filters.mjs', target]);
+  run(['hotfixes/v1.14.2-full-uat-scope-fix.mjs', target]);
   run(['--check', target]);
 
   const source = fs.readFileSync(target, 'utf8');
@@ -75,30 +79,45 @@ try {
   assert.match(source, /failed-checks\.json/, 'FAILED package must contain machine-readable failed checks');
   assert.match(source, /FAILURES\.txt/, 'FAILED package must contain an immediately readable failure summary');
 
-  // Live failures from seed 874674273: picker must use the production source shape,
-  // generated dictionary refresh must bypass only its own trusted service XML, and Boolean
-  // UAT expectations must compare against native true/false semantics.
+  // Seeds 29768023 and 1346937433 reproduced the same 29/4 result. The composed candidate
+  // must surface exact failures without requiring ZIP extraction.
   assert.match(source, /FULL_UAT_PICKER_SOURCE_V2/);
   assert.match(source, /REFRESH_DICTIONARY_DIRECT_XML_V2/);
   assert.match(source, /FULL_UAT_BOOLEAN_SEMANTIC_V2/);
-  assert.doesNotMatch(source, /E\.pickerColumns\(structure, catalog\)/);
+  assert.match(source, /FULL_UAT_INLINE_FAILURES_V1/);
+  assert.match(source, /FAIL DETAILS/);
+  assert.match(source, /TESSA_Full_UAT_FAILURES_/);
+  assert.match(source, /Array\.isArray\(result\.failedChecks\)/);
 
-  // Seeds 29768023 and 1346937433 reproduced the same 29/4 result. The composed candidate
-  // must surface exact failures without requiring ZIP extraction.
-  assert.match(source, /FULL_UAT_INLINE_FAILURES_V1/,
-    'composed artifact must render failed checks inline');
-  assert.match(source, /FAIL DETAILS/,
-    'Full UAT panel must include an explicit failure-details section');
-  assert.match(source, /TESSA_Full_UAT_FAILURES_/,
-    'failed UAT must emit a standalone text evidence download');
-  assert.match(source, /Array\.isArray\(result\.failedChecks\)/,
-    'inline UX must consume the finalized failedChecks array');
+  // v1.14.1 report polish + colleague live Preview fixes + counter-driven filtering +
+  // the live-UAT-only scope correction must be composed into one exact candidate.
+  assert.match(source, /REVIEWED_CHANGES_REPORT_V3/);
+  assert.match(source, /LIVE_EXCEL_PREVIEW_UX_V1/);
+  assert.match(source, /PREVIEW_COUNTER_FILTERS_V1/);
+  assert.match(source, /LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1/);
+  assert.match(source, /live-colleague-picker-multi-position/);
+  assert.match(source, /live-colleague-preview-attention/);
+  assert.match(source, /live-colleague-preview-counter-filters/);
+  assert.match(source, /Не будет применено к TESSA/);
+  assert.match(source, /data-resolution-page/);
+  assert.match(source, /data-preview-counter-filter=\"add\"/);
+  assert.match(source, /button\[data-preview-counter-filter\]/);
+  assert.match(source, /aria-pressed=/);
+  assert.doesNotMatch(source, /class=\"tms-preview-filters\"/,
+    'exact candidate must not contain duplicated lower Preview filter controls');
+  assert.match(source, /const text = E\.pickerSelectionText\(\[item\]\);/);
+  assert.match(source, /const summary = E\.previewAttentionSummary\(syntheticPlan, E\.createPlanReviewState\(\)\);/);
+  assert.match(source, /const windowed = E\.resolutionCenterWindow\(/);
+  assert.doesNotMatch(source, /const text = pickerSelectionText\(\[item\]\);/);
+  assert.doesNotMatch(source, /const summary = previewAttentionSummary\(syntheticPlan, createPlanReviewState\(\)\);/);
+  assert.doesNotMatch(source, /const windowed = resolutionCenterWindow\(Array\.from\(/);
 
   run(['tests/user-copied-identity-regression.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/full-uat-runner-contract.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/live-uat-regressions.mjs'], { TMS_TEST_SOURCE: target });
+  run(['tests/live-colleague-excel-regressions.mjs'], { TMS_TEST_SOURCE: target });
 
-  console.log('v1.14 release/UAT artifact composition: canonical limits + live cleanup + final Save evidence + inline failures + final-four fixes OK');
+  console.log('v1.14 release/UAT artifact composition: write safety + report V3 + live Excel UX + counter filters + exported Full UAT scope OK');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
