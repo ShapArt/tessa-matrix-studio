@@ -4,7 +4,9 @@ const target = process.argv[2] || 'tessa-matrix-studio.user.js';
 let source = fs.readFileSync(target, 'utf8');
 
 const startMarker = `      await runCheck('write-clear-delete', 'Сервер: ADD → очистка поля → read-back → cleanup', async () => {`;
-const endMarker = `      if (typeof E.stopNativeOperationRecorder`;
+// v1.13.0-full-uat-live-finalize moves recorder shutdown into finally. This marker is
+// the stable boundary immediately after the write-clear check in the composed artifact.
+const endMarker = `      // FULL_UAT_RECORDER_THROUGH_FINAL_SAVE_V2`;
 const start = source.indexOf(startMarker);
 const end = source.indexOf(endMarker, start);
 if (start < 0 || end < 0 || end <= start) {
