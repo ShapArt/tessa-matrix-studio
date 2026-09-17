@@ -6,6 +6,16 @@ const replaceOnce = (source, before, after, label) => {
   return source.replace(before, after);
 };
 
+const replacePatternOnce = (source, pattern, after, label) => {
+  let count = 0;
+  const output = source.replace(pattern, () => {
+    count += 1;
+    return after;
+  });
+  if (count !== 1) throw new Error(`${label}: expected exactly one match, got ${count}`);
+  return output;
+};
+
 export function applyPreviewCounterFilters(input) {
   let source = String(input ?? '');
   if (source.includes('PREVIEW_COUNTER_FILTERS_V1')) return source;
@@ -49,14 +59,15 @@ export function applyPreviewCounterFilters(input) {
       </div>`;
   source = replaceOnce(source, oldCounters, newCounters, 'Preview counter cards');
 
-  const filterButtonDefinition = '    const filterButton = (value, label) => `<button type=\\"button\\" class=\\"tms-preview-filter\${selection.filter === value ? \' tms-active\' : \'\'}\\" data-preview-filter=\\"\${value}\\">\${label}</button>`;\n';
-  source = replaceOnce(source, filterButtonDefinition, '', 'legacy filter button factory');
-
-  const lowerFilters = `      <div class=\"tms-preview-filters\">
-        \${filterButton('all', 'Все')}\${filterButton('update', \`Изменить \${c.update}\`)}\${filterButton('add', \`Добавить \${c.add}\`)}\${filterButton('delete', \`Удалить \${c.delete}\`)}\${filterButton('skip', \`Не будет применено \${attention.notApplied}\`)}\${filterButton('error', \`Ошибки \${attention.errors}\`)}
-      </div>
-`;
-  source = replaceOnce(source, lowerFilters, '', 'duplicated lower Preview filters');
+  // Remove only the rendered duplicate filter row. The tiny local factory may remain
+  // dead in the template source; keeping this transform independent of quote escaping
+  // makes the release composition resilient across the 1.14.x source variants.
+  source = replacePatternOnce(
+    source,
+    /^      <div class=\\?"tms-preview-filters\\?">\n        \$\{filterButton[^\n]+\}\n      <\/div>\n/gm,
+    '',
+    'duplicated lower Preview filters',
+  );
 
   const oldClickHandler = `      const filter = event.target?.closest?.('button[data-preview-filter]');
       if (filter && !APP.busy) {
