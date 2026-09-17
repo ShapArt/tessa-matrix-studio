@@ -110,7 +110,7 @@ assert.match(source, /button\[data-preview-counter-filter\]/, 'Preview click del
 assert.doesNotMatch(source, /class="tms-preview-filters"/, 'Duplicated lower Preview filter bar must be removed');
 assert.match(source, /не будет применено <b>\$\{attention\.notApplied\}<\/b>/i, 'summary counter must retain explicit not-applied semantics');
 
-assert.doesNotMatch(source, /<details class=\"tms-action\" open><summary><b>/, 'large Resolution Center entries must be collapsed by default');
+assert.match(source, /return '<details class="tms-action"><summary><b>' \+ escapeHtml\(title\)/, 'Resolution Center entries must render collapsed by default');
 assert.match(source, /data-resolution-page/, 'large Resolution Center must have bounded pagination');
 assert.match(source, /live-colleague-picker-multi-position/);
 assert.match(source, /live-colleague-preview-attention/);
