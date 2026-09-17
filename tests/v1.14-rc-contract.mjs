@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import './live-uat-final-four-regressions.mjs';
 import './live-uat-release-composition.mjs';
 import './v1.14.1-report-only-release-parity.mjs';
+import './live-colleague-excel-regressions.mjs';
 
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const source = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
