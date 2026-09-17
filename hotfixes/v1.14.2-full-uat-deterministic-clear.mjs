@@ -15,8 +15,8 @@ const currentBlock = source.slice(start, end);
 if (!currentBlock.includes('FULL_UAT_CLEAR_NOT_RUN_CLEANUP_V1')) {
   throw new Error('Full UAT deterministic CLEAR: expected finalized NOT_RUN cleanup contract is missing');
 }
-if (!currentBlock.includes('Не найдено доказанно необязательное заполненное поле временной строки.')) {
-  throw new Error('Full UAT deterministic CLEAR: old flaky heuristic branch is missing');
+if (!currentBlock.includes('candidateIndexes = directTokenIndexes(book)')) {
+  throw new Error('Full UAT deterministic CLEAR: expected old data-shape heuristic is missing');
 }
 
 const replacement = `      await runCheck('write-clear-delete', 'Сервер: ADD → SET → CLEAR → read-back → cleanup', async () => {
@@ -134,11 +134,11 @@ const replacedBlock = source.slice(start, replacedBlockEnd);
 if (!replacedBlock.includes('FULL_UAT_CLEAR_SCENARIO_DETERMINISTIC_V2')) {
   throw new Error('Full UAT deterministic CLEAR marker missing after replacement');
 }
-if (replacedBlock.includes('Не найдено доказанно необязательное заполненное поле временной строки.')) {
-  throw new Error('Full UAT deterministic CLEAR: obsolete NOT_RUN branch remains');
-}
 if (replacedBlock.includes("status: 'NOT_RUN'")) {
   throw new Error('Full UAT deterministic CLEAR: scenario must PASS or FAIL, never NOT_RUN');
+}
+if (replacedBlock.includes('candidateIndexes = directTokenIndexes(book)')) {
+  throw new Error('Full UAT deterministic CLEAR: obsolete live-data heuristic remains');
 }
 
 fs.writeFileSync(target, source, 'utf8');
