@@ -30,6 +30,7 @@ try {
   run(['hotfixes/v1.14-live-uat-final-four.mjs', target]);
   run(['hotfixes/v1.14.1-changes-report-full-row.mjs', target]);
   run(['hotfixes/v1.14.2-live-excel-preview-ux.mjs', target]);
+  run(['hotfixes/v1.14.2-preview-counter-filters.mjs', target]);
   run(['hotfixes/v1.14.2-full-uat-scope-fix.mjs', target]);
   run(['--check', target]);
 
@@ -88,17 +89,22 @@ try {
   assert.match(source, /TESSA_Full_UAT_FAILURES_/);
   assert.match(source, /Array\.isArray\(result\.failedChecks\)/);
 
-  // v1.14.1 report polish + colleague live Preview fix + the live-UAT-only scope correction
-  // must be composed into one exact candidate. Seed 2970132379 proved that product helpers
-  // are not lexically visible from the appended Full UAT runner, so all new UAT checks must
-  // cross the stable exported E bridge.
+  // v1.14.1 report polish + colleague live Preview fixes + counter-driven filtering +
+  // the live-UAT-only scope correction must be composed into one exact candidate.
   assert.match(source, /REVIEWED_CHANGES_REPORT_V3/);
   assert.match(source, /LIVE_EXCEL_PREVIEW_UX_V1/);
+  assert.match(source, /PREVIEW_COUNTER_FILTERS_V1/);
   assert.match(source, /LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1/);
   assert.match(source, /live-colleague-picker-multi-position/);
   assert.match(source, /live-colleague-preview-attention/);
+  assert.match(source, /live-colleague-preview-counter-filters/);
   assert.match(source, /Не будет применено к TESSA/);
   assert.match(source, /data-resolution-page/);
+  assert.match(source, /data-preview-counter-filter=\"add\"/);
+  assert.match(source, /button\[data-preview-counter-filter\]/);
+  assert.match(source, /aria-pressed=/);
+  assert.doesNotMatch(source, /class=\"tms-preview-filters\"/,
+    'exact candidate must not contain duplicated lower Preview filter controls');
   assert.match(source, /const text = E\.pickerSelectionText\(\[item\]\);/);
   assert.match(source, /const summary = E\.previewAttentionSummary\(syntheticPlan, E\.createPlanReviewState\(\)\);/);
   assert.match(source, /const windowed = E\.resolutionCenterWindow\(/);
@@ -111,7 +117,7 @@ try {
   run(['tests/live-uat-regressions.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/live-colleague-excel-regressions.mjs'], { TMS_TEST_SOURCE: target });
 
-  console.log('v1.14 release/UAT artifact composition: write safety + report V3 + live Excel UX + exported Full UAT scope OK');
+  console.log('v1.14 release/UAT artifact composition: write safety + report V3 + live Excel UX + counter filters + exported Full UAT scope OK');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
