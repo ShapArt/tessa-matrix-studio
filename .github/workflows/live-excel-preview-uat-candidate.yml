@@ -7,6 +7,7 @@ on:
       - 'hotfixes/v1.14.2-live-excel-preview-ux.mjs'
       - 'hotfixes/v1.14.2-preview-counter-filters.mjs'
       - 'hotfixes/v1.14.2-full-uat-scope-fix.mjs'
+      - 'hotfixes/v1.14.2-full-uat-deterministic-clear.mjs'
       - 'tests/live-colleague-excel-regressions.mjs'
       - 'tests/v1.14.2-full-uat-clear-regression.mjs'
       - 'tests/fixtures/live-ord-main-78792326-regression.json'
@@ -64,6 +65,7 @@ jobs:
           node hotfixes/v1.14.2-live-excel-preview-ux.mjs dist/tessa-matrix-studio.user.js
           node hotfixes/v1.14.2-preview-counter-filters.mjs dist/tessa-matrix-studio.user.js
           node hotfixes/v1.14.2-full-uat-scope-fix.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14.2-full-uat-deterministic-clear.mjs dist/tessa-matrix-studio.user.js
 
           node --check dist/tessa-matrix-studio.user.js
           grep -Fqx "// @version      $CANDIDATE_VERSION" dist/tessa-matrix-studio.user.js
@@ -72,6 +74,11 @@ jobs:
           grep -Fq 'LIVE_EXCEL_PREVIEW_UX_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'PREVIEW_COUNTER_FILTERS_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'FULL_UAT_CLEAR_SCENARIO_DETERMINISTIC_V2' dist/tessa-matrix-studio.user.js
+          if grep -Fq 'Не найдено доказанно необязательное заполненное поле временной строки' dist/tessa-matrix-studio.user.js; then
+            echo 'Flaky Full UAT CLEAR NOT_RUN branch is still present.' >&2
+            exit 1
+          fi
           grep -Fq 'const text = E.pickerSelectionText([item]);' dist/tessa-matrix-studio.user.js
           grep -Fq 'const summary = E.previewAttentionSummary(syntheticPlan, E.createPlanReviewState());' dist/tessa-matrix-studio.user.js
           grep -Fq 'const windowed = E.resolutionCenterWindow(' dist/tessa-matrix-studio.user.js
