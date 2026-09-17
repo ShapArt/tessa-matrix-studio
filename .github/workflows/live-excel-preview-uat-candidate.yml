@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'hotfixes/v1.14.2-live-excel-preview-ux.mjs'
+      - 'hotfixes/v1.14.2-preview-counter-filters.mjs'
       - 'hotfixes/v1.14.2-full-uat-scope-fix.mjs'
       - 'tests/live-colleague-excel-regressions.mjs'
       - 'tests/fixtures/live-ord-main-78792326-regression.json'
@@ -34,6 +35,9 @@ jobs:
       - name: Verify repository regression suite
         run: npm test
 
+      - name: Verify exact composition contract
+        run: node tests/v1.14-artifact-composition.mjs
+
       - name: Build exact candidate
         shell: bash
         run: |
@@ -57,6 +61,7 @@ jobs:
           node hotfixes/v1.14-live-uat-final-four.mjs dist/tessa-matrix-studio.user.js
           node hotfixes/v1.14.1-changes-report-full-row.mjs dist/tessa-matrix-studio.user.js
           node hotfixes/v1.14.2-live-excel-preview-ux.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14.2-preview-counter-filters.mjs dist/tessa-matrix-studio.user.js
           node hotfixes/v1.14.2-full-uat-scope-fix.mjs dist/tessa-matrix-studio.user.js
 
           node --check dist/tessa-matrix-studio.user.js
@@ -64,12 +69,20 @@ jobs:
           grep -Fq "version: '$CANDIDATE_VERSION'," dist/tessa-matrix-studio.user.js
           grep -Fq 'REVIEWED_CHANGES_REPORT_V3' dist/tessa-matrix-studio.user.js
           grep -Fq 'LIVE_EXCEL_PREVIEW_UX_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'PREVIEW_COUNTER_FILTERS_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'const text = E.pickerSelectionText([item]);' dist/tessa-matrix-studio.user.js
           grep -Fq 'const summary = E.previewAttentionSummary(syntheticPlan, E.createPlanReviewState());' dist/tessa-matrix-studio.user.js
           grep -Fq 'const windowed = E.resolutionCenterWindow(' dist/tessa-matrix-studio.user.js
           grep -Fq 'live-colleague-picker-multi-position' dist/tessa-matrix-studio.user.js
           grep -Fq 'live-colleague-preview-attention' dist/tessa-matrix-studio.user.js
+          grep -Fq 'live-colleague-preview-counter-filters' dist/tessa-matrix-studio.user.js
+          grep -Fq 'data-preview-counter-filter="add"' dist/tessa-matrix-studio.user.js
+          grep -Fq 'aria-pressed=' dist/tessa-matrix-studio.user.js
+          if grep -Fq 'class="tms-preview-filters"' dist/tessa-matrix-studio.user.js; then
+            echo 'Duplicated lower Preview filter bar is still present.' >&2
+            exit 1
+          fi
           grep -Fq 'Не будет применено к TESSA' dist/tessa-matrix-studio.user.js
           grep -Fq 'data-resolution-page' dist/tessa-matrix-studio.user.js
 
@@ -90,7 +103,7 @@ jobs:
 
           USER_SHA="$(sha256sum dist/tessa-matrix-studio.user.js | awk '{print $1}')"
           COMMIT_SHA="$(git rev-parse HEAD)"
-          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "live-colleague-excel-preview-uat",\n  "sourceWorkbook": "TESSA_Матрица_ОРД-основная_78792326_СПРАВОЧНИКИ.xlsx",\n  "expectedChecks": ["multi-position-picker-copy", "visible-preview-error-count", "explicit-not-applied-count", "bounded-resolution-center", "full-uat-export-scope"]\n}\n' \
+          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "live-colleague-excel-preview-uat",\n  "sourceWorkbook": "TESSA_Матрица_ОРД-основная_78792326_СПРАВОЧНИКИ.xlsx",\n  "expectedChecks": ["multi-position-picker-copy", "visible-preview-error-count", "explicit-not-applied-count", "bounded-resolution-center", "counter-driven-preview-filters", "full-uat-export-scope"]\n}\n' \
             "$CANDIDATE_VERSION" "$COMMIT_SHA" "$USER_SHA" > dist/candidate-manifest.json
 
       - name: Upload exact UAT candidate
