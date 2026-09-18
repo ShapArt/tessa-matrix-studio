@@ -18,8 +18,29 @@ assert.ok(finalFourIndex > inlineIndex,
   'production release must apply final-four fixes after the finalizer/inline-failure transforms');
 assert.match(releaseWorkflow, /hotfixes\/v1\.14-live-uat-final-four\.mjs/,
   'release change detection/package must track the final-four transform');
+
 assert.match(releaseWorkflow, /hotfixes\/v1\.14-full-uat-inline-failures\.mjs/,
   'release change detection/package must track the inline-failure transform');
+
+const exactV1142Transforms = [
+  'v1.14.2-live-excel-preview-ux.mjs',
+  'v1.14.2-preview-counter-filters.mjs',
+  'v1.14.2-full-uat-scope-fix.mjs',
+  'v1.14.2-full-uat-deterministic-clear.mjs',
+  'v1.14.2-full-uat-copied-identity-collision-safe.mjs',
+  'v1.14.2-full-uat-action-coverage-final.mjs',
+  'v1.14.2-full-uat-version-provenance.mjs',
+];
+let previousIndex = finalFourIndex;
+for (const transform of exactV1142Transforms) {
+  assert.match(artifactComposition, new RegExp(transform.replaceAll('.', '\\.')),
+    `exact UAT composition must apply ${transform}`);
+  const productionIndex = releaseWorkflow.indexOf('node hotfixes/' + transform + ' dist/tessa-matrix-studio.user.js');
+  assert.ok(productionIndex > previousIndex,
+    `production Release must apply ${transform} in the same ordered chain as the exact UAT artifact`);
+  previousIndex = productionIndex;
+}
+
 
 // v1.14 exact UAT/live composition no longer emits the old copy-as-add marker. The
 // production Release must validate markers that are actually present in the canonical
