@@ -25,9 +25,9 @@ const fullUatFinalizer = fs.readFileSync(new URL('../hotfixes/v1.13.0-full-uat-l
 const inlineFailureUxPath = new URL('../hotfixes/v1.14-full-uat-inline-failures.mjs', import.meta.url);
 const finalFourPath = new URL('../hotfixes/v1.14-live-uat-final-four.mjs', import.meta.url);
 
-assert.equal(pkg.version, '1.14.1', 'package candidate version must be 1.14.1');
+assert.equal(pkg.version, '1.14.2', 'package candidate version must be 1.14.2');
 // The checked-in userscript remains the verified v1.14.0 baseline. Release composition bumps
-// metadata/runtime version only after applying the report-only v1.14.1 transform.
+// metadata/runtime version only after applying the ordered release transforms through v1.14.2.
 assert.match(source, /^\/\/ @version\s+1\.14\.0$/m, 'canonical userscript baseline must remain 1.14.0');
 assert.match(source, /version:\s*'1\.14\.0'/, 'canonical runtime baseline must remain 1.14.0');
 
