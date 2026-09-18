@@ -115,6 +115,8 @@ try {
   // the live-UAT-only scope correction must be composed into one exact candidate.
   assert.match(source, /REVIEWED_CHANGES_REPORT_V3/);
   assert.match(source, /LIVE_EXCEL_PREVIEW_UX_V1/);
+  assert.match(source, /LIVE_PICKER_DELIMITER_SAFE_V2/,
+    'composed artifact must support personal-role captions whose ShortName/native caption contains semicolon-separated positions');
   assert.match(source, /PREVIEW_COUNTER_FILTERS_V1/);
   assert.match(source, /LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1/);
   assert.match(source, /live-colleague-picker-multi-position/);
