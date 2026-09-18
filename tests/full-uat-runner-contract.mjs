@@ -35,12 +35,14 @@ const syntheticCoverage = U.actionCoverageFromChecks(syntheticActionChecks, regi
 assert.equal(syntheticCoverage.covered, registry.length, 'all registered actions must be coverable');
 assert.deepEqual(syntheticCoverage.missing, [], 'complete action evidence must not produce a false FAILED status');
 const runnerSource = fs.readFileSync(process.env.TMS_TEST_SOURCE || new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
-assert.match(runnerSource, /['"]action-apply['"]/,
-  'Full UAT must contain an Apply action-evidence check');
-assert.match(runnerSource, /outcome:\s*['"]live-write-readback['"]/,
-  'Full UAT Apply evidence must use the registry outcome');
-assert.match(runnerSource, /['"]action-reconcile['"]/,
-  'Full UAT must contain a Reconcile action-evidence check');
+assert.match(runnerSource, /addCheck\(\s*['"]action-apply['"]/,
+  'Full UAT must emit an explicit Apply action-evidence check, not merely register the action');
+assert.match(runnerSource, /outcome:\s*applyOk\s*\?\s*['"]live-write-readback['"]/,
+  'Full UAT Apply evidence must use the registry outcome after real writes');
+assert.match(runnerSource, /addCheck\(\s*['"]action-reconcile['"]/,
+  'Full UAT must emit an explicit Reconcile action-evidence check, not merely register the action');
+assert.match(runnerSource, /await E\.runReconciliationRead\(/,
+  'Full UAT Reconcile evidence must invoke the real reconciliation reader');
 assert.match(runnerSource, /outcome:\s*['"]reconciliation-readback['"]/,
   'Full UAT Reconcile evidence must use the registry outcome');
 const a = U.seededRandom(0x12345678), b = U.seededRandom(0x12345678);
