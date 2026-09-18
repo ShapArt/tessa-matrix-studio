@@ -7358,7 +7358,7 @@
         else if (/не останется исполнителей/i.test(message)) category = 'noPerformers';
         categories[category] += 1;
 
-        const fieldMatch = message.match(/(?:справочнике|столбце)\s+[«"]([^»"]+)[»"]/i);
+        const fieldMatch = message.match(/(?:справочнике|справочника|столбце)\s+[«"]([^»"]+)[»"]/i);
         bumpField(fieldMatch?.[1] || '', category);
       }
     }
