@@ -48,6 +48,8 @@ assert.equal(shadow.observedProfile.resolution.fields['Организация Г
 assert.equal(shadow.observedProfile.resolution.fields['Обязательные'].total, 550);
 assert.equal(shadow.observedProfile.resolution.fields['Подписание'].total, 468);
 assert.equal(shadow.assertions.staleEmployeeTitleResolvedByFio, true);
+assert.equal(shadow.assertions.previousSelectorMigration, true, 'historical PROD aliases must resolve to the current canonical dictionary item');
+assert.equal(shadow.assertions.observedIssueEnvelopeExact, true);
 assert.equal(shadow.assertions.namesakeFailClosed, true);
 assert.equal(shadow.assertions.positionOnlyFailClosed, true);
 assert.equal(shadow.assertions.crossMatrixScale, true);
