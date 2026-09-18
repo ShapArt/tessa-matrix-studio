@@ -13,21 +13,45 @@ export function applyLiveExcelPreviewUx(input) {
   if (source.includes('LIVE_EXCEL_PREVIEW_UX_V1')) return source;
 
   source = replaceFunction(source, '  function employeeResolvableAliases(item) {', `  // LIVE_EXCEL_PREVIEW_UX_V1
-  // One employee can have several TESSA positions separated by semicolons. A semicolon is
-  // also the Excel multi-value delimiter, so a selected employee must be copied as one
-  // compact alias and remain resolvable to the same dictionary identity.
+  // LIVE_PICKER_DELIMITER_SAFE_V2
+  // Some MtxRoles installations do not expose a clean ShortName. The native caption can
+  // already contain "ФИО - должность; должность". Semicolon is also the Excel multi-value
+  // delimiter, so extract a clean employee identity before assembling the copyable alias.
+  function employeeSafeNameForPicker(item, rawValue = '') {
+    const candidates = [
+      item?.shortName,
+      item?.nativeDisplay,
+      item?.display,
+      item?.fullName,
+      pickerDetailValue(item, ['RoleFullName', 'UserFullName']),
+      rawValue,
+    ];
+    for (const candidate of candidates) {
+      const normalized = normalizeSpace(candidate || '');
+      if (!normalized) continue;
+      const beforeRole = normalizeSpace(normalized.split(/\\s+-\\s+/)[0] || normalized);
+      const beforeList = normalizeSpace(beforeRole.split(/\\s*;\\s*/)[0] || beforeRole);
+      if (beforeList && !/[;\\r\\n\\t]/.test(beforeList)) return beforeList;
+    }
+    return '';
+  }
+
   function employeeSafeSelector(item) {
     const raw = String(item?.selector || item?.display || '').trim();
     if (!raw || Number(item?.roleTypeId) !== PERSONAL_ROLE_TYPE_ID) return raw;
-    if (!/[;\\r\\n\\t]/.test(raw)) return raw;
-    const fullName = normalizeSpace(item?.fullName || pickerDetailValue(item, ['RoleFullName', 'UserFullName']));
-    const shortName = normalizeSpace(item?.shortName || '');
+    const isSafe = value => Boolean(value) && !/[;\\r\\n\\t]/.test(value) && !/^[=+@-]/.test(value);
+    if (isSafe(raw)) return raw;
+
+    const base = employeeSafeNameForPicker(item, raw);
     const positionRaw = normalizeSpace(item?.position || pickerDetailValue(item, ['RolePositionName', 'UserPosition', 'PositionName', 'Position']));
     const position = pickerPrimaryValue(positionRaw);
-    const rawBase = normalizeSpace(raw.split(/\\s+[—–-]\\s+/)[0] || '');
-    const base = shortName || fullName || rawBase;
-    const compact = base && position ? \`\${base} — \${position}\` : (fullName || shortName || rawBase);
-    if (compact && !/[;\\r\\n\\t]/.test(compact)) return compact;
+    const compact = normalizeSpace(base && position ? (base + ' — ' + position) : base);
+    if (isSafe(compact)) return compact;
+
+    // Last resort: preserve the personal-role information while replacing Excel
+    // list/control delimiters. employeeResolvableAliases indexes the exact same alias.
+    const sanitized = normalizeSpace(raw.replace(/[;\\r\\n\\t]+/g, ' · '));
+    if (isSafe(sanitized)) return sanitized;
     return raw;
   }
 
@@ -51,6 +75,36 @@ export function applyLiveExcelPreviewUx(input) {
   }
 
 `);
+
+  source = replaceFunction(source, '  function pickerEntryPresentation(item) {', `  function pickerEntryPresentation(item) {
+    const value = String(item?.selector || item?.display || '').trim();
+    const roleType = canonicalValue(item?.roleTypeId);
+    const display = normalizeSpace(item?.display);
+    const roleFullName = pickerDetailValue(item, ['RoleFullName', 'UserFullName']);
+    const positionRaw = normalizeSpace(item?.position || pickerDetailValue(item, ['RolePositionName', 'UserPosition', 'PositionName', 'Position']));
+    const position = pickerPrimaryValue(positionRaw);
+    const department = pickerCompactList(pickerDetailValue(item, ['Departments', 'UserDepartment', 'Department', 'Info']));
+    const isPerson = roleType === '1' || Boolean(roleFullName);
+    const personName = isPerson ? employeeSafeNameForPicker(item, value) : '';
+    const titleBase = isPerson
+      ? (personName || display || roleFullName || normalizeSpace(item?.qualifier) || value)
+      : (display || normalizeSpace(item?.qualifier) || value);
+    const title = isPerson && position ? (titleBase + ' — ' + position) : titleBase;
+    const typeLabel = roleType ? previewRoleTypeLabel(roleType) : '';
+    const subtitle = [...new Set([
+      isPerson && roleFullName && canonicalValue(roleFullName) !== canonicalValue(titleBase) ? roleFullName : '',
+      department,
+      typeLabel,
+    ].filter(Boolean))].join(' · ');
+    return { title, subtitle, typeLabel, value: isPerson ? employeeSafeSelector(item) : value };
+  }
+
+`);
+
+  const oldPersonalRoleExport = "        values.push(items.map(item => dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, '')).join('\\n'));";
+  const newPersonalRoleExport = "        values.push(items.map(item => Number(item.roleTypeId) === PERSONAL_ROLE_TYPE_ID ? employeeSafeSelector((dictionaryLookup(dict)?.byId?.get(canonicalValue(item.id) + '|' + canonicalValue(item.roleTypeId)) || [])[0] || item) : (dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, ''))).join('\\n'));";
+  if (!source.includes(oldPersonalRoleExport)) throw new Error('Function-role Excel export anchor not found');
+  source = source.replace(oldPersonalRoleExport, newPersonalRoleExport);
 
   const resolutionSignature = '  function renderResolutionCenter(plan) {';
   const resolutionStart = source.indexOf(resolutionSignature);
@@ -192,10 +246,10 @@ export function applyLiveExcelPreviewUx(input) {
   const uatChecks = `      await runCheck('live-colleague-picker-multi-position', 'Регрессия: сотрудник с несколькими должностями копируется в Excel', async () => {
         const item = {
           id: 'uat-multi-position', roleTypeId: 1,
-          shortName: 'Горинова Т.А.', fullName: 'Горинова Татьяна Александровна',
+          shortName: 'Тестов Т.А. — Руководитель направления; Эксперт по методологии', fullName: '',
           position: 'Руководитель направления; Эксперт по методологии',
-          display: 'Горинова Т.А. — Руководитель направления; Эксперт по методологии',
-          selector: 'Горинова Т.А. — Руководитель направления; Эксперт по методологии',
+          display: 'Тестов Т.А. — Руководитель направления; Эксперт по методологии — Руководитель направления',
+          selector: 'Тестов Т.А. — Руководитель направления; Эксперт по методологии — Руководитель направления',
         };
         const text = pickerSelectionText([item]);
         if (!text || /[;\\r\\n\\t]/.test(text)) throw new Error('Picker не сформировал безопасное одиночное значение сотрудника.');
