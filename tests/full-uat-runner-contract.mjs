@@ -19,6 +19,26 @@ assert.equal(typeof U.runFullUat, 'function');
 assert.equal(typeof U.runProductionShadowAudit, 'function', 'Full UAT must expose the production-shadow stress layer');
 assert.equal(typeof U.installUi, 'function');
 assert.equal(typeof E.makeZip, 'function', 'Full UAT must reuse the audited ZIP writer');
+assert.equal(typeof U.actionCoverageFromChecks, 'function', 'Full UAT must expose action coverage audit');
+const registry = E.STUDIO_ACTION_REGISTRY || [];
+assert.equal(registry.length, 12, 'Full UAT action registry cardinality drifted');
+const requiredActions = new Set(registry.map(item => item.id));
+assert(requiredActions.has('apply'), 'Apply must remain a required Full UAT action');
+assert(requiredActions.has('reconcile'), 'Reconcile must remain a required Full UAT action');
+const syntheticActionChecks = registry.map(action => ({
+  id: action.uatCheckId,
+  status: 'PASS',
+  detail: 'synthetic coverage proof',
+  data: { outcome: action.outcome },
+}));
+const syntheticCoverage = U.actionCoverageFromChecks(syntheticActionChecks, registry);
+assert.equal(syntheticCoverage.covered, registry.length, 'all registered actions must be coverable');
+assert.deepEqual(syntheticCoverage.missing, [], 'complete action evidence must not produce a false FAILED status');
+const runnerSource = fs.readFileSync(process.env.TMS_TEST_SOURCE || new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
+assert.match(runnerSource, /addCheck\('action-apply',[\s\S]{0,1200}outcome:\s*'live-write-readback'/,
+  'Full UAT must emit live Apply action evidence');
+assert.match(runnerSource, /addCheck\('action-reconcile',[\s\S]{0,1200}outcome:\s*'reconciliation-readback'/,
+  'Full UAT must emit reconciliation read-back action evidence');
 const a = U.seededRandom(0x12345678), b = U.seededRandom(0x12345678);
 for (let i = 0; i < 20; i += 1) assert.equal(a(), b(), 'same seed must reproduce candidate choices');
 const sigA = U.snapshotSignature({ rows: [{ rowCardId: 'b', fingerprint: '2' }, { rowCardId: 'a', fingerprint: '1' }] });
