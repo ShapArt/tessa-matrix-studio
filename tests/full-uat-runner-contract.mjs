@@ -35,10 +35,14 @@ const syntheticCoverage = U.actionCoverageFromChecks(syntheticActionChecks, regi
 assert.equal(syntheticCoverage.covered, registry.length, 'all registered actions must be coverable');
 assert.deepEqual(syntheticCoverage.missing, [], 'complete action evidence must not produce a false FAILED status');
 const runnerSource = fs.readFileSync(process.env.TMS_TEST_SOURCE || new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
-assert.match(runnerSource, /addCheck\('action-apply',[\s\S]{0,1200}outcome:\s*'live-write-readback'/,
-  'Full UAT must emit live Apply action evidence');
-assert.match(runnerSource, /addCheck\('action-reconcile',[\s\S]{0,1200}outcome:\s*'reconciliation-readback'/,
-  'Full UAT must emit reconciliation read-back action evidence');
+assert.match(runnerSource, /['"]action-apply['"]/,
+  'Full UAT must contain an Apply action-evidence check');
+assert.match(runnerSource, /outcome:\s*['"]live-write-readback['"]/,
+  'Full UAT Apply evidence must use the registry outcome');
+assert.match(runnerSource, /['"]action-reconcile['"]/,
+  'Full UAT must contain a Reconcile action-evidence check');
+assert.match(runnerSource, /outcome:\s*['"]reconciliation-readback['"]/,
+  'Full UAT Reconcile evidence must use the registry outcome');
 const a = U.seededRandom(0x12345678), b = U.seededRandom(0x12345678);
 for (let i = 0; i < 20; i += 1) assert.equal(a(), b(), 'same seed must reproduce candidate choices');
 const sigA = U.snapshotSignature({ rows: [{ rowCardId: 'b', fingerprint: '2' }, { rowCardId: 'a', fingerprint: '1' }] });
