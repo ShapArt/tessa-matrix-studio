@@ -2154,6 +2154,32 @@
     ].map(normalizeSpace).filter(Boolean))];
   }
 
+  // Personal role identity is the employee name (or stable RoleID), never the
+  // position caption. Old workbooks often carry "ФИО - старая должность" after
+  // the employee has moved; keep that compatible without guessing by title.
+  function employeeIdentityNameAliases(item) {
+    if (!item || Number(item.roleTypeId) !== PERSONAL_ROLE_TYPE_ID) return [];
+    const values = [item.shortName, item.fullName, item.nativeDisplay]
+      .map(normalizeSpace)
+      .filter(Boolean);
+    return [...new Set(values.filter(value => {
+      const tokens = searchTokens(value);
+      if (tokens.length < 2 || !tokens.some(token => token.length >= 3)) return false;
+      const initials = /[A-ZА-ЯЁ]\.[\s]*[A-ZА-ЯЁ]\.?$/iu.test(value);
+      const fullName = tokens.length >= 3 && tokens.every(token => /^[A-ZА-ЯЁA-Z][A-ZА-ЯЁA-Z-]*$/iu.test(token));
+      return initials || fullName;
+    }))];
+  }
+
+  function employeeIdentityNameEmbedded(item, text) {
+    const haystack = ` ${searchCanonical(text)} `;
+    if (!haystack.trim()) return false;
+    return employeeIdentityNameAliases(item).some(alias => {
+      const needle = searchCanonical(alias);
+      return needle && haystack.includes(` ${needle} `);
+    });
+  }
+
   function dictionaryRoleDisplay(catalog, item) {
     if (!catalog || !item) return item?.display || '';
     const lookup = dictionaryLookup(catalog);
@@ -2540,11 +2566,14 @@
         || [];
       explicitMatch = candidates.find(item => !explicitRoleType || canonicalValue(item.roleTypeId) === explicitRoleType) || null;
     }
-    if (explicitMatch && [
-      explicitMatch.selector, explicitMatch.display, ...(explicitMatch.previousSelectors || []),
-      ...employeeResolvableAliases(explicitMatch),
-    ].map(canonicalValue).includes(visibleCanonical)) {
-      return resolvedItem(explicitMatch, 'id-and-text');
+    if (explicitMatch) {
+      const exactVisibleAlias = [
+        explicitMatch.selector, explicitMatch.display, ...(explicitMatch.previousSelectors || []),
+        ...employeeResolvableAliases(explicitMatch),
+      ].map(canonicalValue).includes(visibleCanonical);
+      if (exactVisibleAlias || employeeIdentityNameEmbedded(explicitMatch, visibleText)) {
+        return resolvedItem(explicitMatch, exactVisibleAlias ? 'id-and-text' : 'id-and-name');
+      }
     }
 
     let matches = lookup.bySelector.get(visibleCanonical) || [];
@@ -2572,6 +2601,40 @@
 
     const needle = searchCanonical(visibleText);
     const tokens = searchTokens(visibleText);
+
+    if (column.kind === 'function' && visibleText) {
+      const embeddedNameMatches = lookup.searchRows
+        .map(row => row.item)
+        .filter(item => Number(item?.roleTypeId) === PERSONAL_ROLE_TYPE_ID)
+        .filter(item => employeeIdentityNameEmbedded(item, visibleText));
+      if (embeddedNameMatches.length === 1) {
+        return cacheResolution(resolvedItem(embeddedNameMatches[0], 'unique-embedded-employee-name'));
+      }
+      if (embeddedNameMatches.length > 1) {
+        const candidateDto = item => ({
+          id: item.id,
+          roleTypeId: item.roleTypeId,
+          display: item.displayName || item.display || item.selector || '',
+          selector: item.selector || item.display || '',
+          shortName: item.shortName || '',
+          fullName: item.fullName || '',
+          position: item.position || '',
+          department: item.department || '',
+        });
+        const candidates = embeddedNameMatches.slice(0, 20).map(candidateDto);
+        const variants = candidates.slice(0, 10).map(item => item.selector).join('; ');
+        const suffix = embeddedNameMatches.length > 10 ? `; … ещё ${embeddedNameMatches.length - 10}` : '';
+        return cacheResolution({
+          display: visibleText,
+          explicit: '',
+          resolved: false,
+          resolution: 'employee-name-ambiguous',
+          candidates,
+          issue: `ФИО в значении «${visibleText}» неоднозначно. Выберите сотрудника явно: ${variants}${suffix}.`,
+        });
+      }
+    }
+
     const allowPartial = needle.length >= 2 && !/^\d+$/.test(needle);
     if (allowPartial) {
       const partial = lookup.searchRows
