@@ -33,6 +33,7 @@ try {
   run(['hotfixes/v1.14.2-preview-counter-filters.mjs', target]);
   run(['hotfixes/v1.14.2-full-uat-scope-fix.mjs', target]);
   run(['hotfixes/v1.14.2-full-uat-deterministic-clear.mjs', target]);
+  run(['hotfixes/v1.14.2-full-uat-version-provenance.mjs', target]);
   run(['--check', target]);
 
   const source = fs.readFileSync(target, 'utf8');
@@ -48,6 +49,12 @@ try {
     'composed artifact must prove SET -> CLEAR -> read-back -> cleanup without a data-shape NOT_RUN');
   assert.doesNotMatch(source, /Не найдено доказанно необязательное заполненное поле временной строки/,
     'exact candidate must not retain the flaky Full UAT CLEAR NOT_RUN branch');
+  assert.match(source, /FULL_UAT_VERSION_PROVENANCE_V1/,
+    'composed artifact must bind Full UAT evidence to the runtime Studio version');
+  assert.match(source, /studioVersion: String\(E\.studioVersion\?\.\(\) \|\| 'unknown'\)/,
+    'Full UAT report must read the runtime Studio version instead of a stale literal');
+  assert.doesNotMatch(source, /format: 'TESSA_FULL_UAT_V1', studioVersion: '1\.14\.0'/,
+    'Full UAT evidence must not report the stale 1.14.0 version');
 
   // Live UAT 2026-09-14 showed that every temporary Apply invoked the native editor Save,
   // forcing the tester through repeated TESSA confirmation dialogs. Full UAT already has
@@ -120,8 +127,9 @@ try {
   run(['tests/live-uat-regressions.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/live-colleague-excel-regressions.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/v1.14.2-full-uat-clear-regression.mjs'], { TMS_TEST_SOURCE: target });
+  run(['tests/v1.14.2-full-uat-version-provenance.mjs'], { TMS_TEST_SOURCE: target });
 
-  console.log('v1.14 release/UAT artifact composition: write safety + report V3 + live Excel UX + counter filters + deterministic Full UAT CLEAR OK');
+  console.log('v1.14 release/UAT artifact composition: write safety + report V3 + live Excel UX + counter filters + deterministic Full UAT CLEAR + version provenance OK');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
