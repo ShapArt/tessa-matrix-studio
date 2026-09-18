@@ -101,7 +101,7 @@ assert.match(resolved.issue || '', /выберите.*сотрудник|дол�
 // A unique employee name must survive this drift; namesakes still fail closed.
 const driftCatalog = E.normalizeDictionaryCatalog({
   catalogs: {
-    people: {
+    'people-drift': {
       id: 'people-drift',
       label: 'Подписание · роли и пользователи TESSA',
       sourceView: 'MtxRoles',
