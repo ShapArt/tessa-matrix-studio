@@ -57,7 +57,272 @@ jobs:
               hotfixes/v1.14-full-uat-inline-failures.mjs \
               hotfixes/v1.14-live-uat-final-four.mjs \
               hotfixes/v1.14.1-changes-report-full-row.mjs \
-              package.json | grep -Eq '^(tessa-matrix-studio\.user\.js|hotfixes/interval-add-valid-fallback\.js|hotfixes/malformed-range-diagnostic-transform\.mjs|hotfixes/v1\.13\.0-user-row-lifecycle-transform\.mjs|hotfixes/full-uat-runner-v1\.js|hotfixes/v1\.13\.0-full-uat-live-finalize\.mjs|hotfixes/v1\.14-full-uat-inline-failures\.mjs|hotfixes/v1\.14-live-uat-final-four\.mjs|hotfixes/v1\.14\.1-changes-report-full-row\.mjs|package\.json)$'; then
+              hotfixes/v1.14.2-live-excel-preview-ux.mjs \
+              hotfixes/v1.14.2-preview-counter-filters.mjs \
+              hotfixes/v1.14.2-full-uat-scope-fix.mjs \
+              hotfixes/v1.14.2-full-uat-deterministic-clear.mjs \
+              hotfixes/v1.14.2-full-uat-copied-identity-collision-safe.mjs \
+              hotfixes/v1.14.2-full-uat-action-coverage-final.mjs \
+              hotfixes/v1.14.2-full-uat-version-provenance.mjs \
+              package.json | grep -Eq '^(tessa-matrix-studio\.user\.js|hotfixes/interval-add-valid-fallback\.js|hotfixes/malformed-range-diagnostic-transform\.mjs|hotfixes/v1\.13\.0-user-row-lifecycle-transform\.mjs|hotfixes/full-uat-runner-v1\.js|hotfixes/v1\.13\.0-full-uat-live-finalize\.mjs|hotfixes/v1\.14-full-uat-inline-failures\.mjs|hotfixes/v1\.14-live-uat-final-four\.mjs|hotfixes/v1\.14\.1-changes-report-full-row\.mjs|hotfixes/v1\.14\.2-live-excel-preview-ux\.mjs|hotfixes/v1\.14\.2-preview-counter-filters\.mjs|hotfixes/v1\.14\.2-full-uat-scope-fix\.mjs|hotfixes/v1\.14\.2-full-uat-deterministic-clear\.mjs|hotfixes/v1\.14\.2-full-uat-copied-identity-collision-safe\.mjs|hotfixes/v1\.14\.2-full-uat-action-coverage-final\.mjs|hotfixes/v1\.14\.2-full-uat-version-provenance\.mjs|package\.json)
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Production userscript/runtime composition did not change since $PREVIOUS_TAG; release publication is skipped."
+          fi
+
+      - name: Install test dependencies
+        if: steps.changed.outputs.changed == 'true'
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify
+        if: steps.changed.outputs.changed == 'true'
+        run: npm test
+
+      - name: Read version
+        if: steps.changed.outputs.changed == 'true'
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Guard immutable published version
+        if: steps.changed.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Refusing to overwrite published release $TAG. Published versions are immutable; bump @version and create a new release."
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            REMOTE_SHA="$(git ls-remote --tags origin "refs/tags/$TAG" | awk '{print $1}' | head -n1)"
+            HEAD_SHA="$(git rev-parse HEAD)"
+            if [[ "$REMOTE_SHA" != "$HEAD_SHA" ]]; then
+              echo "Existing tag $TAG points to $REMOTE_SHA, not verified HEAD $HEAD_SHA. Refusing to move or overwrite the tag."
+              exit 1
+            fi
+            echo "Tag $TAG already points to verified HEAD; continuing a tag-only partial release recovery."
+          fi
+
+      - name: Build assets
+        if: steps.changed.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p dist
+
+          cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
+          node hotfixes/malformed-range-diagnostic-transform.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.13.0-user-row-lifecycle-transform.mjs dist/tessa-matrix-studio.user.js
+          sed -i -E "0,/^\/\/ @version[[:space:]]+[0-9.]+$/s//\/\/ @version      $VERSION/" dist/tessa-matrix-studio.user.js
+          sed -i -E "0,/^[[:space:]]+version: '[0-9.]+'[,]$/s//    version: '$VERSION',/" dist/tessa-matrix-studio.user.js
+          printf '\n' >> dist/tessa-matrix-studio.user.js
+          cat hotfixes/interval-add-valid-fallback.js >> dist/tessa-matrix-studio.user.js
+          printf '\n' >> dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.13.0-full-uat-live-finalize.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14-full-uat-inline-failures.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14-live-uat-final-four.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14.1-changes-report-full-row.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14.2-live-excel-preview-ux.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14.2-preview-counter-filters.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14.2-full-uat-scope-fix.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14.2-full-uat-deterministic-clear.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14.2-full-uat-copied-identity-collision-safe.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14.2-full-uat-action-coverage-final.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14.2-full-uat-version-provenance.mjs dist/tessa-matrix-studio.user.js
+
+          node --check dist/tessa-matrix-studio.user.js
+          grep -Fqx "// @version      $VERSION" dist/tessa-matrix-studio.user.js
+          grep -Fq "version: '$VERSION'," dist/tessa-matrix-studio.user.js
+          grep -Fq "__TMS_INSTALL_INTERVAL_ADD_VALID_FALLBACK__" dist/tessa-matrix-studio.user.js
+          grep -Fq "__TMS_FULL_UAT_V1__" dist/tessa-matrix-studio.user.js
+          grep -Fq "FULL_UAT_RUNTIME_CONTEXT_V1" dist/tessa-matrix-studio.user.js
+          grep -Fq "diagnosticNativeCardCache" dist/tessa-matrix-studio.user.js
+          grep -Fq "source: 'full-uat'" dist/tessa-matrix-studio.user.js
+          grep -Fq "Numeric ranges have an exact grammar" dist/tessa-matrix-studio.user.js
+          grep -Fq "FULL_UAT_INLINE_FAILURES_V1" dist/tessa-matrix-studio.user.js
+          grep -Fq "FULL_UAT_PICKER_SOURCE_V2" dist/tessa-matrix-studio.user.js
+          grep -Fq "REFRESH_DICTIONARY_DIRECT_XML_V2" dist/tessa-matrix-studio.user.js
+          grep -Fq "FULL_UAT_BOOLEAN_SEMANTIC_V2" dist/tessa-matrix-studio.user.js
+          grep -Fq "REVIEWED_CHANGES_REPORT_V3" dist/tessa-matrix-studio.user.js
+          grep -Fq 'LIVE_EXCEL_PREVIEW_UX_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'LIVE_PICKER_DELIMITER_SAFE_V2' dist/tessa-matrix-studio.user.js
+          grep -Fq 'PREVIEW_COUNTER_FILTERS_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'FULL_UAT_CLEAR_SCENARIO_DETERMINISTIC_V2' dist/tessa-matrix-studio.user.js
+          grep -Fq 'FULL_UAT_COPIED_IDENTITY_COLLISION_SAFE_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'FULL_UAT_ACTION_COVERAGE_FINAL_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'FULL_UAT_VERSION_PROVENANCE_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq "'action-apply'" dist/tessa-matrix-studio.user.js
+          grep -Fq "'action-reconcile'" dist/tessa-matrix-studio.user.js
+          grep -Fq 'await E.runReconciliationRead(' dist/tessa-matrix-studio.user.js
+          grep -Fq 'PROD_SHADOW_UAT_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'prod-shadow-offline' dist/tessa-matrix-studio.user.js
+          ! grep -Fq "Детали изменений" dist/tessa-matrix-studio.user.js
+          if grep -Fq 'Не найдено доказанно необязательное заполненное поле временной строки' dist/tessa-matrix-studio.user.js; then
+            echo 'Flaky Full UAT CLEAR NOT_RUN branch is still present in production build.' >&2
+            exit 1
+          fi
+
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/user-copied-identity-regression.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/full-uat-runner-contract.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/live-uat-regressions.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/live-colleague-excel-regressions.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.14.2-full-uat-clear-regression.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.14.2-full-uat-copied-identity-regression.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.14.2-full-uat-action-coverage-regression.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.14.2-full-uat-version-provenance.mjs
+
+          awk 'BEGIN { emit=0 } /^\/\/ ==UserScript==/ { emit=1 } emit { print } /^\/\/ ==\/UserScript==/ { exit }' \
+            dist/tessa-matrix-studio.user.js > dist/tessa-matrix-studio.meta.js
+          test -s dist/tessa-matrix-studio.meta.js
+          grep -Fqx "// @version      $VERSION" dist/tessa-matrix-studio.meta.js
+          grep -Fqx "// @updateURL    https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.meta.js" dist/tessa-matrix-studio.meta.js
+          grep -Fqx "// @downloadURL  https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js" dist/tessa-matrix-studio.meta.js
+
+          (
+            cd dist
+            zip "tessa-matrix-studio-v$VERSION.zip" tessa-matrix-studio.user.js
+          )
+          zip -g "dist/tessa-matrix-studio-v$VERSION.zip" \
+            README.md CHANGELOG.md SECURITY.md \
+            hotfixes/interval-add-valid-fallback.js \
+            hotfixes/malformed-range-diagnostic-transform.mjs \
+            hotfixes/v1.13.0-user-row-lifecycle-transform.mjs \
+            hotfixes/full-uat-runner-v1.js \
+            hotfixes/v1.13.0-full-uat-live-finalize.mjs \
+            hotfixes/v1.14-full-uat-inline-failures.mjs \
+            hotfixes/v1.14-live-uat-final-four.mjs \
+            hotfixes/v1.14.1-changes-report-full-row.mjs \
+            hotfixes/v1.14.2-live-excel-preview-ux.mjs \
+            hotfixes/v1.14.2-preview-counter-filters.mjs \
+            hotfixes/v1.14.2-full-uat-scope-fix.mjs \
+            hotfixes/v1.14.2-full-uat-deterministic-clear.mjs \
+            hotfixes/v1.14.2-full-uat-copied-identity-collision-safe.mjs \
+            hotfixes/v1.14.2-full-uat-action-coverage-final.mjs \
+            hotfixes/v1.14.2-full-uat-version-provenance.mjs
+          (
+            cd dist
+            sha256sum \
+              tessa-matrix-studio.meta.js \
+              tessa-matrix-studio.user.js \
+              "tessa-matrix-studio-v$VERSION.zip" \
+              > SHA256SUMS.txt
+          )
+
+      - name: Enforce native TESSA evidence
+        if: steps.changed.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          EVIDENCE="release-evidence/v$VERSION.json"
+          test -f "$EVIDENCE" || {
+            echo "::error::Missing $EVIDENCE. Release is blocked until the exact built userscript has verified live TESSA DELETE + SAVE evidence."
+            exit 1
+          }
+          node tools/release-native-evidence-gate.mjs "$VERSION" dist/tessa-matrix-studio.user.js "$EVIDENCE"
+
+      - name: Attest release provenance
+        if: steps.changed.outputs.changed == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-checksums: dist/SHA256SUMS.txt
+
+      - name: Publish release
+        if: steps.changed.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+          gh release create "$TAG" \
+            dist/tessa-matrix-studio.meta.js \
+            dist/tessa-matrix-studio.user.js \
+            "dist/tessa-matrix-studio-v$VERSION.zip" \
+            dist/SHA256SUMS.txt \
+            --title "TESSA Matrix Studio v$VERSION" \
+            --generate-notes
+
+      - name: Verify public latest delivery
+        if: steps.changed.outputs.changed == 'true'
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PUBLIC_DIR="$(mktemp -d)"
+          BASE="https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download"
+          META_URL="$BASE/tessa-matrix-studio.meta.js"
+          USER_URL="$BASE/tessa-matrix-studio.user.js"
+          ZIP_URL="$BASE/tessa-matrix-studio-v$EXPECTED_VERSION.zip"
+          SUMS_URL="$BASE/SHA256SUMS.txt"
+
+          ok=false
+          for attempt in 1 2 3 4 5 6 7 8; do
+            rm -f "$PUBLIC_DIR"/*
+            if curl --fail --location --silent --show-error --retry 2 --retry-all-errors "$META_URL" -o "$PUBLIC_DIR/tessa-matrix-studio.meta.js" \
+              && curl --fail --location --silent --show-error --retry 2 --retry-all-errors "$USER_URL" -o "$PUBLIC_DIR/tessa-matrix-studio.user.js" \
+              && curl --fail --location --silent --show-error --retry 2 --retry-all-errors "$ZIP_URL" -o "$PUBLIC_DIR/tessa-matrix-studio-v$EXPECTED_VERSION.zip" \
+              && curl --fail --location --silent --show-error --retry 2 --retry-all-errors "$SUMS_URL" -o "$PUBLIC_DIR/SHA256SUMS.txt"; then
+              META_VERSION="$(awk '/@version/{print $3; exit}' "$PUBLIC_DIR/tessa-matrix-studio.meta.js")"
+              USER_VERSION="$(awk '/@version/{print $3; exit}' "$PUBLIC_DIR/tessa-matrix-studio.user.js")"
+              if [[ "$META_VERSION" == "$EXPECTED_VERSION" && "$USER_VERSION" == "$EXPECTED_VERSION" ]]; then
+                ok=true
+                break
+              fi
+            fi
+            echo "Public latest is not v$EXPECTED_VERSION yet (attempt $attempt/8); retrying..."
+            sleep 3
+          done
+
+          [[ "$ok" == "true" ]] || { echo "Public latest delivery never converged to v$EXPECTED_VERSION"; exit 1; }
+          node --check "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fqx "// @updateURL    $META_URL" "$PUBLIC_DIR/tessa-matrix-studio.meta.js"
+          grep -Fqx "// @downloadURL  $USER_URL" "$PUBLIC_DIR/tessa-matrix-studio.meta.js"
+          grep -Fqx "// @updateURL    $META_URL" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fqx "// @downloadURL  $USER_URL" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "version: '$EXPECTED_VERSION'," "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "__TMS_INSTALL_INTERVAL_ADD_VALID_FALLBACK__" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "__TMS_FULL_UAT_V1__" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "FULL_UAT_RUNTIME_CONTEXT_V1" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "Numeric ranges have an exact grammar" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "FULL_UAT_INLINE_FAILURES_V1" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "FULL_UAT_PICKER_SOURCE_V2" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "REFRESH_DICTIONARY_DIRECT_XML_V2" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "FULL_UAT_BOOLEAN_SEMANTIC_V2" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq "REVIEWED_CHANGES_REPORT_V3" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq 'LIVE_EXCEL_PREVIEW_UX_V1' "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq 'LIVE_PICKER_DELIMITER_SAFE_V2' "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq 'PREVIEW_COUNTER_FILTERS_V1' "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq 'LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1' "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq 'FULL_UAT_CLEAR_SCENARIO_DETERMINISTIC_V2' "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq 'FULL_UAT_COPIED_IDENTITY_COLLISION_SAFE_V1' "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq 'FULL_UAT_ACTION_COVERAGE_FINAL_V1' "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq 'FULL_UAT_VERSION_PROVENANCE_V1' "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          grep -Fq 'PROD_SHADOW_UAT_V1' "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          ! grep -Fq "Детали изменений" "$PUBLIC_DIR/tessa-matrix-studio.user.js"
+          (
+            cd "$PUBLIC_DIR"
+            sha256sum --check SHA256SUMS.txt
+          )
+; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
