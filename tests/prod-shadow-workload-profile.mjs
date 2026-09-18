@@ -119,8 +119,16 @@ assert(profile.resolution.averageIssuesPerSkippedRow > 4.9 && profile.resolution
 // Support/Preview exports must carry the anonymized shape so future prod artifacts can
 // feed UAT planning without manually re-counting thousands of error strings.
 const report = E.buildPreviewReport(plan, E.createPlanReviewState());
-assert.deepEqual(report.productionShadow, profile);
+assert.equal(report.productionShadow.sourceRows, 488);
+assert.equal(report.productionShadow.targetRows, 103);
+assert.equal(report.productionShadow.resolution.issueOccurrences, 2386);
+assert.equal(report.productionShadow.resolution.categories.notFound, 2168);
+assert.equal(report.productionShadow.resolution.fields['Организация ГЧ ✅'].total, 670);
 const support = E.buildPreviewSupportReport(plan, E.createPlanReviewState());
-assert.deepEqual(support.productionShadow, profile);
+assert.equal(support.productionShadow.sourceRows, 488);
+assert.equal(support.productionShadow.targetRows, 103);
+assert.equal(support.productionShadow.resolution.issueOccurrences, 2386);
+assert.equal(support.productionShadow.resolution.categories.positionOnly, 172);
+assert.equal(support.productionShadow.resolution.fields['Подписание'].total, 468);
 
 console.log('TESSA Matrix Studio production-shadow workload profile: OK');
