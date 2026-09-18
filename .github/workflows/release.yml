@@ -233,6 +233,20 @@ jobs:
           }
           node tools/release-native-evidence-gate.mjs "$VERSION" dist/tessa-matrix-studio.user.js "$EVIDENCE"
 
+          SCHEMA_VERSION="$(node -p "JSON.parse(require('fs').readFileSync('$EVIDENCE','utf8')).schemaVersion")"
+          if [[ "$SCHEMA_VERSION" == "5" ]]; then
+            RUN_ID="$(node -p "JSON.parse(require('fs').readFileSync('$EVIDENCE','utf8')).candidateArtifactRunId")"
+            ARTIFACT_NAME="$(node -p "JSON.parse(require('fs').readFileSync('$EVIDENCE','utf8')).candidateArtifactName")"
+            EXPECTED_DIGEST="sha256:$(node -p "JSON.parse(require('fs').readFileSync('$EVIDENCE','utf8')).candidateArtifactDigest")"
+            ACTUAL_DIGEST="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" --jq ".artifacts[] | select(.name == \"$ARTIFACT_NAME\") | .digest" | head -n1)"
+            [[ -n "$ACTUAL_DIGEST" ]] || { echo "::error::Exact live-tested artifact $ARTIFACT_NAME was not found in run $RUN_ID."; exit 1; }
+            [[ "$ACTUAL_DIGEST" == "$EXPECTED_DIGEST" ]] || {
+              echo "::error::Live-tested artifact digest mismatch: expected $EXPECTED_DIGEST, got $ACTUAL_DIGEST."
+              exit 1
+            }
+            echo "Exact live-tested GitHub artifact verified: $ARTIFACT_NAME ($ACTUAL_DIGEST)."
+          fi
+
       - name: Attest release provenance
         if: steps.changed.outputs.changed == 'true'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
