@@ -13063,6 +13063,222 @@
     return candidates[Math.floor(rng() * candidates.length)];
   }
 
+  // PROD_SHADOW_UAT_V1
+  // Deterministic, read-only stress layer derived from the shape of a real production
+  // workbook. It deliberately does not depend on the TEST environment's smaller live
+  // dictionaries: high-cardinality catalogs and a 488 -> 103 same-template transfer are
+  // synthesized in memory, while live TESSA checks continue separately below.
+  async function runProductionShadowAudit() {
+    const nowMs = () => Number(globalThis.performance?.now?.() ?? Date.now());
+    const started = nowMs();
+    const profile = Object.freeze({
+      sourceRows: 488,
+      targetRows: 103,
+      sourceCriteria: 14,
+      functions: 9,
+      retiredColumns: 2,
+      targetOnlyColumns: 4,
+      observedSkippedRows: 478,
+      observedIssueOccurrences: 2386,
+      observedAutoFragmentResolutions: 239,
+      observedCategories: { notFound: 2168, positionOnly: 172, ambiguous: 45, noPerformers: 1 },
+      syntheticOrganizationEntries: 50002,
+      syntheticEmployeeEntries: 50004,
+      syntheticMissQueries: 100,
+      syntheticIssueVolume: 2386,
+    });
+
+    const orgEntries = Array.from({ length: 50000 }, (_, index) => ({
+      id: `qa-org-${index}`,
+      display: `QA Организация ${String(index).padStart(5, '0')}`,
+      roleTypeId: '',
+      source: 'PROD_SHADOW',
+    }));
+    orgEntries.push(
+      { id: 'qa-org-dup-a', display: 'QA Одинаковая организация', qualifier: 'Регион A', source: 'PROD_SHADOW' },
+      { id: 'qa-org-dup-b', display: 'QA Одинаковая организация', qualifier: 'Регион B', source: 'PROD_SHADOW' },
+    );
+
+    const peopleEntries = Array.from({ length: 50000 }, (_, index) => ({
+      id: `qa-person-${index}`,
+      roleTypeId: 1,
+      display: `Тестов${index} Т.Т. — Специалист`,
+      displayName: `Тестов${index} Т.Т. — Специалист`,
+      shortName: `Тестов${index} Т.Т.`,
+      fullName: `Тестов${index} Тест Тестович`,
+      position: 'Специалист',
+      department: 'QA',
+      nativeDisplay: `Тестов${index} Т.Т.`,
+      previousSelectors: [`Тестов${index} Т.Т.`],
+      source: 'MtxRoles',
+      status: 'Доступно',
+    }));
+    peopleEntries.push(
+      {
+        id: 'qa-title-drift', roleTypeId: 1,
+        display: 'Сидоров С.С. — Руководитель центра', displayName: 'Сидоров С.С. — Руководитель центра',
+        shortName: 'Сидоров С.С.', fullName: 'Сидоров Сергей Сергеевич',
+        position: 'Руководитель центра', department: 'QA', nativeDisplay: 'Сидоров С.С.',
+        previousSelectors: ['Сидоров С.С.'], source: 'MtxRoles', status: 'Доступно',
+      },
+      {
+        id: 'qa-name-a', roleTypeId: 1,
+        display: 'Иванов И.И. — Эксперт', displayName: 'Иванов И.И. — Эксперт',
+        shortName: 'Иванов И.И.', fullName: 'Иванов Иван Иванович',
+        position: 'Эксперт', department: 'QA A', nativeDisplay: 'Иванов И.И.',
+        previousSelectors: ['Иванов И.И.'], source: 'MtxRoles', status: 'Доступно',
+      },
+      {
+        id: 'qa-name-b', roleTypeId: 1,
+        display: 'Иванов И.И. — Аналитик', displayName: 'Иванов И.И. — Аналитик',
+        shortName: 'Иванов И.И.', fullName: 'Иванов Игорь Ильич',
+        position: 'Аналитик', department: 'QA B', nativeDisplay: 'Иванов И.И.',
+        previousSelectors: ['Иванов И.И.'], source: 'MtxRoles', status: 'Доступно',
+      },
+      {
+        id: 'qa-position-only', roleTypeId: 1,
+        display: 'Киреева Ю.А. — Директор', displayName: 'Киреева Ю.А. — Директор',
+        shortName: 'Киреева Ю.А.', fullName: 'Киреева Юлия Александровна',
+        position: 'Директор', department: 'QA', nativeDisplay: 'Киреева Ю.А.',
+        previousSelectors: ['Киреева Ю.А.'], source: 'MtxRoles', status: 'Доступно',
+      },
+    );
+
+    const catalogStarted = nowMs();
+    const catalog = E.normalizeDictionaryCatalog({
+      catalogs: {
+        orgs: { id: 'orgs', label: 'Организация', sourceView: 'PROD_SHADOW', entries: orgEntries },
+        people: { id: 'people', label: 'Подписание', sourceView: 'MtxRoles', entries: peopleEntries },
+      },
+      columnCatalogIds: { 'criterion:org': 'orgs', 'function:sign': 'people' },
+      stats: { errors: [], warnings: [] },
+    });
+    const catalogMs = nowMs() - catalogStarted;
+    if (catalog.stats.entries !== profile.syntheticOrganizationEntries + profile.syntheticEmployeeEntries) {
+      throw new Error(`Production-shadow: нормализация справочников потеряла значения: ${catalog.stats.entries}.`);
+    }
+
+    const orgWorkbook = { dictionaryCatalog: catalog };
+    const orgColumn = { key: 'criterion:org', kind: 'criterion', excelHeader: 'Организация' };
+    const signColumn = { key: 'function:sign', kind: 'function', excelHeader: 'Подписание' };
+
+    const lastOrg = E.resolveEmbeddedDictionaryValue(orgWorkbook, orgColumn, 'QA Организация 49999', 'qa-org-49999');
+    if (!lastOrg.resolved || lastOrg.explicit !== 'qa-org-49999') throw new Error('Production-shadow: точный ID в большом справочнике не разрешился.');
+    const duplicateOrg = E.resolveEmbeddedDictionaryValue(orgWorkbook, orgColumn, 'QA Одинаковая организация', '');
+    if (duplicateOrg.resolved || !/неоднознач/i.test(duplicateOrg.issue || '')) throw new Error('Production-shadow: одинаковые организации должны оставаться неоднозначными.');
+
+    const staleTitle = E.resolveEmbeddedDictionaryValue(orgWorkbook, signColumn, 'Сидоров С.С. - Руководитель МФЦ', '');
+    if (!staleTitle.resolved || staleTitle.explicit !== 'qa-title-drift|1') throw new Error(`Production-shadow: ФИО со старой должностью не разрешилось: ${staleTitle.issue || ''}`);
+    const namesake = E.resolveEmbeddedDictionaryValue(orgWorkbook, signColumn, 'Иванов И.И.', '');
+    if (namesake.resolved || !/неоднознач/i.test(namesake.issue || '')) throw new Error('Production-shadow: одинаковое ФИО должно требовать явного выбора.');
+    const positionOnly = E.resolveEmbeddedDictionaryValue(orgWorkbook, signColumn, 'Директор', '');
+    if (positionOnly.resolved || positionOnly.resolution !== 'employee-position-only') throw new Error('Production-shadow: должность без ФИО не должна автоматически выбирать сотрудника.');
+
+    const missStarted = nowMs();
+    const missQueries = Array.from({ length: profile.syntheticMissQueries }, (_, index) => `QA отсутствующее значение ${index}`);
+    let unresolved = 0;
+    for (let index = 0; index < profile.syntheticIssueVolume; index += 1) {
+      const value = missQueries[index % missQueries.length];
+      const result = E.resolveEmbeddedDictionaryValue(orgWorkbook, orgColumn, value, '');
+      if (!result.resolved) unresolved += 1;
+    }
+    const missMs = nowMs() - missStarted;
+    if (unresolved !== profile.syntheticIssueVolume) throw new Error('Production-shadow: отсутствующее значение неожиданно разрешилось.');
+
+    const O = E.constants.OPERAND;
+    const commonConditions = Array.from({ length: 12 }, (_, index) => ({
+      criterionRowId: `qa-common-${index}`, criterionName: `QA поле ${index + 1}`, operandTypeId: O.String,
+    }));
+    const retiredConditions = Array.from({ length: 2 }, (_, index) => ({
+      criterionRowId: `qa-retired-${index}`, criterionName: `QA старое ${index + 1}`, operandTypeId: O.String,
+    }));
+    const targetOnlyConditions = Array.from({ length: 4 }, (_, index) => ({
+      criterionRowId: `qa-target-${index}`, criterionName: `QA новое ${index + 1}`, operandTypeId: O.String,
+    }));
+    const functions = Array.from({ length: profile.functions }, (_, index) => ({
+      id: `qa-fn-${index}`, name: `QA функция ${index + 1}`, typeName: 'Исполнитель',
+    }));
+    const sourceStructure = { templateId: 'qa-prod-shadow-template', conditions: [...commonConditions, ...retiredConditions], functions };
+    const targetStructure = { templateId: sourceStructure.templateId, conditions: [...commonConditions, ...targetOnlyConditions], functions };
+
+    const makeSnapshotRow = (prefix, index, sourceStructureForRow) => {
+      const flat = {}, values = {}, roles = {};
+      for (const condition of sourceStructureForRow.conditions) {
+        const display = `${prefix}-${index}-${condition.criterionRowId}`;
+        flat[`criterion:${condition.criterionRowId}`] = [display];
+        values[condition.criterionRowId] = [{ kind: 'String', value: display, display }];
+      }
+      for (let fnIndex = 0; fnIndex < sourceStructureForRow.functions.length; fnIndex += 1) {
+        const fn = sourceStructureForRow.functions[fnIndex];
+        const roleIndex = index % 40;
+        const id = `${prefix}-role-${fnIndex}-${roleIndex}`;
+        const display = `${prefix} QA ${fnIndex}-${roleIndex}`;
+        flat[`function:${fn.id}`] = [display];
+        roles[fn.id] = [{ id, display, roleTypeId: 1 }];
+      }
+      return {
+        index,
+        rowCardId: `${prefix}-card-${index}`,
+        versionId: `${prefix}-version-${index}`,
+        fingerprint: E.fingerprintFlat(flat),
+        values,
+        roles,
+        flat,
+      };
+    };
+    const makeSnapshot = (prefix, size, rowStructure) => ({
+      matrixId: `${prefix}-matrix`,
+      templateId: sourceStructure.templateId,
+      rows: Array.from({ length: size }, (_, index) => makeSnapshotRow(prefix, index, rowStructure)),
+      criterionIdCache: new Map(), roleIdByFunctionCache: new Map(), roleIdCache: new Map(),
+    });
+    const sourceSnapshot = makeSnapshot('qa-source', profile.sourceRows, sourceStructure);
+    const targetSnapshot = makeSnapshot('qa-target', profile.targetRows, targetStructure);
+    const sourceInfo = { matrixId: sourceSnapshot.matrixId, TemplateID: sourceStructure.templateId, TemplateName: 'PROD SHADOW', StateName: 'Черновик' };
+    const targetInfo = { matrixId: targetSnapshot.matrixId, TemplateID: sourceStructure.templateId, TemplateName: 'PROD SHADOW', StateName: 'Черновик' };
+
+    const planStarted = nowMs();
+    const sourceCatalog = E.mergeSnapshotIntoDictionaryCatalog(null, sourceStructure, sourceSnapshot);
+    const bytes = await E.createRoundtripXlsxBytes(sourceStructure, sourceSnapshot, sourceInfo, sourceCatalog, { includeActions: true });
+    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const workbook = await E.readXlsxArrayBuffer(buffer, 'TESSA_PROD_SHADOW.xlsx');
+    const plan = E.buildPlan(workbook, targetStructure, targetSnapshot, targetInfo);
+    const safety = E.evaluatePlanSafety(plan, { matrixInfo: () => targetInfo, localizeValue: value => value });
+    const planMs = nowMs() - planStarted;
+
+    if (plan.counts.add !== profile.sourceRows || plan.counts.delete !== profile.targetRows || plan.counts.skip !== 0 || plan.counts.update !== 0 || plan.counts.noop !== 0) {
+      throw new Error(`Production-shadow: 488→103 planner drift: ${JSON.stringify(plan.counts)}`);
+    }
+    if (safety.blocked) throw new Error(`Production-shadow: полный same-template перенос заблокирован: ${(safety.blockedReasons || []).join(' ')}`);
+    if (E.evaluateApplyBatch(plan.actions).blocked) throw new Error('Production-shadow: пакет 591 операций ошибочно превысил Apply ceiling.');
+    if ((plan.columnMap?.retiredColumns || []).length !== profile.retiredColumns || (plan.columnMap?.missingCurrentColumns || []).length !== profile.targetOnlyColumns) {
+      throw new Error(`Production-shadow: schema drift не совпал: retired=${plan.columnMap?.retiredColumns?.length || 0}, targetOnly=${plan.columnMap?.missingCurrentColumns?.length || 0}.`);
+    }
+
+    return {
+      profile,
+      metrics: {
+        totalMs: Math.round(nowMs() - started),
+        catalogMs: Math.round(catalogMs),
+        repeatedMissMs: Math.round(missMs),
+        plannerMs: Math.round(planMs),
+        xlsxBytes: bytes.byteLength,
+        dictionaryEntries: catalog.stats.entries,
+        operationCount: plan.actions.filter(action => action.type !== 'noop').length,
+      },
+      assertions: {
+        exactLargeDictionaryId: true,
+        duplicateOrganizationFailClosed: true,
+        staleEmployeeTitleResolvedByFio: true,
+        namesakeFailClosed: true,
+        positionOnlyFailClosed: true,
+        repeatedMissingValuesFailClosed: true,
+        crossMatrixScale: true,
+        schemaDrift: true,
+      },
+    };
+  }
+
   function findUniqueAddCandidate(book, structure, snapshot, bridge, catalog, rng, options = {}) {
     const source = options.source || chooseSourceRow(book, rng);
     const columns = shuffled(mutableCriterionColumns(book, catalog, 2), rng);
@@ -13099,7 +13315,7 @@
     const report = {
       format: 'TESSA_FULL_UAT_V1', studioVersion: '1.14.0', runnerVersion: VERSION, seed, startedAt,
       status: 'INCOMPLETE', matrix: null, checks: [], timeline: [], cleanup: [], cleanupLedger: null, restoreProof: null, dictionaryAudit: null, functionalActionAudit: null,
-      rolePresentationAudit: null, recordKeepingAudit: null, fieldMutationAudit: null, liveConfirmation: options.liveConfirmation === 'full-uat-confirmed' ? 'full-uat-confirmed' : null, writesAttempted: 0, writesCompleted: 0,
+      rolePresentationAudit: null, recordKeepingAudit: null, fieldMutationAudit: null, productionShadowAudit: null, liveConfirmation: options.liveConfirmation === 'full-uat-confirmed' ? 'full-uat-confirmed' : null, writesAttempted: 0, writesCompleted: 0,
     };
     const packageEntries = [];
     let baseline = null, structure = null, catalog = null, bridge = null, baselineSignature = null;
@@ -13292,6 +13508,15 @@
         if (!(bytes instanceof Uint8Array) || bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error('Отчёт изменений не сформировал XLSX/ZIP артефакт.');
         packageEntries.push(['changes-preview.xlsx', bytes]);
         return { detail: `Сформирован changes-preview.xlsx (${bytes.length} байт).`, data: { outcome: 'changes-xlsx-artifact', artifact: 'changes-preview.xlsx', bytes: bytes.length } };
+      });
+
+      await runCheck('prod-shadow-offline', 'Production-shadow: объём и ошибки production-класса', async () => {
+        const audit = await runProductionShadowAudit();
+        report.productionShadowAudit = audit;
+        return {
+          detail: `Synthetic envelope: ${audit.metrics.dictionaryEntries} значений справочников; перенос ${audit.profile.sourceRows}→${audit.profile.targetRows}; ${audit.metrics.operationCount} операций; schema drift ${audit.profile.retiredColumns}/${audit.profile.targetOnlyColumns}; ${audit.metrics.totalMs} мс.`,
+          data: { outcome: 'production-shadow', profile: audit.profile, metrics: audit.metrics, assertions: audit.assertions },
+        };
       });
 
       await runCheck('runtime', 'Контекст и доступ на запись', async () => ({ detail: `Черновик «${info.TemplateName}», строк: ${baseline.rows.length}.` }));
@@ -13641,7 +13866,7 @@
       report.finishedAt = now(); report.durationMs = new Date(report.finishedAt).getTime() - new Date(startedAt).getTime(); report.summary = { pass: report.checks.filter(x => x.status === 'PASS').length, fail: report.checks.filter(x => x.status === 'FAIL').length, warn: report.checks.filter(x => x.status === 'WARN').length, notRun: report.checks.filter(x => x.status === 'NOT_RUN').length, writesAttempted: report.writesAttempted, writesCompleted: report.writesCompleted, cleanupVerified: report.cleanup.filter(x => x.status === 'verified' || x.status === 'already-absent').length, cleanupFailed: report.cleanup.filter(x => x.status === 'FAILED').length, cleanupLedgerPending: Number(report.cleanupLedger?.pending || 0), cleanupLedgerFailed: Number(report.cleanupLedger?.failed || 0), restoreStatus: report.restoreProof?.status || 'NOT_RUN' };
       const summary = { format: 'TESSA_FULL_UAT_SUMMARY_V1', status: report.status, seed: report.seed, studioVersion: report.studioVersion, runnerVersion: report.runnerVersion, matrix: report.matrix, startedAt: report.startedAt, finishedAt: report.finishedAt, summary: report.summary };
       const readme = `TESSA Matrix Studio — Full UAT\n\nСтатус: ${report.status}\nSeed: ${report.seed}\nМатрица: ${report.matrix?.name || ''} (${report.matrix?.matrixId || ''})\n\nPASSED — обязательные проверки прошли и cleanup подтверждён.\nFAILED — есть функциональная ошибка, cleanup подтверждён.\nUNSAFE — cleanup или восстановление исходного состояния не подтверждены.\nINCOMPLETE — UAT не дошёл до полного набора проверок.\n`;
-      packageEntries.push(['cleanup-ledger.json', utf8(report.cleanupLedger || {})], ['restore-proof.json', utf8(report.restoreProof || {})], ['summary.json', utf8(summary)], ['uat-report.json', utf8(report)], ['timeline.json', utf8(report.timeline)], ['dictionary-audit.json', utf8({ dictionaryAudit: report.dictionaryAudit, rolePresentationAudit: report.rolePresentationAudit, recordKeepingAudit: report.recordKeepingAudit })], ['README.txt', utf8(readme)]);
+      packageEntries.push(['cleanup-ledger.json', utf8(report.cleanupLedger || {})], ['restore-proof.json', utf8(report.restoreProof || {})], ['summary.json', utf8(summary)], ['uat-report.json', utf8(report)], ['timeline.json', utf8(report.timeline)], ['dictionary-audit.json', utf8({ dictionaryAudit: report.dictionaryAudit, rolePresentationAudit: report.rolePresentationAudit, recordKeepingAudit: report.recordKeepingAudit, productionShadowAudit: report.productionShadowAudit })], ['README.txt', utf8(readme)]);
       try { const zip = await E.makeZip(packageEntries); const stamp = report.finishedAt.replace(/[:.]/g, '-'); E.triggerBlobDownload(new Blob([zip], { type: 'application/zip' }), `TESSA_Full_UAT_${report.status}_${stamp}.zip`); }
       catch (error) { console.error('[TESSA Full UAT] package error', error); try { E.downloadJson(report, `TESSA_Full_UAT_${report.status}.json`, null); } catch (_) { /* best effort */ } }
     }
@@ -13669,6 +13894,6 @@
     return true;
   }
 
-  window[INSTALL_KEY] = { version: VERSION, seededRandom, hashSeed, snapshotSignature, cloneWorkbook, buildWritableFieldInventory, fieldCandidateValues, actionCoverageFromChecks, createCleanupLedger, baselineRestoreProof, runFullUat, installUi };
+  window[INSTALL_KEY] = { version: VERSION, seededRandom, hashSeed, snapshotSignature, cloneWorkbook, buildWritableFieldInventory, fieldCandidateValues, actionCoverageFromChecks, createCleanupLedger, baselineRestoreProof, runProductionShadowAudit, runFullUat, installUi };
   if (!globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__) { let attempts = 0; const timer = setInterval(() => { attempts += 1; if (installUi() || attempts > 120) clearInterval(timer); }, 250); installUi(); }
 })();
