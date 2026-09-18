@@ -10317,8 +10317,13 @@
     }, snapshotOk);
     await run('selected-plan', 'Изменения и ошибки выбранного Excel', async () => {
       capture('selected-workbook.json', { fileName: selected.fileName, sheetName: selected.sheetName, headers: selected.headers, schemaTokens: selected.schemaTokens, roundtrip: selected.roundtrip, rows: selected.rows });
-      plan = buildPlan(selected, structure, snapshot); capture('selected-plan.json', compactPlanForExport(plan));
-      return { status: plan.safety?.blocked || plan.counts.skip || plan.skippedFields?.length ? 'fail' : 'pass', detail: `Изменить: ${plan.counts.update}; добавить: ${plan.counts.add}; удалить: ${plan.counts.delete}; пропустить: ${plan.counts.skip}; ошибочных полей: ${plan.skippedFields?.length || 0}.` };
+      plan = buildPlan(selected, structure, snapshot);
+      const selectedSafety = evaluatePlanSafety(plan, bridge);
+      const productionShadow = productionShadowProfile({ ...plan, safety: selectedSafety });
+      report.productionShadow = productionShadow;
+      capture('selected-plan.json', compactPlanForExport({ ...plan, safety: selectedSafety }));
+      capture('production-shadow.json', productionShadow);
+      return { status: selectedSafety?.blocked || plan.counts.skip || plan.skippedFields?.length ? 'fail' : 'pass', detail: `Изменить: ${plan.counts.update}; добавить: ${plan.counts.add}; удалить: ${plan.counts.delete}; пропустить: ${plan.counts.skip}; ошибочных полей: ${plan.skippedFields?.length || 0}.` };
     }, Boolean(snapshotOk && selected));
 
     const columns = roundtripOk ? buildColumnMap(generated, structure).columns : null;
