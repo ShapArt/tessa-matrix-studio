@@ -222,6 +222,8 @@ jobs:
 
       - name: Enforce native TESSA evidence
         if: steps.changed.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
