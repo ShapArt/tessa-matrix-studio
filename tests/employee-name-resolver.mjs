@@ -95,4 +95,47 @@ assert.ok(Array.isArray(resolved.candidates) && resolved.candidates.some(item =>
   `position ambiguity must expose structured current candidates: ${JSON.stringify(resolved)}`);
 assert.match(resolved.issue || '', /выберите.*сотрудник|должност/i);
 
+// Regression from the 2026-09-18 real cross-matrix workbook: an old workbook may
+// contain FIO + a historical position, while live MtxRoles already has another
+// position caption for the same employee. Position is a hint, not identity.
+// A unique employee name must survive this drift; namesakes still fail closed.
+const driftCatalog = E.normalizeDictionaryCatalog({
+  catalogs: {
+    people: {
+      id: 'people-drift',
+      label: 'Подписание · роли и пользователи TESSA',
+      sourceView: 'MtxRoles',
+      entries: [
+        {
+          id: 'ponomareva', roleTypeId: 1,
+          display: 'Пономарева Н.А. — Руководитель центра',
+          displayName: 'Пономарева Н.А. — Руководитель центра',
+          shortName: 'Пономарева Н.А.', fullName: 'Пономарева Наталья Александровна',
+          position: 'Руководитель центра', department: 'ОЦО', nativeDisplay: 'Пономарева Н.А.',
+          previousSelectors: ['Пономарева Н.А.'], source: 'MtxRoles', status: 'Доступно',
+        },
+        {
+          id: 'gorinova', roleTypeId: 1,
+          display: 'Горинова Т.А. — Директор направления',
+          displayName: 'Горинова Т.А. — Директор направления',
+          shortName: 'Горинова Т.А.', fullName: 'Горинова Татьяна Александровна',
+          position: 'Директор направления', department: 'ОЦО', nativeDisplay: 'Горинова Т.А.',
+          previousSelectors: ['Горинова Т.А.'], source: 'MtxRoles', status: 'Доступно',
+        },
+      ],
+    },
+  },
+  columnCatalogIds: { 'function:sign': 'people-drift' },
+  stats: { errors: [], warnings: [] },
+});
+const driftWorkbook = { dictionaryCatalog: driftCatalog };
+
+resolved = E.resolveEmbeddedDictionaryValue(driftWorkbook, column, 'Пономарева Н.А. - Руководитель МФЦ', '');
+assert.equal(resolved.resolved, true, resolved.issue || 'old Ponomareva position must not block unique FIO resolution');
+assert.equal(resolved.explicit, 'ponomareva|1');
+
+resolved = E.resolveEmbeddedDictionaryValue(driftWorkbook, column, 'Горинова Т.А. - Руководитель направления', '');
+assert.equal(resolved.resolved, true, resolved.issue || 'old Gorinova position must not block unique FIO resolution');
+assert.equal(resolved.explicit, 'gorinova|1');
+
 console.log('TESSA Matrix Studio employee tolerant resolver: OK');
