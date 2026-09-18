@@ -373,6 +373,67 @@ function assertSchema3ReleaseEvidence(attestation) {
   };
 }
 
+function assertSchema5ReleaseEvidence(attestation) {
+  if (attestation.operation !== 'live-uat-exact-artifact') {
+    throw new Error(`Exact-artifact live UAT evidence operation must be live-uat-exact-artifact, got ${attestation.operation || 'missing'}.`);
+  }
+  const live = attestation.liveUat || {};
+  if (canonical(live.status) !== 'passed'
+      || Number(live.passCount || 0) <= 0
+      || Number(live.failCount || 0) !== 0
+      || Number(live.notRunCount || 0) !== 0) {
+    throw new Error('Exact-artifact live UAT evidence must prove PASSED, PASS > 0, FAIL = 0 and NOT_RUN = 0.');
+  }
+  if (!Number.isInteger(Number(live.seed)) || Number(live.seed) < 0) {
+    throw new Error('Exact-artifact live UAT evidence must include the deterministic seed.');
+  }
+  if (!String(live.archiveName || '').startsWith('TESSA_Full_UAT_PASSED_')) {
+    throw new Error('Exact-artifact live UAT evidence must identify the PASSED Full UAT archive.');
+  }
+  if (Number(live.archiveSizeBytes || 0) <= 0) {
+    throw new Error('Exact-artifact live UAT evidence must include the uploaded archive size.');
+  }
+
+  const contract = attestation.runnerContract || {};
+  const requiredTrue = [
+    'allRequiredChecksPassed',
+    'cleanupSafe',
+    'finalBaselinePassed',
+    'restoreVerified',
+    'actionCoverageComplete',
+    'applyEvidencePassed',
+    'reconcileEvidencePassed',
+    'productionShadowPassed',
+    'versionProvenancePassed',
+  ];
+  const missing = requiredTrue.filter(key => contract[key] !== true);
+  if (missing.length) {
+    throw new Error(`Exact-artifact live UAT evidence is incomplete: ${missing.join(', ')}.`);
+  }
+
+  assertHash(attestation.candidateArtifactDigest, 'attestation.candidateArtifactDigest');
+  if (!Number.isInteger(Number(attestation.candidateArtifactRunId)) || Number(attestation.candidateArtifactRunId) <= 0) {
+    throw new Error('Exact-artifact evidence must include a positive GitHub Actions run id.');
+  }
+  if (!String(attestation.candidateArtifactName || '').includes(String(attestation.version || ''))) {
+    throw new Error('Exact-artifact evidence artifact name must identify the release version.');
+  }
+
+  return {
+    operation: 'live-uat-exact-artifact',
+    schemaVersion: 5,
+    candidateArtifactDigest: String(attestation.candidateArtifactDigest).toLowerCase(),
+    candidateArtifactRunId: Number(attestation.candidateArtifactRunId),
+    candidateArtifactName: String(attestation.candidateArtifactName),
+    seed: Number(live.seed) >>> 0,
+    passCount: Number(live.passCount),
+    failCount: 0,
+    notRunCount: 0,
+    archiveName: String(live.archiveName),
+    archiveSizeBytes: Number(live.archiveSizeBytes),
+  };
+}
+
 export function normalizeReportOnlyReleaseSource(input) {
   let source = String(input ?? '').replace(/\r\n/g, '\n');
   source = source.replace(/^\/\/ @version\s+[0-9.]+$/m, '// @version      <VERSION>');
@@ -480,8 +541,8 @@ export function assertReleaseNativeEvidence({ version, userscriptSource, attesta
   if (!attestation || typeof attestation !== 'object') {
     throw new Error(`Native evidence attestation is required for release ${version}. Keep this build as RC until live TESSA evidence is verified.`);
   }
-  if (![2, 3, 4].includes(Number(attestation.schemaVersion))) {
-    throw new Error('Native evidence attestation schemaVersion must be 2, 3 or 4.');
+  if (![2, 3, 4, 5].includes(Number(attestation.schemaVersion))) {
+    throw new Error('Native evidence attestation schemaVersion must be 2, 3, 4 or 5.');
   }
   if (String(attestation.version) !== String(version)) {
     throw new Error(`Native evidence attestation version ${attestation.version || 'missing'} does not match release ${version}.`);
@@ -501,9 +562,11 @@ export function assertReleaseNativeEvidence({ version, userscriptSource, attesta
     };
   }
 
-  const evidence = schemaVersion === 3
-    ? assertSchema3ReleaseEvidence(attestation)
-    : assertSchema2ReleaseEvidence(attestation);
+  const evidence = schemaVersion === 5
+    ? assertSchema5ReleaseEvidence(attestation)
+    : schemaVersion === 3
+      ? assertSchema3ReleaseEvidence(attestation)
+      : assertSchema2ReleaseEvidence(attestation);
 
   assertHash(attestation.userscriptSha256, 'attestation.userscriptSha256');
   if (String(attestation.userscriptSha256).toLowerCase() !== actualUserscriptSha256) {
