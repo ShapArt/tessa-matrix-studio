@@ -99,10 +99,10 @@ for (const token of ['0 изменений', 'ADD', 'UPDATE', 'DELETE', '3000', 
 assert.match(communication, /не.*подтвержден.*live TESSA/is, 'message must not claim live speedup before live UAT');
 assert.match(communication, /1\.14\.0/);
 
-assert.match(readme, /version-1\.14\.1/);
-assert.match(readme, /\*\*v1\.14\.1/);
+assert.match(readme, /version-1\.14\.2/);
+assert.match(readme, /\*\*v1\.14\.2/);
 assert.ok(readme.includes('docs/assets/studio-start-v1.14.1.jpg'), 'current v1.14.1 Studio screenshot must be preserved');
 assert.ok(readme.includes('docs/assets/changes-report-v1.14.1.jpg'), 'current v1.14.1 changes-report screenshot must be preserved');
 assert.ok(readme.includes('Скачать изменения в Excel'), 'README should mention reviewed-changes export');
 
-console.log('TESSA Matrix Studio v1.14.1 RC documentation/final-proof/inline-failures/runtime-context/final-four/report-only-release contract: OK');
+console.log('TESSA Matrix Studio v1.14.2 RC documentation/final-proof/inline-failures/runtime-context/final-four/release contract: OK');
