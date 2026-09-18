@@ -7320,6 +7320,95 @@
     return reviewed;
   }
 
+  // PROD_SHADOW_PROFILE_V1
+  // Compact, non-secret profile of the workload shape observed by Preview. It is
+  // intentionally based on counts/categories rather than business values so a real
+  // production dry-run can be converted into deterministic UAT coverage without
+  // publishing employee/organisation names in the repository.
+  function productionShadowProfile(plan) {
+    const skippedRows = [...(plan?.skippedRows || [])];
+    const categories = { notFound: 0, positionOnly: 0, ambiguous: 0, noPerformers: 0, other: 0 };
+    const fields = {};
+    let issueOccurrences = 0;
+    let maxIssuesPerRow = 0;
+
+    const bumpField = (field, category) => {
+      const key = normalizeSpace(field || '');
+      if (!key) return;
+      if (!fields[key]) fields[key] = { total: 0, notFound: 0, positionOnly: 0, ambiguous: 0, noPerformers: 0, other: 0 };
+      fields[key].total += 1;
+      fields[key][category] = (fields[key][category] || 0) + 1;
+    };
+
+    for (const skipped of skippedRows) {
+      const reason = normalizeSpace(skipped?.reason || '');
+      const segments = String(reason)
+        .split(/(?=Excel\s+\d+:\s*)/g)
+        .map(item => normalizeSpace(item))
+        .filter(Boolean);
+      const messages = segments.length ? segments : (reason ? [reason] : []);
+      maxIssuesPerRow = Math.max(maxIssuesPerRow, messages.length);
+
+      for (const message of messages) {
+        issueOccurrences += 1;
+        let category = 'other';
+        if (/не найдено в справочнике/i.test(message)) category = 'notFound';
+        else if (/похоже на должность, а не на ФИО сотрудника/i.test(message)) category = 'positionOnly';
+        else if (/найдено\s+\d+\s+вариант/i.test(message) || /неоднознач/i.test(message)) category = 'ambiguous';
+        else if (/не останется исполнителей/i.test(message)) category = 'noPerformers';
+        categories[category] += 1;
+
+        const fieldMatch = message.match(/(?:справочнике|столбце)\s+[«"]([^»"]+)[»"]/i);
+        bumpField(fieldMatch?.[1] || '', category);
+      }
+    }
+
+    const orderedFields = Object.fromEntries(
+      Object.entries(fields)
+        .sort((a, b) => b[1].total - a[1].total || a[0].localeCompare(b[0], 'ru'))
+        .slice(0, 50),
+    );
+    const autoFragmentResolutions = (plan?.desired || [])
+      .reduce((sum, row) => sum + Number(row?.resolutions?.length || 0), 0);
+    const safety = plan?.safety || {};
+    const columnMap = plan?.columnMap || {};
+
+    return {
+      sourceRows: Number(plan?.workbook?.rows?.length || 0),
+      targetRows: Number(plan?.snapshot?.rows?.length || 0),
+      planned: {
+        noop: Number(plan?.counts?.noop || 0),
+        update: Number(plan?.counts?.update || 0),
+        add: Number(plan?.counts?.add || 0),
+        delete: Number(plan?.counts?.delete || 0),
+        skip: Number(plan?.counts?.skip || 0),
+      },
+      structure: {
+        criteria: Number(plan?.structure?.conditions?.length || 0),
+        functions: Number(plan?.structure?.functions?.length || 0),
+        mappedHeaders: Number(safety?.mappedHeaders || 0),
+        totalHeaders: Number(safety?.totalHeaders || 0),
+        mappedFunctions: Number(safety?.mappedFunctions || 0),
+        retiredColumns: Number(columnMap?.retiredColumns?.length || 0),
+        targetOnlyColumns: Number(columnMap?.missingCurrentColumns?.length || 0),
+      },
+      context: {
+        kind: safety?.workbookContext?.kind || plan?.workbookContext?.kind || null,
+        crossMatrixReplacement: Boolean(safety?.crossMatrixReplacement || plan?.crossMatrixReplacement?.enabled),
+        blocked: Boolean(safety?.blocked),
+      },
+      resolution: {
+        autoUniqueFragment: autoFragmentResolutions,
+        skippedRows: skippedRows.length,
+        issueOccurrences,
+        maxIssuesPerRow,
+        averageIssuesPerSkippedRow: skippedRows.length ? Number((issueOccurrences / skippedRows.length).toFixed(3)) : 0,
+        categories,
+        fields: orderedFields,
+      },
+    };
+  }
+
   function buildPreviewReport(plan, review = null) {
     const reviewed = buildReviewedPlan(plan, review);
     const availability = reviewedApplyAvailability(reviewed, plan?.safety);
@@ -7328,6 +7417,7 @@
       studioVersion: APP.version,
       createdAt: nowIso(),
       plan: compactPlanForExport(reviewed),
+      productionShadow: productionShadowProfile(reviewed),
       skippedRows: [...(reviewed?.skippedRows || [])],
       skippedFields: [...(reviewed?.skippedFields || [])],
       reviewIssues: [...(reviewed?.reviewIssues || [])],
@@ -10873,6 +10963,7 @@
       reasonCodes,
       roleTypeIds: [...roleTypeIds].sort(),
       sources: [...new Set((reviewed?.skippedRows || []).map(item => normalizeSpace(item?.source || '')).filter(Boolean))].sort(),
+      productionShadow: productionShadowProfile(reviewed),
       apply: {
         canApply: Boolean(availability.canApply),
         count: Number(availability.count || 0),
@@ -12571,7 +12662,7 @@
     preflightPlan, applyPreflightPreview, crossMatrixReplacementIntegrity, verifyCrossMatrixRollback, finalizeCrossMatrixTransferVerification, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
     incrementalSafetyMode, collectTouchedIdentities, buildTargetedPreflightSnapshot, buildTargetedReconciliationSnapshot,
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, partnerRecordKeepingColumnIndex, detectPlanDuplicateConflicts, friendlyErrorMessage,
-    dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport,
+    dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport, productionShadowProfile,
     performanceStage, performanceSnapshot, resetPerformanceTelemetry, performanceUatScenarioNames, runPerformanceUat, buildPerformanceUatSummary, makeZip, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,
     baselineExplicitValues, workbookBaselineFastPathIndex, unchangedDesiredRowFromBaseline,
     TessaBridge,
