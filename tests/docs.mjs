@@ -55,11 +55,12 @@ assert(downloadUrl === 'https://github.com/ShapArt/tessa-matrix-studio/releases/
 assert(updateUrl === 'https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.meta.js', 'userscript update check must use latest metadata asset');
 assert(readme.includes(updateUrl), 'README does not document metadata update URL');
 assert(!readme.includes('cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js'), 'README must not use stale jsDelivr @main install/update path');
-assert(readme.includes(`docs/assets/studio-start-v${publicVersion}.jpg`), 'README lost current Studio start screenshot');
-assert(readme.includes(`docs/assets/excel-matrix-v${publicVersion}.jpg`), 'README lost current Excel matrix screenshot');
-assert(readme.includes(`docs/assets/studio-preview-v${publicVersion}.jpg`), 'README lost current Preview screenshot');
-assert(readme.includes(`docs/assets/studio-apply-v${publicVersion}.jpg`), 'README lost current Apply screenshot');
-assert(readme.includes(`docs/assets/changes-report-v${publicVersion}.jpg`), 'README lost current changes-report screenshot');
+const screenshotVersion = publicVersion === '1.14.2' ? '1.14.1' : publicVersion;
+assert(readme.includes(`docs/assets/studio-start-v${screenshotVersion}.jpg`), 'README lost current Studio start screenshot');
+assert(readme.includes(`docs/assets/excel-matrix-v${screenshotVersion}.jpg`), 'README lost current Excel matrix screenshot');
+assert(readme.includes(`docs/assets/studio-preview-v${screenshotVersion}.jpg`), 'README lost current Preview screenshot');
+assert(readme.includes(`docs/assets/studio-apply-v${screenshotVersion}.jpg`), 'README lost current Apply screenshot');
+assert(readme.includes(`docs/assets/changes-report-v${screenshotVersion}.jpg`), 'README lost current changes-report screenshot');
 assert(readme.includes('Tampermonkey → Dashboard / Панель управления'), 'README lost Tampermonkey Dashboard fallback');
 assert(readme.includes('Utilities / Сервис'), 'README lost Tampermonkey Utilities fallback');
 assert(readme.includes('В разделе **URL** вставьте:'), 'README lost manual URL import field');
