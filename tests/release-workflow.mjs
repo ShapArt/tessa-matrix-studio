@@ -97,6 +97,14 @@ assert(workflow.includes('id-token: write'), 'release must allow OIDC signing fo
 assert(workflow.includes('uses: actions/attest@'), 'release must generate GitHub artifact attestations');
 assert(workflow.includes('subject-checksums: dist/SHA256SUMS.txt'), 'attestation must bind the checksummed release assets');
 
+// Schema v5 exact-artifact verification calls GitHub through gh CLI and must authenticate
+// with the workflow token instead of relying on runner-global gh state.
+const evidenceStep = workflow.slice(workflow.indexOf('- name: Enforce native TESSA evidence'), workflow.indexOf('- name: Attest release provenance'));
+assert(evidenceStep.includes('GH_TOKEN: ${{ github.token }}'),
+  'release evidence step must authenticate gh api when verifying the exact live-tested artifact digest');
+assert(evidenceStep.includes('candidateArtifactRunId') && evidenceStep.includes('candidateArtifactDigest'),
+  'release evidence step must verify the recorded exact artifact through GitHub Actions metadata');
+
 // Published versions are immutable: a repeated run may finish a release after a tag-only partial failure,
 // but it must never replace assets of an already published GitHub Release.
 assert(!workflow.includes('--clobber'), 'published release assets must never be overwritten with --clobber');
