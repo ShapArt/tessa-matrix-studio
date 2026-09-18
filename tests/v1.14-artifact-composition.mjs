@@ -33,6 +33,7 @@ try {
   run(['hotfixes/v1.14.2-preview-counter-filters.mjs', target]);
   run(['hotfixes/v1.14.2-full-uat-scope-fix.mjs', target]);
   run(['hotfixes/v1.14.2-full-uat-deterministic-clear.mjs', target]);
+  run(['hotfixes/v1.14.2-full-uat-copied-identity-collision-safe.mjs', target]);
   run(['hotfixes/v1.14.2-full-uat-version-provenance.mjs', target]);
   run(['--check', target]);
 
@@ -51,6 +52,8 @@ try {
     'exact candidate must not retain the flaky Full UAT CLEAR NOT_RUN branch');
   assert.match(source, /FULL_UAT_VERSION_PROVENANCE_V1/,
     'composed artifact must bind Full UAT evidence to the runtime Studio version');
+  assert.match(source, /FULL_UAT_COPIED_IDENTITY_COLLISION_SAFE_V1/,
+    'composed artifact must preflight copied identities against business-row duplicates');
   assert.match(source, /studioVersion: String\(E\.studioVersion\?\.\(\) \|\| 'unknown'\)/,
     'Full UAT report must read the runtime Studio version instead of a stale literal');
   assert.doesNotMatch(source, /format: 'TESSA_FULL_UAT_V1', studioVersion: '1\.14\.0'/,
@@ -128,8 +131,9 @@ try {
   run(['tests/live-colleague-excel-regressions.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/v1.14.2-full-uat-clear-regression.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/v1.14.2-full-uat-version-provenance.mjs'], { TMS_TEST_SOURCE: target });
+  run(['tests/v1.14.2-full-uat-copied-identity-regression.mjs'], { TMS_TEST_SOURCE: target });
 
-  console.log('v1.14 release/UAT artifact composition: write safety + report V3 + live Excel UX + counter filters + deterministic Full UAT CLEAR + version provenance OK');
+  console.log('v1.14 release/UAT artifact composition: write safety + report V3 + live Excel UX + counter filters + deterministic Full UAT CLEAR + collision-safe copied identities + version provenance OK');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
