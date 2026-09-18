@@ -88,6 +88,7 @@ jobs:
           grep -Fq "version: '$CANDIDATE_VERSION'," dist/tessa-matrix-studio.user.js
           grep -Fq 'REVIEWED_CHANGES_REPORT_V3' dist/tessa-matrix-studio.user.js
           grep -Fq 'LIVE_EXCEL_PREVIEW_UX_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'LIVE_PICKER_DELIMITER_SAFE_V2' dist/tessa-matrix-studio.user.js
           grep -Fq 'PREVIEW_COUNTER_FILTERS_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'FULL_UAT_CLEAR_SCENARIO_DETERMINISTIC_V2' dist/tessa-matrix-studio.user.js
@@ -139,7 +140,7 @@ jobs:
 
           USER_SHA="$(sha256sum dist/tessa-matrix-studio.user.js | awk '{print $1}')"
           COMMIT_SHA="$(git rev-parse HEAD)"
-          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "live-colleague-excel-preview-uat",\n  "sourceWorkbook": "TESSA_Матрица_ОРД-основная_78792326_СПРАВОЧНИКИ.xlsx",\n  "expectedChecks": ["multi-position-picker-copy", "visible-preview-error-count", "explicit-not-applied-count", "bounded-resolution-center", "counter-driven-preview-filters", "full-uat-export-scope", "deterministic-live-clear", "production-shadow-prod-envelope", "historical-alias-migration", "cross-matrix-production-scale", "full-uat-version-provenance", "copied-identity-collision-safe", "full-uat-apply-reconcile-evidence"]\n}\n' \
+          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "live-colleague-excel-preview-uat",\n  "sourceWorkbook": "TESSA_Матрица_ОРД-основная_78792326_СПРАВОЧНИКИ.xlsx",\n  "expectedChecks": ["multi-position-picker-copy", "picker-delimiter-safe-v2", "visible-preview-error-count", "explicit-not-applied-count", "bounded-resolution-center", "counter-driven-preview-filters", "full-uat-export-scope", "deterministic-live-clear", "production-shadow-prod-envelope", "historical-alias-migration", "cross-matrix-production-scale", "full-uat-version-provenance", "copied-identity-collision-safe", "full-uat-apply-reconcile-evidence"]\n}\n' \
             "$CANDIDATE_VERSION" "$COMMIT_SHA" "$USER_SHA" > dist/candidate-manifest.json
 
       - name: Upload exact UAT candidate
