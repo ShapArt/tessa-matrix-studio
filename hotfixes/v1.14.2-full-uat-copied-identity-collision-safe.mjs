@@ -122,11 +122,11 @@ const replacement = `      // FULL_UAT_COPIED_IDENTITY_COLLISION_SAFE_V1
         }
 
         if (!selected) {
-          throw new Error(`Не удалось построить collision-safe copied-identity сценарий за ${attempts.length} попыток. Последние планы: ${JSON.stringify(attempts.slice(-8))}`);
+          throw new Error('Не удалось построить collision-safe copied-identity сценарий за ' + attempts.length + ' попыток. Последние планы: ' + JSON.stringify(attempts.slice(-8)));
         }
 
         return {
-          detail: `Excel ${selected.sourceRow.excelRow}, ${selected.column.key}: одна копия стала UPDATE, остальные три — ADD; два отсутствующих оригинала — DELETE. Кандидат предварительно проверен на отсутствие business-дублей.`,
+          detail: 'Excel ' + selected.sourceRow.excelRow + ', ' + selected.column.key + ': одна копия стала UPDATE, остальные три — ADD; два отсутствующих оригинала — DELETE. Кандидат предварительно проверен на отсутствие business-дублей.',
           data: {
             ...compactPlan(selected.plan),
             sourceExcelRow: selected.sourceRow.excelRow,
