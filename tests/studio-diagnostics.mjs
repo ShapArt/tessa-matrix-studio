@@ -39,7 +39,7 @@ function fixture({ intervalFailure = false } = {}) {
   Object.assign(bridge, {
     core: { TypedField: { createGuid: value => value }, StorageHelper: { tryGet: (info, key) => info?.[key] } },
     cards: { CardRequest: class { constructor() { this.info = {}; } } },
-    mainCard: { id: 'matrix' }, templateId: () => 'template', matrixInfo: () => ({ matrixId: 'matrix', TemplateID: 'template' }),
+    mainCard: { id: 'matrix' }, templateId: () => 'template', matrixInfo: () => ({ matrixId: 'matrix', TemplateID: 'template', TemplateName: 'Test', StateName: 'Черновик' }),
     section: (c, name) => c.sections[name], rowValue: (r, key) => r.data[key], isDeleted: r => r.state === 2,
     addRow: section => { const r = row({}); section.rows.push(r); return r; },
     async requestStructure() { await this.cardService.request({ requestType: REQUEST.Structure, info: {} }); return structuredClone(structure); },
