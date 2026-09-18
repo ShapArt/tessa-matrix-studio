@@ -13087,8 +13087,9 @@
       observedIssueOccurrences: 2386,
       observedAutoFragmentResolutions: 239,
       observedCategories: { notFound: 2168, positionOnly: 172, ambiguous: 45, noPerformers: 1 },
+      observedRoleTypeIds: ['0', '1', '2', '4'],
       syntheticOrganizationEntries: 50002,
-      syntheticEmployeeEntries: 50004,
+      syntheticEmployeeEntries: 50007,
       syntheticMissQueries: 100,
       syntheticIssueVolume: 2386,
     });
@@ -13147,6 +13148,9 @@
         position: 'Директор', department: 'QA', nativeDisplay: 'Киреева Ю.А.',
         previousSelectors: ['Киреева Ю.А.'], source: 'MtxRoles', status: 'Доступно',
       },
+      { id: 'qa-role-static', roleTypeId: 0, display: 'QA статическая роль', source: 'MtxRoles', status: 'Доступно' },
+      { id: 'qa-role-department', roleTypeId: 2, display: 'QA подразделение', source: 'MtxRoles', status: 'Доступно' },
+      { id: 'qa-role-context', roleTypeId: 4, display: 'QA контекстная роль', source: 'MtxRoles', status: 'Доступно' },
     );
 
     const catalogStarted = nowMs();
@@ -13178,6 +13182,18 @@
     if (namesake.resolved || !/неоднознач/i.test(namesake.issue || '')) throw new Error('Production-shadow: одинаковое ФИО должно требовать явного выбора.');
     const positionOnly = E.resolveEmbeddedDictionaryValue(orgWorkbook, signColumn, 'Директор', '');
     if (positionOnly.resolved || positionOnly.resolution !== 'employee-position-only') throw new Error('Production-shadow: должность без ФИО не должна автоматически выбирать сотрудника.');
+
+    for (const [id, roleTypeId, display] of [
+      ['qa-role-static', 0, 'QA статическая роль'],
+      ['qa-title-drift', 1, 'Сидоров С.С. — Руководитель центра'],
+      ['qa-role-department', 2, 'QA подразделение'],
+      ['qa-role-context', 4, 'QA контекстная роль'],
+    ]) {
+      const resolved = E.resolveEmbeddedDictionaryValue(orgWorkbook, signColumn, display, `${id}|${roleTypeId}`);
+      if (!resolved.resolved || resolved.explicit !== `${id}|${roleTypeId}`) {
+        throw new Error(`Production-shadow: RoleTypeID=${roleTypeId} не сохранил точную identity.`);
+      }
+    }
 
     const missStarted = nowMs();
     const missQueries = Array.from({ length: profile.syntheticMissQueries }, (_, index) => `QA отсутствующее значение ${index}`);
@@ -13250,6 +13266,11 @@
     const plan = E.buildPlan(workbook, targetStructure, targetSnapshot, targetInfo);
     const safety = E.evaluatePlanSafety(plan, { matrixInfo: () => targetInfo, localizeValue: value => value });
     const planMs = nowMs() - planStarted;
+    const totalMs = nowMs() - started;
+    if (bytes.byteLength >= 32 * 1024 * 1024) throw new Error(`Production-shadow: XLSX вышел за production input ceiling: ${bytes.byteLength} байт.`);
+    if (catalogMs > 30000) throw new Error(`Production-shadow: нормализация ~100k справочных значений заняла ${Math.round(catalogMs)} мс (>30 сек).`);
+    if (missMs > 15000) throw new Error(`Production-shadow: повторная проверка ${profile.syntheticIssueVolume} проблемных значений заняла ${Math.round(missMs)} мс (>15 сек).`);
+    if (totalMs > 60000) throw new Error(`Production-shadow: полный synthetic-прогон занял ${Math.round(totalMs)} мс (>60 сек).`);
 
     if (plan.counts.add !== profile.sourceRows || plan.counts.delete !== profile.targetRows || plan.counts.skip !== 0 || plan.counts.update !== 0 || plan.counts.noop !== 0) {
       throw new Error(`Production-shadow: 488→103 planner drift: ${JSON.stringify(plan.counts)}`);
@@ -13263,7 +13284,7 @@
     return {
       profile,
       metrics: {
-        totalMs: Math.round(nowMs() - started),
+        totalMs: Math.round(totalMs),
         catalogMs: Math.round(catalogMs),
         repeatedMissMs: Math.round(missMs),
         plannerMs: Math.round(planMs),
@@ -13277,6 +13298,7 @@
         staleEmployeeTitleResolvedByFio: true,
         namesakeFailClosed: true,
         positionOnlyFailClosed: true,
+        roleTypeDiversityPreserved: true,
         repeatedMissingValuesFailClosed: true,
         crossMatrixScale: true,
         schemaDrift: true,
