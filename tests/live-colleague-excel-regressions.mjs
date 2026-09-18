@@ -35,6 +35,12 @@ for (const employee of fixture.pickerEmployees) {
   }, `${employee.shortName}: long/multi-position employee must remain copyable`);
   assert.ok(copied.trim(), `${employee.shortName}: copied value must not be empty`);
   assert.doesNotMatch(copied, /[;\r\n\t]/, `${employee.shortName}: one employee selector must stay one Excel value`);
+  assert.equal(E.splitCell(copied).length, 1, `${employee.shortName}: copied employee alias must parse as exactly one Excel value`);
+
+  const presentation = E.pickerEntryPresentation(employee);
+  assert.doesNotMatch(presentation.title, /;/, `${employee.shortName}: picker title must not expose raw multi-value delimiters`);
+  assert.doesNotMatch(presentation.title, /Руководитель по воспроизводству.*Руководитель по воспроизводству.*Руководитель по воспроизводству/,
+    `${employee.shortName}: picker title must not repeat the same position chain`);
 
   const catalog = E.normalizeDictionaryCatalog({
     catalogs: { people: { id: 'people', sourceView: 'MtxRoles', entries: [{ ...employee }] } },
@@ -44,6 +50,22 @@ for (const employee of fixture.pickerEmployees) {
   const resolved = E.resolveEmbeddedDictionaryValue({ dictionaryCatalog: catalog }, { key: 'function:sign', kind: 'function', excelHeader: 'Согласование' }, copied, '');
   assert.equal(resolved.resolved, true, `${employee.shortName}: copied compact selector must resolve back to exact dictionary item`);
   assert.equal(String(resolved.explicit).split('|')[0], employee.id);
+
+  const structure = { conditions: [], functions: [{ id: 'sign', name: 'Согласование' }] };
+  const snapshot = {
+    rows: [{
+      rowCardId: 'row-' + employee.id,
+      versionId: 'version-' + employee.id,
+      fingerprint: 'fingerprint-' + employee.id,
+      values: {},
+      roles: { sign: [{ id: employee.id, roleTypeId: 1, display: employee.display }] },
+    }],
+  };
+  const grid = E.buildRoundtripGrid(structure, snapshot, {}, catalog);
+  const exported = String(grid.rows[0]?.[0] || '');
+  assert.ok(exported, `${employee.shortName}: exported function cell must not be empty`);
+  assert.doesNotMatch(exported, /[;\r\n\t]/, `${employee.shortName}: fresh Excel export must use delimiter-safe personal-role alias`);
+  assert.equal(E.splitCell(exported).length, 1, `${employee.shortName}: fresh Excel export must roundtrip as one personal role`);
 }
 
 assert.equal(typeof E.previewAttentionSummary, 'function', 'Preview must expose one canonical attention-summary model');

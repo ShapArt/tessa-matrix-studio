@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 5,
+  "version": "1.14.2",
+  "status": "verified",
+  "operation": "live-uat-exact-artifact",
+  "userscriptSha256": "fdc34f046cbae36e84a3eb8cc116d816058abb4bda988653f3851fc46c618e28",
+  "candidateArtifactDigest": "d6720b5ccb50a3468e05bbf9b2343000085e4e1ad199abc374393ead6193d0ec",
+  "candidateArtifactRunId": 35346741095,
+  "candidateArtifactName": "tessa-matrix-studio-v1.14.2-live-excel-uat-35346741095",
+  "candidateBranchHead": "6f0d0d30c38d9e940d645769934bfeaf43a9307f",
+  "liveUat": {
+    "status": "PASSED",
+    "passCount": 37,
+    "failCount": 0,
+    "notRunCount": 0,
+    "seed": 1664950438,
+    "capturedAt": "2026-09-18T15:01:14.777Z",
+    "archiveName": "TESSA_Full_UAT_PASSED_2026-09-18T15-01-14-777Z.zip",
+    "archiveSizeBytes": 31137066,
+    "evidenceSource": "uploaded-live-test-result"
+  },
+  "runnerContract": {
+    "allRequiredChecksPassed": true,
+    "cleanupSafe": true,
+    "finalBaselinePassed": true,
+    "restoreVerified": true,
+    "actionCoverageComplete": true,
+    "applyEvidencePassed": true,
+    "reconcileEvidencePassed": true,
+    "productionShadowPassed": true,
+    "versionProvenancePassed": true
+  },
+  "notes": [
+    "Live TEST run used the exact GitHub Actions v1.14.2 UAT artifact identified above.",
+    "PASSED is finalized only after cleanup/restore and functional action coverage in the exact candidate runner.",
+    "The separate same-template cross-matrix PROD-like preview remains fail-closed while 478 source rows are unresolved; that data migration is not claimed as successfully applicable by this release."
+  ]
+}

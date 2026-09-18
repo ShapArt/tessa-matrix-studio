@@ -25,7 +25,26 @@ Stateful contract-тест моделирует состояние до и по�
 
 Каждый production-баг сначала получает воспроизводимый fixture/contract-test, затем исправление.
 
-### 3. Native runtime evidence
+### 3. Production-shadow / PROD envelope on TEST
+
+TEST и PROD могут отличаться на порядки по объёму справочников, количеству исторических значений и форме cross-matrix переносов. Поэтому зелёный native UAT на TEST сам по себе не доказывает, что planner/resolver выдержит production-класс данных.
+
+Для каждого доступного PROD dry-run Studio сохраняет **обезличенный production-shadow профиль**: количество строк, полей, schema drift, категории и плотность SKIP/ambiguity, объём auto-resolution и другие структурные метрики. Бизнес-значения, ФИО и названия организаций в fixture не переносятся.
+
+Full UAT на TEST затем отдельно воспроизводит этот envelope синтетически:
+
+- high-cardinality справочники порядка 100k значений;
+- исторические selector/caption → актуальное значение;
+- одинаковые ФИО и одинаковые названия организаций;
+- position-only роли;
+- наблюдённые RoleTypeID;
+- точное распределение проблемных значений и плотность ошибок по строкам;
+- same-template cross-matrix перенос production-класса со schema drift;
+- XLSX writer/parser + planner + safety на том же масштабе.
+
+Production-shadow не заменяет Native runtime evidence: он закрывает различие **в данных и масштабе**, а native canary закрывает различие **в реальном TESSA runtime/API**.
+
+### 4. Native runtime evidence
 
 Часть TESSA API и Cherkizovo-расширений не имеет доступного нам стабильного публичного контракта. Здесь нельзя безопасно угадывать по именам методов.
 
@@ -41,7 +60,7 @@ Studio предоставляет opt-in инструменты:
 
 Запись нативного действия должна быть ограниченной по времени/объёму, восстанавливать перехваченные методы после завершения и по умолчанию редактировать бизнес-значения.
 
-### 4. Native canary / test TESSA
+### 5. Native canary / test TESSA
 
 Максимальный уровень достоверности — отдельная тестовая матрица в реальной TESSA с тестовой учётной записью. Canary должен выполнять контролируемый CRUD-roundtrip:
 

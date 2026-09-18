@@ -17,6 +17,13 @@ assert(workflow.includes('release-evidence/v$VERSION.json'), 'release must use a
 assert(workflow.includes('test -f "$EVIDENCE"'), 'release must fail closed when native evidence is absent');
 assert(workflow.includes('node tools/release-native-evidence-gate.mjs "$VERSION" dist/tessa-matrix-studio.user.js "$EVIDENCE"'),
   'release gate must bind evidence to the exact built dist userscript');
+assert(workflow.includes('candidateArtifactRunId'), 'schema-v5 release gate must read the exact live-tested Actions run id');
+assert(workflow.includes('candidateArtifactName'), 'schema-v5 release gate must read the exact live-tested artifact name');
+assert(workflow.includes('candidateArtifactDigest'), 'schema-v5 release gate must read the expected immutable artifact digest');
+assert(workflow.includes('gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts"'),
+  'schema-v5 release gate must verify the immutable candidate artifact through GitHub API');
+assert(workflow.includes('Live-tested artifact digest mismatch'),
+  'schema-v5 release gate must fail closed when the recorded artifact digest differs');
 
 const gateBlock = workflow.slice(gateIndex, attestIndex);
 assert(!gateBlock.includes('continue-on-error'), 'native evidence gate must never be advisory');

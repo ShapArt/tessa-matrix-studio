@@ -7,7 +7,22 @@ on:
       - 'hotfixes/v1.14.2-live-excel-preview-ux.mjs'
       - 'hotfixes/v1.14.2-preview-counter-filters.mjs'
       - 'hotfixes/v1.14.2-full-uat-scope-fix.mjs'
+      - 'hotfixes/v1.14.2-full-uat-deterministic-clear.mjs'
+      - 'hotfixes/v1.14.2-full-uat-version-provenance.mjs'
+      - 'hotfixes/v1.14.2-full-uat-copied-identity-collision-safe.mjs'
+      - 'hotfixes/v1.14.2-full-uat-action-coverage-final.mjs'
       - 'tests/live-colleague-excel-regressions.mjs'
+      - 'tests/v1.14.2-full-uat-clear-regression.mjs'
+      - 'tests/v1.14.2-full-uat-version-provenance.mjs'
+      - 'tests/v1.14.2-full-uat-copied-identity-regression.mjs'
+      - 'tests/v1.14.2-full-uat-action-coverage-regression.mjs'
+      - 'tests/employee-name-resolver.mjs'
+      - 'tests/prod-shadow-workload-profile.mjs'
+      - 'tests/prod-shadow-cross-matrix-scale.mjs'
+      - 'tests/full-uat-runner-contract.mjs'
+      - 'tests/coverage-manifest.json'
+      - 'docs/TEST-STRATEGY.md'
+      - 'tessa-matrix-studio.user.js'
       - 'tests/fixtures/live-ord-main-78792326-regression.json'
       - 'tests/v1.14-artifact-composition.mjs'
       - '.github/workflows/live-excel-preview-uat-candidate.yml'
@@ -63,14 +78,30 @@ jobs:
           node hotfixes/v1.14.2-live-excel-preview-ux.mjs dist/tessa-matrix-studio.user.js
           node hotfixes/v1.14.2-preview-counter-filters.mjs dist/tessa-matrix-studio.user.js
           node hotfixes/v1.14.2-full-uat-scope-fix.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14.2-full-uat-deterministic-clear.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14.2-full-uat-copied-identity-collision-safe.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14.2-full-uat-action-coverage-final.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.14.2-full-uat-version-provenance.mjs dist/tessa-matrix-studio.user.js
 
           node --check dist/tessa-matrix-studio.user.js
           grep -Fqx "// @version      $CANDIDATE_VERSION" dist/tessa-matrix-studio.user.js
           grep -Fq "version: '$CANDIDATE_VERSION'," dist/tessa-matrix-studio.user.js
           grep -Fq 'REVIEWED_CHANGES_REPORT_V3' dist/tessa-matrix-studio.user.js
           grep -Fq 'LIVE_EXCEL_PREVIEW_UX_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'LIVE_PICKER_DELIMITER_SAFE_V2' dist/tessa-matrix-studio.user.js
           grep -Fq 'PREVIEW_COUNTER_FILTERS_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'FULL_UAT_CLEAR_SCENARIO_DETERMINISTIC_V2' dist/tessa-matrix-studio.user.js
+          grep -Fq 'FULL_UAT_VERSION_PROVENANCE_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'FULL_UAT_COPIED_IDENTITY_COLLISION_SAFE_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'FULL_UAT_ACTION_COVERAGE_FINAL_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq "'action-apply'" dist/tessa-matrix-studio.user.js
+          grep -Fq "'action-reconcile'" dist/tessa-matrix-studio.user.js
+          grep -Fq 'await E.runReconciliationRead(' dist/tessa-matrix-studio.user.js
+          if grep -Fq 'Не найдено доказанно необязательное заполненное поле временной строки' dist/tessa-matrix-studio.user.js; then
+            echo 'Flaky Full UAT CLEAR NOT_RUN branch is still present.' >&2
+            exit 1
+          fi
           grep -Fq 'const text = E.pickerSelectionText([item]);' dist/tessa-matrix-studio.user.js
           grep -Fq 'const summary = E.previewAttentionSummary(syntheticPlan, E.createPlanReviewState());' dist/tessa-matrix-studio.user.js
           grep -Fq 'const windowed = E.resolutionCenterWindow(' dist/tessa-matrix-studio.user.js
@@ -85,11 +116,17 @@ jobs:
           fi
           grep -Fq 'Не будет применено к TESSA' dist/tessa-matrix-studio.user.js
           grep -Fq 'data-resolution-page' dist/tessa-matrix-studio.user.js
+          grep -Fq 'PROD_SHADOW_UAT_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq "prod-shadow-offline" dist/tessa-matrix-studio.user.js
 
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/user-copied-identity-regression.mjs
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/full-uat-runner-contract.mjs
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/live-uat-regressions.mjs
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/live-colleague-excel-regressions.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.14.2-full-uat-clear-regression.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.14.2-full-uat-version-provenance.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.14.2-full-uat-copied-identity-regression.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.14.2-full-uat-action-coverage-regression.mjs
 
           awk 'BEGIN { emit=0 } /^\/\/ ==UserScript==/ { emit=1 } emit { print } /^\/\/ ==\/UserScript==/ { exit }' \
             dist/tessa-matrix-studio.user.js > dist/tessa-matrix-studio.meta.js
@@ -103,7 +140,7 @@ jobs:
 
           USER_SHA="$(sha256sum dist/tessa-matrix-studio.user.js | awk '{print $1}')"
           COMMIT_SHA="$(git rev-parse HEAD)"
-          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "live-colleague-excel-preview-uat",\n  "sourceWorkbook": "TESSA_Матрица_ОРД-основная_78792326_СПРАВОЧНИКИ.xlsx",\n  "expectedChecks": ["multi-position-picker-copy", "visible-preview-error-count", "explicit-not-applied-count", "bounded-resolution-center", "counter-driven-preview-filters", "full-uat-export-scope"]\n}\n' \
+          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "live-colleague-excel-preview-uat",\n  "sourceWorkbook": "TESSA_Матрица_ОРД-основная_78792326_СПРАВОЧНИКИ.xlsx",\n  "expectedChecks": ["multi-position-picker-copy", "picker-delimiter-safe-v2", "visible-preview-error-count", "explicit-not-applied-count", "bounded-resolution-center", "counter-driven-preview-filters", "full-uat-export-scope", "deterministic-live-clear", "production-shadow-prod-envelope", "historical-alias-migration", "cross-matrix-production-scale", "full-uat-version-provenance", "copied-identity-collision-safe", "full-uat-apply-reconcile-evidence"]\n}\n' \
             "$CANDIDATE_VERSION" "$COMMIT_SHA" "$USER_SHA" > dist/candidate-manifest.json
 
       - name: Upload exact UAT candidate

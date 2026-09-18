@@ -6,12 +6,12 @@
 
 `TESSA → XLSX → массовая правка → точный diff → review → controlled apply`
 
-[![Version](https://img.shields.io/badge/version-1.14.1-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.14.2-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 
 ### [УСТАНОВИТЬ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js) · [РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [ISSUES](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.14.1 · Автор: Шаповалов Артём**
+**v1.14.2 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -42,6 +42,8 @@ TESSA Matrix Studio добавляет в открытую карточку ма
 В **1.14.0** неизменённые строки проходят быстрый fingerprint-path, а серверная перепроверка по возможности ограничивается реально затронутыми строками с безопасным fallback. Для сотрудников Excel показывает **ФИО — должность**. После Preview можно нажать **«Скачать изменения в Excel»** и получить отдельный отчёт только по ADD/UPDATE/DELETE/SKIP; он помечен как report-only и не принимается обратно для Apply. В диагностический ZIP добавлен read-only Performance UAT. Числа из CI являются synthetic-замерами локального planner-а и не заменяют live-проверку TESSA.
 
 В **1.14.1** Excel-отчёт изменений стал самодостаточным: UPDATE показывает изменённые поля, ADD и DELETE разворачивают все заполненные бизнес-поля строки, SKIP сохраняет причину, а книга содержит один лист «Изменения» и остаётся report-only.
+
+В **1.14.2** Full UAT и release gate синхронизированы с живой TEST-проверкой: 37/37 обязательных сценариев прошли без FAIL/NOT RUN. Улучшены переносы между карточками одного шаблона, Preview больших изменений, сопоставление сотрудников по ФИО/RoleID и picker для нескольких должностей. Должность остаётся уточняющей подсказкой: уникальное ФИО без должности допустимо, а неоднозначные тёзки блокируются fail-closed.
 
 Перед Apply Studio повторно читает актуальное состояние матрицы. Если строка, структура файла или состояние карточки больше не совпадают с тем, что было проверено, небезопасная операция не применяется молча.
 
@@ -120,7 +122,7 @@ Studio автоматически подключается к открытой �
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.14.1** в Tampermonkey.
+2. Подтвердите установку версии **1.14.2** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -182,7 +184,7 @@ Studio автоматически подключается к открытой �
 Перед подтверждением проверьте:
 
 - **Название:** `TESSA Matrix Studio — Черкизово`
-- **Версия:** `1.14.1`
+- **Версия:** `1.14.2`
 - **Автор:** `Шаповалов Артём`
 - **Разрешения:** `@grant none`
 - **Область запуска:** только домены TESSA Черкизово
@@ -486,7 +488,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.14.1**
+Текущая версия: **1.14.2**
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)

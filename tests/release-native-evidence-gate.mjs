@@ -212,6 +212,77 @@ try {
 }
 assert(fullUatStaleBlocked, 'Full UAT attestation for a different userscript must be rejected');
 
+// v1.14.2 may record a live acceptance verdict against the exact immutable GitHub Actions
+// candidate. The production gate still binds the evidence to the built userscript SHA; the
+// Release workflow independently verifies the recorded Actions artifact digest through GitHub.
+const exactArtifactSource = '// @version      1.14.2\n(function(){})();\n';
+const exactArtifactSha = crypto.createHash('sha256').update(exactArtifactSource).digest('hex');
+const exactArtifactEvidence = {
+  schemaVersion: 5,
+  version: '1.14.2',
+  status: 'verified',
+  operation: 'live-uat-exact-artifact',
+  userscriptSha256: exactArtifactSha,
+  candidateArtifactDigest: 'd'.repeat(64),
+  candidateArtifactRunId: 35346741095,
+  candidateArtifactName: 'tessa-matrix-studio-v1.14.2-live-excel-uat-35346741095',
+  liveUat: {
+    status: 'PASSED',
+    passCount: 37,
+    failCount: 0,
+    notRunCount: 0,
+    seed: 1664950438,
+    archiveName: 'TESSA_Full_UAT_PASSED_2026-09-18T15-01-14-777Z.zip',
+    archiveSizeBytes: 31137066,
+  },
+  runnerContract: {
+    allRequiredChecksPassed: true,
+    cleanupSafe: true,
+    finalBaselinePassed: true,
+    restoreVerified: true,
+    actionCoverageComplete: true,
+    applyEvidencePassed: true,
+    reconcileEvidencePassed: true,
+    productionShadowPassed: true,
+    versionProvenancePassed: true,
+  },
+};
+const exactArtifactAccepted = assertReleaseNativeEvidence({
+  version: '1.14.2',
+  userscriptSource: exactArtifactSource,
+  attestation: exactArtifactEvidence,
+});
+assert(exactArtifactAccepted.ok === true && exactArtifactAccepted.schemaVersion === 5, JSON.stringify(exactArtifactAccepted));
+assert(exactArtifactAccepted.operation === 'live-uat-exact-artifact', JSON.stringify(exactArtifactAccepted));
+assert(exactArtifactAccepted.seed === 1664950438 && exactArtifactAccepted.passCount === 37, JSON.stringify(exactArtifactAccepted));
+
+let exactArtifactStaleBlocked = false;
+try {
+  assertReleaseNativeEvidence({
+    version: '1.14.2',
+    userscriptSource: exactArtifactSource + '// changed',
+    attestation: exactArtifactEvidence,
+  });
+} catch (error) {
+  exactArtifactStaleBlocked = /sha|source|userscript|stale/i.test(String(error?.message || error));
+}
+assert(exactArtifactStaleBlocked, 'exact-artifact live UAT evidence must be rejected for a different userscript');
+
+let exactArtifactMissingContractBlocked = false;
+try {
+  assertReleaseNativeEvidence({
+    version: '1.14.2',
+    userscriptSource: exactArtifactSource,
+    attestation: {
+      ...exactArtifactEvidence,
+      runnerContract: { ...exactArtifactEvidence.runnerContract, actionCoverageComplete: false },
+    },
+  });
+} catch (error) {
+  exactArtifactMissingContractBlocked = /incomplete|coverage|evidence/i.test(String(error?.message || error));
+}
+assert(exactArtifactMissingContractBlocked, 'exact-artifact live UAT evidence must fail closed when a runner invariant is absent');
+
 // A report-only patch may inherit native write evidence only when the exact tested parent
 // can be supplied and the candidate differs exclusively inside the reviewed report surface
 // plus version metadata. This must never be a generic bypass for write-path changes.
@@ -295,4 +366,4 @@ try {
 }
 assert(reportDerivativeWrongParentBlocked, 'report-only derivative must reject a parent that does not match the attested live-tested hash');
 
-console.log('Release native-evidence gate: v2 split + v3 Full UAT + v4 report-only derivative parity: OK');
+console.log('Release native-evidence gate: v2 split + v3 Full UAT + v4 report-only derivative + v5 exact-artifact live UAT parity: OK');

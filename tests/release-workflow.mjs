@@ -20,15 +20,40 @@ assert(workflow.includes('workflow_dispatch:'), 'manual release fallback must st
 assert(workflow.includes('github.event.workflow_run.head_sha'), 'release must checkout the exact verified commit');
 assert(workflow.includes('tessa-matrix-studio.user.js'), 'release change gate must watch the userscript');
 
-// v1.14.1 is a report-only production transform. It must participate in the exact release
-// composition instead of living dormant in the repository while /latest still serves v1.14.0.
-assert(packageJson.version === '1.14.1', `release package version must be 1.14.1, got ${packageJson.version}`);
+// v1.14.2 is the exact live-tested production candidate. The public Release must build the
+// same transform chain that produced the PASSED 37/37 TEST artifact.
+assert(packageJson.version === '1.14.2', `release package version must be 1.14.2, got ${packageJson.version}`);
 assert(workflow.includes('hotfixes/v1.14.1-changes-report-full-row.mjs'),
   'release change detection/package must track the v1.14.1 changes-report transform');
 assert(workflow.includes('node hotfixes/v1.14.1-changes-report-full-row.mjs dist/tessa-matrix-studio.user.js'),
   'release build must compose the v1.14.1 changes-report transform into the public userscript');
-assert(workflow.includes('REVIEWED_CHANGES_REPORT_V2'),
-  'release build/public verification must require the self-contained report V2 marker');
+assert(workflow.includes('REVIEWED_CHANGES_REPORT_V3'),
+  'release build/public verification must require the current reviewed report V3 marker');
+for (const marker of [
+  'LIVE_EXCEL_PREVIEW_UX_V1',
+  'LIVE_PICKER_DELIMITER_SAFE_V2',
+  'PREVIEW_COUNTER_FILTERS_V1',
+  'LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1',
+  'FULL_UAT_CLEAR_SCENARIO_DETERMINISTIC_V2',
+  'FULL_UAT_COPIED_IDENTITY_COLLISION_SAFE_V1',
+  'FULL_UAT_ACTION_COVERAGE_FINAL_V1',
+  'FULL_UAT_VERSION_PROVENANCE_V1',
+  'PROD_SHADOW_UAT_V1',
+]) {
+  assert(workflow.includes(marker), `release build/public verification must require ${marker}`);
+}
+for (const transform of [
+  'hotfixes/v1.14.2-live-excel-preview-ux.mjs',
+  'hotfixes/v1.14.2-preview-counter-filters.mjs',
+  'hotfixes/v1.14.2-full-uat-scope-fix.mjs',
+  'hotfixes/v1.14.2-full-uat-deterministic-clear.mjs',
+  'hotfixes/v1.14.2-full-uat-copied-identity-collision-safe.mjs',
+  'hotfixes/v1.14.2-full-uat-action-coverage-final.mjs',
+  'hotfixes/v1.14.2-full-uat-version-provenance.mjs',
+]) {
+  assert(workflow.includes(`node ${transform} dist/tessa-matrix-studio.user.js`),
+    `release composition must apply exact v1.14.2 transform: ${transform}`);
+}
 assert(workflow.includes('! grep -Fq "Детали изменений"'),
   'release must prove the obsolete second changes-report sheet is absent');
 

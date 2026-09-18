@@ -2,8 +2,19 @@ import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import './live-uat-final-four-regressions.mjs';
 import './live-uat-release-composition.mjs';
-import './v1.14.1-report-only-release-parity.mjs';
 import './live-colleague-excel-regressions.mjs';
+
+// v1.14.1 exact-parent parity is immutable historical release evidence. Re-running that
+// test against an intentionally changed v1.14.2 core would require the working tree to
+// hash to the old public v1.14.0 parent and would block every legitimate future fix.
+// Keep the evidence file present and pinned; current candidates get their own gates.
+const historicalParityPath = new URL('./v1.14.1-report-only-release-parity.mjs', import.meta.url);
+assert.ok(fs.existsSync(historicalParityPath), 'historical v1.14.1 parity evidence must remain in the repository');
+const historicalParity = fs.readFileSync(historicalParityPath, 'utf8');
+assert.match(historicalParity, /811a3e7251cc0f89f632814b3ac49d5feb1e280670f34f31c6a631b22d960eff/,
+  'historical v1.14.1 parity evidence must stay pinned to the public v1.14.0 parent');
+assert.match(historicalParity, /assertReleaseNativeEvidence/,
+  'historical v1.14.1 parity evidence must retain the release-native-evidence gate');
 
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const source = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
@@ -14,9 +25,9 @@ const fullUatFinalizer = fs.readFileSync(new URL('../hotfixes/v1.13.0-full-uat-l
 const inlineFailureUxPath = new URL('../hotfixes/v1.14-full-uat-inline-failures.mjs', import.meta.url);
 const finalFourPath = new URL('../hotfixes/v1.14-live-uat-final-four.mjs', import.meta.url);
 
-assert.equal(pkg.version, '1.14.1', 'package candidate version must be 1.14.1');
+assert.equal(pkg.version, '1.14.2', 'package candidate version must be 1.14.2');
 // The checked-in userscript remains the verified v1.14.0 baseline. Release composition bumps
-// metadata/runtime version only after applying the report-only v1.14.1 transform.
+// metadata/runtime version only after applying the ordered release transforms through v1.14.2.
 assert.match(source, /^\/\/ @version\s+1\.14\.0$/m, 'canonical userscript baseline must remain 1.14.0');
 assert.match(source, /version:\s*'1\.14\.0'/, 'canonical runtime baseline must remain 1.14.0');
 
@@ -88,10 +99,10 @@ for (const token of ['0 изменений', 'ADD', 'UPDATE', 'DELETE', '3000', 
 assert.match(communication, /не.*подтвержден.*live TESSA/is, 'message must not claim live speedup before live UAT');
 assert.match(communication, /1\.14\.0/);
 
-assert.match(readme, /version-1\.14\.1/);
-assert.match(readme, /\*\*v1\.14\.1/);
+assert.match(readme, /version-1\.14\.2/);
+assert.match(readme, /\*\*v1\.14\.2/);
 assert.ok(readme.includes('docs/assets/studio-start-v1.14.1.jpg'), 'current v1.14.1 Studio screenshot must be preserved');
 assert.ok(readme.includes('docs/assets/changes-report-v1.14.1.jpg'), 'current v1.14.1 changes-report screenshot must be preserved');
 assert.ok(readme.includes('Скачать изменения в Excel'), 'README should mention reviewed-changes export');
 
-console.log('TESSA Matrix Studio v1.14.1 RC documentation/final-proof/inline-failures/runtime-context/final-four/report-only-release contract: OK');
+console.log('TESSA Matrix Studio v1.14.2 RC documentation/final-proof/inline-failures/runtime-context/final-four/release contract: OK');

@@ -32,6 +32,10 @@ try {
   run(['hotfixes/v1.14.2-live-excel-preview-ux.mjs', target]);
   run(['hotfixes/v1.14.2-preview-counter-filters.mjs', target]);
   run(['hotfixes/v1.14.2-full-uat-scope-fix.mjs', target]);
+  run(['hotfixes/v1.14.2-full-uat-deterministic-clear.mjs', target]);
+  run(['hotfixes/v1.14.2-full-uat-copied-identity-collision-safe.mjs', target]);
+  run(['hotfixes/v1.14.2-full-uat-action-coverage-final.mjs', target]);
+  run(['hotfixes/v1.14.2-full-uat-version-provenance.mjs', target]);
   run(['--check', target]);
 
   const source = fs.readFileSync(target, 'utf8');
@@ -43,8 +47,26 @@ try {
     'composed artifact must validate Full UAT writes');
   assert.match(source, /FULL_UAT_ADD_RECEIPT_RECOVERY_V2/,
     'composed artifact must bind temporary-row cleanup to the exact successful ADD receipt');
-  assert.match(source, /FULL_UAT_CLEAR_NOT_RUN_CLEANUP_V1/,
-    'composed artifact must cleanup temporary rows before NOT_RUN');
+  assert.match(source, /FULL_UAT_CLEAR_SCENARIO_DETERMINISTIC_V2/,
+    'composed artifact must prove SET -> CLEAR -> read-back -> cleanup without a data-shape NOT_RUN');
+  assert.doesNotMatch(source, /Не найдено доказанно необязательное заполненное поле временной строки/,
+    'exact candidate must not retain the flaky Full UAT CLEAR NOT_RUN branch');
+  assert.match(source, /FULL_UAT_VERSION_PROVENANCE_V1/,
+    'composed artifact must bind Full UAT evidence to the runtime Studio version');
+  assert.match(source, /FULL_UAT_COPIED_IDENTITY_COLLISION_SAFE_V1/,
+    'composed artifact must preflight copied identities against business-row duplicates');
+  assert.match(source, /FULL_UAT_ACTION_COVERAGE_FINAL_V1/,
+    'composed artifact must contain final Apply/Reconcile action evidence');
+  assert.match(source, /addCheck\(\s*['\"]action-apply['\"]/,
+    'composed artifact must emit explicit Apply action evidence');
+  assert.match(source, /addCheck\(\s*['\"]action-reconcile['\"]/,
+    'composed artifact must emit explicit Reconcile action evidence');
+  assert.match(source, /await E\.runReconciliationRead\(/,
+    'composed artifact must execute the real reconciliation reader');
+  assert.match(source, /studioVersion: String\(E\.studioVersion\?\.\(\) \|\| 'unknown'\)/,
+    'Full UAT report must read the runtime Studio version instead of a stale literal');
+  assert.doesNotMatch(source, /format: 'TESSA_FULL_UAT_V1', studioVersion: '1\.14\.0'/,
+    'Full UAT evidence must not report the stale 1.14.0 version');
 
   // Live UAT 2026-09-14 showed that every temporary Apply invoked the native editor Save,
   // forcing the tester through repeated TESSA confirmation dialogs. Full UAT already has
@@ -93,6 +115,8 @@ try {
   // the live-UAT-only scope correction must be composed into one exact candidate.
   assert.match(source, /REVIEWED_CHANGES_REPORT_V3/);
   assert.match(source, /LIVE_EXCEL_PREVIEW_UX_V1/);
+  assert.match(source, /LIVE_PICKER_DELIMITER_SAFE_V2/,
+    'composed artifact must support personal-role captions whose ShortName/native caption contains semicolon-separated positions');
   assert.match(source, /PREVIEW_COUNTER_FILTERS_V1/);
   assert.match(source, /LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1/);
   assert.match(source, /live-colleague-picker-multi-position/);
@@ -116,8 +140,12 @@ try {
   run(['tests/full-uat-runner-contract.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/live-uat-regressions.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/live-colleague-excel-regressions.mjs'], { TMS_TEST_SOURCE: target });
+  run(['tests/v1.14.2-full-uat-clear-regression.mjs'], { TMS_TEST_SOURCE: target });
+  run(['tests/v1.14.2-full-uat-version-provenance.mjs'], { TMS_TEST_SOURCE: target });
+  run(['tests/v1.14.2-full-uat-copied-identity-regression.mjs'], { TMS_TEST_SOURCE: target });
+  run(['tests/v1.14.2-full-uat-action-coverage-regression.mjs'], { TMS_TEST_SOURCE: target });
 
-  console.log('v1.14 release/UAT artifact composition: write safety + report V3 + live Excel UX + counter filters + exported Full UAT scope OK');
+  console.log('v1.14 release/UAT artifact composition: write safety + report V3 + live Excel UX + counter filters + deterministic Full UAT CLEAR + collision-safe copied identities + real Apply/Reconcile evidence + version provenance OK');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

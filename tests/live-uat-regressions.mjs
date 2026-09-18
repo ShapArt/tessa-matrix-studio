@@ -59,8 +59,14 @@ assert.match(source, /FULL_UAT_ACCEPTED_WRITE_RESULT_V2/,
   'Full UAT must distinguish accepted writes from nested post-write verification status');
 assert.doesNotMatch(source, /result\.success\s*!==\s*true\s*\|\|\s*result\.status\s*!==\s*'completed'/,
   'Full UAT must not fail an accepted mutation solely because ordinary Apply post-write verification is partial');
-assert.match(source, /FULL_UAT_CLEAR_NOT_RUN_CLEANUP_V1/,
-  'Full UAT must cleanup a temporary row before returning NOT_RUN from clear-field scenario');
+assert.match(source, /FULL_UAT_CLEAR_SCENARIO_DETERMINISTIC_V2/,
+  'Full UAT must deterministically prove SET -> CLEAR -> read-back -> cleanup on its temporary row');
+assert.doesNotMatch(source, /FULL_UAT_CLEAR_NOT_RUN_CLEANUP_V1/,
+  'the clear-field scenario must no longer rely on a data-shape NOT_RUN escape hatch');
+assert.doesNotMatch(source, /candidateIndexes = directTokenIndexes\(book\)[\s\S]{0,900}\(book\.rows \|\| \[\]\)\.some\(/,
+  'the clear-field scenario must not infer optionality from whether another production row is blank');
+assert.match(source, /write-clear-delete[\s\S]{0,14000}SET[\s\S]{0,14000}CLEAR[\s\S]{0,14000}cleanup/i,
+  'the live clear-field check must execute the complete SET -> CLEAR -> cleanup lifecycle');
 assert.match(source, /FULL_UAT_ADD_RECEIPT_RECOVERY_V2/,
   'Full UAT must bind the Task9 cleanup obligation to the exact ADD receipt before read-back');
 assert.match(source, /Number\(result\.appliedCount \|\| 0\) !== 1/,
@@ -82,4 +88,4 @@ vm.runInThisContext(source);
 assert.ok(globalThis.__TESSA_MATRIX_SYNC_EXPORTS__?.applyPlan);
 assert.ok(globalThis.__TMS_FULL_UAT_V1__?.runFullUat);
 
-console.log('Live UAT regressions: selective XLSX, scoped runtime context, single-consent/single-save writes, native diagnostics and cleanup invariants: OK');
+console.log('Live UAT regressions: selective XLSX, scoped runtime context, single-consent/single-save writes, deterministic SET/CLEAR, native diagnostics and cleanup invariants: OK');
