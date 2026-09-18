@@ -35,16 +35,23 @@ const syntheticCoverage = U.actionCoverageFromChecks(syntheticActionChecks, regi
 assert.equal(syntheticCoverage.covered, registry.length, 'all registered actions must be coverable');
 assert.deepEqual(syntheticCoverage.missing, [], 'complete action evidence must not produce a false FAILED status');
 const runnerSource = fs.readFileSync(process.env.TMS_TEST_SOURCE || new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
-assert.match(runnerSource, /addCheck\(\s*['"]action-apply['"]/,
-  'Full UAT must emit an explicit Apply action-evidence check, not merely register the action');
-assert.match(runnerSource, /outcome:\s*applyOk\s*\?\s*['"]live-write-readback['"]/,
-  'Full UAT Apply evidence must use the registry outcome after real writes');
-assert.match(runnerSource, /addCheck\(\s*['"]action-reconcile['"]/,
-  'Full UAT must emit an explicit Reconcile action-evidence check, not merely register the action');
-assert.match(runnerSource, /await E\.runReconciliationRead\(/,
-  'Full UAT Reconcile evidence must invoke the real reconciliation reader');
-assert.match(runnerSource, /outcome:\s*['"]reconciliation-readback['"]/,
-  'Full UAT Reconcile evidence must use the registry outcome');
+if (/FULL_UAT_ACTION_COVERAGE_FINAL_V1/.test(runnerSource)) {
+  assert.match(runnerSource, /addCheck\(\s*['"]action-apply['"]/,
+    'composed Full UAT must emit an explicit Apply action-evidence check, not merely register the action');
+  assert.match(runnerSource, /outcome:\s*applyOk\s*\?\s*['"]live-write-readback['"]/,
+    'composed Full UAT Apply evidence must use the registry outcome after real writes');
+  assert.match(runnerSource, /addCheck\(\s*['"]action-reconcile['"]/,
+    'composed Full UAT must emit an explicit Reconcile action-evidence check, not merely register the action');
+  assert.match(runnerSource, /await E\.runReconciliationRead\(/,
+    'composed Full UAT Reconcile evidence must invoke the real reconciliation reader');
+  assert.match(runnerSource, /outcome:\s*['"]reconciliation-readback['"]/,
+    'composed Full UAT Reconcile evidence must use the registry outcome');
+} else {
+  assert.match(runnerSource, /['"]action-apply['"]/,
+    'source Full UAT must retain the Apply registry contract before release transforms');
+  assert.match(runnerSource, /['"]action-reconcile['"]/,
+    'source Full UAT must retain the Reconcile registry contract before release transforms');
+}
 const a = U.seededRandom(0x12345678), b = U.seededRandom(0x12345678);
 for (let i = 0; i < 20; i += 1) assert.equal(a(), b(), 'same seed must reproduce candidate choices');
 const sigA = U.snapshotSignature({ rows: [{ rowCardId: 'b', fingerprint: '2' }, { rowCardId: 'a', fingerprint: '1' }] });
