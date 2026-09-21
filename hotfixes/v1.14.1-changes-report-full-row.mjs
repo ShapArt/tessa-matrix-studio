@@ -124,6 +124,35 @@ export function applyChangesReportFullRow(input) {
       });
     }
 
+    for (const field of plan?.skippedFields || []) {
+      const reason = normalizeSpace(field?.reason || 'Поле оставлено без изменения.');
+      const excelRow = field?.excelRow ?? '';
+      const label = normalizeSpace(field?.label || field?.key || 'Поле');
+      operations.push({
+        change: 'Пропущено поле', excelRow, tessaRow: '',
+        fields: label, before: '—', after: reason, error: true,
+      });
+      details.push({
+        change: 'Пропущено поле', excelRow, tessaRow: '',
+        field: label, before: '—', after: reason, error: true,
+      });
+    }
+
+    for (const value of plan?.skippedValues || []) {
+      const reason = normalizeSpace(value?.reason || 'Значение пропущено при проверке.');
+      const excelRow = value?.excelRow ?? '';
+      const label = normalizeSpace(value?.label || value?.key || 'Поле');
+      const rejected = normalizeSpace(value?.value || '') || '—';
+      operations.push({
+        change: 'Пропущено значение', excelRow, tessaRow: '',
+        fields: label, before: rejected, after: reason, error: true,
+      });
+      details.push({
+        change: 'Пропущено значение', excelRow, tessaRow: '',
+        field: label, before: rejected, after: reason, error: true,
+      });
+    }
+
     return {
       format: 'TESSA_MATRIX_CHANGES_REPORT_V3', reportOnly: true,
       matrixId: plan?.matrixId || '', templateId: plan?.templateId || structure?.templateId || '',
@@ -143,7 +172,7 @@ export function applyChangesReportFullRow(input) {
     if (row?.change === 'Добавлена') return 4;
     if (row?.change === 'Изменена') return 3;
     if (row?.change === 'Удалена') return 5;
-    if (row?.change === 'Пропущена') return row?.error ? 7 : 6;
+    if (String(row?.change || '').startsWith('Пропущ')) return row?.error ? 7 : 6;
     return 1;
   }
 
