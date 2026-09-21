@@ -36,6 +36,7 @@
    * а не к догадке, автоматическому ADD или массовому DELETE.
    */
 
+  // V1.15_PERFORMANCE_RELIABILITY_UX_V1
   // ---------------------------------------------------------------------------
   // 1. СОСТОЯНИЕ ПРИЛОЖЕНИЯ И КОНСТАНТЫ
   // Все изменяемое состояние одной вкладки хранится в APP. Константы ниже
@@ -82,6 +83,7 @@
       rowByCardId: new Map(), hits: 0, misses: 0, invalidations: 0, lastInvalidationReason: '', updatedAt: null,
     },
     performanceTelemetry: { startedAt: new Date().toISOString(), stages: {}, events: [] },
+    longJob: null,
     progress: { percent: 0, label: 'Готово', detail: '' },
   };
 
@@ -160,6 +162,8 @@
   // зато превращают точный поиск по ID/названию из O(N) на каждую ячейку в O(1).
   const DICTIONARY_LOOKUP_CACHE = new WeakMap();
   const NORMALIZED_DICTIONARY_CATALOGS = new WeakSet();
+  // V1.15: trusted identities that were present in this workbook's own baseline.
+  const WORKBOOK_HISTORICAL_ROLE_CACHE = new WeakMap();
   let extensionRuntimeCache = null;
 
   const OPERAND = Object.freeze({
@@ -2287,7 +2291,7 @@
 
   function dictionaryStructureSignature(structure) {
     const compact = {
-      projectionVersion: 5,
+      projectionVersion: 6,
       templateId: canonicalValue(structure?.templateId),
       conditions: (structure?.conditions || []).map(item => [
         canonicalValue(item.criterionRowId), canonicalValue(item.operandTypeId),
@@ -2525,6 +2529,46 @@
     return lookup;
   }
 
+  function workbookHistoricalRoleLookup(workbook) {
+    if (!workbook || typeof workbook !== 'object') return new Map();
+    const cached = WORKBOOK_HISTORICAL_ROLE_CACHE.get(workbook);
+    if (cached) return cached;
+    const lookup = new Map();
+    const append = item => {
+      const id = canonicalValue(item?.id || '');
+      const roleTypeId = canonicalValue(item?.roleTypeId ?? '');
+      const display = normalizeSpace(item?.display || '');
+      if (!id || !display) return;
+      const normalized = {
+        id: String(item.id),
+        roleTypeId: item?.roleTypeId ?? '',
+        display,
+        selector: display,
+        source: 'Roundtrip baseline',
+        status: 'Историческое значение',
+      };
+      const exact = `${id}|${roleTypeId}`;
+      if (!lookup.has(exact)) lookup.set(exact, []);
+      lookup.get(exact).push(normalized);
+      if (!lookup.has(`${id}|`)) lookup.set(`${id}|`, []);
+      lookup.get(`${id}|`).push(normalized);
+    };
+    for (const base of workbook?.roundtrip?.baselineRows || []) {
+      for (const items of Object.values(base?.base?.roles || {})) {
+        for (const item of items || []) append(item);
+      }
+    }
+    WORKBOOK_HISTORICAL_ROLE_CACHE.set(workbook, lookup);
+    return lookup;
+  }
+
+  function historicalRoleTextMatches(item, visibleText) {
+    const visible = canonicalValue(visibleText);
+    if (!visible) return false;
+    if (canonicalValue(item?.display) === visible || canonicalValue(item?.selector) === visible) return true;
+    try { return employeeIdentityNameEmbedded(item, visibleText); } catch (_) { return false; }
+  }
+
   /**
    * Разрешает значение Excel в точную запись справочника TESSA.
    * Точный ID/текст ищется по индексам O(1); линейный поиск включается только
@@ -2573,6 +2617,20 @@
       ].map(canonicalValue).includes(visibleCanonical);
       if (exactVisibleAlias || employeeIdentityNameEmbedded(explicitMatch, visibleText)) {
         return resolvedItem(explicitMatch, exactVisibleAlias ? 'id-and-text' : 'id-and-name');
+      }
+    }
+
+    // V1.15 BLOCKED_ROLE_BASELINE_FALLBACK_V1
+    // Disabled accounts may disappear from live MtxRoles. Accept an old RoleID only
+    // when the exact identity is proven by this workbook's roundtrip baseline.
+    if (!explicitMatch && column.kind === 'function' && explicitId && workbook?.roundtrip?.enabled) {
+      const historical = workbookHistoricalRoleLookup(workbook);
+      const candidates = historical.get(`${explicitId}|${explicitRoleType}`)
+        || historical.get(`${explicitId}|`)
+        || [];
+      const matching = candidates.filter(item => historicalRoleTextMatches(item, visibleText));
+      if (matching.length === 1) {
+        return resolvedItem({ ...matching[0], roleTypeId: matching[0].roleTypeId ?? explicitParts[1] ?? '' }, 'historical-role-id');
       }
     }
 
@@ -3773,7 +3831,9 @@
     const validationXml = `<dataValidations xmlns="${namespace}" count="${preserved.length}">${preserved.join('')}</dataValidations>`;
     matrixXml = validationPattern.test(matrixXml) ? matrixXml.replace(validationPattern, () => validationXml) : matrixXml.replace(/(<(?:[\w.-]+:)?(?:hyperlinks|printOptions|pageMargins|pageSetup|headerFooter|drawing|extLst)\b|<\/(?:[\w.-]+:)?worksheet>)/, (_, tail) => validationXml + tail);
     entries.set(matrixPath, matrixXml);
-    return makeZip([...entries]);
+    const refreshedBytes = await makeZip([...entries]);
+    releaseWorkbookArchive(workbook);
+    return refreshedBytes;
   }
 
   async function readSelectedWorkbookWithLiveCatalog(file, { needBridge = false } = {}) {
@@ -5000,12 +5060,17 @@
       // Numeric FunctionType values are still supported for installations that explicitly
       // expose RoleType there. GUID/custom function types get independent catalogs whose
       // ordering is learned from the role types already used by that exact function.
+      // V1.15 COMPACT_ROLE_CATALOG_V1
+      // MtxRoles is global. Do not clone the same 20k–30k records once per custom
+      // function: all compatible columns share one physical dictionary range.
       const sharedRoleCatalog = {
         id: roleResult.roleCatalogId,
         label: 'Роли и пользователи TESSA',
         sourceView: roleResult.roleAlias || 'Текущая матрица',
         entries: roleResult.roleEntries,
+        functionPolicies: {},
       };
+      catalog.catalogs[roleResult.roleCatalogId] = sharedRoleCatalog;
       const hasTypedRoleEntries = roleResult.roleEntries.some(entry => catalogRoleTypeId(entry.roleTypeId) !== null);
       const typedRoleCatalogIds = new Map();
 
@@ -5018,6 +5083,7 @@
             typedRoleCatalogIds.set(functionRoleTypeId, typedCatalogId);
             catalog.catalogs[typedCatalogId] = {
               ...sharedRoleCatalog,
+              functionPolicies: {},
               id: typedCatalogId,
               label: `Роли и пользователи TESSA · тип ${functionRoleTypeId}`,
               entries: roleResult.roleEntries.filter(entry => catalogRoleTypeId(entry.roleTypeId) === functionRoleTypeId),
@@ -5027,21 +5093,11 @@
           continue;
         }
 
-        const functionCatalogId = `${roleResult.roleCatalogId}:function:${fn.id}`;
-        const observedRoleTypes = observedFunctionRoleTypeIds(snapshot, fn.id);
-        catalog.catalogs[functionCatalogId] = {
-          ...sharedRoleCatalog,
-          id: functionCatalogId,
-          label: `${fn.name} · роли и пользователи TESSA`,
-          entries: hasTypedRoleEntries
-            ? prioritizeFunctionRoleEntries(roleResult.roleEntries, snapshot, fn.id)
-            : Array.from(roleResult.roleEntries),
-          rolePolicy: {
-            mode: hasTypedRoleEntries ? 'function-observed-types-first' : 'untyped-conservative',
-            observedRoleTypeIds: observedRoleTypes,
-          },
+        sharedRoleCatalog.functionPolicies[fn.id] = {
+          mode: hasTypedRoleEntries ? 'function-observed-types-first' : 'untyped-conservative',
+          observedRoleTypeIds: observedFunctionRoleTypeIds(snapshot, fn.id),
         };
-        catalog.columnCatalogIds[definitionKey('function', fn.id)] = functionCatalogId;
+        catalog.columnCatalogIds[definitionKey('function', fn.id)] = roleResult.roleCatalogId;
       }
 
       const normalized = mergeSnapshotIntoDictionaryCatalog(catalog, structure, snapshot);
@@ -6044,7 +6100,7 @@
     const hasData = [...columns.values()].some(column => (flat[column.key] || []).length > 0);
     return {
       excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, clearedForDeletion: false,
-      issues: [], fieldIssues: [], resolutions: [], fingerprint: base.baseFingerprint || fingerprintFlat(flat),
+      issues: [], fieldIssues: [], valueIssues: [], resolutions: [], resolutionItems: [], fingerprint: base.baseFingerprint || fingerprintFlat(flat),
       compareFingerprint: fingerprintFlat(compare), fastPath: 'baseline-unchanged',
     };
   }
@@ -6060,6 +6116,7 @@
       const columns = new Map();
       const issues = [];
       const fieldIssues = [];
+      const valueIssues = [];
       const resolutions = [];
       const resolutionItems = [];
       for (const [id, column] of columnMap.columns.entries()) {
@@ -6091,13 +6148,24 @@
             return;
           }
           const result = resolveEmbeddedDictionaryValue(workbook, column, visible, explicitValues[index] || '');
-          resolvedDisplays.push(result.display);
-          resolvedIds.push(result.explicit);
           if (result.issue) {
-            issues.push(`Excel ${row.excelRow}: ${result.issue}`);
-            if (result.resolution && Array.isArray(result.candidates) && result.candidates.length) {
+            // V1.15 VALUE_LEVEL_RECOVERY_V1
+            // One invalid value in a multi-value cell is omitted independently.
+            const valueIssue = {
+              id: `excel-${row.excelRow}-${column.key}-${index}`,
+              excelRow: row.excelRow,
+              key: column.key,
+              label: column.excelHeader,
+              valueIndex: index,
+              value: visible,
+              reason: `Excel ${row.excelRow}: ${result.issue}`,
+              resolution: result.resolution || null,
+              candidates: Array.isArray(result.candidates) ? clonePlain(result.candidates) : [],
+            };
+            valueIssues.push(valueIssue);
+            if (result.resolution && valueIssue.candidates.length) {
               resolutionItems.push({
-                id: `excel-${row.excelRow}-${column.key}-${index}`,
+                id: valueIssue.id,
                 source: 'excel-validation',
                 excelRow: row.excelRow,
                 columnKey: column.key,
@@ -6111,12 +6179,13 @@
                 visible,
                 resolution: result.resolution,
                 issue: result.issue,
-                candidates: clonePlain(result.candidates),
+                candidates: valueIssue.candidates,
               });
             }
-            compareValues.push(`invalid:${canonicalValue(visible)}`);
             return;
           }
+          resolvedDisplays.push(result.display);
+          resolvedIds.push(result.explicit);
           if (result.resolution === 'unique-fragment') resolutions.push(`Excel ${row.excelRow}: «${visible}» → «${result.display}» в «${column.excelHeader}»`);
           if (column.kind === 'function' && result.explicit) {
             const [roleId, roleTypeId = ''] = String(result.explicit).split('|').map(value => value.trim());
@@ -6164,7 +6233,7 @@
           && canonicalValue(item.versionId) === canonicalValue(system.versionId));
         if (!system.baseFingerprint && base) system.baseFingerprint = base.baseFingerprint;
       }
-      return { excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, clearedForDeletion, issues, fieldIssues, resolutions, resolutionItems, fingerprint: fingerprintFlat(flat), compareFingerprint: fingerprintFlat(compare) };
+      return { excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, clearedForDeletion, issues, fieldIssues, valueIssues, resolutions, resolutionItems, fingerprint: fingerprintFlat(flat), compareFingerprint: fingerprintFlat(compare) };
     });
   }
 
@@ -6883,6 +6952,7 @@
     // An unambiguous UPDATE can preserve a bad cell without discarding unrelated
     // edits. ADD/REPLACE/DELETE and identity/baseline errors stay atomic.
     const skippedFields = [];
+    const skippedValues = desired.flatMap(row => row.valueIssues || []);
     const recoveredRows = new Set();
     const structuralIssueRows = new Set([...(built.issues || []), ...(columnMap.mappingIssues || [])].flatMap(issueExcelRows));
     built.actions = (built.actions || []).map(action => {
@@ -6987,6 +7057,7 @@
     }
     const uniqueFragmentResolutions = desired.flatMap(row => row.resolutions || []);
     if (uniqueFragmentResolutions.length) warnings.push(`По уникальному фрагменту автоматически найдено значений: ${uniqueFragmentResolutions.length}. ${uniqueFragmentResolutions.slice(0, 6).join(' | ')}${uniqueFragmentResolutions.length > 6 ? ' | …' : ''}`);
+    if (skippedValues.length) warnings.push(`Пропущено отдельных некорректных значений: ${skippedValues.length}. Остальные значения этих ячеек и строк продолжают обрабатываться.`);
     const nonEmptyFingerprints = desired.filter(row => row.hasData).map(x => x.compareFingerprint || x.fingerprint);
     const duplicates = nonEmptyFingerprints.filter((fp, i) => nonEmptyFingerprints.indexOf(fp) !== i);
     if (duplicates.length) warnings.push('В Excel обнаружены полностью одинаковые строки. Конфликтующие изменяемые строки будут пропущены.');
@@ -7012,6 +7083,7 @@
       fatalIssues,
       skippedRows,
       skippedFields,
+      skippedValues,
       warnings,
       counts: countActions(actions, skippedRows),
       workbookContext,
@@ -7113,7 +7185,7 @@
     const refreshText = result?.viewRefresh?.ok
       ? ' Отображение TESSA обновлено автоматически.'
       : (result?.viewRefresh && !result.viewRefresh.skipped ? ' Запись завершена; отображение можно обновить кнопкой ниже.' : '');
-    if (summary) summary.innerHTML = `<div class="tms-review-note"><b>${title}</b>${sourceText}${refreshText} Для следующего применения выполните новую проверку.</div>${rowFailuresHtml(result?.skipped, true)}${skippedFieldsHtml(result?.skippedFields)}`;
+    if (summary) summary.innerHTML = `<div class="tms-review-note"><b>${title}</b>${sourceText}${refreshText} Для следующего применения выполните новую проверку.</div>${rowFailuresHtml(result?.skipped, true)}${skippedFieldsHtml(result?.skippedFields)}${skippedValuesHtml(result?.skippedValues)}`;
     if (table) table.innerHTML = '';
     if (refreshButton) {
       const needsManualRefresh = Boolean(result?.viewRefresh && !result.viewRefresh.ok && !result.viewRefresh.skipped);
@@ -7125,6 +7197,14 @@
   function skippedFieldsHtml(fields = []) {
     if (!fields?.length) return '';
     return `<details open class="tms-skipped-box"><summary><b>Не применяются отдельные поля: ${fields.length}</b></summary><div>Значения этих полей в TESSA сохраняются. Исправьте ячейки в Excel и выполните новую проверку.</div>${fields.slice(0, 20).map(field => `<div class="tms-skip-line">Excel ${escapeHtml(field.excelRow)} · ${escapeHtml(field.label)}: ${escapeHtml(field.reason)}</div>`).join('')}${fields.length > 20 ? '<div>Остальные поля указаны в строках Preview и отчёте.</div>' : ''}</details>`;
+  }
+
+  function skippedValuesHtml(values = []) {
+    if (!values?.length) return '';
+    const lines = values.slice(0, 12).map(item =>
+      `<div class="tms-skip-line"><b>Excel ${escapeHtml(item.excelRow)} · ${escapeHtml(item.label)}</b><br>Пропущено значение «${escapeHtml(item.value)}».</div>`
+    ).join('');
+    return `<details class="tms-skipped-box"><summary><b>Пропущены отдельные значения: ${values.length}</b></summary><div>Остальные корректные значения в этих ячейках продолжают обрабатываться.</div>${lines}${values.length > 12 ? `<div>Показано 12 из ${values.length}.</div>` : ''}</details>`;
   }
 
   function rowFailureReason(item) {
@@ -7926,6 +8006,7 @@
     resetFilePreview();
     if (!file) throw new Error('Выберите файл .xlsx.');
     APP.abortRequested = false;
+    longJobCheckpoint('preview:xlsx', { operation: 'preview', fileName: file.name });
     setProgress(5, '1/6 · Читаю Excel', file.name);
     log(`Читаю ${file.name}`);
     const selected = await performanceStage('preview.xlsx-read', async () => readSelectedWorkbookWithLiveCatalog(file, { needBridge: true }), { operation: 'preview', fileName: file.name });
@@ -7955,6 +8036,7 @@
     if (!reusableSnapshot) setSessionSnapshot(snapshot, structure);
     setProgress(55, '4/6 · Сопоставляю Excel и TESSA', `${snapshot.rows.length} строк в TESSA`);
     log(`Текущее состояние TESSA: ${snapshot.rows.length} строк${reusableSnapshot ? ' (из текущей сессии)' : ''}.`);
+    longJobCheckpoint('preview:plan', { operation: 'preview', rows: snapshot.rows.length, excelRows: workbook.rows.length });
     const plan = await performanceStage('preview.plan', () => buildPlan(workbook, structure, snapshot, bridge.matrixInfo()), { operation: 'preview', rows: snapshot.rows.length, excelRows: workbook.rows.length });
     setProgress(62, '5/6 · Проверяю безопасность', 'Дубли, права, удаления и неоднозначности');
     plan.safety = evaluatePlanSafety(plan, bridge);
@@ -8006,6 +8088,7 @@
       : (skipped ? `Нет изменений для применения · пропущено строк: ${skipped}` : 'Изменений нет');
     const atomicReplacementReason = previewPlan.preflightPreview?.atomicReplacementReason || null;
     setProgress(100, atomicReplacementReason ? 'Перенос заблокирован' : 'Проверка завершена', atomicReplacementReason || detail);
+    clearLongJobCheckpoint();
     return previewPlan;
   }
 
@@ -12386,13 +12469,13 @@
           <div class="tms-operation-status" aria-live="polite" aria-atomic="true"><div class="tms-status-line" hidden><span id="tms-progress-label">Готово</span><span id="tms-progress-percent" class="tms-progress-percent">0%</span></div><div class="tms-progress-track" hidden><div id="tms-progress-fill" class="tms-progress-fill"></div></div><div id="tms-progress-detail" class="tms-progress-detail"></div></div>
         </div>
         <div class="tms-controls">
-          <details class="tms-start-help"><summary>Перед началом работы</summary><p>В TESSA создайте черновик матрицы и перейдите в редактирование. Затем скачайте Excel: справочники при каждой выгрузке читаются заново.</p><p>Удалить строку: удалить её целиком в Excel. Удалить отдельное значение: очистить ячейку или убрать элемент списка. Очистить все рабочие ячейки строки — тоже удалить строку. Пустые строки между записями пропускаются; новые заполненные строки добавляются автоматически, в том числе вместе с удалениями.</p><p>Можно вводить полное название вручную. Однозначный фрагмент сопоставляется при проверке; неоднозначный требует уточнения. Автодополнение выпадающих списков зависит от версии Excel. Поиск в «Собрать значения» доступен независимо от неё.</p></details><div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button><button type="button" id="tms-open-picker" aria-controls="tms-value-picker" aria-expanded="false" title="Несколько значений для одной ячейки">Собрать значения</button></div><section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section></div>
+          <details class="tms-start-help"><summary>Коротко о работе</summary><p><b>Скачайте Excel → измените → проверьте → примените.</b> Удаление строки — удалить строку целиком. Одно ошибочное значение в ячейке будет пропущено отдельно, остальные корректные значения продолжат обрабатываться.</p></details><div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button><button type="button" id="tms-open-picker" aria-controls="tms-value-picker" aria-expanded="false" title="Несколько значений для одной ячейки">Собрать значения</button></div><section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section></div>
           <div class="tms-step"><div class="tms-step-label">2 · Изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
           <details class="tms-tools"><summary>Дополнительно</summary><div class="tms-tool-list">
             <div><button id="tms-download-fresh">Обновить справочники в моём Excel</button><p>Выберите изменённый файл в шаге 2. Скачается его копия с новыми справочниками; ваши строки и правки сохранятся.</p></div>
             <div><button id="tms-refresh-excel" disabled>Объединить с актуальной TESSA</button><p>Добавить новые поля и изменения других пользователей. Совпавшие правки объединяются; конфликты покажем для выбора. В старых книгах без исходных значений объединение ограничено.</p></div>
-            <details id="tms-test-tools"><summary>Проверки и диагностика</summary>
-              <p>Проверка матрицы и Excel без сохранения строк. Пакет содержит рабочие значения, запросы и ответы TESSA.</p>
+            <details id="tms-test-tools"><summary>Для поддержки</summary>
+              <p>Технические проверки и диагностика. В обычной работе этот раздел не нужен.</p>
               <div class="tms-row"><button id="tms-run-tests" type="button">Запустить проверки</button><button id="tms-download-diagnostics" type="button">Скачать пакет диагностики</button></div>
               <details><summary>Нативный интерфейс TESSA</summary><p>Снимает технический состав методов/контролов без бизнес-значений. Режим записи позволяет выполнить штатное действие TESSA (например, удалить строку правой кнопкой и сохранить) и скачать фактические вызовы CardService и изменение состава матрицы.</p><div class="tms-row"><button id="tms-native-surface" type="button">Снять интерфейс TESSA</button><button id="tms-native-record-start" type="button">Начать запись нативного действия</button><button id="tms-native-record-stop" type="button" disabled>Остановить и скачать</button></div></details>
               <details><summary>Проверка с записью</summary><p>Сначала проверьте Excel и выберите операции в Preview. Кнопка применяет именно эти изменения после обычного подтверждения, затем перечитывает результат. Для испытаний используйте отдельный тестовый черновик. Добавление, изменение и удаление проверяются только если есть в выбранном наборе.</p><button id="tms-test-write" type="button">Применить выбранное и проверить запись</button></details><div id="tms-tests-result" role="status" aria-live="polite">Проверки ещё не запускались.</div>
@@ -12630,10 +12713,45 @@
       APP.nativeRecorder = null;
       APP.runtimeMonitor?.stop();
     });
-    window.addEventListener('pageshow', () => APP.runtimeMonitor?.start());
-    document.addEventListener('visibilitychange', () => APP.runtimeMonitor?.tick());
+    window.addEventListener('pageshow', () => {
+      APP.runtimeMonitor?.start();
+      const pending = restoreLongJobCheckpoint();
+      if (document.wasDiscarded && pending) {
+        setProgress(0, 'Предыдущая операция была прервана браузером', 'Выберите Excel и повторите проверку — Studio сохранила этап, на котором вкладка была выгружена.');
+      }
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden' && APP.longJob) longJobCheckpoint(APP.longJob.stage, APP.longJob.detail || {});
+      APP.runtimeMonitor?.tick();
+    });
+    document.addEventListener('freeze', () => {
+      if (APP.longJob) longJobCheckpoint(APP.longJob.stage, APP.longJob.detail || {});
+    });
+    document.addEventListener('resume', () => APP.runtimeMonitor?.tick());
   }
 
+
+  const LONG_JOB_STORAGE_KEY = 'TMS_LONG_JOB_CHECKPOINT_V1';
+
+  function longJobCheckpoint(stage, detail = {}) {
+    if (!APP.longJob) APP.longJob = { id: `job-${Date.now()}`, startedAt: nowIso(), operation: detail.operation || 'unknown' };
+    APP.longJob = { ...APP.longJob, stage, detail: clonePlain(detail), updatedAt: nowIso() };
+    try { sessionStorage.setItem(LONG_JOB_STORAGE_KEY, JSON.stringify(APP.longJob)); } catch (_) {}
+    return APP.longJob;
+  }
+
+  function clearLongJobCheckpoint() {
+    APP.longJob = null;
+    try { sessionStorage.removeItem(LONG_JOB_STORAGE_KEY); } catch (_) {}
+  }
+
+  function restoreLongJobCheckpoint() {
+    try {
+      const parsed = JSON.parse(sessionStorage.getItem(LONG_JOB_STORAGE_KEY) || 'null');
+      if (parsed && parsed.stage) APP.longJob = parsed;
+    } catch (_) {}
+    return APP.longJob;
+  }
 
   async function bootstrap() {
     if (window.__TESSA_MATRIX_SYNC_TEST_MODE__) return;
@@ -12657,6 +12775,7 @@
     probeRuntimeEnvironment, inspectNativeViewCapabilitiesReadOnly, inspectMatrixCapabilitiesReadOnly,
     evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, triggerBlobDownload, downloadJson, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport, buildApplySupportReport,
+    workbookHistoricalRoleLookup, historicalRoleTextMatches, skippedValuesHtml, longJobCheckpoint, clearLongJobCheckpoint, restoreLongJobCheckpoint,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
     readXlsxArrayBuffer, releaseWorkbookArchive, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, buildChangesReportModel, createChangesReportXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
