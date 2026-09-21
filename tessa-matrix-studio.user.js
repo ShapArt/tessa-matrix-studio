@@ -14657,6 +14657,41 @@
       });
 
       await runCheck('runtime', 'Контекст и доступ на запись', async () => ({ detail: `Черновик «${info.TemplateName}», строк: ${baseline.rows.length}.` }));
+      await runCheck('server-paging-parity', 'Чтение матрицы без перелистывания UI', async () => {
+        if (typeof bridge.collectNativeMatrixViewLinksServerPaged !== 'function') {
+          return { status: 'WARN', detail: 'Server-paging helper недоступен; Studio продолжит использовать безопасный UI fallback.' };
+        }
+        const started = Number(globalThis.performance?.now?.() ?? Date.now());
+        const fast = await bridge.collectNativeMatrixViewLinksServerPaged();
+        const fastMs = Number(globalThis.performance?.now?.() ?? Date.now()) - started;
+        if (!fast) {
+          return { status: 'WARN', detail: 'TESSA runtime не отдал доказуемый server-paged набор; безопасный UI fallback остаётся активен.', data: { fastAvailable: false } };
+        }
+        const fallbackStarted = Number(globalThis.performance?.now?.() ?? Date.now());
+        const fallback = await bridge.collectNativeMatrixViewLinksAllPages({ forceUiPaging: true });
+        const fallbackMs = Number(globalThis.performance?.now?.() ?? Date.now()) - fallbackStarted;
+        const identity = item => `${canon(item?.rowCardId)}|${canon(item?.versionId)}`;
+        const fastIds = (fast.links || []).map(identity).sort();
+        const fallbackIds = (fallback.links || []).map(identity).sort();
+        if (!sameArray(fastIds, fallbackIds)) {
+          throw new Error(`Server paging и UI fallback расходятся: server=${fastIds.length}, ui=${fallbackIds.length}.`);
+        }
+        if (fastIds.length !== baseline.rows.length) {
+          throw new Error(`Server paging вернул ${fastIds.length} строк, baseline содержит ${baseline.rows.length}.`);
+        }
+        return {
+          detail: `Server paging = ${fast.pagesVisited?.length || 0} запросов / ${Math.round(fastMs)} мс; UI fallback = ${fallback.pagesVisited?.length || 0} страниц / ${Math.round(fallbackMs)} мс; identity совпадают.`,
+          data: {
+            fastAvailable: true,
+            rows: fastIds.length,
+            serverRequests: fast.pagesVisited?.length || 0,
+            uiPages: fallback.pagesVisited?.length || 0,
+            serverMs: Math.round(fastMs),
+            uiMs: Math.round(fallbackMs),
+            serverPageLimit: fast.pageLimit || null,
+          },
+        };
+      }, false);
       await runCheck('roundtrip', 'Выгрузка → обратное чтение', async () => {
         const plan = E.buildPlan(base.book, structure, baseline, info);
         if (plan.counts.skip || plan.counts.add || plan.counts.update || plan.counts.delete) throw new Error(`Roundtrip дал изменения: ${JSON.stringify(plan.counts)}`);
