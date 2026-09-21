@@ -13212,6 +13212,8 @@
     baselineExplicitValues, workbookBaselineFastPathIndex, unchangedDesiredRowFromBaseline,
     TessaBridge,
     version: APP.version,
+    // FULL_UAT_VERSION_PROVENANCE_V1
+    studioVersion: () => APP.version,
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE, XLSX_ARCHIVE_LIMITS, SPREADSHEETML_LIMITS },
   };
 
@@ -14016,7 +14018,7 @@
     const seed = Number.isFinite(Number(options.seed)) ? Number(options.seed) >>> 0 : hashSeed(`${Date.now()}|${location?.href || ''}`);
     const rng = seededRandom(seed);
     const report = {
-      format: 'TESSA_FULL_UAT_V1', studioVersion: E.version || 'unknown', runnerVersion: VERSION, seed, startedAt,
+      format: 'TESSA_FULL_UAT_V1', studioVersion: String(E.studioVersion?.() || 'unknown'), runnerVersion: VERSION, seed, startedAt,
       status: 'INCOMPLETE', matrix: null, checks: [], timeline: [], cleanup: [], cleanupLedger: null, restoreProof: null, dictionaryAudit: null, functionalActionAudit: null,
       rolePresentationAudit: null, recordKeepingAudit: null, fieldMutationAudit: null, productionShadowAudit: null, liveConfirmation: options.liveConfirmation === 'full-uat-confirmed' ? 'full-uat-confirmed' : null, writesAttempted: 0, writesCompleted: 0,
     };
