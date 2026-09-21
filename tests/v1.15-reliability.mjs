@@ -31,6 +31,26 @@ assert.match(source, /BLOCKED_ROLE_BASELINE_FALLBACK_V1/);
 assert.match(source, /COMPACT_ROLE_CATALOG_V1/);
 assert.match(source, /VALUE_LEVEL_RECOVERY_V1/);
 
+assert.match(source, /FULL_UAT_RESOURCE_SAFETY_V1/,
+  'Full UAT must include browser resource/OOM-prevention checks');
+assert.match(source, /FULL_UAT_DICTIONARY_INVALID_VALUE_LEVEL_V1/,
+  'dictionary-invalid UAT must understand field/value-level fail-closed recovery');
+for (const id of [
+  'resource-input-limit',
+  'resource-entry-limit',
+  'resource-path-traversal',
+  'resource-spreadsheet-bounds',
+  'memory-bounded-roundtrip',
+]) {
+  assert.ok(source.includes(`runCheck('${id}'`), `Full UAT resource check missing: ${id}`);
+}
+assert.match(source, /skippedValues:\s*\(plan\?\.skippedValues \|\| \[\]\)\.slice\(0, 30\)/,
+  'Full UAT compact evidence must include skippedValues');
+assert.match(source, /leakedIntoExecutableChange/,
+  'dictionary-invalid must prove the bad value never reaches executable changes');
+assert.match(source, /XLSX_ARCHIVE_LIMITS, SPREADSHEETML_LIMITS/,
+  'resource ceilings must be visible to Full UAT through the test export');
+
 // A disabled account can disappear from live MtxRoles, but an older Studio workbook
 // contains cryptographically-equivalent roundtrip evidence: visible value + exact RoleID
 // + RoleTypeID inside its baseline. Preserve that identity instead of silently dropping it.
