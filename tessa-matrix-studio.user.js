@@ -7002,6 +7002,11 @@
       ));
       if (!preserve.size) return action;
       const excelRow = reviewedExcelRow(action, preserve);
+      // Do not delete/reinsert a field merely to write back its unchanged current value.
+      // Removing it from columns makes rebuildRowCard leave the native rows untouched.
+      for (const [columnId, column] of [...(excelRow.columns || new Map()).entries()]) {
+        if (preserve.has(column?.key)) excelRow.columns.delete(columnId);
+      }
       excelRow.valueIssues = rowValueIssues;
       const changes = (action.changes || []).filter(change => !preserve.has(change.key));
       return { ...action, type: changes.length ? action.type : 'noop', changes, excelRow };
