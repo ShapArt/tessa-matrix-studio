@@ -6987,6 +6987,25 @@
       return { ...action, changes, excelRow, skippedFields: omitted };
     });
 
+    // If every value of one UPDATE field is invalid, "skip that value" must not
+    // accidentally mean "clear the whole field". Preserve the current TESSA field.
+    // Mixed cells keep their valid values and omit only the rejected items.
+    built.actions = (built.actions || []).map(action => {
+      if (action.type !== 'update' || columnMap.mode !== 'roundtrip' || action.match?.matchedBy !== 'identity') return action;
+      const rowValueIssues = action.excelRow?.valueIssues || [];
+      if (!rowValueIssues.length) return action;
+      const invalidKeys = new Set(rowValueIssues.map(item => item.key));
+      const preserve = new Set([...invalidKeys].filter(key =>
+        !(action.excelRow?.flat?.[key] || []).length
+        && (action.currentRow?.flat?.[key] || []).length
+      ));
+      if (!preserve.size) return action;
+      const excelRow = reviewedExcelRow(action, preserve);
+      excelRow.valueIssues = rowValueIssues;
+      const changes = (action.changes || []).filter(change => !preserve.has(change.key));
+      return { ...action, type: changes.length ? action.type : 'noop', changes, excelRow };
+    });
+
     // Ошибки конкретной строки не должны ломать весь пакет. Они переводятся в SKIP,
     // а корректные строки остаются исполняемыми. Глобальные ошибки формата/матрицы
     // по-прежнему считаются фатальными, потому что безопасно интерпретировать файл нельзя.
