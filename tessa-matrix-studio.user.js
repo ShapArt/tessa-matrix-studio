@@ -115,7 +115,13 @@
 
   const PERFORMANCE = Object.freeze({
     SnapshotCardGetConcurrency: 6,
+    SnapshotCardGetMaxConcurrency: 10,
+    PreflightUpdateConcurrency: 4,
+    PreflightUpdateMaxConcurrency: 6,
     PreflightAddConcurrency: 4,
+    PreflightAddMaxConcurrency: 6,
+    ReconcileCardGetConcurrency: 6,
+    ReconcileCardGetMaxConcurrency: 10,
     PreviewSnapshotTtlMs: 15 * 60 * 1000,
     PreviewYieldDeadlineMs: 40,
     ZipConcurrency: 4,
@@ -339,6 +345,19 @@
     }
     await Promise.all(Array.from({ length: concurrency }, () => run()));
     return output;
+  }
+
+  // Adaptive but always bounded: faster Chrome workstations get more independent
+  // reads/validations in flight, while low-memory devices stay at the conservative floor.
+  function adaptiveConcurrency(base, cap = base) {
+    const floor = Math.max(1, Number(base) || 1);
+    const ceiling = Math.max(floor, Number(cap) || floor);
+    const logical = Math.max(1, Number(globalThis.navigator?.hardwareConcurrency) || 4);
+    const memoryGb = Number(globalThis.navigator?.deviceMemory) || 0;
+    let target = Math.max(floor, Math.ceil(logical * 0.6));
+    if (memoryGb > 0 && memoryGb <= 4) target = floor;
+    else if (memoryGb > 0 && memoryGb <= 8) target = Math.min(target, Math.max(floor, Math.ceil((floor + ceiling) / 2)));
+    return Math.max(1, Math.min(ceiling, target));
   }
   const nowIso = () => new Date().toISOString();
 
@@ -4774,6 +4793,64 @@
     }
 
 
+    // FAST_ROUNDTRIP_MEMBERSHIP_V1
+    // Same-matrix roundtrip Excel already carries authoritative MatrixRowID +
+    // MatrixVersionID from export. Match live membership to that ledger in O(n) and
+    // skip native UI page flipping. Any unknown/concurrent row falls back fail-closed.
+    previewMatrixLinksFromRoundtripBaseline(workbook) {
+      if (!workbook?.roundtrip?.enabled || !Array.isArray(workbook.roundtrip?.baselineRows)) return null;
+      const baselineRows = workbook.roundtrip.baselineRows;
+      const rawLinks = this.rawMatrixSectionLinks();
+      if (!rawLinks.length) {
+        if (!baselineRows.length) {
+          return { controlName: 'roundtrip-baseline-membership', links: [], pageCount: 0, pagesVisited: [], pagingUsed: false, dynamicPaging: false, baselineMembership: true };
+        }
+        return null;
+      }
+
+      const byVersion = new Map();
+      const ambiguous = new Set();
+      for (const base of baselineRows) {
+        const version = canonicalValue(base?.versionId || '');
+        const card = canonicalValue(base?.rowCardId || '');
+        if (!version || !card) continue;
+        if (!byVersion.has(version)) byVersion.set(version, base);
+        else if (canonicalValue(byVersion.get(version)?.rowCardId || '') !== card) ambiguous.add(version);
+      }
+      for (const version of ambiguous) byVersion.delete(version);
+
+      const links = [];
+      for (const raw of rawLinks) {
+        const candidates = [...new Set([raw?.rowRowID, raw?.rowID, raw?.cardRowId]
+          .map(value => canonicalValue(value || '')).filter(Boolean))];
+        const matches = [...new Map(candidates
+          .map(version => byVersion.get(version))
+          .filter(Boolean)
+          .map(base => [canonicalValue(base.versionId), base])).values()];
+        if (matches.length !== 1) return null;
+        const base = matches[0];
+        if (!base?.rowCardId || !base?.versionId) return null;
+        links.push({
+          index: raw.index,
+          rowCardId: String(base.rowCardId),
+          versionId: String(base.versionId),
+          rowName: raw.rowName || `Строка ${raw.index + 1}`,
+          source: 'roundtrip-baseline-membership',
+        });
+      }
+      return {
+        controlName: 'roundtrip-baseline-membership',
+        visibleRows: links.length,
+        links,
+        pageCount: 0,
+        pagesVisited: [],
+        pagingUsed: false,
+        dynamicPaging: false,
+        baselineMembership: true,
+      };
+    }
+
+
     // Быстрый маркер состава матрицы. Он используется только для повторного предпросмотра:
     // перед фактической записью сервер всё равно перечитывается и валидируется заново.
     matrixSectionSignature() {
@@ -5326,13 +5403,16 @@
       // Preview needs exact current data only for rows the user touched (plus rows not
       // represented by the trusted baseline). Unchanged roundtrip rows can be reconstructed
       // locally from the export ledger; Apply still runs fresh targeted server validation.
-      let native = typeof this.collectNativeMatrixViewLinksAllPages === 'function'
-        ? await this.collectNativeMatrixViewLinksAllPages()
-        : { ...this.findNativeMatrixViewLinks(), pageCount: 1, pagesVisited: [1], pagingUsed: false };
+      let native = this.previewMatrixLinksFromRoundtripBaseline(workbook);
+      if (!native) {
+        native = typeof this.collectNativeMatrixViewLinksAllPages === 'function'
+          ? await this.collectNativeMatrixViewLinksAllPages()
+          : { ...this.findNativeMatrixViewLinks(), pageCount: 1, pagesVisited: [1], pagingUsed: false };
+      }
       const sectionCount = this.rawMatrixSectionLinks().length;
       let links = native.links || [];
 
-      if (sectionCount > links.length) {
+      if (!native.baselineMembership && sectionCount > links.length) {
         const nativeControl = this.findNativeMatrixControl();
         const target = nativeControl?.target;
         try {
@@ -5372,7 +5452,10 @@
         });
       }
 
-      const fetchedRows = await mapConcurrent(plan.fetch, PERFORMANCE.SnapshotCardGetConcurrency, async link => {
+      const fetchedRows = await mapConcurrent(
+        plan.fetch,
+        adaptiveConcurrency(PERFORMANCE.SnapshotCardGetConcurrency, PERFORMANCE.SnapshotCardGetMaxConcurrency),
+        async link => {
         if (APP.abortRequested) throw new Error('Операция остановлена пользователем.');
         const card = await this.getCard(link.rowCardId);
         const row = this.readMatrixRowFromCard(card, link, structure);
@@ -5396,6 +5479,8 @@
           totalRows: links.length,
           baselineRows: plan.reusedCount,
           cardGets: plan.fetchedCount,
+          membershipSource: native.baselineMembership ? 'roundtrip-baseline' : 'native-view',
+          viewPagesVisited: native.pagesVisited?.length || 0,
         },
       };
     }
@@ -5445,7 +5530,10 @@
       const roleIdCache = new Map();
       const roleIdByFunctionCache = new Map();
 
-      const loadedRows = await mapConcurrent(links, PERFORMANCE.SnapshotCardGetConcurrency, async (link, i) => {
+      const loadedRows = await mapConcurrent(
+        links,
+        adaptiveConcurrency(PERFORMANCE.SnapshotCardGetConcurrency, PERFORMANCE.SnapshotCardGetMaxConcurrency),
+        async (link, i) => {
         if (APP.abortRequested) throw new Error('Операция остановлена пользователем.');
         const card = await this.getCard(link.rowCardId);
         return this.readMatrixRowFromCard(card, link, structure, {
@@ -7942,19 +8030,23 @@
       if (key) membershipVersions.add(key);
     };
     for (const raw of rawLinks) {
-      // RowID/RowRowID are never used as CardID. For reconciliation they are safe only
-      // as membership/version evidence, exactly like resolveMatrixSectionLinks already does.
       rememberVersion(raw?.rowRowID);
       rememberVersion(raw?.rowID);
       rememberVersion(raw?.cardRowId);
     }
 
-    // The native view may still contain most usable identities even when one unrelated
-    // row has no MatrixRowID. Add those VersionIDs to membership without requiring a
-    // complete view. Known CardID for CardGet always comes from the mutation receipt.
-    if (typeof bridge?.collectNativeMatrixViewLinksAllPages === 'function') {
+    // UPDATE/ADD can be verified from fresh membership + receipt CardID without scanning
+    // every visible page. DELETE (absence proof) and unresolved membership use native view.
+    const needsNativeMembership = receipts.some(receipt => {
+      const versionKey = canonicalValue(receipt?.versionId || '');
+      if (receipt?.type === 'delete') return true;
+      return Boolean(versionKey && !membershipVersions.has(versionKey));
+    });
+    let nativePagesVisited = 0;
+    if (needsNativeMembership && typeof bridge?.collectNativeMatrixViewLinksAllPages === 'function') {
       try {
         const native = await bridge.collectNativeMatrixViewLinksAllPages();
+        nativePagesVisited = native?.pagesVisited?.length || 0;
         for (const link of native?.links || []) rememberVersion(link?.versionId);
       } catch (error) {
         log(`Точечная проверка: нативное представление прочитано не полностью: ${error.message || error}.`, 'warn');
@@ -7966,14 +8058,12 @@
     }
 
     const rows = [];
+    const cardReceipts = [];
     for (const receipt of receipts) {
       const versionKey = canonicalValue(receipt?.versionId || '');
       if (!versionKey) continue;
       const isMember = membershipVersions.has(versionKey);
-
       if (receipt?.type === 'delete') {
-        // Existing membership is enough to prove a failed DELETE; absence means the
-        // deleted version is no longer attached to this matrix. No CardGet is needed.
         if (isMember) rows.push({
           rowCardId: receipt.rowCardId || null,
           versionId: receipt.versionId,
@@ -7981,22 +8071,36 @@
         });
         continue;
       }
-
-      if (!isMember || !receipt?.rowCardId) continue;
-      const card = await bridge.getCard(receipt.rowCardId);
-      rows.push(bridge.readMatrixRowFromCard(card, {
-        index: -1,
-        rowCardId: receipt.rowCardId,
-        versionId: receipt.versionId,
-        rowName: receipt.excelRow ? `Excel ${receipt.excelRow}` : 'Проверяемая строка',
-        source: 'reconcile-targeted-receipts',
-      }, structure));
+      if (isMember && receipt?.rowCardId) cardReceipts.push(receipt);
     }
+
+    const loaded = await mapConcurrent(
+      cardReceipts,
+      adaptiveConcurrency(PERFORMANCE.ReconcileCardGetConcurrency, PERFORMANCE.ReconcileCardGetMaxConcurrency),
+      async receipt => {
+        const card = await bridge.getCard(receipt.rowCardId);
+        return bridge.readMatrixRowFromCard(card, {
+          index: -1,
+          rowCardId: receipt.rowCardId,
+          versionId: receipt.versionId,
+          rowName: receipt.excelRow ? `Excel ${receipt.excelRow}` : 'Проверяемая строка',
+          source: 'reconcile-targeted-receipts',
+        }, structure);
+      },
+    );
+    rows.push(...loaded);
 
     return {
       matrixId: String(bridge?.mainCard?.id || ''),
       templateId: structure?.templateId || receiptContext?.templateId || '',
       rows,
+      targetedTelemetry: {
+        receipts: receipts.length,
+        rawMembershipRows: rawLinks.length,
+        nativeMembershipFallback: needsNativeMembership,
+        nativePagesVisited,
+        cardGets: cardReceipts.length,
+      },
     };
   }
 
@@ -8772,18 +8876,16 @@
       deleteDependencies.set(action, [...(mutationRowsByDesiredSemanticKey.get(currentSemanticKey) || [])]);
     }
 
-    // UPDATE: каждая строка проверяется независимо. Ошибка одной строки не отменяет пакет.
-    for (const action of plan.actions.filter(x => x.type === 'update')) {
+    // UPDATE validation is read-only and independent per row, so run it concurrently
+    // with a hard cap. Actual Store operations remain ordered later.
+    const updateActions = plan.actions.filter(x => x.type === 'update');
+    const validateUpdateAction = async action => {
       if (APP.abortRequested) throw preflightAbortError();
       try {
         const current = freshByVersion.get(canonicalValue(action.currentRow.versionId));
         if (!current) throw new Error(`Строка ${action.currentRow.versionId} исчезла после предпросмотра.`);
         if (current.fingerprint !== action.expectedFingerprint) throw new Error(`Строка Excel ${action.excelRow.excelRow} изменилась в TESSA после предпросмотра.`);
 
-        // REPLACE читает данные из source identity Excel, но записывает их в другую target identity.
-        // Target stale-check выше недостаточен: source мог измениться уже после Preview.
-        // Повторно сверяем source непосредственно перед записью, иначе старый снимок source
-        // может быть перенесён в неизменившийся target.
         if (isOverwriteMatch(action.match)) {
           const sourceVersionId = canonicalValue(action.excelRow?.system?.versionId || '');
           const sourceRowCardId = canonicalValue(action.excelRow?.system?.rowCardId || '');
@@ -8820,17 +8922,29 @@
         const card = cachedCard || await awaitPreflightAbortable(bridge.getCard(current.rowCardId));
         bridge.rebuildRowCard(card, current.versionId, action.excelRow, structure, fresh);
         await awaitPreflightAbortable(bridge.validateDuplicate(card, current.versionId));
-        preparedUpdates.set(action.excelRow.excelRow, { action, card, current });
+        return { action, prepared: { action, card, current } };
       } catch (error) {
         if (isPreflightAbortError(error)) throw error;
-        const excelRow = Number(action.excelRow?.excelRow);
-        if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
-        runtimeSkippedActions.add(action);
-        runtimeSkips.push(runtimeSkip(action, error, 'preflight-update'));
+        return { action, error };
       }
+    };
+    const updateResults = await mapConcurrent(
+      updateActions,
+      adaptiveConcurrency(PERFORMANCE.PreflightUpdateConcurrency, PERFORMANCE.PreflightUpdateMaxConcurrency),
+      validateUpdateAction,
+    );
+    for (const item of updateResults) {
+      if (!item.error) {
+        preparedUpdates.set(item.action.excelRow.excelRow, item.prepared);
+        continue;
+      }
+      const excelRow = Number(item.action.excelRow?.excelRow);
+      if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
+      runtimeSkippedActions.add(item.action);
+      runtimeSkips.push(runtimeSkip(item.action, item.error, 'preflight-update'));
     }
 
-    preflightProgress(28, 'Проверяю изменяемые строки', `Проверено: ${plan.actions.filter(x => x.type === 'update').length}`);
+    preflightProgress(28, 'Проверяю изменяемые строки', `Проверено: ${updateActions.length}`);
 
     // ADD: локальные справочники/типы проверяются всегда. Серверный CardNew +
     // ValidateDuplicate нужен для применяемых пакетов, но для Preview >2000 он только
@@ -8941,7 +9055,10 @@
         }, 1000);
       }
       try {
-        const results = await mapConcurrent(addActions, PERFORMANCE.PreflightAddConcurrency, async action => {
+        const results = await mapConcurrent(
+          addActions,
+          adaptiveConcurrency(PERFORMANCE.PreflightAddConcurrency, PERFORMANCE.PreflightAddMaxConcurrency),
+          async action => {
           const result = await validateAddAction(action);
           reportAddProgress();
           return result;
@@ -12741,14 +12858,13 @@
           <div class="tms-operation-status" aria-live="polite" aria-atomic="true"><div class="tms-status-line" hidden><span id="tms-progress-label">Готово</span><span id="tms-progress-percent" class="tms-progress-percent">0%</span></div><div class="tms-progress-track" hidden><div id="tms-progress-fill" class="tms-progress-fill"></div></div><div id="tms-progress-detail" class="tms-progress-detail"></div></div>
         </div>
         <div class="tms-controls">
-          <details class="tms-start-help"><summary>Коротко о работе</summary><p><b>Скачайте Excel → измените → проверьте → примените.</b> Удаление строки — удалить строку целиком. Одно ошибочное значение в ячейке будет пропущено отдельно, остальные корректные значения продолжат обрабатываться.</p></details><div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button><button type="button" id="tms-open-picker" aria-controls="tms-value-picker" aria-expanded="false" title="Несколько значений для одной ячейки">Собрать значения</button></div><section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section></div>
+          <div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button><button type="button" id="tms-open-picker" aria-controls="tms-value-picker" aria-expanded="false" title="Несколько значений для одной ячейки">Собрать значения</button></div><section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section></div>
           <div class="tms-step"><div class="tms-step-label">2 · Изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
           <details class="tms-tools"><summary>Дополнительно</summary><div class="tms-tool-list">
-            <div><button id="tms-download-fresh">Обновить справочники в моём Excel</button><p>Выберите изменённый файл в шаге 2. Скачается его копия с новыми справочниками; ваши строки и правки сохранятся.</p></div>
-            <div><button id="tms-refresh-excel" disabled>Объединить с актуальной TESSA</button><p>Добавить новые поля и изменения других пользователей. Совпавшие правки объединяются; конфликты покажем для выбора. В старых книгах без исходных значений объединение ограничено.</p></div>
+            <div><button id="tms-download-fresh">Обновить справочники</button></div>
+            <div><button id="tms-refresh-excel" disabled>Объединить с актуальной TESSA</button></div>
             <details id="tms-test-tools"><summary>Для поддержки</summary>
-              <p>Технические проверки и диагностика. В обычной работе этот раздел не нужен.</p>
-              <div class="tms-row"><button id="tms-run-tests" type="button">Запустить проверки</button><button id="tms-download-diagnostics" type="button">Скачать пакет диагностики</button></div>
+              <div class="tms-row"><button id="tms-run-tests" type="button">Проверки</button><button id="tms-download-diagnostics" type="button">Диагностика</button></div>
               <details><summary>Нативный интерфейс TESSA</summary><p>Снимает технический состав методов/контролов без бизнес-значений. Режим записи позволяет выполнить штатное действие TESSA (например, удалить строку правой кнопкой и сохранить) и скачать фактические вызовы CardService и изменение состава матрицы.</p><div class="tms-row"><button id="tms-native-surface" type="button">Снять интерфейс TESSA</button><button id="tms-native-record-start" type="button">Начать запись нативного действия</button><button id="tms-native-record-stop" type="button" disabled>Остановить и скачать</button></div></details>
               <details><summary>Проверка с записью</summary><p>Сначала проверьте Excel и выберите операции в Preview. Кнопка применяет именно эти изменения после обычного подтверждения, затем перечитывает результат. Для испытаний используйте отдельный тестовый черновик. Добавление, изменение и удаление проверяются только если есть в выбранном наборе.</p><button id="tms-test-write" type="button">Применить выбранное и проверить запись</button></details><div id="tms-tests-result" role="status" aria-live="polite">Проверки ещё не запускались.</div>
             </details>
@@ -13059,9 +13175,10 @@
     incrementalSafetyMode, collectTouchedIdentities, buildTargetedPreflightSnapshot, buildTargetedReconciliationSnapshot,
     finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, partnerRecordKeepingColumnIndex, detectPlanDuplicateConflicts, friendlyErrorMessage,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport, productionShadowProfile,
-    performanceStage, performanceSnapshot, resetPerformanceTelemetry, performanceUatScenarioNames, runPerformanceUat, buildPerformanceUatSummary, makeZip, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,
+    performanceStage, performanceSnapshot, resetPerformanceTelemetry, performanceUatScenarioNames, runPerformanceUat, buildPerformanceUatSummary, makeZip, adaptiveConcurrency, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,
     baselineExplicitValues, workbookBaselineFastPathIndex, unchangedDesiredRowFromBaseline,
     TessaBridge,
+    version: VERSION,
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE, XLSX_ARCHIVE_LIMITS, SPREADSHEETML_LIMITS },
   };
 
@@ -13840,7 +13957,7 @@
     const seed = Number.isFinite(Number(options.seed)) ? Number(options.seed) >>> 0 : hashSeed(`${Date.now()}|${location?.href || ''}`);
     const rng = seededRandom(seed);
     const report = {
-      format: 'TESSA_FULL_UAT_V1', studioVersion: '1.14.0', runnerVersion: VERSION, seed, startedAt,
+      format: 'TESSA_FULL_UAT_V1', studioVersion: E.version || 'unknown', runnerVersion: VERSION, seed, startedAt,
       status: 'INCOMPLETE', matrix: null, checks: [], timeline: [], cleanup: [], cleanupLedger: null, restoreProof: null, dictionaryAudit: null, functionalActionAudit: null,
       rolePresentationAudit: null, recordKeepingAudit: null, fieldMutationAudit: null, productionShadowAudit: null, liveConfirmation: options.liveConfirmation === 'full-uat-confirmed' ? 'full-uat-confirmed' : null, writesAttempted: 0, writesCompleted: 0,
     };
@@ -14560,7 +14677,7 @@
       document.head?.appendChild(style);
     }
     const host = document.querySelector('#tms-test-tools'); if (!host || host.querySelector('#tms-full-uat')) return false;
-    const card = document.createElement('div'); card.className = 'tms-uat-card'; card.innerHTML = `<h4>Полный UAT</h4><p>Автоматически проверяет Excel-сценарии, справочники, объединение и реальные ADD/UPDATE/DELETE на временных строках. Исходные строки не меняются; после каждого write-сценария временная строка удаляется и состояние перечитывается.</p><button id="tms-full-uat" type="button">Запустить полный UAT</button><div id="tms-full-uat-status" class="tms-uat-status" data-state="idle">Не запускался.</div>`; host.appendChild(card);
+    const card = document.createElement('div'); card.className = 'tms-uat-card'; card.innerHTML = `<h4>Полный UAT</h4><button id="tms-full-uat" type="button">Запустить</button><div id="tms-full-uat-status" class="tms-uat-status" data-state="idle">Не запускался.</div>`; host.appendChild(card);
     const button = card.querySelector('#tms-full-uat'), status = card.querySelector('#tms-full-uat-status');
     button.addEventListener('click', async () => {
       if (!window.confirm('Полный UAT выполнит реальные операции только с временными строками в текущем черновике TESSA и будет удалять их после каждого сценария. Запустить?')) return;
