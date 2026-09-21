@@ -147,4 +147,54 @@ assert.equal(incremental.rows.length, 4);
 assert.equal(incremental.rows.find(row => row.rowCardId === 'card-1').previewSource, 'baseline');
 assert.equal(incremental.rows.find(row => row.rowCardId === 'card-2').previewSource, 'card-get');
 
+// Production-shape guard: 503 current rows with only 15 edited rows must not regress
+// into 503 CardGet calls. This test exercises only the local read planner, so it remains
+// deterministic and cheap while pinning the network-complexity contract.
+{
+  const largeRows = Array.from({ length: 503 }, (_, i) => {
+    const n = i + 1;
+    const flat = { 'criterion:kind': [`Вид ${n}`], 'function:sign': [`Сотрудник ${n}`] };
+    return {
+      index: i,
+      rowCardId: `large-card-${n}`,
+      versionId: `large-version-${n}`,
+      rowName: `Строка ${n}`,
+      flat,
+      values: { kind: [{ kind: 'String', value: `Вид ${n}`, display: `Вид ${n}` }] },
+      roles: { sign: [{ id: `large-person-${n}`, display: `Сотрудник ${n}`, roleTypeId: 1 }] },
+      fingerprint: E.fingerprintFlat(flat),
+    };
+  });
+  const largeSnapshot = { matrixId: 'matrix-preview-large', templateId: structure.templateId, rows: largeRows };
+  const largeCatalog = E.mergeSnapshotIntoDictionaryCatalog(null, structure, largeSnapshot);
+  const largeBytes = await E.createRoundtripXlsxBytes(
+    structure,
+    largeSnapshot,
+    { matrixId: largeSnapshot.matrixId, TemplateID: structure.templateId, TemplateName: 'Preview 503' },
+    largeCatalog,
+  );
+  const largeWorkbook = await E.readXlsxArrayBuffer(
+    largeBytes.buffer.slice(largeBytes.byteOffset, largeBytes.byteOffset + largeBytes.byteLength),
+    'preview-503.xlsx',
+  );
+  const kindIx = largeWorkbook.headers.indexOf('Вид');
+  for (let i = 0; i < 15; i += 1) largeWorkbook.rows[i].values[kindIx] = `Изменено ${i + 1}`;
+
+  const largeBridge = Object.create(E.TessaBridge.prototype);
+  largeBridge.mainCard = { id: largeSnapshot.matrixId };
+  largeBridge.matrixInfo = () => ({ matrixId: largeSnapshot.matrixId, TemplateID: structure.templateId });
+  largeBridge.templateId = () => structure.templateId;
+  const largeLinks = largeRows.map(row => ({
+    index: row.index,
+    rowCardId: row.rowCardId,
+    versionId: row.versionId,
+    rowName: row.rowName,
+  }));
+  const largePlan = largeBridge.previewSnapshotBaselineReusePlan(largeWorkbook, structure, largeLinks);
+  assert.equal(largePlan.eligible, true);
+  assert.equal(largePlan.total, 503);
+  assert.equal(largePlan.fetchedCount, 15, '503-row Preview with 15 edits should need only 15 CardGet reads');
+  assert.equal(largePlan.reusedCount, 488);
+}
+
 console.log('TESSA Matrix Studio incremental Preview snapshot: 2 CardGet for 4 rows, unchanged baseline rows reused safely: OK');
