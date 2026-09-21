@@ -6198,11 +6198,26 @@
               const [fromText, toText] = kind === 'Boolean' ? [result.display || '', null] : splitRangeText(result.display || '', kind);
               const fromIssue = typedValueIssue(kind, fromText, column.excelHeader);
               const toIssue = toText ? typedValueIssue(kind, toText, column.excelHeader) : null;
-              if (fromIssue) issues.push(`Excel ${row.excelRow}: ${fromIssue}`);
-              if (toIssue) issues.push(`Excel ${row.excelRow}: ${toIssue}`);
-              if (!fromIssue && !toIssue && kind !== 'Boolean') {
+              let typedIssue = fromIssue || toIssue || null;
+              if (!typedIssue && kind !== 'Boolean') {
                 try { parseRange(result.display, kind); }
-                catch (error) { issues.push(`Excel ${row.excelRow}: «${column.excelHeader}»: ${error.message}`); }
+                catch (error) { typedIssue = `«${column.excelHeader}»: ${error.message}`; }
+              }
+              if (typedIssue) {
+                resolvedDisplays.pop();
+                resolvedIds.pop();
+                valueIssues.push({
+                  id: `excel-${row.excelRow}-${column.key}-${index}`,
+                  excelRow: row.excelRow,
+                  key: column.key,
+                  label: column.excelHeader,
+                  valueIndex: index,
+                  value: visible,
+                  reason: `Excel ${row.excelRow}: ${typedIssue}`,
+                  resolution: null,
+                  candidates: [],
+                });
+                return;
               }
               compareValues.push(typedRangeSemantic(kind, fromText, toText));
             } else compareValues.push(`value:${canonicalValue(result.display)}`);
