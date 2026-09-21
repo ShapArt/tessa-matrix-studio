@@ -157,13 +157,32 @@ if (!source.includes('const diagnosticNativeCardCache = new Map();')) {
 
 // Full UAT packages use the same audited ZIP writer as XLSX/diagnostics instead of
 // introducing another archive implementation in the runtime hotfix.
-replaceExact(
-`    TessaBridge,
+// v1.15 also exports immutable XLSX/SpreadsheetML resource ceilings so Full UAT can
+// exercise the same production OOM-prevention guards. Keep the historical transform
+// compatible with both export shapes.
+{
+  const legacy = `    TessaBridge,
+    constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },`;
+  const resourceAware = `    TessaBridge,
+    constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE, XLSX_ARCHIVE_LIMITS, SPREADSHEETML_LIMITS },`;
+  if (source.includes(legacy)) {
+    replaceExact(
+      legacy,
+      `    TessaBridge, makeZip,
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },`,
-`    TessaBridge, makeZip,
-    constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },`,
-  'export makeZip for Full UAT',
-);
+      'export makeZip for Full UAT',
+    );
+  } else if (source.includes(resourceAware)) {
+    replaceExact(
+      resourceAware,
+      `    TessaBridge, makeZip,
+    constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE, XLSX_ARCHIVE_LIMITS, SPREADSHEETML_LIMITS },`,
+      'export makeZip for resource-aware Full UAT',
+    );
+  } else if (!source.includes('TessaBridge, makeZip,')) {
+    throw new Error('export makeZip for Full UAT: supported export block not found');
+  }
+}
 
 if ((source.match(/DUPLICATE_IDENTITY_COPY_AS_ADD_V1/g) || []).length !== 2) {
   throw new Error('Copied identity patch marker count mismatch.');
