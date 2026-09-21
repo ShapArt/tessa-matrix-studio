@@ -6538,10 +6538,42 @@
 
   function buildLegacyPlan(workbook, structure, snapshot, columnMap, desired) {
     const keys = [...new Set([...columnMap.columns.values()].map(x => x.key))];
+
+    // LEGACY_MATCH_INVERTED_INDEX_V1
+    // Old workbooks do not have hidden row identities, but a full desired×current
+    // Cartesian product is unnecessary. similarityFlat can exceed zero only when rows
+    // share at least one canonical value in the same schema key. Index those tokens once,
+    // then score only real candidates. Worst case remains quadratic for pathological
+    // duplicate-heavy data, while normal matrices become near O(n * fields).
+    const currentTokenIndex = new Map();
+    const tokenKey = (key, value) => `${key}\u0000${canonicalValue(value)}`;
+    (snapshot.rows || []).forEach((currentRow, ci) => {
+      for (const key of keys) {
+        for (const value of sortedCanon(currentRow.flat?.[key] || [])) {
+          if (!value) continue;
+          const token = tokenKey(key, value);
+          let bucket = currentTokenIndex.get(token);
+          if (!bucket) { bucket = new Set(); currentTokenIndex.set(token, bucket); }
+          bucket.add(ci);
+        }
+      }
+    });
+
     const pairs = [];
-    desired.forEach((excelRow, ei) => snapshot.rows.forEach((currentRow, ci) => {
-      pairs.push({ ei, ci, score: similarityFlat(excelRow.flat, currentRow.flat, keys), distance: Math.abs(ei - ci) });
-    }));
+    desired.forEach((excelRow, ei) => {
+      const candidates = new Set();
+      for (const key of keys) {
+        for (const value of sortedCanon(excelRow.flat?.[key] || [])) {
+          if (!value) continue;
+          for (const ci of currentTokenIndex.get(tokenKey(key, value)) || []) candidates.add(ci);
+        }
+      }
+      for (const ci of candidates) {
+        const score = similarityFlat(excelRow.flat, snapshot.rows[ci].flat, keys);
+        if (score <= 0) continue;
+        pairs.push({ ei, ci, score, distance: Math.abs(ei - ci) });
+      }
+    });
     pairs.sort((a, b) => b.score - a.score || a.distance - b.distance);
     const usedExcel = new Set();
     const usedCurrent = new Set();
@@ -6560,6 +6592,7 @@
       }
     }
 
+    const columnByKey = new Map([...columnMap.columns.values()].map(column => [column.key, column]));
     const actions = [];
     for (const match of matches.sort((a, b) => a.ei - b.ei)) {
       const excelRow = desired[match.ei];
@@ -6569,7 +6602,7 @@
         const before = currentRow.flat[key] || [];
         const after = excelRow.flat[key] || [];
         if (!arraysEqual(before, after)) {
-          const column = [...columnMap.columns.values()].find(x => x.key === key);
+          const column = columnByKey.get(key);
           changes.push({ key, label: column?.excelHeader || column?.name || key, before, after });
         }
       }
