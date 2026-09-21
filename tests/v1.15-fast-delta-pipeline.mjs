@@ -123,6 +123,107 @@ assert.equal(pageScans, 0, 'ordinary roundtrip Preview must do zero native UI pa
 assert.equal(cardGets, 2, 'only two edited rows need CardGet');
 assert.equal(incremental.previewIncremental.baselineRows, 18);
 
+// Initial export/full snapshot: use the native view's current request parameters but
+// page it directly through View API. No visible grid page changes are allowed.
+assert.match(source, /SERVER_PAGED_NATIVE_VIEW_V1/);
+const serverRows = Array.from({ length: 125 }, (_, index) => ({
+  card: `server-card-${index + 1}`,
+  version: `server-version-${index + 1}`,
+  order: index + 1,
+}));
+let serverUiPageCalls = 0;
+let serverRequests = 0;
+const fakeMetadata = { alias: 'TestMatrixView', paging: 'Always', pageLimit: 50 };
+class FakeTessaViewRequest {
+  constructor(metadata) {
+    this.metadata = metadata;
+    this.parameters = [];
+    this.calculateRowCounting = false;
+    this.canUseCache = true;
+  }
+}
+class FakePagingProvider {
+  providePageLimitParameter(parameters, paging, limit) {
+    assert.equal(paging, 'Always');
+    const existing = parameters.findIndex(item => item?.name === 'PageLimit');
+    const value = { name: 'PageLimit', limit };
+    if (existing >= 0) parameters[existing] = value;
+    else parameters.push(value);
+  }
+  providePageOffsetParameter(parameters, paging, page, limit) {
+    assert.equal(paging, 'Always');
+    const existing = parameters.findIndex(item => item?.name === 'PageOffset');
+    const value = { name: 'PageOffset', page, limit };
+    if (existing >= 0) parameters[existing] = value;
+    else parameters.push(value);
+  }
+}
+FakePagingProvider.default = new FakePagingProvider();
+
+const fakeView = {
+  metadata: fakeMetadata,
+  async getData(request) {
+    serverRequests += 1;
+    assert.ok(request.parameters.some(item => item?.name === 'CurrentCardId' && item?.value === snapshot.matrixId),
+      'server paging must preserve native CurrentCardId');
+    const limit = request.parameters.find(item => item?.name === 'PageLimit')?.limit || 50;
+    const page = request.parameters.find(item => item?.name === 'PageOffset')?.page || 1;
+    const start = (page - 1) * limit;
+    const pageRows = serverRows.slice(start, start + limit);
+    return {
+      columns: ['MatrixRowID', 'MatrixVersionID', 'Order'],
+      rows: pageRows.map(item => [item.card, item.version, item.order]),
+      rowCount: serverRows.length,
+    };
+  },
+};
+const serverBridge = Object.create(E.TessaBridge.prototype);
+serverBridge.mainCard = { id: snapshot.matrixId };
+serverBridge.rawMatrixSectionLinks = () => serverRows.map((item, index) => ({
+  index,
+  rowRowID: item.version,
+  rowID: `section-${index + 1}`,
+  cardRowId: `section-${index + 1}`,
+}));
+serverBridge.findNativeMatrixControl = () => ({
+  controlName: 'TestMatrixView',
+  rows: serverRows.slice(0, 50),
+  target: {
+    viewMetadata: fakeMetadata,
+    viewComponent: {
+      viewMetadata: fakeMetadata,
+      getRequestParams: () => [{
+        name: 'CurrentCardId',
+        value: snapshot.matrixId,
+        clone() { return { ...this, clone: this.clone }; },
+      }],
+    },
+    async setPageAndRefresh() { serverUiPageCalls += 1; },
+  },
+});
+serverBridge.viewApi = () => ({
+  service: { getByName: alias => alias === 'TestMatrixView' ? fakeView : null },
+  serviceModule: { TessaViewRequest: FakeTessaViewRequest, ViewPagingParameters: FakePagingProvider },
+  platformModule: {},
+});
+
+const serverPaged = await serverBridge.collectNativeMatrixViewLinksAllPages();
+assert.equal(serverPaged.serverPaging, true);
+assert.equal(serverPaged.links.length, 125);
+assert.equal(serverPaged.pagesVisited.length, 3);
+assert.equal(serverPaged.pageLimit, 50);
+assert.equal(serverUiPageCalls, 0, 'server paging must not move the visible native grid');
+assert.equal(serverRequests, 3, '125 rows at pageLimit 50 should require exactly 3 server requests');
+
+const validServerMembership = serverBridge.rawMatrixSectionLinks;
+serverBridge.rawMatrixSectionLinks = () => [
+  ...validServerMembership(),
+  { index: 125, rowRowID: 'unknown-version', rowID: 'unknown-section', cardRowId: 'unknown-section' },
+];
+const rejectedServerPaged = await serverBridge.collectNativeMatrixViewLinksServerPaged();
+assert.equal(rejectedServerPaged, null, 'membership count mismatch must fail closed before UI fallback');
+serverBridge.rawMatrixSectionLinks = validServerMembership;
+
 // Targeted reconciliation: UPDATE/ADD receipts with membership already known from the
 // main-card section must not scan the visible matrix. CardGet reads should overlap.
 Object.defineProperty(globalThis, 'navigator', {
