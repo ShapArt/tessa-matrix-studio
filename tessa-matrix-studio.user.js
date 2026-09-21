@@ -15125,7 +15125,7 @@
       document.head?.appendChild(style);
     }
     const host = document.querySelector('#tms-test-tools'); if (!host || host.querySelector('#tms-full-uat')) return false;
-    const card = document.createElement('div'); card.className = 'tms-uat-card'; card.innerHTML = `<h4>Полный UAT</h4><button id="tms-full-uat" type="button">Запустить</button><div id="tms-full-uat-status" class="tms-uat-status" data-state="idle">Не запускался.</div>`; host.appendChild(card);
+    const card = document.createElement('div'); card.className = 'tms-uat-card'; card.innerHTML = `<h4>Полный UAT</h4><button id="tms-full-uat" type="button">Запустить полный UAT</button><div id="tms-full-uat-status" class="tms-uat-status" data-state="idle">Не запускался.</div>`; host.appendChild(card);
     const button = card.querySelector('#tms-full-uat'), status = card.querySelector('#tms-full-uat-status');
     button.addEventListener('click', async () => {
       if (!window.confirm('Полный UAT выполнит реальные операции только с временными строками в текущем черновике TESSA и будет удалять их после каждого сценария. Запустить?')) return;
