@@ -130,7 +130,7 @@ await check('one bad value in a multivalue cell is omitted while valid values su
   assert.equal(plan.skippedValues.length, 1);
   const action = plan.actions.find(a => a.type === 'update');
   assert.deepEqual(action.excelRow.ids['criterion:kind'], ['kind-1']);
-  assert.deepEqual(action.excelRow.flat['criterion:kind'], ['ОРД — Приказ']);
+  assert.deepEqual(action.excelRow.flat['criterion:kind'], ['ОРД']);
   assert.equal(action.excelRow.columns.has('kind'), true);
   assert.deepEqual(action.changes.map(change => change.key), ['criterion:pages']);
 });
@@ -324,8 +324,8 @@ await check('one mixed workbook keeps valid UPDATE and ADD operations despite in
   assert.equal(plan.counts.add, 2, 'the row with one valid + one invalid role must still be added');
   assert.equal(plan.counts.delete, 0, 'blank new rows cannot schedule a deletion');
   assert.equal(plan.counts.skip, payloads.length, 'rows with no remaining performer stay skipped; mixed role cell survives');
-  assert.equal(plan.skippedFields.length, 1);
-  assert.ok(plan.skippedValues.length >= payloads.length, 'invalid values must be reported individually');
+  assert.equal(plan.skippedFields.length, 0);
+  assert.ok(plan.skippedValues.length >= payloads.length + 1, 'invalid values must be reported individually, including the reversed numeric range');
   const reviewed = E.buildReviewedPlan(plan);
   assert.equal(reviewed.safety.blocked, false, JSON.stringify(reviewed.safety));
   assert.equal(reviewed.actions.filter(a=>['add','update'].includes(a.type)).length, 4);
