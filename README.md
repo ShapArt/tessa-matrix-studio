@@ -9,7 +9,11 @@
 [![Version](https://img.shields.io/badge/version-1.14.2-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 
-### [УСТАНОВИТЬ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js) · [РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [ISSUES](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
+### [1 · УСТАНОВИТЬ TAMPERMONKEY ДЛЯ CHROME](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
+
+### [2 · УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)
+
+[РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [ISSUES](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
 **v1.14.2 · Автор: Шаповалов Артём**
 
