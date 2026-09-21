@@ -13211,7 +13211,7 @@
     performanceStage, performanceSnapshot, resetPerformanceTelemetry, performanceUatScenarioNames, runPerformanceUat, buildPerformanceUatSummary, makeZip, adaptiveConcurrency, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,
     baselineExplicitValues, workbookBaselineFastPathIndex, unchangedDesiredRowFromBaseline,
     TessaBridge,
-    version: VERSION,
+    version: APP.version,
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE, XLSX_ARCHIVE_LIMITS, SPREADSHEETML_LIMITS },
   };
 
