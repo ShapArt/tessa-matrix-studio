@@ -13775,13 +13775,16 @@
     return plan;
   }
 
-  async function workbookFromSnapshot(structure, snapshot, bridge, catalog) {
+  async function workbookFromSnapshot(structure, snapshot, bridge, catalog, options = {}) {
     const bytes = await E.createRoundtripXlsxBytes(structure, snapshot, bridge.matrixInfo(), catalog, { includeActions: true });
     const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     const book = await E.readXlsxArrayBuffer(buffer, 'TESSA_UAT_CURRENT.xlsx', {
       skipSheetNames: ['Словари'],
       dictionaryCatalog: catalog,
       selectiveInflate: true,
+      // Only the one base workbook used by the dictionary-refresh scenario needs its
+      // raw OPC/ZIP parts later. Temporary UAT books are parse-and-discard.
+      retainArchive: options.retainArchive === true,
     });
     return { bytes, book };
   }
@@ -14266,6 +14269,11 @@
       if (canon(freshBridge.matrixInfo().matrixId) !== canon(report.matrix?.matrixId)) throw new Error('Во время UAT открыта другая матрица.');
       return { bridge: freshBridge, snapshot: await freshBridge.loadSnapshot(structure) };
     }
+    // UAT_DICTIONARY_REUSE_V1
+    // Dictionary views are large but immutable for the duration of one UAT run.
+    // Force-load them once (and once again in the explicit refresh test); between writes
+    // only overlay current matrix values, which is O(rows) and does no View API I/O.
+    const catalogForSnapshot = snapshot => E.mergeSnapshotIntoDictionaryCatalog(catalog, structure, snapshot);
     async function applySingle(plan, label) {
       applySafety(plan, bridge);
       if (plan.safety?.blocked) throw new Error(plan.safety.blockedReasons?.join(' ') || `${label}: Apply заблокирован.`);
@@ -14282,7 +14290,7 @@
         const current = await freshSnapshot();
         const target = current.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
         if (!target) { report.cleanup.push({ scenarioId, rowCardId, status: 'already-absent', at: now() }); resolveCleanupForAbsentRow(rowCardId, 'already-absent', { resolvedBy: scenarioId }); return true; }
-        const currentCatalog = await current.bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true });
+        const currentCatalog = catalogForSnapshot(current.snapshot);
         const { book } = await workbookFromSnapshot(structure, current.snapshot, current.bridge, currentCatalog);
         const cardIndex = tokenIndex(book, 'system:rowCardId');
         book.rows = book.rows.filter(row => canon(row.values?.[cardIndex]) !== canon(rowCardId));
@@ -14318,7 +14326,7 @@
     }
     async function createTemporaryRow(scenarioId) {
       const current = await freshSnapshot(); bridge = current.bridge;
-      const currentCatalog = await bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true });
+      const currentCatalog = catalogForSnapshot(current.snapshot);
       const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog);
       const candidate = findUniqueAddCandidate(book, structure, current.snapshot, bridge, currentCatalog, rng, { gap: 3 });
       let plan = applySafety(candidate.plan, bridge); const beforeIds = new Set(current.snapshot.rows.map(row => canon(row.rowCardId)));
@@ -14360,7 +14368,7 @@
       cleanupLedgerController = createCleanupLedger(baselineSignature); report.cleanupLedger = cleanupLedgerController.snapshot();
       catalog = await bridge.loadDictionaryCatalog(structure, baseline, { forceRefresh: true, transient: true });
       const info = bridge.matrixInfo(); report.matrix = { matrixId: info.matrixId, templateId: info.TemplateID, name: info.TemplateName, state: info.StateName, rows: baseline.rows.length };
-      const base = await workbookFromSnapshot(structure, baseline, bridge, catalog); packageEntries.push(['matrix-current.xlsx', base.bytes]);
+      const base = await workbookFromSnapshot(structure, baseline, bridge, catalog, { retainArchive: true }); packageEntries.push(['matrix-current.xlsx', base.bytes]);
 
       await runCheck('action-download-current', 'Действие: скачать текущий Excel', async () => {
         if (!(base.bytes instanceof Uint8Array) || base.bytes.length < 4 || base.bytes[0] !== 0x50 || base.bytes[1] !== 0x4b) throw new Error('Текущая выгрузка не является XLSX/ZIP артефактом.');
@@ -14727,6 +14735,7 @@
         return { detail: `Неизвестное значение fail-closed отклонено до Store на уровне ${level}; в executable change-set его нет.`, data: { rejectionLevel: level, ...compactPlan(plan) } };
       });
       await runCheck('dictionary-refresh', 'Обновление справочников в изменённом Excel', async () => {
+        catalog = await bridge.loadDictionaryCatalog(structure, baseline, { forceRefresh: true, transient: true });
         let edited;
         try { edited = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng); }
         catch (_) { edited = null; }
@@ -14822,7 +14831,7 @@
       await runCheck('write-update-delete', 'Сервер: ADD → UPDATE → read-back → cleanup', async () => {
         const temp = await createTemporaryRow('write-update-delete'), rowCardId = temp.created.rowCardId;
         try {
-          const current = await freshSnapshot(); bridge = current.bridge; const currentCatalog = await bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true }); const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog); const target = findRowByCard(book, rowCardId); if (!target) throw new Error('Временная строка не найдена после ADD.');
+          const current = await freshSnapshot(); bridge = current.bridge; const currentCatalog = catalogForSnapshot(current.snapshot); const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog); const target = findRowByCard(book, rowCardId); if (!target) throw new Error('Временная строка не найдена после ADD.');
           let updatePlan = null; for (const column of shuffled(mutableCriterionColumns(book, currentCatalog, 3), rng)) { for (const entry of shuffled(column.entries.filter(entry => canon(entry.selector || entry.display) !== canon(target.values[column.index])), rng).slice(0, 20)) { const attempt = cloneWorkbook(book), row = findRowByCard(attempt, rowCardId); setDictionaryValue(attempt, row, column.key, entry); const plan = E.buildPlan(attempt, structure, current.snapshot, bridge.matrixInfo()); const exec = plan.actions.filter(action => action.type !== 'noop'); if (exec.length === 1 && exec[0].type === 'update' && canon(exec[0].currentRow?.rowCardId) === canon(rowCardId) && !plan.counts.skip) { updatePlan = plan; break; } } if (updatePlan) break; }
           if (!updatePlan) throw new Error('Не удалось подобрать безопасное UPDATE временной строки.'); registerFieldMutationObligations(updatePlan, 'write-update-delete', rowCardId); await applySingle(updatePlan, 'write-update-delete: UPDATE'); const afterUpdate = await freshSnapshot(); if (!afterUpdate.snapshot.rows.some(row => canon(row.rowCardId) === canon(rowCardId))) throw new Error('Временная строка исчезла после UPDATE.'); if (!await cleanupCreatedRow(rowCardId, 'write-update-delete')) throw new Error('Cleanup после UPDATE не подтверждён.'); const final = await freshSnapshot(); if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) throw new Error('После UPDATE cleanup baseline не восстановлен.'); return { detail: 'Временная строка изменена через штатный Store/read-back и полностью удалена.' };
         } catch (error) { await cleanupCreatedRow(rowCardId, 'write-update-delete-finally'); throw error; }
@@ -14834,7 +14843,7 @@
         let fatalRestore = null;
         try {
           let initial = await freshSnapshot(); bridge = initial.bridge;
-          let currentCatalog = await bridge.loadDictionaryCatalog(structure, initial.snapshot, { forceRefresh: true, transient: true });
+          let currentCatalog = catalogForSnapshot(initial.snapshot);
           const initialPackage = await workbookFromSnapshot(structure, initial.snapshot, bridge, currentCatalog);
           const initialBook = initialPackage.book;
           const initialTarget = findRowByCard(initialBook, rowCardId);
@@ -14861,7 +14870,7 @@
             audit.evidence.push(evidence);
             try {
               const current = await freshSnapshot(); bridge = current.bridge;
-              currentCatalog = await bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true });
+              currentCatalog = catalogForSnapshot(current.snapshot);
               const prepared = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog);
               const book = prepared.book;
               const target = findRowByCard(book, rowCardId);
@@ -14917,7 +14926,7 @@
               if (mutationApplied && original) {
                 try {
                   const restoreState = await freshSnapshot(); bridge = restoreState.bridge;
-                  const restoreCatalog = await bridge.loadDictionaryCatalog(structure, restoreState.snapshot, { forceRefresh: true, transient: true });
+                  const restoreCatalog = catalogForSnapshot(restoreState.snapshot);
                   const restorePackage = await workbookFromSnapshot(structure, restoreState.snapshot, bridge, restoreCatalog);
                   const restoreBook = restorePackage.book;
                   const restoreRow = findRowByCard(restoreBook, rowCardId);
@@ -14973,7 +14982,7 @@
       await runCheck('write-clear-delete', 'Сервер: ADD → очистка поля → read-back → cleanup', async () => {
         const temp = await createTemporaryRow('write-clear-delete'), rowCardId = temp.created.rowCardId;
         try {
-          const current = await freshSnapshot(); bridge = current.bridge; const currentCatalog = await bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true }); const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog); const target = findRowByCard(book, rowCardId); if (!target) throw new Error('Временная строка не найдена после ADD.');
+          const current = await freshSnapshot(); bridge = current.bridge; const currentCatalog = catalogForSnapshot(current.snapshot); const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog); const target = findRowByCard(book, rowCardId); if (!target) throw new Error('Временная строка не найдена после ADD.');
           const candidateIndexes = directTokenIndexes(book).filter(index => String(book.schemaTokens[index]).startsWith('criterion:') && String(target.values[index] || '').trim()); let clearPlan = null;
           for (const index of shuffled(candidateIndexes, rng)) { const key = book.schemaTokens[index]; if (!(book.rows || []).some(row => canon(rowIdentity(book, row).rowCardId) !== canon(rowCardId) && !String(row.values[index] || '').trim())) continue; const attempt = cloneWorkbook(book), row = findRowByCard(attempt, rowCardId); row.values[index] = ''; const idIndex = companionIndex(attempt, key); if (idIndex >= 0) row.values[idIndex] = ''; const plan = E.buildPlan(attempt, structure, current.snapshot, bridge.matrixInfo()); const exec = plan.actions.filter(action => action.type !== 'noop'); if (exec.length === 1 && exec[0].type === 'update' && canon(exec[0].currentRow?.rowCardId) === canon(rowCardId) && !plan.counts.skip) { clearPlan = plan; break; } }
           if (!clearPlan) return { status: 'NOT_RUN', detail: 'Не найдено доказанно необязательное заполненное поле временной строки.' }; registerFieldMutationObligations(clearPlan, 'write-clear-delete', rowCardId); await applySingle(clearPlan, 'write-clear-delete: CLEAR'); if (!await cleanupCreatedRow(rowCardId, 'write-clear-delete')) throw new Error('Cleanup после очистки не подтверждён.'); const final = await freshSnapshot(); if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) throw new Error('После очистки cleanup baseline не восстановлен.'); return { detail: 'Очистка значения применена на временной строке, подтверждена и откатана.' };
