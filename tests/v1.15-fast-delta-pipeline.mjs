@@ -23,7 +23,8 @@ const O = E.constants.OPERAND;
 
 assert.match(source, /FAST_ROUNDTRIP_MEMBERSHIP_V1/);
 assert.doesNotMatch(source, /Коротко о работе/);
-assert.equal(E.version, '1.15.0');
+const metadataVersion = source.match(/\/\/ @version\s+([^\s]+)/)?.[1] || '';
+assert.equal(E.version, metadataVersion, 'runtime version must match userscript metadata');
 assert.equal(E.adaptiveConcurrency(6, 10), 10, '16 logical CPUs may raise bounded read concurrency to cap');
 
 Object.defineProperty(globalThis, 'navigator', {
