@@ -13979,9 +13979,9 @@
     throw new Error('Не удалось подобрать уникальную временную строку из актуальных справочников без конфликтов.');
   }
 
-  function findSafeUpdateCandidate(book, structure, snapshot, bridge, catalog, rng) {
+  function findSafeUpdateCandidate(book, structure, snapshot, bridge, catalog, rng, options = {}) {
     const columns = shuffled(mutableCriterionColumns(book, catalog, 2), rng);
-    const sources = shuffled((book.rows || []).filter(row => rowHasRole(book, row)), rng);
+    const sources = options.source ? [options.source] : shuffled((book.rows || []).filter(row => rowHasRole(book, row)), rng);
     for (const source of sources) {
       for (const column of columns) {
         const current = canon(source.values?.[column.index] || '');
@@ -14273,10 +14273,7 @@
         let second = null;
         for (const source of secondCandidates.slice(0, 30)) {
           try {
-            second = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, () => {
-              const idx = Math.max(0, (base.book.rows || []).findIndex(row => Number(row.excelRow) === Number(source.excelRow)));
-              return Math.min(0.999999, idx / Math.max(1, base.book.rows.length));
-            });
+            second = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng, { source });
           } catch (_) { /* try another source */ }
           if (second && canon(rowIdentity(second.book, second.row).rowCardId) !== canon(firstIdentity.rowCardId)) break;
           second = null;
