@@ -81,7 +81,7 @@ const supportText = JSON.stringify(support);
 assert.equal(support.format, 'TESSA_MATRIX_SUPPORT_REPORT_V1');
 const declaredStudioVersion = code.match(/\/\/ @version\s+([^\s]+)/)?.[1];
 assert.equal(support.studioVersion, declaredStudioVersion, 'support report must use the declared userscript version');
-assert.deepEqual(support.counts, { update: 1, add: 1, delete: 1, noop: 0, skip: 3, skippedFields: 1 });
+assert.deepEqual(support.counts, { update: 1, add: 1, delete: 1, noop: 0, skip: 3, skippedFields: 1, skippedValues: 0 });
 assert.deepEqual(support.reasonCodes.sort(), ['ambiguous-value', 'duplicate-interval-extractor', 'invalid-value']);
 assert.deepEqual(support.roleTypeIds.sort(), ['1', '9']);
 assert.equal(support.apply.canApply, true);
