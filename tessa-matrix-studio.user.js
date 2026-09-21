@@ -37,6 +37,7 @@
    */
 
   // V1.15_PERFORMANCE_RELIABILITY_UX_V1
+  // PREVIEW_BASELINE_INCREMENTAL_SNAPSHOT_V1
   // ---------------------------------------------------------------------------
   // 1. СОСТОЯНИЕ ПРИЛОЖЕНИЯ И КОНСТАНТЫ
   // Все изменяемое состояние одной вкладки хранится в APP. Константы ниже
@@ -5205,6 +5206,183 @@
       return { ...link, values, roles, flat, fingerprint: fingerprintFlat(flat) };
     }
 
+    previewSnapshotBaselineReusePlan(workbook, structure, links = []) {
+      if (!workbook?.roundtrip?.enabled || !workbook?.roundtrip?.baselineRows?.length) {
+        return { eligible: false, reason: 'no-roundtrip-baseline', reuse: [], fetch: [...links] };
+      }
+      const matrixInfo = this.matrixInfo?.() || {};
+      const workbookMatrixId = canonicalValue(workbook.roundtrip.matrixId || '');
+      const workbookTemplateId = canonicalValue(workbook.roundtrip.templateId || '');
+      const currentMatrixId = canonicalValue(this.mainCard?.id || matrixInfo.matrixId || '');
+      const currentTemplateId = canonicalValue(structure?.templateId || this.templateId?.() || matrixInfo.TemplateID || '');
+      if (!workbookMatrixId || !currentMatrixId || workbookMatrixId !== currentMatrixId) {
+        return { eligible: false, reason: 'foreign-matrix', reuse: [], fetch: [...links] };
+      }
+      if (!workbookTemplateId || !currentTemplateId || workbookTemplateId !== currentTemplateId) {
+        return { eligible: false, reason: 'foreign-template', reuse: [], fetch: [...links] };
+      }
+
+      const columnMap = buildColumnMap(workbook, structure);
+      if (columnMap.mode !== 'roundtrip' || columnMap.mappingIssues?.length) {
+        return { eligible: false, reason: 'unsafe-column-map', reuse: [], fetch: [...links] };
+      }
+      const baselineIndex = workbookBaselineFastPathIndex(workbook, columnMap);
+      const safeIdentities = new Set();
+      const dirtyIdentities = new Set();
+
+      const rowIdentity = row => {
+        const card = canonicalValue(columnMap.system.rowCardId === undefined ? '' : row.values[columnMap.system.rowCardId]);
+        const version = canonicalValue(columnMap.system.versionId === undefined ? '' : row.values[columnMap.system.versionId]);
+        return version || card ? `v:${version}|c:${card}` : '';
+      };
+
+      for (const row of workbook.rows || []) {
+        const identity = rowIdentity(row);
+        if (!identity) continue;
+        if ((baselineIndex.identityCounts.get(identity) || 0) !== 1) {
+          dirtyIdentities.add(identity);
+          continue;
+        }
+        const unchanged = unchangedDesiredRowFromBaseline(workbook, row, columnMap, baselineIndex);
+        if (unchanged) safeIdentities.add(identity);
+        else dirtyIdentities.add(identity);
+      }
+      for (const identity of dirtyIdentities) safeIdentities.delete(identity);
+
+      const reuse = [];
+      const fetch = [];
+      for (const link of links || []) {
+        const card = canonicalValue(link?.rowCardId || '');
+        const version = canonicalValue(link?.versionId || '');
+        const identity = version || card ? `v:${version}|c:${card}` : '';
+        const base = (card ? baselineIndex.byCard.get(card) : null) || (version ? baselineIndex.byVersion.get(version) : null);
+        const exactBase = Boolean(
+          base?.base
+          && (!card || canonicalValue(base.rowCardId || '') === card)
+          && (!version || canonicalValue(base.versionId || '') === version)
+        );
+        if (identity && exactBase && safeIdentities.has(identity)) reuse.push({ link, base });
+        else fetch.push(link);
+      }
+
+      return {
+        eligible: true,
+        reason: null,
+        reuse,
+        fetch,
+        total: links.length,
+        reusedCount: reuse.length,
+        fetchedCount: fetch.length,
+      };
+    }
+
+    snapshotCachesFromRows(rows, structure) {
+      const criterionIdCache = new Map();
+      const roleIdCache = new Map();
+      const roleIdByFunctionCache = new Map();
+      const remember = (map, key, item) => {
+        if (!key) return;
+        if (!map.has(key)) map.set(key, item);
+        else if (canonicalValue(map.get(key)?.id) !== canonicalValue(item?.id)) map.set(key, { ambiguous: true, display: item?.display || '' });
+      };
+      for (const row of rows || []) {
+        for (const condition of structure?.conditions || []) {
+          for (const item of row?.values?.[condition.criterionRowId] || []) {
+            if (item?.id === null || item?.id === undefined || item?.id === '') continue;
+            remember(criterionIdCache, `${condition.criterionRowId}|${canonicalValue(item.display)}`, item);
+          }
+        }
+        for (const fn of structure?.functions || []) {
+          for (const item of row?.roles?.[fn.id] || []) {
+            const key = canonicalValue(item?.display || '');
+            if (!key || !item?.id) continue;
+            remember(roleIdCache, key, item);
+            remember(roleIdByFunctionCache, `${fn.id}|${key}`, item);
+          }
+        }
+      }
+      return { criterionIdCache, roleIdCache, roleIdByFunctionCache };
+    }
+
+    async loadPreviewSnapshot(structure, workbook) {
+      // PREVIEW_BASELINE_INCREMENTAL_SNAPSHOT_V1
+      // Preview needs exact current data only for rows the user touched (plus rows not
+      // represented by the trusted baseline). Unchanged roundtrip rows can be reconstructed
+      // locally from the export ledger; Apply still runs fresh targeted server validation.
+      let native = typeof this.collectNativeMatrixViewLinksAllPages === 'function'
+        ? await this.collectNativeMatrixViewLinksAllPages()
+        : { ...this.findNativeMatrixViewLinks(), pageCount: 1, pagesVisited: [1], pagingUsed: false };
+      const sectionCount = this.rawMatrixSectionLinks().length;
+      let links = native.links || [];
+
+      if (sectionCount > links.length) {
+        const nativeControl = this.findNativeMatrixControl();
+        const target = nativeControl?.target;
+        try {
+          if (typeof target?.refresh === 'function') await target.refresh();
+          else if (typeof target?.refreshWithDelay === 'function') await target.refreshWithDelay();
+          await sleep(100);
+          native = await this.collectNativeMatrixViewLinksAllPages();
+          links = native.links || [];
+        } catch (error) {
+          log(`Не удалось принудительно обновить представление матрицы: ${error.message || error}`, 'warn');
+        }
+      }
+
+      if (!links.length && sectionCount === 0 && native.controlName) {
+        links = [];
+      } else if (links.length && sectionCount > links.length) {
+        links = await this.resolveMatrixSectionLinks(links);
+      } else if (!links.length) {
+        return null;
+      }
+
+      const plan = this.previewSnapshotBaselineReusePlan(workbook, structure, links);
+      if (!plan.eligible) return null;
+
+      const byIdentity = new Map();
+      const identity = link => `${canonicalValue(link?.rowCardId || '')}|${canonicalValue(link?.versionId || '')}`;
+
+      for (const item of plan.reuse) {
+        const base = item.base.base || {};
+        byIdentity.set(identity(item.link), {
+          ...item.link,
+          values: clonePlain(base.values || {}),
+          roles: clonePlain(base.roles || {}),
+          flat: clonePlain(base.flat || {}),
+          fingerprint: item.base.baseFingerprint || fingerprintFlat(base.flat || {}),
+          previewSource: 'baseline',
+        });
+      }
+
+      const fetchedRows = await mapConcurrent(plan.fetch, PERFORMANCE.SnapshotCardGetConcurrency, async link => {
+        if (APP.abortRequested) throw new Error('Операция остановлена пользователем.');
+        const card = await this.getCard(link.rowCardId);
+        const row = this.readMatrixRowFromCard(card, link, structure);
+        row.previewSource = 'card-get';
+        return row;
+      });
+      for (const row of fetchedRows) byIdentity.set(identity(row), row);
+
+      const rows = links.map(link => byIdentity.get(identity(link))).filter(Boolean);
+      if (rows.length !== links.length) return null;
+      const caches = this.snapshotCachesFromRows(rows, structure);
+      return {
+        matrixId: this.mainCard.id,
+        templateId: structure.templateId,
+        rows,
+        ...caches,
+        sectionSignature: this.matrixSectionSignature(),
+        createdAt: nowIso(),
+        previewIncremental: {
+          enabled: true,
+          totalRows: links.length,
+          baselineRows: plan.reusedCount,
+          cardGets: plan.fetchedCount,
+        },
+      };
+    }
+
     async loadSnapshot(structure) {
       let native = typeof this.collectNativeMatrixViewLinksAllPages === 'function'
         ? await this.collectNativeMatrixViewLinksAllPages()
@@ -8073,10 +8251,21 @@
     setProgress(canReuseSnapshot ? 48 : 40, canReuseSnapshot ? '3/6 · Использую свежий снимок' : '3/6 · Читаю строки TESSA', canReuseSnapshot ? 'Повторная загрузка не нужна' : 'Сверяю текущие строки');
     const sessionSnapshot = getSessionSnapshot(bridge.mainCard?.id, structure.templateId);
     const reusableSnapshot = canReuseSnapshot ? cachedSnapshot : sessionSnapshot;
-    const snapshot = reusableSnapshot || await performanceStage('preview.snapshot', () => bridge.loadSnapshot(structure), { operation: 'preview' });
-    if (!reusableSnapshot) setSessionSnapshot(snapshot, structure);
+    let snapshot = reusableSnapshot || null;
+    if (!snapshot) {
+      longJobCheckpoint('preview:snapshot', { operation: 'preview', mode: 'baseline-incremental' });
+      snapshot = await performanceStage('preview.snapshot.incremental', () => bridge.loadPreviewSnapshot(structure, workbook), { operation: 'preview' });
+      if (!snapshot) {
+        log('Точечный Preview недоступен для этого Excel — использую полный безопасный снимок.', 'warn');
+        snapshot = await performanceStage('preview.snapshot', () => bridge.loadSnapshot(structure), { operation: 'preview', fallbackFrom: 'baseline-incremental' });
+      }
+      setSessionSnapshot(snapshot, structure);
+    }
     setProgress(55, '4/6 · Сопоставляю Excel и TESSA', `${snapshot.rows.length} строк в TESSA`);
-    log(`Текущее состояние TESSA: ${snapshot.rows.length} строк${reusableSnapshot ? ' (из текущей сессии)' : ''}.`);
+    const incrementalNote = snapshot.previewIncremental?.enabled
+      ? ` · CardGet: ${snapshot.previewIncremental.cardGets} из ${snapshot.previewIncremental.totalRows}, baseline: ${snapshot.previewIncremental.baselineRows}`
+      : '';
+    log(`Текущее состояние TESSA: ${snapshot.rows.length} строк${reusableSnapshot ? ' (из текущей сессии)' : ''}${incrementalNote}.`);
     longJobCheckpoint('preview:plan', { operation: 'preview', rows: snapshot.rows.length, excelRows: workbook.rows.length });
     const plan = await performanceStage('preview.plan', () => buildPlan(workbook, structure, snapshot, bridge.matrixInfo()), { operation: 'preview', rows: snapshot.rows.length, excelRows: workbook.rows.length });
     setProgress(62, '5/6 · Проверяю безопасность', 'Дубли, права, удаления и неоднозначности');
