@@ -19,7 +19,10 @@ globalThis.document = {
   querySelectorAll: () => [],
 };
 
-const source = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
+const configuredSource = process.env.TMS_TEST_SOURCE;
+const source = configuredSource
+  ? fs.readFileSync(configuredSource, 'utf8')
+  : fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
 vm.runInThisContext(source, { filename: 'tessa-matrix-studio.user.js' });
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 
