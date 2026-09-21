@@ -7216,7 +7216,8 @@
           ? `Применение остановлено: применено ${applied}.`
           : `Применение завершено частично: применено ${applied} из ${requested}.`;
     const sourceText = (sourceSkipped ? ` Ещё ${sourceSkipped} строк не входили в Apply и остались без изменений.` : '')
-      + (result?.skippedFields?.length ? ` Не применено отдельных полей: ${result.skippedFields.length}.` : '');
+      + (result?.skippedFields?.length ? ` Не применено отдельных полей: ${result.skippedFields.length}.` : '')
+      + (result?.skippedValues?.length ? ` Пропущено отдельных значений: ${result.skippedValues.length}.` : '');
     const refreshText = result?.viewRefresh?.ok
       ? ' Отображение TESSA обновлено автоматически.'
       : (result?.viewRefresh && !result.viewRefresh.skipped ? ' Запись завершена; отображение можно обновить кнопкой ниже.' : '');
@@ -8243,21 +8244,24 @@
 
   // ATOMIC_CROSS_MATRIX_REPLACEMENT_PREVIEW_V1
   function crossMatrixReplacementIntegrity(plan, extraSkippedRows = []) {
-    if (!plan?.crossMatrixReplacement?.enabled) return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0, reviewExcludedCount: 0 };
+    if (!plan?.crossMatrixReplacement?.enabled) return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0, skippedValueCount: 0, reviewExcludedCount: 0 };
     const skippedRows = [...(plan.skippedRows || []), ...(extraSkippedRows || [])];
     const skippedFieldCount = (plan.skippedFields || []).length;
+    const skippedValueCount = (plan.skippedValues || []).length;
     const reviewExcludedCount = (plan.actions || []).filter(action => Boolean(action?.reviewExcluded)).length;
-    if (!skippedRows.length && !skippedFieldCount && !reviewExcludedCount) {
-      return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0, reviewExcludedCount: 0 };
+    if (!skippedRows.length && !skippedFieldCount && !skippedValueCount && !reviewExcludedCount) {
+      return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0, skippedValueCount: 0, reviewExcludedCount: 0 };
     }
     const pieces = [];
     if (skippedRows.length) pieces.push(`${skippedRows.length} строк не могут быть перенесены`);
     if (skippedFieldCount) pieces.push(`${skippedFieldCount} полей нельзя применить`);
+    if (skippedValueCount) pieces.push(`${skippedValueCount} значений пропущены при проверке`);
     if (reviewExcludedCount) pieces.push(`${reviewExcludedCount} операций исключены вручную`);
     return {
       blocked: true,
       skippedCount: skippedRows.length,
       skippedFieldCount,
+      skippedValueCount,
       reviewExcludedCount,
       reason: `Перенос из другой матрицы неполный: ${pieces.join(' и ')}. Для полного переноса частичное применение запрещено: ни добавление, ни удаление строк TESSA не начнётся. Исправьте все ошибки исходного Excel и верните все операции в выбранный набор, затем повторите проверку.`,
     };
@@ -9062,7 +9066,8 @@
       || result.storeSkippedCount > 0
       || result.failedCount > 0
       || result.notStartedCount > 0;
-    const sourceNeedsAttention = result.sourceSkippedCount > 0;
+    result.sourceValueSkippedCount = Math.max(0, Number(result.sourceValueSkippedCount ?? result?.skippedValues?.length) || 0);
+    const sourceNeedsAttention = result.sourceSkippedCount > 0 || result.sourceValueSkippedCount > 0 || (result.skippedFields || []).length > 0;
     result.status = cancelled
       ? 'cancelled'
       : (mutationIncomplete ? 'partial' : (sourceNeedsAttention ? 'attention' : 'completed'));
@@ -9097,7 +9102,7 @@
         ? '\nОтображение TESSA обновлено автоматически.'
         : (result?.viewRefresh && !result.viewRefresh.skipped ? '\nЗапись завершена, но отображение TESSA не удалось обновить автоматически.' : '');
       const verifyNote = result?.reconciliation ? `\nПовторная проверка: подтверждено ${verified} из ${accepted}.` : '';
-      return `Готово. Применено: ${applied} из ${requested}.\nВсе подготовленные изменения применены.${matrixSaveNote}${verifyNote}${sourceNote}${result.skippedFields?.length ? `\nНе применено отдельных полей: ${result.skippedFields.length}. Причины указаны в отчёте.` : ''}${refreshNote}\nПеред следующим Apply нужна свежая проверка или свежая выгрузка Excel.`;
+      return `Готово. Применено: ${applied} из ${requested}.\nВсе подготовленные изменения применены.${matrixSaveNote}${verifyNote}${sourceNote}${result.skippedFields?.length ? `\nНе применено отдельных полей: ${result.skippedFields.length}.` : ''}${result.skippedValues?.length ? `\nПропущено отдельных значений: ${result.skippedValues.length}.` : ''}${refreshNote}\nПеред следующим Apply нужна свежая проверка или свежая выгрузка Excel.`;
     }
     if (result?.status === 'attention') {
       return `Требуется внимание.\
@@ -9287,7 +9292,7 @@
       const transferConfirmed = await confirmCrossMatrixReplacement(plan);
       if (!transferConfirmed) return null;
     } else {
-      const ok = window.confirm(`Применить корректные изменения к TESSA?\n\nИзменить: ${c.update}\nДобавить: ${c.add}\nУдалить: ${c.delete}\nПропустить: ${c.skip || 0}${plan.skippedFields?.length ? `\nОставить без изменения отдельных полей: ${plan.skippedFields.length}` : ''}\n\nОшибочные строки и указанные в Preview поля не будут применены.`);
+      const ok = window.confirm(`Применить корректные изменения к TESSA?\n\nИзменить: ${c.update}\nДобавить: ${c.add}\nУдалить: ${c.delete}\nПропустить строки: ${c.skip || 0}${plan.skippedFields?.length ? `\nОставить без изменения полей: ${plan.skippedFields.length}` : ''}${plan.skippedValues?.length ? `\nПропустить отдельных значений: ${plan.skippedValues.length}` : ''}\n\nВ TESSA попадут только значения, прошедшие проверку.`);
       if (!ok) return null;
     }
     APP.abortRequested = false;
@@ -9305,6 +9310,7 @@
         rows: [],
         skipped: [...(plan.skippedRows || [])],
         skippedFields: [...(plan.skippedFields || [])],
+        skippedValues: [...(plan.skippedValues || [])],
         success: false,
         partial: true,
         status: 'cancelled',
@@ -9354,6 +9360,7 @@
       rows: [],
       skipped: [...(plan.skippedRows || []), ...runtimeSkips],
       skippedFields: [...(plan.skippedFields || [])],
+      skippedValues: [...(plan.skippedValues || [])],
       success: false,
       partial: false,
       status: 'running',
@@ -9667,6 +9674,7 @@
     if (result.preflightSkippedCount || result.storeSkippedCount) progressParts.push(`не применено: ${result.preflightSkippedCount + result.storeSkippedCount}`);
     if (result.sourceSkippedCount) progressParts.push(`не вошли в Apply: ${result.sourceSkippedCount}`);
     if (result.skippedFields?.length) progressParts.push(`не применяются поля: ${result.skippedFields.length}`);
+    if (result.skippedValues?.length) progressParts.push(`пропущено значений: ${result.skippedValues.length}`);
     if (result.notStartedCount) progressParts.push(`не начато: ${result.notStartedCount}`);
     if (result.matrixSave?.ok) progressParts.push('матрица сохранена');
     else if (result.matrixSaveIncomplete) progressParts.push('матрица требует сохранения');
@@ -11047,6 +11055,7 @@
     const reasonCodes = [...new Set([
       ...(reviewed?.skippedRows || []).map(item => normalizeSpace(item?.code || '')).filter(Boolean),
       ...(reviewed?.skippedFields || []).map(item => normalizeSpace(item?.code || '')).filter(Boolean),
+      ...(reviewed?.skippedValues || []).map(item => normalizeSpace(item?.code || '')).filter(Boolean),
     ])].sort();
     const roleTypeIds = new Set();
     const collectRow = row => {
@@ -11082,6 +11091,7 @@
         noop: Number(reviewed?.counts?.noop || 0),
         skip: Number(reviewed?.counts?.skip || 0),
         skippedFields: Number(reviewed?.skippedFields?.length || 0),
+        skippedValues: Number(reviewed?.skippedValues?.length || 0),
       },
       reasonCodes,
       roleTypeIds: [...roleTypeIds].sort(),
@@ -11429,6 +11439,7 @@
         : applyState.blocked ? 'Применение заблокировано.' : `Доступно для применения: ${applyState.count}.`}</b> Пропущено строк: ${skipped.length}. Причины указаны в списке ниже.</div>` : ''}
       ${hasSourceChanges ? rowFailuresHtml(skipped) : ''}
       ${skippedFieldsHtml(reviewed.skippedFields)}
+      ${skippedValuesHtml(reviewed.skippedValues)}
       ${reviewedSafety.blocked ? `<div class="tms-fatal"><b>Этот набор изменений нельзя безопасно применить</b><br>${(reviewedSafety.blockedReasons || []).map(escapeHtml).join('<br>')}</div>` : ''}
       ${applyState.batchBlocked ? `<div class="tms-fatal"><b>Слишком много изменений за один раз</b><br>Сейчас: ${applyState.count} · максимум: 2000. Раскройте «Выбрать часть изменений» и уменьшите число операций.</div>` : ''}
       ${warnings.length ? `<details class="tms-warning"><summary>Нужно проверить</summary><div>${warnings.map(item => `<div>${escapeHtml(item)}</div>`).join('')}</div></details>` : ''}
