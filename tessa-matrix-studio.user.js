@@ -8313,9 +8313,12 @@
     renderPlan(previewPlan);
     const visible = previewPlan.actions.filter(action => action.type !== 'noop').length;
     const skipped = previewPlan.counts?.skip || 0;
+    const readStats = snapshot.previewIncremental?.enabled
+      ? ` · серверных CardGet: ${snapshot.previewIncremental.cardGets}/${snapshot.previewIncremental.totalRows}`
+      : '';
     const detail = visible
-      ? `Корректных изменений: ${visible}${skipped ? ` · пропустить строк: ${skipped}` : ''}${previewPlan.skippedFields?.length ? ` · не применяются поля: ${previewPlan.skippedFields.length}` : ''}`
-      : (skipped ? `Нет изменений для применения · пропущено строк: ${skipped}` : 'Изменений нет');
+      ? `Корректных изменений: ${visible}${skipped ? ` · пропустить строк: ${skipped}` : ''}${previewPlan.skippedFields?.length ? ` · не применяются поля: ${previewPlan.skippedFields.length}` : ''}${previewPlan.skippedValues?.length ? ` · пропущено значений: ${previewPlan.skippedValues.length}` : ''}${readStats}`
+      : (skipped ? `Нет изменений для применения · пропущено строк: ${skipped}${readStats}` : `Изменений нет${readStats}`);
     const atomicReplacementReason = previewPlan.preflightPreview?.atomicReplacementReason || null;
     setProgress(100, atomicReplacementReason ? 'Перенос заблокирован' : 'Проверка завершена', atomicReplacementReason || detail);
     clearLongJobCheckpoint();
@@ -11291,6 +11294,12 @@
       roleTypeIds: [...roleTypeIds].sort(),
       sources: [...new Set((reviewed?.skippedRows || []).map(item => normalizeSpace(item?.source || '')).filter(Boolean))].sort(),
       productionShadow: productionShadowProfile(reviewed),
+      previewRead: reviewed?.snapshot?.previewIncremental?.enabled ? {
+        mode: 'baseline-incremental',
+        totalRows: Number(reviewed.snapshot.previewIncremental.totalRows || 0),
+        baselineRows: Number(reviewed.snapshot.previewIncremental.baselineRows || 0),
+        cardGets: Number(reviewed.snapshot.previewIncremental.cardGets || 0),
+      } : { mode: 'full-or-session' },
       apply: {
         canApply: Boolean(availability.canApply),
         count: Number(availability.count || 0),
