@@ -109,7 +109,7 @@
     DbName: 'TESSA_Matrix_Excel_Sync',
     StoreName: 'dictionaryCatalogs',
     DbVersion: 1,
-    TtlMs: 12 * 60 * 60 * 1000,
+    TtlMs: 30 * 60 * 1000,
   });
 
   const PERFORMANCE = Object.freeze({
@@ -3228,9 +3228,10 @@
     setProgress(38, 'Читаю строки', 'Загружаю текущее состояние матрицы');
     log('Выгрузка текущей матрицы: читаю строки.');
     const snapshot = await performanceStage('export.snapshot', () => bridge.loadSnapshot(structure), { operation: 'export' });
-    setProgress(62, 'Обновляю справочники', 'Читаю свежие значения и роли из TESSA');
-    log(options.forceDictionaryRefresh ? 'Выгрузка текущей матрицы: принудительно обновляю словари и роли.' : 'Выгрузка текущей матрицы: подключаю словари и роли.');
-    const dictionaryCatalog = await performanceStage('export.dictionaries', () => bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true }), { operation: 'export', rows: snapshot.rows.length });
+    const forceDictionaryRefresh = Boolean(options.forceDictionaryRefresh);
+    setProgress(62, forceDictionaryRefresh ? 'Обновляю справочники' : 'Подключаю справочники', forceDictionaryRefresh ? 'Читаю свежие значения и роли из TESSA' : 'Использую свежий локальный кэш, если он есть');
+    log(forceDictionaryRefresh ? 'Выгрузка текущей матрицы: принудительно обновляю словари и роли.' : 'Выгрузка текущей матрицы: использую 30-минутный кэш справочников, если он актуален.');
+    const dictionaryCatalog = await performanceStage('export.dictionaries', () => bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: forceDictionaryRefresh }), { operation: 'export', rows: snapshot.rows.length });
     APP.dictionaryCatalog = dictionaryCatalog;
     const matrixInfo = bridge.matrixInfo();
     setProgress(84, 'Формирую Excel', `${snapshot.rows.length} строк`);
@@ -3836,7 +3837,7 @@
     return refreshedBytes;
   }
 
-  async function readSelectedWorkbookWithLiveCatalog(file, { needBridge = false } = {}) {
+  async function readSelectedWorkbookWithLiveCatalog(file, { needBridge = false, forceDictionaryRefresh = false } = {}) {
     if (!file) throw new Error('Выберите файл .xlsx.');
     const workbook = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name, {
       skipSheetNames: ['Словари'],
@@ -3847,7 +3848,7 @@
     const templateId = bridge.templateId();
     if (!templateId) throw new Error('В карточке матрицы не найден TemplateID.');
     const structure = await bridge.requestStructure(templateId);
-    const dictionaryCatalog = await bridge.loadDictionaryCatalog(structure, { rows: [] }, { forceRefresh: true });
+    const dictionaryCatalog = await bridge.loadDictionaryCatalog(structure, { rows: [] }, { forceRefresh: Boolean(forceDictionaryRefresh) });
     workbook.dictionaryCatalog = dictionaryCatalog;
     return { workbook, bridge, structure, dictionaryCatalog };
   }
@@ -3855,7 +3856,7 @@
   async function refreshSelectedWorkbookDictionaries(file) {
     if (!file) throw new Error('Сначала выберите изменённый Excel в шаге 2.');
     setProgress(10, 'Читаю ваш Excel', 'Матрица и ваши правки сохранятся');
-    const selected = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true });
+    const selected = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true, forceDictionaryRefresh: true });
     const { workbook, bridge, structure, dictionaryCatalog: catalog } = selected;
     const matrixInfo = bridge.matrixInfo();
     if (canonicalValue(workbook.roundtrip?.templateId) !== canonicalValue(matrixInfo.TemplateID)) throw new Error('Excel относится к другому шаблону.');
@@ -3868,7 +3869,7 @@
 
   async function refreshSelectedWorkbook(file) {
     if (!file) throw new Error('Выберите Excel, который нужно обновить.');
-    const { workbook } = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true });
+    const { workbook } = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true, forceDictionaryRefresh: true });
     return refreshWorkbookSchema(workbook, file.name);
   }
 
