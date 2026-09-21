@@ -41,6 +41,33 @@ const exactSub = E.exactArrayBuffer(sub);
 assert.notEqual(exactSub, parent.buffer, 'subview must receive an exact defensive buffer');
 assert.deepEqual([...new Uint8Array(exactSub)], [1, 2, 3]);
 
+let resolveSnapshot;
+let resolveCatalog;
+let snapshotStarted = false;
+let catalogStarted = false;
+const snapshotGate = new Promise(resolve => { resolveSnapshot = resolve; });
+const catalogGate = new Promise(resolve => { resolveCatalog = resolve; });
+const parallelBridge = {
+  async loadSnapshot() {
+    snapshotStarted = true;
+    return snapshotGate;
+  },
+  async loadDictionaryCatalog() {
+    catalogStarted = true;
+    return catalogGate;
+  },
+};
+const parallelStructure = { templateId: 'parallel-template', conditions: [], functions: [] };
+const parallelLoad = E.loadExportSnapshotAndDictionaries(parallelBridge, parallelStructure);
+await Promise.resolve();
+assert.equal(snapshotStarted, true, 'export snapshot read must start immediately');
+assert.equal(catalogStarted, true, 'dictionary read must start before snapshot finishes');
+resolveSnapshot({ matrixId: 'parallel-matrix', templateId: 'parallel-template', rows: [] });
+resolveCatalog({ catalogs: {}, columnCatalogIds: {}, stats: { catalogs: 0, entries: 0, errors: [], warnings: [] } });
+const parallelResult = await parallelLoad;
+assert.equal(parallelResult.snapshot.matrixId, 'parallel-matrix');
+assert.equal(parallelResult.dictionaryCatalog.stats.entries, 0);
+
 const structure = {
   templateId: 'tpl-fast-delta',
   conditions: [{ criterionRowId: 'kind', criterionName: 'Вид', operandTypeId: O.String }],
