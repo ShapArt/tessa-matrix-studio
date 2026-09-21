@@ -13062,7 +13062,7 @@
     performanceStage, performanceSnapshot, resetPerformanceTelemetry, performanceUatScenarioNames, runPerformanceUat, buildPerformanceUatSummary, makeZip, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,
     baselineExplicitValues, workbookBaselineFastPathIndex, unchangedDesiredRowFromBaseline,
     TessaBridge,
-    constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },
+    constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE, XLSX_ARCHIVE_LIMITS, SPREADSHEETML_LIMITS },
   };
 
   bootstrap();
@@ -13432,6 +13432,7 @@
       issues: plan?.issues || [],
       skippedRows: (plan?.skippedRows || []).slice(0, 30),
       skippedFields: (plan?.skippedFields || []).slice(0, 30),
+      skippedValues: (plan?.skippedValues || []).slice(0, 30),
       safety: plan?.safety ? { blocked: Boolean(plan.safety.blocked), blockedReasons: plan.safety.blockedReasons || [] } : null,
     };
   }
@@ -14036,9 +14037,120 @@
         return { detail: `Сформирован changes-preview.xlsx (${bytes.length} байт).`, data: { outcome: 'changes-xlsx-artifact', artifact: 'changes-preview.xlsx', bytes: bytes.length } };
       });
 
+      // FULL_UAT_RESOURCE_SAFETY_V1
+      // A real OOM cannot be used as a successful test oracle: if the renderer dies there is
+      // no code left to emit FAIL or cleanup live writes. Full UAT therefore proves the
+      // fail-fast resource guards and repeatedly exercises the bounded XLSX path that must
+      // prevent the browser from reaching OOM in normal operation.
+      await runCheck('resource-input-limit', 'Память: XLSX больше лимита отклоняется до ZIP/XML', async () => {
+        const limits = E.constants?.XLSX_ARCHIVE_LIMITS;
+        if (!limits || !Number.isFinite(Number(limits.MaxInputBytes)) || Number(limits.MaxInputBytes) <= 0) throw new Error('Production XLSX input limit недоступен.');
+        let rejected = false;
+        let message = '';
+        let oversized = null;
+        try {
+          oversized = new Uint8Array(Number(limits.MaxInputBytes) + 1);
+          await E.readXlsxArrayBuffer(oversized.buffer, 'TESSA_UAT_OVERSIZE.xlsx', { retainArchive: false, selectiveInflate: true });
+        } catch (error) {
+          message = String(error?.message || error);
+          rejected = /размер файла|безопасн.*лимит/i.test(message);
+        } finally {
+          oversized = null;
+        }
+        if (!rejected) throw new Error(`Файл > ${limits.MaxInputBytes} байт не был fail-fast отклонён. ${message}`);
+        return { detail: `Hard limit ${Math.round(Number(limits.MaxInputBytes) / 1024 / 1024)} МБ сработал до разбора XLSX.`, data: { maxInputBytes: limits.MaxInputBytes, rejection: message } };
+      });
+
+      await runCheck('resource-entry-limit', 'Память: слишком много ZIP-частей XLSX отклоняется', async () => {
+        const limits = E.constants?.XLSX_ARCHIVE_LIMITS;
+        if (!limits || !Number.isFinite(Number(limits.MaxEntries))) throw new Error('Production ZIP entry limit недоступен.');
+        const entries = Array.from({ length: Number(limits.MaxEntries) + 1 }, (_, index) => [`xl/uat-resource-${index}.xml`, '']);
+        const bytes = await E.makeZip(entries);
+        let rejected = false;
+        let message = '';
+        try {
+          await E.readXlsxArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), 'TESSA_UAT_TOO_MANY_PARTS.xlsx', { retainArchive: false });
+        } catch (error) {
+          message = String(error?.message || error);
+          rejected = /слишком много|количеств.*файл/i.test(message);
+        }
+        if (!rejected) throw new Error(`ZIP с ${entries.length} частями не был отклонён. ${message}`);
+        return { detail: `Лимит ZIP-частей ${limits.MaxEntries} подтверждён fail-closed.`, data: { maxEntries: limits.MaxEntries, testedEntries: entries.length, rejection: message } };
+      });
+
+      await runCheck('resource-path-traversal', 'Безопасность XLSX: path traversal внутри ZIP', async () => {
+        const bytes = await E.makeZip([['../TESSA_UAT_EVIL.xml', '<x/>']]);
+        let rejected = false;
+        let message = '';
+        try {
+          await E.readXlsxArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), 'TESSA_UAT_PATH_TRAVERSAL.xlsx', { retainArchive: false });
+        } catch (error) {
+          message = String(error?.message || error);
+          rejected = /небезопасн.*путь|путь.*архив/i.test(message);
+        }
+        if (!rejected) throw new Error(`Небезопасный ZIP path не был отклонён. ${message}`);
+        return { detail: 'ZIP path traversal отклонён до чтения workbook XML.', data: { rejection: message } };
+      });
+
+      await runCheck('resource-spreadsheet-bounds', 'Безопасность XLSX: границы строк/столбцов Excel', async () => {
+        const limits = E.constants?.SPREADSHEETML_LIMITS;
+        if (!limits?.MaxRowNumber || !limits?.MaxColumnNumber) throw new Error('SpreadsheetML production limits недоступны.');
+        const worksheet = body => `<?xml version="1.0" encoding="utf-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${body}</sheetData></worksheet>`;
+        let rowRejected = false;
+        let colRejected = false;
+        try {
+          const row = Number(limits.MaxRowNumber) + 1;
+          E.parseSheetXml(worksheet(`<row r="${row}"><c r="A${row}" t="str"><v>x</v></c></row>`), []);
+        } catch (error) {
+          rowRejected = /строк|номер строки|лимит/i.test(String(error?.message || error));
+        }
+        try {
+          E.parseSheetXml(worksheet('<row r="1"><c r="XFE1" t="str"><v>x</v></c></row>'), []);
+        } catch (error) {
+          colRejected = /столб|XFD|16384/i.test(String(error?.message || error));
+        }
+        if (!rowRejected || !colRejected) throw new Error(`Границы SpreadsheetML не сработали: row=${rowRejected}, col=${colRejected}.`);
+        return { detail: `Excel bounds подтверждены: rows≤${limits.MaxRowNumber}, cols≤${limits.MaxColumnNumber}.`, data: limits };
+      });
+
+      await runCheck('memory-bounded-roundtrip', 'Память: повторный XLSX roundtrip без удержания архива', async () => {
+        const heap = () => {
+          const used = Number(globalThis.performance?.memory?.usedJSHeapSize);
+          const limit = Number(globalThis.performance?.memory?.jsHeapSizeLimit);
+          return Number.isFinite(used) && used > 0 ? { used, limit: Number.isFinite(limit) && limit > 0 ? limit : null } : null;
+        };
+        const before = heap();
+        const buffer = base.bytes.buffer.slice(base.bytes.byteOffset, base.bytes.byteOffset + base.bytes.byteLength);
+        const samples = [];
+        for (let iteration = 1; iteration <= 3; iteration += 1) {
+          const parsed = await E.readXlsxArrayBuffer(buffer, `TESSA_UAT_MEMORY_${iteration}.xlsx`, {
+            skipSheetNames: ['Словари'],
+            dictionaryCatalog: catalog,
+            retainArchive: false,
+            selectiveInflate: true,
+          });
+          if (parsed.parsedSheets?.has?.('Словари')) throw new Error(`Итерация ${iteration}: лист «Словари» был материализован в bounded-memory режиме.`);
+          if ((parsed.rows || []).length !== (base.book.rows || []).length) throw new Error(`Итерация ${iteration}: число строк изменилось ${parsed.rows?.length}/${base.book.rows?.length}.`);
+          if (E.releaseWorkbookArchive(parsed)) throw new Error(`Итерация ${iteration}: retainArchive:false всё равно удержал распакованные ZIP parts.`);
+          const plan = E.buildPlan(parsed, structure, baseline, info);
+          if (plan.counts.skip || plan.counts.add || plan.counts.update || plan.counts.delete) throw new Error(`Итерация ${iteration}: повторный roundtrip дал изменения ${JSON.stringify(plan.counts)}.`);
+          samples.push({ iteration, rows: parsed.rows?.length || 0, heap: heap() });
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+        const after = heap();
+        if (after?.limit && after.used / after.limit >= 0.90) throw new Error(`После bounded-memory roundtrip занято ${Math.round(after.used / after.limit * 100)}% JS heap — опасно близко к OOM.`);
+        return {
+          detail: after?.limit
+            ? `3 повторных import→plan прошли без удержания ZIP/«Словарей»; JS heap ${Math.round(after.used / 1024 / 1024)} / ${Math.round(after.limit / 1024 / 1024)} МБ.`
+            : '3 повторных import→plan прошли без удержания ZIP/«Словарей»; performance.memory браузером не предоставлен.',
+          data: { before, after, samples, archiveRetained: false, dictionarySheetParsed: false },
+        };
+      });
+
       await runCheck('prod-shadow-offline', 'Production-shadow: объём и ошибки production-класса', async () => {
         const audit = await runProductionShadowAudit();
         report.productionShadowAudit = audit;
+        if (Number(audit.metrics?.dictionaryEntries || 0) < 100000) throw new Error(`Stress-профиль слишком мал: ${audit.metrics?.dictionaryEntries || 0} dictionary entries.`);
         return {
           detail: `Synthetic envelope: ${audit.metrics.dictionaryEntries} значений справочников; перенос ${audit.profile.sourceRows}→${audit.profile.targetRows}; ${audit.metrics.operationCount} операций; schema drift ${audit.profile.retiredColumns}/${audit.profile.targetOnlyColumns}; ${audit.metrics.totalMs} мс.`,
           data: { outcome: 'production-shadow', profile: audit.profile, metrics: audit.metrics, assertions: audit.assertions },
@@ -14102,9 +14214,37 @@
       });
       await runCheck('dictionary-invalid', 'Некорректное значение справочника', async () => {
         const columns = mutableCriterionColumns(base.book, catalog, 2); if (!columns.length) return { status: 'NOT_RUN', detail: 'Нет подходящего справочника.' };
-        const test = cloneWorkbook(base.book), row = chooseSourceRow(test, rng), column = shuffled(columns, rng)[0]; row.values[column.index] = `__UAT_INVALID_${seed}__`; const idIndex = companionIndex(test, column.key); if (idIndex >= 0) row.values[idIndex] = '';
-        const plan = E.buildPlan(test, structure, baseline, info); if (!plan.counts.skip && !(plan.issues || []).length) throw new Error('Некорректное значение не было отклонено.');
-        return { detail: 'Неизвестное значение остановлено до Store.', data: compactPlan(plan) };
+        const test = cloneWorkbook(base.book), row = chooseSourceRow(test, rng), column = shuffled(columns, rng)[0];
+        const invalidValue = `__UAT_INVALID_${seed}__`;
+        row.values[column.index] = invalidValue;
+        const idIndex = companionIndex(test, column.key); if (idIndex >= 0) row.values[idIndex] = '';
+        const plan = E.buildPlan(test, structure, baseline, info);
+
+        // FULL_UAT_DICTIONARY_INVALID_VALUE_LEVEL_V1
+        // v1.15 may fail closed at row, field or individual-value level. The old UAT only
+        // looked at counts.skip / plan.issues and therefore reported a false FAIL when the
+        // planner correctly preserved the existing field through skippedFields/skippedValues.
+        const sameRow = item => Number(item?.excelRow) === Number(row.excelRow);
+        const sameField = item => canon(item?.key || '') === canon(column.key);
+        const rejectedField = (plan.skippedFields || []).find(item => sameRow(item) && sameField(item));
+        const rejectedValue = (plan.skippedValues || []).find(item => sameRow(item) && sameField(item));
+        const rejectedRow = (plan.skippedRows || []).find(item => sameRow(item));
+        const rejectedIssue = (plan.issues || []).find(item => {
+          const text = JSON.stringify(item || {});
+          return text.includes(invalidValue) || (sameRow(item) && (!item?.key || sameField(item)));
+        });
+        const leakedIntoExecutableChange = (plan.actions || [])
+          .filter(action => action?.type && action.type !== 'noop')
+          .some(action => (action.changes || []).some(change =>
+            canon(change?.key || '') === canon(column.key)
+            && (change?.after || []).some(value => canon(value) === canon(invalidValue))
+          ));
+        if (leakedIntoExecutableChange) throw new Error('Некорректное значение попало в исполняемый change-set Apply.');
+        if (!rejectedField && !rejectedValue && !rejectedRow && !rejectedIssue && !plan.counts.skip) {
+          throw new Error('Некорректное значение не было отклонено ни на уровне строки, ни поля, ни значения.');
+        }
+        const level = rejectedValue ? 'value' : rejectedField ? 'field' : rejectedRow || plan.counts.skip ? 'row' : 'issue';
+        return { detail: `Неизвестное значение fail-closed отклонено до Store на уровне ${level}; в executable change-set его нет.`, data: { rejectionLevel: level, ...compactPlan(plan) } };
       });
       await runCheck('dictionary-refresh', 'Обновление справочников без потери строк', async () => {
         const refreshedBytes = await E.refreshWorkbookDictionaries(base.book, structure, catalog);
