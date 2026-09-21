@@ -488,7 +488,7 @@
     const matrixInfo = { matrixId: snapshot.matrixId, TemplateID: snapshot.templateId, Name: 'Performance UAT' };
     const catalog = mergeSnapshotIntoDictionaryCatalog(null, structure, snapshot);
     const bytes = await createRoundtripXlsxBytes(structure, snapshot, matrixInfo, catalog, { includeActions: true });
-    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const buffer = exactArrayBuffer(bytes);
     const baseWorkbook = await readXlsxArrayBuffer(buffer, 'performance-uat.xlsx');
     const signer = baseWorkbook.headers.indexOf('Подписание');
     const signerId = baseWorkbook.headers.indexOf('Подписание__ID');
@@ -2013,6 +2013,17 @@
       offset += part.length;
     }
     return output;
+  }
+
+  // Avoid duplicating multi-megabyte XLSX buffers merely to normalize a Uint8Array view.
+  // makeZip/createRoundtripXlsxBytes normally return a view covering the whole buffer,
+  // so the common path is zero-copy. Subviews still get an exact defensive copy.
+  function exactArrayBuffer(value) {
+    if (value instanceof ArrayBuffer) return value;
+    if (!ArrayBuffer.isView(value)) throw new TypeError('Ожидался ArrayBuffer или TypedArray.');
+    const buffer = value.buffer;
+    if (value.byteOffset === 0 && value.byteLength === buffer.byteLength) return buffer;
+    return buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
   }
 
   async function deflateRaw(bytes) {
@@ -3835,7 +3846,7 @@
     if (!dictionaryPath || !structurePath || !matrixPath) throw new Error('В книге отсутствуют служебные листы справочников.');
     catalog = preserveWorkbookSelectors(workbook, catalog);
     const donorBytes = await createRoundtripXlsxBytes(structure, { rows: [] }, {}, catalog);
-    const donor = await unzipArrayBuffer(donorBytes.buffer.slice(donorBytes.byteOffset, donorBytes.byteOffset + donorBytes.byteLength));
+    const donor = await unzipArrayBuffer(exactArrayBuffer(donorBytes));
     const donorDescriptors = parseWorkbookSheets(donor, decoder);
     const donorPath = name => donorDescriptors.find(item => item.name === name)?.path;
     // Replace reference data only. Matrix cells, IDs, formulas, row order, styles,
@@ -10985,7 +10996,7 @@
     const roundtripOk = await run('roundtrip', 'Выгрузка и обратное чтение всех полей', async () => {
       const bytes = await createRoundtripXlsxBytes(structure, snapshot, bridge.matrixInfo(), catalog);
       capture('matrix-current.xlsx', bytes);
-      generated = await readXlsxArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+      generated = await readXlsxArrayBuffer(exactArrayBuffer(bytes));
       const roundtrip = buildPlan(generated, structure, snapshot);
       capture('roundtrip.json', { counts: roundtrip.counts, safety: roundtrip.safety, skippedRows: roundtrip.skippedRows, skippedFields: roundtrip.skippedFields });
       if (roundtrip.safety?.blocked || roundtrip.counts.skip || roundtrip.skippedFields?.length || roundtrip.actions.some(a => a.type !== 'noop') || roundtrip.actions.length !== snapshot.rows.length) throw new Error('Выгрузка и обратное чтение дали расхождения. Подробности в пакете.');
@@ -13378,7 +13389,7 @@
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, triggerBlobDownload, downloadJson, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport, buildApplySupportReport,
     workbookHistoricalRoleLookup, historicalRoleTextMatches, skippedValuesHtml, longJobCheckpoint, clearLongJobCheckpoint, restoreLongJobCheckpoint,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
-    readXlsxArrayBuffer, releaseWorkbookArchive, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
+    readXlsxArrayBuffer, releaseWorkbookArchive, exactArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, buildChangesReportModel, createChangesReportXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, replacementConfirmationModel, confirmCrossMatrixReplacement, isWriterLockError, persistMainMatrixAfterApply, refreshNativeMatrixViewAfterApply, collectPlanResolutionItems, applyResolutionChoiceToWorkbook, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
@@ -13777,7 +13788,7 @@
 
   async function workbookFromSnapshot(structure, snapshot, bridge, catalog, options = {}) {
     const bytes = await E.createRoundtripXlsxBytes(structure, snapshot, bridge.matrixInfo(), catalog, { includeActions: true });
-    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const buffer = exactArrayBuffer(bytes);
     const book = await E.readXlsxArrayBuffer(buffer, 'TESSA_UAT_CURRENT.xlsx', {
       skipSheetNames: ['Словари'],
       dictionaryCatalog: catalog,
@@ -14092,7 +14103,7 @@
     const planStarted = nowMs();
     const sourceCatalog = E.mergeSnapshotIntoDictionaryCatalog(null, sourceStructure, sourceSnapshot);
     const bytes = await E.createRoundtripXlsxBytes(sourceStructure, sourceSnapshot, sourceInfo, sourceCatalog, { includeActions: true });
-    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const buffer = exactArrayBuffer(bytes);
     const workbook = await E.readXlsxArrayBuffer(buffer, 'TESSA_PROD_SHADOW.xlsx');
     const plan = E.buildPlan(workbook, targetStructure, targetSnapshot, targetInfo);
     const safety = E.evaluatePlanSafety(plan, { matrixInfo: () => targetInfo, localizeValue: value => value });
@@ -14384,7 +14395,7 @@
         return { detail: `Picker сформировал значение для «${column.label || column.key}».`, data: { outcome: 'picker-selection', column: column.key, value: text } };
       });
       await runCheck('action-file-ingest', 'Действие: загрузить изменённый Excel', async () => {
-        const buffer = base.bytes.buffer.slice(base.bytes.byteOffset, base.bytes.byteOffset + base.bytes.byteLength);
+        const buffer = exactArrayBuffer(base.bytes);
         const ingested = await E.readXlsxArrayBuffer(buffer, 'TESSA_UAT_INGEST.xlsx');
         if (!ingested || (ingested.rows || []).length !== (base.book.rows || []).length) throw new Error('Повторный ingest изменил число строк roundtrip-книги.');
         return { detail: `Excel прочитан обратно: ${(ingested.rows || []).length} строк.`, data: { outcome: 'ingest-workbook', rows: (ingested.rows || []).length } };
@@ -14545,7 +14556,7 @@
         let rejected = false;
         let message = '';
         try {
-          await E.readXlsxArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), 'TESSA_UAT_TOO_MANY_PARTS.xlsx', { retainArchive: false });
+          await E.readXlsxArrayBuffer(exactArrayBuffer(bytes), 'TESSA_UAT_TOO_MANY_PARTS.xlsx', { retainArchive: false });
         } catch (error) {
           message = String(error?.message || error);
           rejected = /слишком много|количеств.*файл/i.test(message);
@@ -14559,7 +14570,7 @@
         let rejected = false;
         let message = '';
         try {
-          await E.readXlsxArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), 'TESSA_UAT_PATH_TRAVERSAL.xlsx', { retainArchive: false });
+          await E.readXlsxArrayBuffer(exactArrayBuffer(bytes), 'TESSA_UAT_PATH_TRAVERSAL.xlsx', { retainArchive: false });
         } catch (error) {
           message = String(error?.message || error);
           rejected = /небезопасн.*путь|путь.*архив/i.test(message);
@@ -14596,7 +14607,7 @@
           return Number.isFinite(used) && used > 0 ? { used, limit: Number.isFinite(limit) && limit > 0 ? limit : null } : null;
         };
         const before = heap();
-        const buffer = base.bytes.buffer.slice(base.bytes.byteOffset, base.bytes.byteOffset + base.bytes.byteLength);
+        const buffer = exactArrayBuffer(base.bytes);
         const samples = [];
         for (let iteration = 1; iteration <= 3; iteration += 1) {
           const parsed = await E.readXlsxArrayBuffer(buffer, `TESSA_UAT_MEMORY_${iteration}.xlsx`, {
@@ -14747,7 +14758,7 @@
         E.releaseWorkbookArchive(sourceBook);
         E.releaseWorkbookArchive(base.book);
         const refreshed = await E.readXlsxArrayBuffer(
-          refreshedBytes.buffer.slice(refreshedBytes.byteOffset, refreshedBytes.byteOffset + refreshedBytes.byteLength),
+          exactArrayBuffer(refreshedBytes),
           'TESSA_UAT_REFRESHED.xlsx',
           { skipSheetNames: ['Словари'], dictionaryCatalog: catalog, retainArchive: false, selectiveInflate: true },
         );
@@ -14771,7 +14782,7 @@
         const merged = E.mergeWorkbookIntoCurrentSnapshot(base.book, structure, baseline); if ((merged.snapshot?.rows || []).length !== baseline.rows.length) throw new Error(`После merge строк ${merged.snapshot?.rows?.length}, ожидалось ${baseline.rows.length}.`);
         const mergedBytes = await E.createRoundtripXlsxBytes(structure, merged.snapshot, info, catalog, { baselineRows: baseline.rows, includeActions: true, schemaChanges: merged.schemaChanges, customColumns: merged.customColumns });
         const parsed = await E.readXlsxArrayBuffer(
-          mergedBytes.buffer.slice(mergedBytes.byteOffset, mergedBytes.byteOffset + mergedBytes.byteLength),
+          exactArrayBuffer(mergedBytes),
           'TESSA_UAT_MERGED.xlsx',
           { skipSheetNames: ['Словари'], dictionaryCatalog: catalog, retainArchive: false, selectiveInflate: true },
         ); const plan = E.buildPlan(parsed, structure, baseline, info);
