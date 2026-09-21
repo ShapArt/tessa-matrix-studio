@@ -165,6 +165,15 @@ if (!source.includes('const diagnosticNativeCardCache = new Map();')) {
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },`;
   const resourceAware = `    TessaBridge,
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE, XLSX_ARCHIVE_LIMITS, SPREADSHEETML_LIMITS },`;
+
+  // Newer branches may already export makeZip earlier in the object together with
+  // additional performance helpers. Detect the export object semantically instead of
+  // depending on one historical adjacency ("TessaBridge, makeZip,").
+  const exportStart = source.indexOf('window.__TESSA_MATRIX_SYNC_EXPORTS__ = {');
+  const exportEnd = exportStart >= 0 ? source.indexOf('\n  };', exportStart) : -1;
+  const exportBlock = exportStart >= 0 && exportEnd > exportStart ? source.slice(exportStart, exportEnd) : '';
+  const makeZipAlreadyExported = /(?:^|[,\s])makeZip(?:[,\s]|$)/m.test(exportBlock);
+
   if (source.includes(legacy)) {
     replaceExact(
       legacy,
@@ -179,7 +188,7 @@ if (!source.includes('const diagnosticNativeCardCache = new Map();')) {
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE, XLSX_ARCHIVE_LIMITS, SPREADSHEETML_LIMITS },`,
       'export makeZip for resource-aware Full UAT',
     );
-  } else if (!source.includes('TessaBridge, makeZip,')) {
+  } else if (!makeZipAlreadyExported) {
     throw new Error('export makeZip for Full UAT: supported export block not found');
   }
 }
@@ -187,8 +196,16 @@ if (!source.includes('const diagnosticNativeCardCache = new Map();')) {
 if ((source.match(/DUPLICATE_IDENTITY_COPY_AS_ADD_V1/g) || []).length !== 2) {
   throw new Error('Copied identity patch marker count mismatch.');
 }
-for (const marker of ['tms-picker-import-block', 'TessaBridge, makeZip,', 'const confirmApply =', 'FULL_UAT_DEFER_MAIN_SAVE_V1', "reason: 'deferred-by-caller'", 'diagnosticNativeCardCache']) {
+for (const marker of ['tms-picker-import-block', 'const confirmApply =', 'FULL_UAT_DEFER_MAIN_SAVE_V1', "reason: 'deferred-by-caller'", 'diagnosticNativeCardCache']) {
   if (!source.includes(marker)) throw new Error(`v1.13.0 transform verification failed: ${marker}`);
+}
+{
+  const exportStart = source.indexOf('window.__TESSA_MATRIX_SYNC_EXPORTS__ = {');
+  const exportEnd = exportStart >= 0 ? source.indexOf('\n  };', exportStart) : -1;
+  const exportBlock = exportStart >= 0 && exportEnd > exportStart ? source.slice(exportStart, exportEnd) : '';
+  if (!/(?:^|[,\s])makeZip(?:[,\s]|$)/m.test(exportBlock)) {
+    throw new Error('v1.13.0 transform verification failed: makeZip export missing');
+  }
 }
 
 fs.writeFileSync(target, source, 'utf8');
