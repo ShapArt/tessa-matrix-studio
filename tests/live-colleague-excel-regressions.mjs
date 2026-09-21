@@ -129,6 +129,7 @@ assert.match(source, /data-preview-counter-filter="skip"/, 'Not-applied counter 
 assert.match(source, /data-preview-counter-filter="error"/, 'Error counter must be an actionable filter button');
 assert.match(source, /aria-pressed=/, 'Counter filters must expose their active state accessibly');
 assert.match(source, /button\[data-preview-counter-filter\]/, 'Preview click delegation must handle counter filters');
+assert.match(source, /summary\.onclick = event =>/, 'Preview counter events must be delegated from #tms-summary, not the sibling #tms-plan');
 assert.doesNotMatch(source, /class="tms-preview-filters"/, 'Duplicated lower Preview filter bar must be removed');
 assert.match(source, /не будет применено <b>\$\{attention\.notApplied\}<\/b>/i, 'summary counter must retain explicit not-applied semantics');
 
