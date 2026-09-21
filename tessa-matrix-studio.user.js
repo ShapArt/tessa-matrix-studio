@@ -3365,7 +3365,13 @@
     const conflicts = [], highlights = [], rows = workbook.rows.map(row => ({ ...row, values: [...row.values], cellMeta: row.cellMeta ? [...row.cellMeta] : undefined }));
     const byExcel = new Map(rows.map(row => [row.excelRow, row]));
     const counts = new Map();
-    for (const d of desired) { const id = canonicalValue(d.system.rowCardId); if (id) counts.set(id, (counts.get(id) || 0) + 1); }
+    const desiredByCard = new Map();
+    for (const d of desired) {
+      const id = canonicalValue(d.system.rowCardId);
+      if (!id) continue;
+      counts.set(id, (counts.get(id) || 0) + 1);
+      if (!desiredByCard.has(id)) desiredByCard.set(id, d);
+    }
     const mergeCatalog = { ...workbook.dictionaryCatalog, catalogs: { ...(workbook.dictionaryCatalog?.catalogs || {}) }, columnCatalogIds: { ...(workbook.dictionaryCatalog?.columnCatalogIds || {}) } };
     for (const column of map.columns.values()) {
       const catalogId = mergeCatalog.columnCatalogIds[column.key];
@@ -3392,7 +3398,7 @@
     for (const base of outputBases) {
       if (!base.base) continue; // V1–V6 without cell baselines retain conservative conflict handling.
       const id = canonicalValue(base.rowCardId), current = byCard.get(id);
-      const local = desired.find(row => canonicalValue(row.system.rowCardId) === id);
+      const local = desiredByCard.get(id);
       if ((counts.get(id) || 0) > 1 || local?.system.action === 'add') continue;
       if (!current) {
         if (!local) continue;
