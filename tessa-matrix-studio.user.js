@@ -8258,6 +8258,7 @@
     const currentSectionSignature = bridge.matrixSectionSignature();
     const canReuseSnapshot = Boolean(
       cachedSnapshot
+      && !cachedSnapshot.previewIncremental?.enabled
       && canonicalValue(cachedSnapshot.matrixId) === canonicalValue(bridge.mainCard?.id)
       && canonicalValue(cachedSnapshot.templateId) === canonicalValue(structure.templateId)
       && cachedSnapshot.sectionSignature === currentSectionSignature
@@ -8267,7 +8268,12 @@
     // Перед Apply всё равно выполняется свежая серверная проверка, поэтому reuse безопасен для preview.
     setProgress(canReuseSnapshot ? 48 : 40, canReuseSnapshot ? '3/6 · Использую свежий снимок' : '3/6 · Читаю строки TESSA', canReuseSnapshot ? 'Повторная загрузка не нужна' : 'Сверяю текущие строки');
     const sessionSnapshot = getSessionSnapshot(bridge.mainCard?.id, structure.templateId);
-    const reusableSnapshot = canReuseSnapshot ? cachedSnapshot : sessionSnapshot;
+    // Incremental Preview snapshots intentionally contain baseline-reconstructed rows.
+    // They are perfect for the current Excel, but must not be blindly reused for a later
+    // Excel where a previously untouched row becomes edited. Re-run the cheap targeted
+    // membership plan instead; full snapshots from Export may still be reused.
+    const reusableSessionSnapshot = sessionSnapshot?.previewIncremental?.enabled ? null : sessionSnapshot;
+    const reusableSnapshot = canReuseSnapshot ? cachedSnapshot : reusableSessionSnapshot;
     let snapshot = reusableSnapshot || null;
     if (!snapshot) {
       longJobCheckpoint('preview:snapshot', { operation: 'preview', mode: 'baseline-incremental' });
