@@ -89,7 +89,7 @@ await check('invalid cell preserves its value while valid edits remain writable'
   assert.equal(reviewed.skippedFields.length, 1);
 });
 
-await check('new row with invalid cell remains atomic', () => {
+await check('new row omits one invalid typed value but keeps the valid row', () => {
   const book = edit();
   const row = { ...book.rows[0], excelRow: 100, values: [...book.rows[0].values], cellMeta: [...book.rows[0].cellMeta] };
   row.values[ix('Количество листов (между)')] = 'invalid';
@@ -98,30 +98,41 @@ await check('new row with invalid cell remains atomic', () => {
   row.values[ix('__TESSA_BASE_FINGERPRINT')] = '';
   book.rows.push(row);
   const plan = E.buildPlan(book, structure, snapshot);
-  assert.equal(plan.counts.add, 0);
-  assert.equal(plan.counts.skip, 1);
+  assert.equal(plan.counts.add, 1);
+  assert.equal(plan.counts.skip, 0);
+  assert.equal(plan.skippedValues.length, 1);
+  const add = plan.actions.find(action => action.type === 'add');
+  assert.deepEqual(add.excelRow.flat['criterion:pages'], []);
+  assert.deepEqual(add.excelRow.flat['function:sign'], ['Подписант']);
 });
 
-await check('Boolean ranges are rejected per field', () => {
+await check('invalid Boolean value is skipped without clearing the existing field', () => {
   const book = edit();
   book.dictionaryCatalog = null;
   book.rows[0].values[ix('Признак')] = 'Да - Нет';
   book.rows[0].values[ix('Количество листов (между)')] = '4-15';
   const plan = E.buildPlan(book, structure, snapshot);
   assert.equal(plan.counts.update, 1);
-  assert.deepEqual(plan.skippedFields.map(f => f.key), ['criterion:flag']);
-  assert.equal(plan.actions[0].excelRow.columns.has('flag'), false);
+  assert.equal(plan.skippedFields.length, 0);
+  assert.equal(plan.skippedValues.length, 1);
+  const action = plan.actions.find(a => a.type === 'update');
+  assert.deepEqual(action.changes.map(change => change.key), ['criterion:pages']);
+  assert.deepEqual(action.excelRow.flat['criterion:flag'], ['Нет']);
 });
 
-await check('a whole multivalue cell is preserved when one reference is unknown', () => {
+await check('one bad value in a multivalue cell is omitted while valid values survive', () => {
   const book = edit();
   book.rows[0].values[ix('Вид')] += '\nMissing reference';
   book.rows[0].values[ix('Количество листов (между)')] = '4-15';
   const plan = E.buildPlan(book, structure, snapshot);
   assert.equal(plan.counts.update, 1);
-  assert.equal(plan.skippedFields.length, 1);
-  assert.deepEqual(plan.actions[0].excelRow.ids['criterion:kind'], ['kind-1']);
-  assert.equal(plan.actions[0].excelRow.columns.has('kind'), false);
+  assert.equal(plan.skippedFields.length, 0);
+  assert.equal(plan.skippedValues.length, 1);
+  const action = plan.actions.find(a => a.type === 'update');
+  assert.deepEqual(action.excelRow.ids['criterion:kind'], ['kind-1']);
+  assert.deepEqual(action.excelRow.flat['criterion:kind'], ['ОРД — Приказ']);
+  assert.equal(action.excelRow.columns.has('kind'), true);
+  assert.deepEqual(action.changes.map(change => change.key), ['criterion:pages']);
 });
 
 await check('a rejected role formula does not discard valid criteria edits', () => {
@@ -213,22 +224,22 @@ await check('native rebuild preserves rejected field and writes both numeric bou
   assert.equal(card.sections[S.Roles].rows[0].data[F.RoleID], 'person');
 });
 
-await check('invalid-only rows and replacements are never partially applied', () => {
+await check('invalid-only UPDATE value becomes NOOP while mixed replacement keeps valid changes', () => {
   const book = edit();
   book.rows[0].values[ix('Количество листов (между)')] = 'invalid';
   let plan = E.buildPlan(book, structure, snapshot);
   assert.equal(plan.counts.update, 0);
-  assert.equal(plan.counts.skip, 1);
+  assert.equal(plan.counts.skip, 0);
+  assert.equal(plan.skippedValues.length, 1);
+
   const replace = edit();
   replace.rows[1].values = [...replace.rows[0].values];
   replace.rows[1].values[ix('Количество листов (между)')] = '4-15';
   replace.rows[1].values[ix('Приложения (между)')] = 'invalid';
   plan = E.buildPlan(replace, structure, snapshot);
-  assert.equal(plan.counts.update, 0);
-  assert.equal(plan.counts.add, 0);
+  assert.equal(plan.skippedValues.length, 1);
   assert.equal(plan.counts.delete, 0);
-  assert.equal(plan.skippedFields.length, 0);
-  assert.equal(plan.counts.skip, 1);
+  assert.ok(plan.counts.update + plan.counts.add >= 1, 'valid replacement changes must remain visible');
 });
 
 await check('true duplicates remain blocked even when current display differs', () => {
@@ -310,13 +321,14 @@ await check('one mixed workbook keeps valid UPDATE and ADD operations despite in
   book.rows.push({excelRow:130,values:Array(book.headers.length).fill(''),cellMeta:[]});
   const plan = E.buildPlan(book, structure, snapshot);
   assert.equal(plan.counts.update, 2);
-  assert.equal(plan.counts.add, 1);
+  assert.equal(plan.counts.add, 2, 'the row with one valid + one invalid role must still be added');
   assert.equal(plan.counts.delete, 0, 'blank new rows cannot schedule a deletion');
-  assert.equal(plan.counts.skip, payloads.length+1);
+  assert.equal(plan.counts.skip, payloads.length, 'rows with no remaining performer stay skipped; mixed role cell survives');
   assert.equal(plan.skippedFields.length, 1);
+  assert.ok(plan.skippedValues.length >= payloads.length, 'invalid values must be reported individually');
   const reviewed = E.buildReviewedPlan(plan);
   assert.equal(reviewed.safety.blocked, false, JSON.stringify(reviewed.safety));
-  assert.equal(reviewed.actions.filter(a=>['add','update'].includes(a.type)).length, 3);
+  assert.equal(reviewed.actions.filter(a=>['add','update'].includes(a.type)).length, 4);
   assert.equal(plan.actions.find(a=>a.type==='update' && a.currentRow.rowCardId==='card-1').excelRow.columns.has('appendix'), false);
 });
 
