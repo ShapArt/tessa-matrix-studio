@@ -62,9 +62,9 @@ export function applyPreviewCounterFilters(input) {
   // v1.15 regression fix: counters live in #tms-summary, while the historical click
   // delegation lives on #tms-plan. Events do not bubble across siblings, so the old
   // implementation rendered working-looking buttons that could never reach the handler.
-  source = replaceOnce(
+  source = replacePatternOnce(
     source,
-    '    renderResolutionCenter(plan);',
+    /    renderResolutionCenter\(plan\);\n\n    \/\/ Не теряем раскрытую строку/,
     `    summary.onclick = event => {
       const counterFilter = event.target?.closest?.('button[data-preview-counter-filter]');
       if (counterFilter && !APP.busy) {
@@ -74,7 +74,9 @@ export function applyPreviewCounterFilters(input) {
       }
     };
 
-    renderResolutionCenter(plan);`,
+    renderResolutionCenter(plan);
+
+    // Не теряем раскрытую строку`,
     'Preview counter summary click delegation',
   );
 
