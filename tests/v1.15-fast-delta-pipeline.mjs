@@ -33,6 +33,14 @@ Object.defineProperty(globalThis, 'navigator', {
 });
 assert.equal(E.adaptiveConcurrency(6, 10), 6, 'low-memory Chrome stays at conservative floor');
 
+const tight = new Uint8Array([1, 2, 3, 4]);
+assert.equal(E.exactArrayBuffer(tight), tight.buffer, 'tight Uint8Array must reuse its ArrayBuffer without a copy');
+const parent = new Uint8Array([9, 1, 2, 3, 8]);
+const sub = parent.subarray(1, 4);
+const exactSub = E.exactArrayBuffer(sub);
+assert.notEqual(exactSub, parent.buffer, 'subview must receive an exact defensive buffer');
+assert.deepEqual([...new Uint8Array(exactSub)], [1, 2, 3]);
+
 const structure = {
   templateId: 'tpl-fast-delta',
   conditions: [{ criterionRowId: 'kind', criterionName: 'Вид', operandTypeId: O.String }],
