@@ -13788,7 +13788,7 @@
 
   async function workbookFromSnapshot(structure, snapshot, bridge, catalog, options = {}) {
     const bytes = await E.createRoundtripXlsxBytes(structure, snapshot, bridge.matrixInfo(), catalog, { includeActions: true });
-    const buffer = exactArrayBuffer(bytes);
+    const buffer = E.exactArrayBuffer(bytes);
     const book = await E.readXlsxArrayBuffer(buffer, 'TESSA_UAT_CURRENT.xlsx', {
       skipSheetNames: ['Словари'],
       dictionaryCatalog: catalog,
@@ -14103,7 +14103,7 @@
     const planStarted = nowMs();
     const sourceCatalog = E.mergeSnapshotIntoDictionaryCatalog(null, sourceStructure, sourceSnapshot);
     const bytes = await E.createRoundtripXlsxBytes(sourceStructure, sourceSnapshot, sourceInfo, sourceCatalog, { includeActions: true });
-    const buffer = exactArrayBuffer(bytes);
+    const buffer = E.exactArrayBuffer(bytes);
     const workbook = await E.readXlsxArrayBuffer(buffer, 'TESSA_PROD_SHADOW.xlsx');
     const plan = E.buildPlan(workbook, targetStructure, targetSnapshot, targetInfo);
     const safety = E.evaluatePlanSafety(plan, { matrixInfo: () => targetInfo, localizeValue: value => value });
@@ -14395,7 +14395,7 @@
         return { detail: `Picker сформировал значение для «${column.label || column.key}».`, data: { outcome: 'picker-selection', column: column.key, value: text } };
       });
       await runCheck('action-file-ingest', 'Действие: загрузить изменённый Excel', async () => {
-        const buffer = exactArrayBuffer(base.bytes);
+        const buffer = E.exactArrayBuffer(base.bytes);
         const ingested = await E.readXlsxArrayBuffer(buffer, 'TESSA_UAT_INGEST.xlsx');
         if (!ingested || (ingested.rows || []).length !== (base.book.rows || []).length) throw new Error('Повторный ingest изменил число строк roundtrip-книги.');
         return { detail: `Excel прочитан обратно: ${(ingested.rows || []).length} строк.`, data: { outcome: 'ingest-workbook', rows: (ingested.rows || []).length } };
@@ -14556,7 +14556,7 @@
         let rejected = false;
         let message = '';
         try {
-          await E.readXlsxArrayBuffer(exactArrayBuffer(bytes), 'TESSA_UAT_TOO_MANY_PARTS.xlsx', { retainArchive: false });
+          await E.readXlsxArrayBuffer(E.exactArrayBuffer(bytes), 'TESSA_UAT_TOO_MANY_PARTS.xlsx', { retainArchive: false });
         } catch (error) {
           message = String(error?.message || error);
           rejected = /слишком много|количеств.*файл/i.test(message);
@@ -14570,7 +14570,7 @@
         let rejected = false;
         let message = '';
         try {
-          await E.readXlsxArrayBuffer(exactArrayBuffer(bytes), 'TESSA_UAT_PATH_TRAVERSAL.xlsx', { retainArchive: false });
+          await E.readXlsxArrayBuffer(E.exactArrayBuffer(bytes), 'TESSA_UAT_PATH_TRAVERSAL.xlsx', { retainArchive: false });
         } catch (error) {
           message = String(error?.message || error);
           rejected = /небезопасн.*путь|путь.*архив/i.test(message);
@@ -14607,7 +14607,7 @@
           return Number.isFinite(used) && used > 0 ? { used, limit: Number.isFinite(limit) && limit > 0 ? limit : null } : null;
         };
         const before = heap();
-        const buffer = exactArrayBuffer(base.bytes);
+        const buffer = E.exactArrayBuffer(base.bytes);
         const samples = [];
         for (let iteration = 1; iteration <= 3; iteration += 1) {
           const parsed = await E.readXlsxArrayBuffer(buffer, `TESSA_UAT_MEMORY_${iteration}.xlsx`, {
@@ -14793,7 +14793,7 @@
         E.releaseWorkbookArchive(sourceBook);
         E.releaseWorkbookArchive(base.book);
         const refreshed = await E.readXlsxArrayBuffer(
-          exactArrayBuffer(refreshedBytes),
+          E.exactArrayBuffer(refreshedBytes),
           'TESSA_UAT_REFRESHED.xlsx',
           { skipSheetNames: ['Словари'], dictionaryCatalog: catalog, retainArchive: false, selectiveInflate: true },
         );
@@ -14817,7 +14817,7 @@
         const merged = E.mergeWorkbookIntoCurrentSnapshot(base.book, structure, baseline); if ((merged.snapshot?.rows || []).length !== baseline.rows.length) throw new Error(`После merge строк ${merged.snapshot?.rows?.length}, ожидалось ${baseline.rows.length}.`);
         const mergedBytes = await E.createRoundtripXlsxBytes(structure, merged.snapshot, info, catalog, { baselineRows: baseline.rows, includeActions: true, schemaChanges: merged.schemaChanges, customColumns: merged.customColumns });
         const parsed = await E.readXlsxArrayBuffer(
-          exactArrayBuffer(mergedBytes),
+          E.exactArrayBuffer(mergedBytes),
           'TESSA_UAT_MERGED.xlsx',
           { skipSheetNames: ['Словари'], dictionaryCatalog: catalog, retainArchive: false, selectiveInflate: true },
         ); const plan = E.buildPlan(parsed, structure, baseline, info);
