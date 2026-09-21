@@ -3120,6 +3120,23 @@
       details.push({ change: 'SKIP', excelRow, tessaRow, field: '', before: '', after: '', reason, error });
     }
 
+    for (const field of plan?.skippedFields || []) {
+      const reason = normalizeSpace(field?.reason || 'Поле оставлено без изменения.');
+      const excelRow = field?.excelRow ?? '';
+      const label = normalizeSpace(field?.label || field?.key || '');
+      operations.push({ change: 'SKIP FIELD', excelRow, reason, tessaRow: '', fields: label, before: '', after: '', error: true });
+      details.push({ change: 'SKIP FIELD', excelRow, tessaRow: '', field: label, before: '', after: '', reason, error: true });
+    }
+
+    for (const value of plan?.skippedValues || []) {
+      const reason = normalizeSpace(value?.reason || 'Значение пропущено при проверке.');
+      const excelRow = value?.excelRow ?? '';
+      const label = normalizeSpace(value?.label || value?.key || '');
+      const rejected = normalizeSpace(value?.value || '');
+      operations.push({ change: 'SKIP VALUE', excelRow, reason, tessaRow: '', fields: label, before: rejected, after: 'Пропущено', error: true });
+      details.push({ change: 'SKIP VALUE', excelRow, tessaRow: '', field: label, before: rejected, after: 'Пропущено', reason, error: true });
+    }
+
     return {
       format: 'TESSA_MATRIX_CHANGES_REPORT_V1', reportOnly: true,
       matrixId: plan?.matrixId || '', templateId: plan?.templateId || structure?.templateId || '',
@@ -3135,7 +3152,7 @@
     if (row?.change === 'ADD') return 4;
     if (row?.change === 'UPDATE') return 3;
     if (row?.change === 'DELETE') return 5;
-    if (row?.change === 'SKIP') return row?.error ? 7 : 6;
+    if (String(row?.change || '').startsWith('SKIP')) return row?.error ? 7 : 6;
     return 1;
   }
 
