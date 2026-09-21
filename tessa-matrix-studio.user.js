@@ -4657,7 +4657,185 @@
       return { component, currentPage, pageLimit, calculatedRowCount, pageCount: Math.max(1, pageCount) };
     }
 
+    // SERVER_PAGED_NATIVE_VIEW_V1
+    // Read the same native matrix view through TESSA View API instead of driving the
+    // visible grid page-by-page. Current view parameters are cloned from the mounted
+    // component, then only PageOffset/PageLimit are replaced. The result is accepted
+    // only when hidden MatrixRowID/MatrixVersionID are present and membership count
+    // agrees with the authoritative main-card section; otherwise caller falls back to
+    // the old UI paging path.
+    async collectNativeMatrixViewLinksServerPaged(options = {}) {
+      const nativeControl = this.findNativeMatrixControl();
+      if (!nativeControl) return null;
+      const { target, controlName } = nativeControl;
+      const component = target?.viewComponent || target?.component || target;
+      if (typeof component?.getRequestParams !== 'function') return null;
+
+      const api = this.viewApi();
+      if (!api?.service || !api?.serviceModule?.TessaViewRequest) return null;
+
+      const metadataCandidates = [
+        target?.viewMetadata, target?.metadata,
+        component?.viewMetadata, component?.metadata,
+      ].filter(Boolean);
+      const aliasCandidates = [
+        ...metadataCandidates.flatMap(meta => [meta?.alias, meta?.name]),
+        controlName,
+      ].map(value => normalizeSpace(value)).filter(Boolean);
+
+      let view = null;
+      let viewAlias = null;
+      for (const alias of aliasCandidates) {
+        try {
+          const candidate = api.service.getByName(alias);
+          if (candidate?.metadata) { view = candidate; viewAlias = alias; break; }
+        } catch (_) { /* try next alias */ }
+      }
+      if (!view?.metadata) return null;
+
+      let baseParameters;
+      try {
+        baseParameters = await Promise.resolve(component.getRequestParams());
+      } catch (error) {
+        log(`Серверный paging «${controlName}»: не удалось получить параметры текущего view: ${error.message || error}.`, 'warn');
+        return null;
+      }
+      let baseList;
+      try { baseList = Array.from(baseParameters || []); }
+      catch (_) { return null; }
+
+      const PagingProvider = api.serviceModule.ViewPagingParameters
+        || api.platformModule?.ViewPagingParameters
+        || null;
+      let pagingProvider = PagingProvider?.default || PagingProvider?.Default || null;
+      if (!pagingProvider && typeof PagingProvider === 'function') {
+        try { pagingProvider = new PagingProvider(); } catch (_) { /* unsupported constructor */ }
+      }
+      const provideLimit = pagingProvider?.providePageLimitParameter || pagingProvider?.ProvidePageLimitParameter;
+      const provideOffset = pagingProvider?.providePageOffsetParameter || pagingProvider?.ProvidePageOffsetParameter;
+      if (typeof provideLimit !== 'function' || typeof provideOffset !== 'function') return null;
+
+      const meta = view.metadata || metadataCandidates[0] || {};
+      const pagingMode = meta.paging ?? meta.Paging ?? metadataCandidates[0]?.paging ?? metadataCandidates[0]?.Paging;
+      if (pagingMode === null || pagingMode === undefined) return null;
+      const requestedLimit = Number(
+        options.pageLimit
+        ?? meta.exportDataPageLimit
+        ?? meta.ExportDataPageLimit
+        ?? meta.pageLimit
+        ?? meta.PageLimit
+        ?? 500
+      );
+      const pageLimit = Math.max(20, Math.min(1000, Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.trunc(requestedLimit) : 500));
+      const sectionCount = this.rawMatrixSectionLinks().length;
+      const maxPages = Math.max(1, Math.min(10000, sectionCount ? Math.ceil(sectionCount / pageLimit) + 2 : 10000));
+      const collected = [];
+      const seenVersions = new Set();
+      const pagesVisited = [];
+      let reportedRowCount = 0;
+
+      const cloneParameter = item => {
+        try {
+          if (typeof item?.clone === 'function') return item.clone();
+          if (typeof item?.Clone === 'function') return item.Clone();
+        } catch (_) { /* immutable/shared request parameter is still safe in a new list */ }
+        return item;
+      };
+      const resultValue = value => safePlain(this.unwrapTyped(value), { maxDepth: 4, maxKeys: 50, maxArray: 50 });
+
+      try {
+        for (let page = 1; page <= maxPages; page += 1) {
+          if (APP.abortRequested) throw new Error('Операция остановлена пользователем.');
+          await options.assertContext?.();
+
+          const request = new api.serviceModule.TessaViewRequest(view.metadata);
+          request.calculateRowCounting = page === 1;
+          request.canUseCache = true;
+          const parameters = baseList.map(cloneParameter);
+          if ('parameters' in request || !('Parameters' in request)) request.parameters = parameters;
+          else request.Parameters = parameters;
+          const requestParameters = request.parameters ?? request.Parameters;
+          provideLimit.call(pagingProvider, requestParameters, pagingMode, pageLimit, false);
+          provideOffset.call(pagingProvider, requestParameters, pagingMode, page, pageLimit, false);
+
+          const result = await view.getData(request);
+          const columns = Array.from(result?.columns || result?.Columns || []).map(column =>
+            normalizeSpace(column?.alias ?? column?.name ?? column?.Alias ?? column?.Name ?? column)
+          );
+          const canonicalColumns = columns.map(canonicalValue);
+          const cardIndex = canonicalColumns.indexOf(canonicalValue('MatrixRowID'));
+          const versionIndex = canonicalColumns.indexOf(canonicalValue('MatrixVersionID'));
+          const orderIndex = canonicalColumns.indexOf(canonicalValue('Order'));
+          if (cardIndex < 0 || versionIndex < 0) return null;
+
+          const resultRows = Array.from(result?.rows || result?.Rows || []);
+          const rowCount = Number(result?.rowCount ?? result?.RowCount ?? 0) || 0;
+          if (rowCount > 0) reportedRowCount = rowCount;
+          pagesVisited.push(page);
+
+          let added = 0;
+          for (let index = 0; index < resultRows.length; index += 1) {
+            const raw = Array.from(resultRows[index] || []);
+            const rowCardId = resultValue(raw[cardIndex]);
+            const versionId = resultValue(raw[versionIndex]);
+            if (!rowCardId || !versionId) continue;
+            const key = canonicalValue(versionId);
+            if (seenVersions.has(key)) continue;
+            seenVersions.add(key);
+            const order = orderIndex >= 0 ? resultValue(raw[orderIndex]) : null;
+            collected.push({
+              index: collected.length,
+              page,
+              pageIndex: index,
+              rowCardId: String(rowCardId),
+              versionId: String(versionId),
+              rowName: order !== null && order !== undefined && String(order) !== '' ? `Строка ${order}` : `Строка ${collected.length + 1}`,
+              source: 'native-view-server-paged',
+            });
+            added += 1;
+          }
+
+          if (!resultRows.length || added === 0) break;
+          if (reportedRowCount > 0 && collected.length >= reportedRowCount) break;
+          if (resultRows.length < pageLimit) break;
+          if (sectionCount > 0 && collected.length >= sectionCount) break;
+        }
+      } catch (error) {
+        if (/остановлена пользователем/i.test(String(error?.message || error))) throw error;
+        log(`Серверный paging «${controlName}» недоступен: ${error.message || error}. Использую UI fallback.`, 'warn');
+        return null;
+      }
+
+      const links = [...new Map(collected.map(link => [canonicalValue(link.versionId), link])).values()];
+      if (sectionCount > 0 && links.length !== sectionCount) {
+        log(`Серверный paging «${controlName}» вернул ${links.length} из ${sectionCount} строк. Использую UI fallback.`, 'warn');
+        return null;
+      }
+      if (reportedRowCount > 0 && links.length !== reportedRowCount && !sectionCount) {
+        log(`Серверный paging «${controlName}» вернул ${links.length} из заявленных ${reportedRowCount} строк. Использую UI fallback.`, 'warn');
+        return null;
+      }
+
+      return {
+        controlName: viewAlias || controlName,
+        visibleRows: nativeControl.rows.length,
+        links,
+        pageCount: Math.max(1, pagesVisited.length),
+        pagesVisited,
+        pagingUsed: pagesVisited.length > 1,
+        dynamicPaging: false,
+        serverPaging: true,
+        pageLimit,
+        reportedRowCount: reportedRowCount || null,
+      };
+    }
+
     async collectNativeMatrixViewLinksAllPages(options = {}) {
+      if (!options.forceUiPaging) {
+        const serverPaged = await this.collectNativeMatrixViewLinksServerPaged(options);
+        if (serverPaged) return serverPaged;
+      }
+
       const nativeControl = this.findNativeMatrixControl();
       if (!nativeControl) return this.findNativeMatrixViewLinks();
       const { target, controlName } = nativeControl;
@@ -5513,7 +5691,9 @@
         // only when the authoritative card section agrees that membership is empty.
         log(`Источник строк TESSA: нативное представление «${native.controlName || 'матрица'}» (0 строк).`);
       } else if (links.length && (!sectionCount || links.length >= sectionCount)) {
-        const pageNote = native.pagingUsed ? `, страниц: ${native.pagesVisited.length}/${native.pageCount}` : '';
+        const pageNote = native.serverPaging
+          ? `, server paging: ${native.pagesVisited.length} × ${native.pageLimit || '?'}`
+          : native.pagingUsed ? `, страниц UI: ${native.pagesVisited.length}/${native.pageCount}` : '';
         log(`Источник строк TESSA: нативное представление «${native.controlName}» (${links.length}${pageNote}).`);
       } else if (links.length && sectionCount > links.length) {
         log(`Представление вернуло ${links.length} из ${sectionCount} строк; проверяю сопоставление по MatrixVersionID без CardGet по служебным RowID.`, 'warn');
