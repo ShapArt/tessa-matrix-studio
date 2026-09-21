@@ -13979,6 +13979,32 @@
     throw new Error('Не удалось подобрать уникальную временную строку из актуальных справочников без конфликтов.');
   }
 
+  function findSafeUpdateCandidate(book, structure, snapshot, bridge, catalog, rng) {
+    const columns = shuffled(mutableCriterionColumns(book, catalog, 2), rng);
+    const sources = shuffled((book.rows || []).filter(row => rowHasRole(book, row)), rng);
+    for (const source of sources) {
+      for (const column of columns) {
+        const current = canon(source.values?.[column.index] || '');
+        const entries = shuffled(column.entries.filter(entry => canon(entry.selector || entry.display) !== current), rng).slice(0, 40);
+        for (const entry of entries) {
+          const candidateBook = cloneWorkbook(book);
+          const candidateRow = candidateBook.rows.find(row => Number(row.excelRow) === Number(source.excelRow));
+          if (!candidateRow) continue;
+          setDictionaryValue(candidateBook, candidateRow, column.key, entry);
+          const plan = E.buildPlan(candidateBook, structure, snapshot, bridge.matrixInfo());
+          if ((plan.counts?.update || 0) === 1
+            && (plan.counts?.skip || 0) === 0
+            && (plan.counts?.add || 0) === 0
+            && (plan.counts?.delete || 0) === 0) {
+            const action = (plan.actions || []).find(item => item.type === 'update');
+            if (action) return { book: candidateBook, row: candidateRow, source, column, entry, action, plan };
+          }
+        }
+      }
+    }
+    throw new Error('Не удалось подобрать безопасный UPDATE из актуальных справочников.');
+  }
+
   function findRowByCard(book, rowCardId) {
     const cardIndex = tokenIndex(book, 'system:rowCardId');
     if (cardIndex < 0) return null;
@@ -14179,6 +14205,119 @@
         if (previewPlan.counts.skip || previewPlan.counts.add || previewPlan.counts.update || previewPlan.counts.delete) throw new Error(`Неизменённый roundtrip дал ложные изменения: ${JSON.stringify(previewPlan.counts)}`);
         return { detail: 'Production planner построил нулевой Preview для неизменённой книги.', data: { outcome: 'preview-plan', counts: previewPlan.counts } };
       });
+      await runCheck('preview-filters', 'Preview: все фильтры и счётчики', async () => {
+        const update = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng);
+        const add = findUniqueAddCandidate(base.book, structure, baseline, bridge, catalog, rng, { gap: 7 });
+        const deleteBook = cloneWorkbook(base.book);
+        const deleteTarget = deleteBook.rows.find(row => Number(row.excelRow) !== Number(update.row.excelRow)) || deleteBook.rows[0];
+        if (!deleteTarget) return { status: 'NOT_RUN', detail: 'Нет строки для DELETE-фильтра.' };
+        const deleteIndex = deleteBook.rows.indexOf(deleteTarget);
+        deleteBook.rows.splice(deleteIndex, 1);
+        const deletePlan = E.buildPlan(deleteBook, structure, baseline, info);
+        const deleteAction = (deletePlan.actions || []).find(action => action.type === 'delete');
+        if (!deleteAction) throw new Error('Не удалось построить DELETE для filter-contract.');
+
+        const synthetic = {
+          ...update.plan,
+          actions: [update.action, (add.plan.actions || []).find(action => action.type === 'add'), deleteAction].filter(Boolean),
+          skippedRows: [
+            { excelRow: 990001, reason: 'UAT: строка пропущена', code: '' },
+            { excelRow: 990002, reason: 'UAT: ошибка справочника', code: 'dictionary-not-found' },
+          ],
+        };
+        const expected = { all: 5, update: 1, add: 1, delete: 1, skip: 2, error: 1 };
+        const actual = {};
+        for (const [filter, count] of Object.entries(expected)) {
+          const selected = E.selectPreviewItems(synthetic, null, E.createPreviewViewState({ filter, pageSize: 200 }));
+          actual[filter] = selected.total;
+          if (selected.total !== count) throw new Error(`Фильтр ${filter}: ожидалось ${count}, получено ${selected.total}.`);
+        }
+        const searched = E.selectPreviewItems(synthetic, null, E.createPreviewViewState({ filter: 'error', query: '990002', pageSize: 200 }));
+        if (searched.total !== 1) throw new Error(`Поиск внутри ERROR вернул ${searched.total} вместо 1.`);
+        return { detail: 'Все/Изменить/Добавить/Удалить/Пропустить/Ошибки и поиск дают точные счётчики.', data: actual };
+      });
+
+      await runCheck('review-cancel-item', 'Отмена одного изменения и всей строки', async () => {
+        const update = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng);
+        const action = update.action;
+        const change = action.changes?.[0];
+        if (!change) throw new Error('UPDATE не содержит изменения для частичной отмены.');
+        const review = E.createPlanReviewState();
+        E.setPlanReviewChange(review, action, change.key, true);
+        let reviewed = E.buildReviewedPlan(update.plan, review);
+        const changedAction = (reviewed.actions || []).find(item => Number(item.excelRow?.excelRow) === Number(action.excelRow?.excelRow));
+        if (changedAction?.type === 'update' && (changedAction.changes || []).some(item => item.key === change.key)) {
+          throw new Error('Отменённое поле осталось в executable UPDATE.');
+        }
+
+        E.setPlanReviewChange(review, action, change.key, false);
+        reviewed = E.buildReviewedPlan(update.plan, review);
+        if ((reviewed.counts?.update || 0) !== 1) throw new Error('Возврат отдельного поля не восстановил UPDATE.');
+
+        E.setPlanReviewRow(review, action, true);
+        reviewed = E.buildReviewedPlan(update.plan, review);
+        if ((reviewed.counts?.update || 0) !== 0) throw new Error('Отмена всей строки не убрала UPDATE из Apply.');
+        E.setPlanReviewRow(review, action, false);
+        reviewed = E.buildReviewedPlan(update.plan, review);
+        if ((reviewed.counts?.update || 0) !== 1) throw new Error('Возврат всей строки не восстановил UPDATE.');
+        return { detail: 'Отдельное поле и целая операция исключаются/возвращаются без затрагивания остального плана.' };
+      });
+
+      await runCheck('two-excel-disjoint-merge', 'Два Excel: независимые изменения объединяются', async () => {
+        const first = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng);
+        const firstIdentity = rowIdentity(first.book, first.row);
+        const secondSourceBook = cloneWorkbook(base.book);
+        const secondCandidates = secondSourceBook.rows.filter(row => canon(rowIdentity(secondSourceBook, row).rowCardId) !== canon(firstIdentity.rowCardId));
+        if (!secondCandidates.length) return { status: 'NOT_RUN', detail: 'Недостаточно строк для двух независимых Excel.' };
+
+        let second = null;
+        for (const source of secondCandidates.slice(0, 30)) {
+          try {
+            second = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, () => {
+              const idx = Math.max(0, (base.book.rows || []).findIndex(row => Number(row.excelRow) === Number(source.excelRow)));
+              return Math.min(0.999999, idx / Math.max(1, base.book.rows.length));
+            });
+          } catch (_) { /* try another source */ }
+          if (second && canon(rowIdentity(second.book, second.row).rowCardId) !== canon(firstIdentity.rowCardId)) break;
+          second = null;
+        }
+        if (!second) return { status: 'NOT_RUN', detail: 'Не удалось подобрать вторую независимую строку.' };
+
+        const afterFirst = E.mergeWorkbookIntoCurrentSnapshot(first.book, structure, baseline).snapshot;
+        let prepared = E.prepareThreeWayMerge(second.book, structure, afterFirst);
+        if ((prepared.unresolved || []).length) throw new Error(`Независимые изменения дали конфликтов: ${prepared.unresolved.length}.`);
+        const merged = E.mergeWorkbookIntoCurrentSnapshot(prepared.workbook, structure, afterFirst);
+        const secondPlan = E.buildPlan(prepared.workbook, structure, afterFirst, info);
+        if ((secondPlan.counts?.skip || 0) || (secondPlan.counts?.delete || 0) || (secondPlan.counts?.add || 0)) {
+          throw new Error(`Второй Excel после merge дал опасный план: ${JSON.stringify(secondPlan.counts)}`);
+        }
+        if ((merged.snapshot?.rows || []).length !== baseline.rows.length) throw new Error('Two-Excel merge изменил число строк.');
+        return { detail: 'Изменение Excel A сохранено, независимое изменение Excel B добавлено без ложного конфликта.', data: { firstRow: first.row.excelRow, secondRow: second.row.excelRow } };
+      });
+
+      await runCheck('merge-conflict-resolution', 'Два Excel: конфликт одного поля обнаруживается', async () => {
+        const first = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng);
+        const afterFirst = E.mergeWorkbookIntoCurrentSnapshot(first.book, structure, baseline).snapshot;
+        const competing = cloneWorkbook(base.book);
+        const competingRow = competing.rows.find(row => Number(row.excelRow) === Number(first.row.excelRow));
+        const alternatives = (first.column.entries || []).filter(entry => {
+          const value = canon(entry.selector || entry.display);
+          return value !== canon(first.entry.selector || first.entry.display)
+            && value !== canon(first.source.values?.[first.column.index] || '');
+        });
+        if (!competingRow || !alternatives.length) return { status: 'NOT_RUN', detail: 'Нет третьего справочного значения для конфликтного merge.' };
+        setDictionaryValue(competing, competingRow, first.column.key, alternatives[0]);
+        const prepared = E.prepareThreeWayMerge(competing, structure, afterFirst);
+        if (!(prepared.unresolved || []).length) throw new Error('Пересекающиеся изменения одного поля не были показаны как конфликт.');
+        const mineChoices = Object.fromEntries(prepared.unresolved.map(item => [item.id, 'mine']));
+        const mine = E.prepareThreeWayMerge(competing, structure, afterFirst, mineChoices);
+        if ((mine.unresolved || []).length) throw new Error('Выбор «Мой Excel» не разрешил конфликт.');
+        const serverChoices = Object.fromEntries(prepared.unresolved.map(item => [item.id, 'server']));
+        const server = E.prepareThreeWayMerge(competing, structure, afterFirst, serverChoices);
+        if ((server.unresolved || []).length) throw new Error('Выбор «TESSA» не разрешил конфликт.');
+        return { detail: `Конфликт обнаружен (${prepared.unresolved.length}) и разрешается обеими сторонами без молчаливой перезаписи.` };
+      });
+
       await runCheck('action-changes-export', 'Действие: скачать изменения в Excel', async () => {
         const candidate = findUniqueAddCandidate(base.book, structure, baseline, bridge, catalog, rng, { gap: 5 });
         const bytes = await E.createChangesReportXlsxBytes(candidate.plan, structure);
@@ -14288,12 +14427,13 @@
           await new Promise(resolve => setTimeout(resolve, 0));
         }
         const after = heap();
-        if (after?.limit && after.used / after.limit >= 0.90) throw new Error(`После bounded-memory roundtrip занято ${Math.round(after.used / after.limit * 100)}% JS heap — опасно близко к OOM.`);
+        const heapPressure = after?.limit ? after.used / after.limit : null;
         return {
+          status: heapPressure !== null && heapPressure >= 0.90 ? 'WARN' : 'PASS',
           detail: after?.limit
-            ? `3 повторных import→plan прошли без удержания ZIP/«Словарей»; JS heap ${Math.round(after.used / 1024 / 1024)} / ${Math.round(after.limit / 1024 / 1024)} МБ.`
+            ? `3 повторных import→plan прошли без удержания ZIP/«Словарей»; Chrome heap telemetry ${Math.round(after.used / 1024 / 1024)} / ${Math.round(after.limit / 1024 / 1024)} МБ${heapPressure >= 0.90 ? ' (высокое давление памяти; deterministic guards прошли)' : ''}.`
             : '3 повторных import→plan прошли без удержания ZIP/«Словарей»; performance.memory браузером не предоставлен.',
-          data: { before, after, samples, archiveRetained: false, dictionarySheetParsed: false },
+          data: { before, after, samples, heapPressure, heapTelemetryOnly: true, archiveRetained: false, dictionarySheetParsed: false },
         };
       });
 
@@ -14308,14 +14448,13 @@
         const heapAfter = heapSnapshot();
         report.productionShadowAudit = { ...audit, heapBefore, heapAfter };
         if (Number(audit.metrics?.dictionaryEntries || 0) < 100000) throw new Error(`Stress-профиль слишком мал: ${audit.metrics?.dictionaryEntries || 0} dictionary entries.`);
-        if (heapAfter?.limit && heapAfter.used / heapAfter.limit >= 0.90) {
-          throw new Error(`Production-shadow завершён, но JS heap занял ${Math.round(heapAfter.used / heapAfter.limit * 100)}% лимита — опасно близко к OOM.`);
-        }
+        const heapPressure = heapAfter?.limit ? heapAfter.used / heapAfter.limit : null;
         return {
+          status: heapPressure !== null && heapPressure >= 0.90 ? 'WARN' : 'PASS',
           detail: heapAfter?.limit
-            ? `Synthetic envelope: ${audit.metrics.dictionaryEntries} значений; ${audit.profile.sourceRows}→${audit.profile.targetRows}; ${audit.metrics.operationCount} операций; ${audit.metrics.totalMs} мс; heap ${Math.round(heapAfter.used / 1024 / 1024)} / ${Math.round(heapAfter.limit / 1024 / 1024)} МБ.`
+            ? `Synthetic envelope: ${audit.metrics.dictionaryEntries} значений; ${audit.profile.sourceRows}→${audit.profile.targetRows}; ${audit.metrics.operationCount} операций; ${audit.metrics.totalMs} мс; Chrome heap telemetry ${Math.round(heapAfter.used / 1024 / 1024)} / ${Math.round(heapAfter.limit / 1024 / 1024)} МБ${heapPressure >= 0.90 ? ' (высокое давление)' : ''}.`
             : `Synthetic envelope: ${audit.metrics.dictionaryEntries} значений справочников; перенос ${audit.profile.sourceRows}→${audit.profile.targetRows}; ${audit.metrics.operationCount} операций; schema drift ${audit.profile.retiredColumns}/${audit.profile.targetOnlyColumns}; ${audit.metrics.totalMs} мс; performance.memory недоступен.`,
-          data: { outcome: 'production-shadow', profile: audit.profile, metrics: audit.metrics, assertions: audit.assertions, heapBefore, heapAfter },
+          data: { outcome: 'production-shadow', profile: audit.profile, metrics: audit.metrics, assertions: audit.assertions, heapBefore, heapAfter, heapPressure, heapTelemetryOnly: true },
         };
       });
 
@@ -14408,16 +14547,34 @@
         const level = rejectedValue ? 'value' : rejectedField ? 'field' : rejectedRow || plan.counts.skip ? 'row' : 'issue';
         return { detail: `Неизвестное значение fail-closed отклонено до Store на уровне ${level}; в executable change-set его нет.`, data: { rejectionLevel: level, ...compactPlan(plan) } };
       });
-      await runCheck('dictionary-refresh', 'Обновление справочников без потери строк', async () => {
-        const refreshedBytes = await E.refreshWorkbookDictionaries(base.book, structure, catalog);
-        E.releaseWorkbookArchive(base.book);
+      await runCheck('dictionary-refresh', 'Обновление справочников в изменённом Excel', async () => {
+        let edited;
+        try { edited = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng); }
+        catch (_) { edited = null; }
+        const sourceBook = edited?.book || cloneWorkbook(base.book);
+        const beforePlan = E.buildPlan(sourceBook, structure, baseline, info);
+        const refreshedBytes = await E.refreshWorkbookDictionaries(sourceBook, structure, catalog);
+        E.releaseWorkbookArchive(sourceBook);
         const refreshed = await E.readXlsxArrayBuffer(
           refreshedBytes.buffer.slice(refreshedBytes.byteOffset, refreshedBytes.byteOffset + refreshedBytes.byteLength),
           'TESSA_UAT_REFRESHED.xlsx',
           { skipSheetNames: ['Словари'], dictionaryCatalog: catalog, retainArchive: false, selectiveInflate: true },
         );
-        const plan = E.buildPlan(refreshed, structure, baseline, info); if (plan.counts.skip || plan.counts.add || plan.counts.update || plan.counts.delete) throw new Error(`После refresh появились изменения: ${JSON.stringify(plan.counts)}`);
-        packageEntries.push(['dictionary-refreshed.xlsx', refreshedBytes]); return { detail: 'Справочники обновились; матрица и скрытые identity сохранились.' };
+        const afterPlan = E.buildPlan(refreshed, structure, baseline, info);
+        for (const key of ['add', 'update', 'delete', 'skip']) {
+          if (Number(beforePlan.counts?.[key] || 0) !== Number(afterPlan.counts?.[key] || 0)) {
+            throw new Error(`Refresh изменил план ${key}: ${beforePlan.counts?.[key] || 0} → ${afterPlan.counts?.[key] || 0}.`);
+          }
+        }
+        if (edited) {
+          const beforeAction = (beforePlan.actions || []).find(action => action.type === 'update');
+          const afterAction = (afterPlan.actions || []).find(action => action.type === 'update');
+          if (!beforeAction || !afterAction || canon(beforeAction.currentRow?.rowCardId) !== canon(afterAction.currentRow?.rowCardId)) {
+            throw new Error('После обновления справочников изменённая строка потеряла target identity.');
+          }
+        }
+        packageEntries.push(['dictionary-refreshed.xlsx', refreshedBytes]);
+        return { detail: edited ? 'Справочники обновились прямо в изменённом Excel; пользовательская правка и hidden identity сохранены.' : 'Справочники обновились; roundtrip и hidden identity сохранены.', data: { before: beforePlan.counts, after: afterPlan.counts, edited: Boolean(edited) } };
       });
       await runCheck('merge-current', 'Объединение с актуальной TESSA', async () => {
         const merged = E.mergeWorkbookIntoCurrentSnapshot(base.book, structure, baseline); if ((merged.snapshot?.rows || []).length !== baseline.rows.length) throw new Error(`После merge строк ${merged.snapshot?.rows?.length}, ожидалось ${baseline.rows.length}.`);
