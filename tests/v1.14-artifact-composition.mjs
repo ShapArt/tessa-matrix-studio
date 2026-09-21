@@ -133,6 +133,7 @@ try {
   assert.match(source, /BLOCKED_ROLE_BASELINE_FALLBACK_V1/);
   assert.match(source, /COMPACT_ROLE_CATALOG_V1/);
   assert.match(source, /VALUE_LEVEL_RECOVERY_V1/);
+  assert.match(source, /PREVIEW_BASELINE_INCREMENTAL_SNAPSHOT_V1/);
   assert.doesNotMatch(source, /class=\"tms-preview-filters\"/,
     'exact candidate must not contain duplicated lower Preview filter controls');
   assert.match(source, /const text = E\.pickerSelectionText\(\[item\]\);/);
@@ -151,6 +152,7 @@ try {
   run(['tests/v1.14.2-full-uat-copied-identity-regression.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/v1.14.2-full-uat-action-coverage-regression.mjs'], { TMS_TEST_SOURCE: target });
   run(['tests/v1.15-reliability.mjs'], { TMS_TEST_SOURCE: target });
+  run(['tests/preview-incremental-snapshot.mjs'], { TMS_TEST_SOURCE: target });
 
   console.log('v1.14 release/UAT artifact composition: write safety + report V3 + live Excel UX + counter filters + deterministic Full UAT CLEAR + collision-safe copied identities + real Apply/Reconcile evidence + version provenance OK');
 } finally {
