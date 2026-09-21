@@ -4831,7 +4831,7 @@
     }
 
     async collectNativeMatrixViewLinksAllPages(options = {}) {
-      if (!options.forceUiPaging) {
+      if (!options.forceUiPaging && typeof this.collectNativeMatrixViewLinksServerPaged === 'function') {
         const serverPaged = await this.collectNativeMatrixViewLinksServerPaged(options);
         if (serverPaged) return serverPaged;
       }
