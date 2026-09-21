@@ -3265,6 +3265,26 @@
    * Файл содержит видимые пользовательские поля и скрытые идентификаторы строк.
    * options.forceDictionaryRefresh=true принудительно перечитывает справочники TESSA.
    */
+  // PARALLEL_EXPORT_READ_V1
+  // Snapshot CardGet fan-out and dictionary View reads are independent after structure
+  // is known. Run them together, then overlay current matrix values onto the catalog.
+  async function loadExportSnapshotAndDictionaries(bridge, structure, options = {}) {
+    const forceDictionaryRefresh = Boolean(options.forceDictionaryRefresh);
+    const snapshotPromise = performanceStage(
+      'export.snapshot',
+      () => bridge.loadSnapshot(structure),
+      { operation: 'export' },
+    );
+    const baseCatalogPromise = performanceStage(
+      'export.dictionaries-base',
+      () => bridge.loadDictionaryCatalog(structure, { rows: [] }, { forceRefresh: forceDictionaryRefresh }),
+      { operation: 'export' },
+    );
+    const [snapshot, baseCatalog] = await Promise.all([snapshotPromise, baseCatalogPromise]);
+    const dictionaryCatalog = mergeSnapshotIntoDictionaryCatalog(baseCatalog, structure, snapshot);
+    return { snapshot, dictionaryCatalog };
+  }
+
   async function exportCurrentMatrixXlsx(options = {}) {
     setProgress(8, 'Подключаюсь к TESSA', 'Проверяю открытую матрицу');
     const bridge = await TessaBridge.create();
@@ -3273,13 +3293,14 @@
     setProgress(24, 'Читаю структуру', 'Критерии и функции матрицы');
     log('Выгрузка текущей матрицы: читаю структуру.');
     const structure = await performanceStage('export.structure', () => bridge.requestStructure(templateId), { operation: 'export' });
-    setProgress(38, 'Читаю строки', 'Загружаю текущее состояние матрицы');
-    log('Выгрузка текущей матрицы: читаю строки.');
-    const snapshot = await performanceStage('export.snapshot', () => bridge.loadSnapshot(structure), { operation: 'export' });
     const forceDictionaryRefresh = Boolean(options.forceDictionaryRefresh);
-    setProgress(62, forceDictionaryRefresh ? 'Обновляю справочники' : 'Подключаю справочники', forceDictionaryRefresh ? 'Читаю свежие значения и роли из TESSA' : 'Использую свежий локальный кэш, если он есть');
-    log(forceDictionaryRefresh ? 'Выгрузка текущей матрицы: принудительно обновляю словари и роли.' : 'Выгрузка текущей матрицы: использую 30-минутный кэш справочников, если он актуален.');
-    const dictionaryCatalog = await performanceStage('export.dictionaries', () => bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: forceDictionaryRefresh }), { operation: 'export', rows: snapshot.rows.length });
+    setProgress(38, forceDictionaryRefresh ? 'Читаю матрицу и обновляю справочники' : 'Читаю матрицу и справочники',
+      forceDictionaryRefresh ? 'Строки и справочники загружаются параллельно' : 'Строки и кэш/справочники загружаются параллельно');
+    log(forceDictionaryRefresh
+      ? 'Выгрузка текущей матрицы: параллельно читаю строки и свежие словари.'
+      : 'Выгрузка текущей матрицы: параллельно читаю строки и справочники/кэш.');
+    const { snapshot, dictionaryCatalog } = await loadExportSnapshotAndDictionaries(bridge, structure, { forceDictionaryRefresh });
+    setProgress(72, 'Данные получены', `${snapshot.rows.length} строк · ${dictionaryCatalog.stats.entries} значений справочников`);
     APP.dictionaryCatalog = dictionaryCatalog;
     const matrixInfo = bridge.matrixInfo();
     setProgress(84, 'Формирую Excel', `${snapshot.rows.length} строк`);
@@ -13389,7 +13410,7 @@
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, triggerBlobDownload, downloadJson, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport, buildApplySupportReport,
     workbookHistoricalRoleLookup, historicalRoleTextMatches, skippedValuesHtml, longJobCheckpoint, clearLongJobCheckpoint, restoreLongJobCheckpoint,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
-    readXlsxArrayBuffer, releaseWorkbookArchive, exactArrayBuffer, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
+    readXlsxArrayBuffer, releaseWorkbookArchive, exactArrayBuffer, loadExportSnapshotAndDictionaries, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
     buildRoundtripGrid, createRoundtripXlsxBytes, buildChangesReportModel, createChangesReportXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, replacementConfirmationModel, confirmCrossMatrixReplacement, isWriterLockError, persistMainMatrixAfterApply, refreshNativeMatrixViewAfterApply, collectPlanResolutionItems, applyResolutionChoiceToWorkbook, finalizeApplyResult, applyResultMessage,
     createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
