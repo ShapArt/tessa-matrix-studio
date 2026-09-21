@@ -14733,7 +14733,10 @@
         const sourceBook = edited?.book || cloneWorkbook(base.book);
         const beforePlan = E.buildPlan(sourceBook, structure, baseline, info);
         const refreshedBytes = await E.refreshWorkbookDictionaries(sourceBook, structure, catalog);
+        // The original base workbook is the only object that can still own the ZIP
+        // archive from workbookFromSnapshot/readXlsx. Test clones do not carry it.
         E.releaseWorkbookArchive(sourceBook);
+        E.releaseWorkbookArchive(base.book);
         const refreshed = await E.readXlsxArrayBuffer(
           refreshedBytes.buffer.slice(refreshedBytes.byteOffset, refreshedBytes.byteOffset + refreshedBytes.byteLength),
           'TESSA_UAT_REFRESHED.xlsx',
