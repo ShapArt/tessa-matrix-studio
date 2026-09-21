@@ -55,7 +55,13 @@ const plan = {
   skippedRows: [
     { excelRow: 19, reason: 'Исполнитель не найден в справочнике.', code: 'dictionary-not-found', phase: 'planner', actionType: 'add' },
   ],
-  skippedFields: [], warnings: [], safety: { blocked: false, blockedReasons: [] },
+  skippedFields: [
+    { excelRow: 20, key: 'criterion:org', label: 'Организация', reason: 'Поле оставлено без изменения из-за формулы Excel.' },
+  ],
+  skippedValues: [
+    { excelRow: 21, key: 'function:sign', label: 'Подписание', value: 'НЕИЗВЕСТНЫЙ СОТРУДНИК', reason: 'Значение не найдено в MtxRoles.' },
+  ],
+  warnings: [], safety: { blocked: false, blockedReasons: [] },
 };
 
 const model = E.buildChangesReportModel(plan, structure);
@@ -65,7 +71,7 @@ assert.deepEqual(
   'the human report must be fully Russian and must not waste a separate reason column'
 );
 assert.equal(model.detailHeaders.includes('Причина'), false, 'reason must not be a dedicated Excel column');
-assert.deepEqual(model.operations.map(row => row.change), ['Изменена', 'Добавлена', 'Удалена', 'Пропущена']);
+assert.deepEqual(model.operations.map(row => row.change), ['Изменена', 'Добавлена', 'Удалена', 'Пропущена', 'Пропущено поле', 'Пропущено значение']);
 assert.ok(!model.operations.some(row => /^(KEEP|NOOP|UPDATE|ADD|DELETE|SKIP)$/.test(row.change)), 'technical action labels must never appear in the human report');
 assert.ok(model.details.some(row => row.change === 'Изменена' && row.field === 'Организация' && row.before === 'Орг А' && row.after === 'Орг Б'));
 assert.ok(model.details.some(row => row.change === 'Изменена' && row.field === 'Подписание' && /Иванов/.test(row.before) && /Петров/.test(row.after)));
@@ -74,6 +80,8 @@ assert.ok(model.details.some(row => row.change === 'Добавлена' && row.f
 assert.ok(model.details.some(row => row.change === 'Удалена' && row.field === 'Организация' && row.before === 'Орг Г' && row.after === '—'), JSON.stringify(model.details));
 assert.ok(model.details.some(row => row.change === 'Удалена' && row.field === 'Подписание' && /Удаляемый/.test(row.before) && row.after === '—'), 'Удалена must include the full removed row');
 assert.ok(model.details.some(row => row.change === 'Пропущена' && row.field === 'Причина пропуска' && /Исполнитель/.test(row.after)), 'skip reason must stay visible as ordinary report data');
+assert.ok(model.details.some(row => row.change === 'Пропущено поле' && row.field === 'Организация' && /формул/i.test(row.after)), 'skipped field must remain visible in the human report');
+assert.ok(model.details.some(row => row.change === 'Пропущено значение' && row.field === 'Подписание' && /НЕИЗВЕСТНЫЙ/.test(row.before) && /MtxRoles/.test(row.after)), 'skipped individual value must remain visible in the human report');
 assert.equal(model.reportOnly, true);
 assert.equal(model.format, 'TESSA_MATRIX_CHANGES_REPORT_V3');
 
