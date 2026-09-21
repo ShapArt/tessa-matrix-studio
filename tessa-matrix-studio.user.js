@@ -14148,12 +14148,24 @@
       });
 
       await runCheck('prod-shadow-offline', 'Production-shadow: объём и ошибки production-класса', async () => {
+        const heapSnapshot = () => {
+          const used = Number(globalThis.performance?.memory?.usedJSHeapSize);
+          const limit = Number(globalThis.performance?.memory?.jsHeapSizeLimit);
+          return Number.isFinite(used) && used > 0 ? { used, limit: Number.isFinite(limit) && limit > 0 ? limit : null } : null;
+        };
+        const heapBefore = heapSnapshot();
         const audit = await runProductionShadowAudit();
-        report.productionShadowAudit = audit;
+        const heapAfter = heapSnapshot();
+        report.productionShadowAudit = { ...audit, heapBefore, heapAfter };
         if (Number(audit.metrics?.dictionaryEntries || 0) < 100000) throw new Error(`Stress-профиль слишком мал: ${audit.metrics?.dictionaryEntries || 0} dictionary entries.`);
+        if (heapAfter?.limit && heapAfter.used / heapAfter.limit >= 0.90) {
+          throw new Error(`Production-shadow завершён, но JS heap занял ${Math.round(heapAfter.used / heapAfter.limit * 100)}% лимита — опасно близко к OOM.`);
+        }
         return {
-          detail: `Synthetic envelope: ${audit.metrics.dictionaryEntries} значений справочников; перенос ${audit.profile.sourceRows}→${audit.profile.targetRows}; ${audit.metrics.operationCount} операций; schema drift ${audit.profile.retiredColumns}/${audit.profile.targetOnlyColumns}; ${audit.metrics.totalMs} мс.`,
-          data: { outcome: 'production-shadow', profile: audit.profile, metrics: audit.metrics, assertions: audit.assertions },
+          detail: heapAfter?.limit
+            ? `Synthetic envelope: ${audit.metrics.dictionaryEntries} значений; ${audit.profile.sourceRows}→${audit.profile.targetRows}; ${audit.metrics.operationCount} операций; ${audit.metrics.totalMs} мс; heap ${Math.round(heapAfter.used / 1024 / 1024)} / ${Math.round(heapAfter.limit / 1024 / 1024)} МБ.`
+            : `Synthetic envelope: ${audit.metrics.dictionaryEntries} значений справочников; перенос ${audit.profile.sourceRows}→${audit.profile.targetRows}; ${audit.metrics.operationCount} операций; schema drift ${audit.profile.retiredColumns}/${audit.profile.targetOnlyColumns}; ${audit.metrics.totalMs} мс; performance.memory недоступен.`,
+          data: { outcome: 'production-shadow', profile: audit.profile, metrics: audit.metrics, assertions: audit.assertions, heapBefore, heapAfter },
         };
       });
 
