@@ -33,7 +33,7 @@ permissions:
 
 jobs:
   build:
-    name: Build exact v1.15.0 UAT artifact
+    name: Build exact v1.15.9 UAT artifact
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,7 +57,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CANDIDATE_VERSION='1.15.0'
+          CANDIDATE_VERSION='1.15.9'
           mkdir -p dist
           cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
 
@@ -123,6 +123,7 @@ jobs:
           grep -Fq 'COMPACT_ROLE_CATALOG_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'VALUE_LEVEL_RECOVERY_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'PREVIEW_BASELINE_INCREMENTAL_SNAPSHOT_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'SERVER_PAGED_NATIVE_VIEW_V3' dist/tessa-matrix-studio.user.js
           grep -Fq 'FULL_UAT_RESOURCE_SAFETY_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'FULL_UAT_DICTIONARY_INVALID_VALUE_LEVEL_V1' dist/tessa-matrix-studio.user.js
           grep -Fq "'resource-input-limit'" dist/tessa-matrix-studio.user.js
@@ -161,12 +162,12 @@ jobs:
       - name: Upload exact UAT candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: tessa-matrix-studio-v1.15.0-live-excel-uat-${{ github.run_id }}
+          name: tessa-matrix-studio-v1.15.9-live-excel-uat-${{ github.run_id }}
           path: |
             dist/tessa-matrix-studio.user.js
             dist/tessa-matrix-studio.meta.js
             dist/SHA256SUMS.txt
-            dist/tessa-matrix-studio-v1.15.0-UAT.zip
+            dist/tessa-matrix-studio-v1.15.9-UAT.zip
             dist/candidate-manifest.json
           if-no-files-found: error
           retention-days: 14
