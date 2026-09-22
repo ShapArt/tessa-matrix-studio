@@ -274,7 +274,7 @@ export function applyV11510LiveStability(input) {
             errors.push({ executor: executor.name, error: String(error?.message || error) });
           }
         }
-        throw new Error(`Все direct View API executors отклонены: ${JSON.stringify(errors)}`);
+        throw new Error(\`Все direct View API executors отклонены: \${JSON.stringify(errors)}\`);
       };
 
       try {
@@ -284,12 +284,12 @@ export function applyV11510LiveStability(input) {
           const visiblePageBefore = this.nativePagingInfo(target).currentPage;
           const built = await buildRequest(page);
           if (!built?.request) {
-            diagnostics.status = `page-${page}-request-build-failed`;
+            diagnostics.status = \`page-\${page}-request-build-failed\`;
             return null;
           }
           const visiblePageAfterBuild = this.nativePagingInfo(target).currentPage;
           if (visiblePageAfterBuild !== visiblePageBefore) {
-            diagnostics.status = `page-${page}-visible-page-mutated`;
+            diagnostics.status = \`page-\${page}-visible-page-mutated\`;
             return null;
           }
 
@@ -298,10 +298,10 @@ export function applyV11510LiveStability(input) {
             execution = await executeRequest(built);
           } catch (error) {
             diagnostics.attempts.push({ page, strategy: built.strategy, outcome: 'execute-error', error: String(error?.message || error) });
-            diagnostics.status = `page-${page}-execution-failed`;
+            diagnostics.status = \`page-\${page}-execution-failed\`;
             return null;
           }
-          strategiesUsed.push(`${built.strategy}+${execution.executor}`);
+          strategiesUsed.push(\`\${built.strategy}+\${execution.executor}\`);
 
           const result = execution.result;
           const columns = Array.from(result?.columns || result?.Columns || []).map(column =>
@@ -312,7 +312,7 @@ export function applyV11510LiveStability(input) {
           const versionIndex = canonicalColumns.indexOf(canonicalValue('MatrixVersionID'));
           const orderIndex = canonicalColumns.indexOf(canonicalValue('Order'));
           if (cardIndex < 0 || versionIndex < 0) {
-            diagnostics.status = `page-${page}-identity-columns-missing`;
+            diagnostics.status = \`page-\${page}-identity-columns-missing\`;
             diagnostics.attempts.push({ page, strategy: built.strategy, executor: execution.executor, outcome: 'identity-columns-missing', columns: columns.slice(0, 80) });
             return null;
           }
@@ -341,7 +341,7 @@ export function applyV11510LiveStability(input) {
               pageIndex: index,
               rowCardId: String(rowCardId),
               versionId: String(versionId),
-              rowName: order !== null && order !== undefined && String(order) !== '' ? `Строка ${order}` : `Строка ${collected.length + 1}`,
+              rowName: order !== null && order !== undefined && String(order) !== '' ? \`Строка \${order}\` : \`Строка \${collected.length + 1}\`,
               source: 'native-view-server-paged-v4',
             });
             added += 1;
@@ -362,7 +362,7 @@ export function applyV11510LiveStability(input) {
           diagnostics.collected = collected.length;
 
           if (this.nativePagingInfo(target).currentPage !== visiblePageBefore) {
-            diagnostics.status = `page-${page}-visible-page-changed-after-request`;
+            diagnostics.status = \`page-\${page}-visible-page-changed-after-request\`;
             return null;
           }
           if (!rawRows.length || added === 0) break;
@@ -374,7 +374,7 @@ export function applyV11510LiveStability(input) {
         if (/остановлена пользователем/i.test(String(error?.message || error))) throw error;
         diagnostics.status = 'exception';
         diagnostics.error = String(error?.message || error);
-        log(`Серверный paging «${controlName}» недоступен: ${error.message || error}. Использую UI fallback.`, 'warn');
+        log(\`Серверный paging «\${controlName}» недоступен: \${error.message || error}. Использую UI fallback.\`, 'warn');
         return null;
       }
 
@@ -443,26 +443,26 @@ export function applyV11510LiveStability(input) {
     const matrixPath = descriptors.find(item => item.name === workbook.sheetName)?.path;
     if (!matrixPath || !entries.has(matrixPath)) throw new Error('UAT edit could not locate the matrix worksheet XML.');
 
-    const ref = `${indexToCol(colIndex)}${rowNumber}`;
-    const escapedRef = ref.replace(/[.*+?^\${}()|[\\]\\]/g, '\\\\$&');
+    const ref = \`\${indexToCol(colIndex)}\${rowNumber}\`;
+    const escapedRef = ref.replace(/[.*+?^\\${}()|[\\]\\]/g, '\\\\$&');
     let xml = decoder.decode(entries.get(matrixPath));
     const styleOf = attrs => {
       const match = String(attrs || '').match(/\\bs="([^"]+)"/i);
-      return match ? ` s="${xmlEscape(match[1])}"` : '';
+      return match ? \` s="\${xmlEscape(match[1])}"\` : '';
     };
     const replacementFor = attrs =>
-      `<c r="${ref}" t="inlineStr"${styleOf(attrs)}><is><t xml:space="preserve">${xmlEscape(value)}</t></is></c>`;
+      \`<c r="\${ref}" t="inlineStr"\${styleOf(attrs)}><is><t xml:space="preserve">\${xmlEscape(value)}</t></is></c>\`;
 
-    const fullCell = new RegExp(`<c\\b([^>]*\\br="${escapedRef}"[^>]*)>[\\s\\S]*?<\\/c>`, 'i');
-    const selfCell = new RegExp(`<c\\b([^>]*\\br="${escapedRef}"[^>]*)\\/>`, 'i');
+    const fullCell = new RegExp(\`<c\\b([^>]*\\br="\${escapedRef}"[^>]*)>[\\s\\S]*?<\\/c>\`, 'i');
+    const selfCell = new RegExp(\`<c\\b([^>]*\\br="\${escapedRef}"[^>]*)\\/>\`, 'i');
     if (fullCell.test(xml)) {
       xml = xml.replace(fullCell, (_, attrs) => replacementFor(attrs));
     } else if (selfCell.test(xml)) {
       xml = xml.replace(selfCell, (_, attrs) => replacementFor(attrs));
     } else {
-      const rowRe = new RegExp(`(<row\\b[^>]*\\br="${rowNumber}"[^>]*>)([\\s\\S]*?)(<\\/row>)`, 'i');
-      if (!rowRe.test(xml)) throw new Error(`UAT edit could not locate worksheet row ${rowNumber}.`);
-      xml = xml.replace(rowRe, (_, open, body, close) => `${open}${body}${replacementFor('')}${close}`);
+      const rowRe = new RegExp(\`(<row\\b[^>]*\\br="\${rowNumber}"[^>]*>)([\\s\\S]*?)(<\\/row>)\`, 'i');
+      if (!rowRe.test(xml)) throw new Error(\`UAT edit could not locate worksheet row \${rowNumber}.\`);
+      xml = xml.replace(rowRe, (_, open, body, close) => \`\${open}\${body}\${replacementFor('')}\${close}\`);
     }
 
     entries.set(matrixPath, xml);
@@ -515,7 +515,7 @@ export function applyV11510LiveStability(input) {
           || (beforePlan.counts?.add || 0) !== 0
           || (beforePlan.counts?.delete || 0) !== 0) {
           E.releaseWorkbookArchive(sourceBook);
-          throw new Error(`UAT setup: физическая пользовательская правка XLSX должна давать ровно 1 UPDATE: ${JSON.stringify({ counts: beforePlan.counts, warnings: beforePlan.warnings || [], issues: beforePlan.issues || [], skippedRows: beforePlan.skippedRows || [], skippedFields: beforePlan.skippedFields || [], skippedValues: beforePlan.skippedValues || [], safety: beforePlan.safety || null })}`);
+          throw new Error(\`UAT setup: физическая пользовательская правка XLSX должна давать ровно 1 UPDATE: \${JSON.stringify({ counts: beforePlan.counts, warnings: beforePlan.warnings || [], issues: beforePlan.issues || [], skippedRows: beforePlan.skippedRows || [], skippedFields: beforePlan.skippedFields || [], skippedValues: beforePlan.skippedValues || [], safety: beforePlan.safety || null })}\`);
         }
         const beforeAction = (beforePlan.actions || []).find(action => action.type === 'update');
         if (!beforeAction) {
@@ -536,7 +536,7 @@ export function applyV11510LiveStability(input) {
           || (afterPlan.counts?.skip || 0) !== 0
           || (afterPlan.counts?.add || 0) !== 0
           || (afterPlan.counts?.delete || 0) !== 0) {
-          throw new Error(`Refresh изменил пользовательскую правку/план: ${JSON.stringify({ before: beforePlan.counts, after: afterPlan.counts, skippedRows: afterPlan.skippedRows || [], skippedFields: afterPlan.skippedFields || [], skippedValues: afterPlan.skippedValues || [] })}`);
+          throw new Error(\`Refresh изменил пользовательскую правку/план: \${JSON.stringify({ before: beforePlan.counts, after: afterPlan.counts, skippedRows: afterPlan.skippedRows || [], skippedFields: afterPlan.skippedFields || [], skippedValues: afterPlan.skippedValues || [] })}\`);
         }
 
         const afterAction = (afterPlan.actions || []).find(action => action.type === 'update');
@@ -546,12 +546,12 @@ export function applyV11510LiveStability(input) {
         const refreshedRow = (refreshed.rows || []).find(row => Number(row.excelRow) === Number(edited.source.excelRow));
         const visibleAfter = refreshedRow?.values?.[edited.column.index] ?? '';
         if (canon(visibleAfter) !== canon(visibleValue)) {
-          throw new Error(`После refresh потерялась пользовательская правка ячейки ${physical.ref}: «${visibleValue}» → «${visibleAfter}».`);
+          throw new Error(\`После refresh потерялась пользовательская правка ячейки \${physical.ref}: «\${visibleValue}» → «\${visibleAfter}».\`);
         }
 
         packageEntries.push(['dictionary-refreshed.xlsx', refreshedBytes]);
         return {
-          detail: `Физическая правка ${physical.ref} сохранена после refresh; hidden identity и план UPDATE не изменились.`,
+          detail: \`Физическая правка \${physical.ref} сохранена после refresh; hidden identity и план UPDATE не изменились.\`,
           data: { before: beforePlan.counts, after: afterPlan.counts, excelRow: edited.source.excelRow, cell: physical.ref, field: edited.column.key, value: visibleValue },
         };
       });
@@ -570,12 +570,12 @@ export function applyV11510LiveStability(input) {
         const actualBuild = String(E.buildFingerprint || '');
         const version = String(E.studioVersion?.() || E.version || '');
         if (actualBuild !== expectedBuild) {
-          throw new Error(`Загружен другой/старый userscript: build=${actualBuild || '(нет)'}, ожидался ${expectedBuild}.`);
+          throw new Error(\`Загружен другой/старый userscript: build=\${actualBuild || '(нет)'}, ожидался \${expectedBuild}.\`);
         }
         if (version !== '1.15.10') {
-          throw new Error(`Загружена версия ${version || '(нет)'}, ожидалась 1.15.10.`);
+          throw new Error(\`Загружена версия \${version || '(нет)'}, ожидалась 1.15.10.\`);
         }
-        return { detail: `Подтверждён v1.15.10 · ${actualBuild}.`, data: { version, build: actualBuild } };
+        return { detail: \`Подтверждён v1.15.10 · \${actualBuild}.\`, data: { version, build: actualBuild } };
       });
 `;
   source = replaceOnce(
