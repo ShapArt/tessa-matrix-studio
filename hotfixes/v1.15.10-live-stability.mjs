@@ -597,6 +597,50 @@ export function applyV11510LiveStability(input) {
     "if (!direct?.serverPaging) throw new Error(`Runtime не подтвердил безопасный direct server paging; visual fallback. Build=${E.buildFingerprint || '(нет)'}. Evidence=${JSON.stringify(bridge.lastServerPagingDiagnostics || null)}`);",
   );
 
+  // PROD_SMOKE_DIAGNOSTICS_V1
+  source = replaceOnce(
+    source,
+    "  async function runStudioDiagnostics(download = false) {\n    if (APP.busy) return;",
+    "  // PROD_SMOKE_DIAGNOSTICS_V1\n  async function runStudioDiagnostics(download = false) {\n    if (APP.busy) return;\n    const quickMode = !download;",
+    'production smoke diagnostics mode',
+  );
+  source = replaceOnce(
+    source,
+    "      let result = download ? APP.lastStudioDiagnostics : null;",
+    "      let result = download && APP.lastStudioDiagnostics?.report?.mode === 'full' ? APP.lastStudioDiagnostics : null;",
+    'diagnostic cache must match full mode',
+  );
+  source = replaceOnce(
+    source,
+    "          probe: probeRuntimeEnvironment, file, workbook: originalWorkbook, previous, assertContext, limits: { candidates: 200 },",
+    "          probe: probeRuntimeEnvironment, file, workbook: originalWorkbook, previous, assertContext, limits: { candidates: quickMode ? 40 : 200 },",
+    'bounded production smoke candidates',
+  );
+  source = replaceOnce(
+    source,
+    "      const intervalDiagnostics = await resolveStudioIntervalDiagnostics({",
+    "      const intervalDiagnostics = quickMode ? null : await resolveStudioIntervalDiagnostics({",
+    'skip heavy interval diagnostics in smoke mode',
+  );
+  source = replaceOnce(
+    source,
+    "      // Performance UAT is deliberately synthetic/read-only. Real touched-only server\n      // timings are copied from this session's telemetry and are never fabricated.\n      let performanceUat;\n      try {\n        setProgress(95, 'Performance UAT', 'Локальные сценарии 0/1/10/100/3000 строк');\n        performanceUat = await runPerformanceUat({ baseRows: 3000 });",
+    "      // Performance UAT is deliberately synthetic/read-only. Regular «Проверки» use\n      // a fast 300-row smoke profile; downloaded «Диагностика» keeps the full 3000-row profile.\n      const performanceRows = quickMode ? 300 : 3000;\n      let performanceUat;\n      try {\n        setProgress(95, 'Performance UAT', \`Локальные сценарии до \${performanceRows} строк\`);\n        performanceUat = await runPerformanceUat({ baseRows: performanceRows });",
+    'smoke performance profile',
+  );
+  source = replaceOnce(
+    source,
+    "          createdAt: nowIso(), baseRows: 3000, scenarios: [], cache: { hits: 0, misses: 0 },",
+    "          createdAt: nowIso(), baseRows: performanceRows, scenarios: [], cache: { hits: 0, misses: 0 },",
+    'smoke performance failure metadata',
+  );
+  source = replaceOnce(
+    source,
+    "      APP.lastPerformanceUat = performanceUat;\n      result.performanceUat = performanceUat;",
+    "      APP.lastPerformanceUat = performanceUat;\n      result.report.mode = quickMode ? 'smoke' : 'full';\n      result.performanceUat = performanceUat;",
+    'diagnostic mode evidence',
+  );
+
   return source;
 }
 
