@@ -6,8 +6,8 @@ const sourcePath = process.env.TMS_TEST_SOURCE || new URL('../tessa-matrix-studi
 let source = fs.readFileSync(sourcePath, 'utf8');
 
 source = source
-  .replace(/^(\\/\\/ @version\\s+)[0-9.]+$/m, '$11.15.10')
-  .replace(/(^\\s*version:\\s*')[0-9.]+(',\\s*$)/m, '$11.15.10$2');
+  .replace(/^(\/\/ @version\s+)[0-9.]+$/m, '$11.15.10')
+  .replace(/(^\s*version:\s*')[0-9.]+(',\s*$)/m, '$11.15.10$2');
 
 const output = applyV11510LiveStability(source);
 assert.equal(applyV11510LiveStability(output), output, 'transform must be idempotent');
