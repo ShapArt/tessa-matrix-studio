@@ -14462,6 +14462,39 @@
         if (!(base.bytes instanceof Uint8Array) || base.bytes.length < 4 || base.bytes[0] !== 0x50 || base.bytes[1] !== 0x4b) throw new Error('Текущая выгрузка не является XLSX/ZIP артефактом.');
         return { detail: `Сформирован matrix-current.xlsx (${base.bytes.length} байт).`, data: { outcome: 'xlsx-artifact', artifact: 'matrix-current.xlsx', bytes: base.bytes.length } };
       });
+      await runCheck('initial-export-server-paging', 'Выгрузка: server paging без визуального листания', async () => {
+        const native = bridge.findNativeMatrixControl();
+        if (!native?.target) throw new Error('Нативное представление матрицы не найдено.');
+        const before = bridge.nativePagingInfo(native.target).currentPage;
+        const result = await bridge.collectNativeMatrixViewLinksAllPages({ pageLimit: 50 });
+        const after = bridge.nativePagingInfo(native.target).currentPage;
+        if (!result?.serverPaging) throw new Error('Первичная выгрузка использовала native-visual-paging вместо server-view-paging.');
+        if (before !== after) throw new Error(`Server paging изменил видимую страницу: ${before} → ${after}.`);
+        if ((baseline.rows || []).length && (result.links || []).length !== (baseline.rows || []).length) {
+          throw new Error(`Server paging вернул ${(result.links || []).length} строк вместо ${(baseline.rows || []).length}.`);
+        }
+        return {
+          detail: `Server paging подтверждён: ${(result.links || []).length} строк, ${(result.pagesVisited || []).length} server pages, visible page=${after}.`,
+          data: { source: 'server-view-paging', rows: (result.links || []).length, pagesVisited: result.pagesVisited || [], strategy: result.strategy || null, visiblePage: after },
+        };
+      });
+      await runCheck('native-view-paging-probe', 'Runtime TESSA: server paging без UI page flip', async () => {
+        const native = bridge.findNativeMatrixControl();
+        if (!native?.target) throw new Error('Нативное представление матрицы не найдено.');
+        const before = bridge.nativePagingInfo(native.target).currentPage;
+        const direct = await bridge.collectNativeMatrixViewLinksServerPaged({ pageLimit: 50 });
+        const after = bridge.nativePagingInfo(native.target).currentPage;
+        if (!direct?.serverPaging) throw new Error('Runtime не подтвердил безопасный direct server paging; visual fallback.');
+        if (after !== before) throw new Error(`Direct server paging изменил visible currentPage: ${before} → ${after}.`);
+        if ((baseline.rows || []).length > 50 && (direct.pagesVisited || []).length < 2) {
+          throw new Error(`Ожидалось несколько server pages для ${(baseline.rows || []).length} строк, получено ${JSON.stringify(direct.pagesVisited || [])}.`);
+        }
+        return {
+          detail: `Direct server paging работает без setPageAndRefresh: ${(direct.links || []).length} строк.`,
+          data: { rows: (direct.links || []).length, pagesVisited: direct.pagesVisited || [], strategy: direct.strategy || null, visiblePage: after },
+        };
+      });
+
       await runCheck('action-value-picker', 'Действие: собрать значения', async () => {
         const columns = E.pickerColumns(structure, catalog);
         const column = columns.find(item => item?.catalog?.entries?.length);
