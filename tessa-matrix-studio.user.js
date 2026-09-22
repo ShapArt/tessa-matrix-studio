@@ -4695,6 +4695,7 @@
       return { component, currentPage, pageLimit, calculatedRowCount, pageCount: Math.max(1, pageCount) };
     }
 
+    // SERVER_PAGED_NATIVE_VIEW_V1
     // SERVER_PAGED_NATIVE_VIEW_V3
     // Build each page request through the mounted native control without ever calling
     // setPageAndRefresh(). TESSA's setupPagingParameters expects the request-parameter
