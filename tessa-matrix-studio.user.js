@@ -4815,6 +4815,36 @@
             else request.Parameters = parameters;
             return { request, strategy: 'setupPagingParameters-array', parameters };
           }
+
+          // Portable fallback used by older/newer TESSA bundles where the mounted
+          // control does not publish setupPagingParameters but ViewPagingParameters is
+          // available from the service module. This also keeps the regression harness
+          // aligned with the documented IList<RequestParameter> contract.
+          if (typeof component?.getRequestParams === 'function') {
+            const Provider = api.serviceModule?.ViewPagingParameters || api.platformModule?.ViewPagingParameters || null;
+            let provider = Provider?.default || Provider?.Default || null;
+            if (!provider && typeof Provider === 'function') {
+              try { provider = new Provider(); } catch (_) { /* unsupported constructor */ }
+            }
+            const limitFn = provider?.providePageLimitParameter || provider?.ProvidePageLimitParameter;
+            const offsetFn = provider?.providePageOffsetParameter || provider?.ProvidePageOffsetParameter;
+            if (typeof limitFn === 'function' && typeof offsetFn === 'function') {
+              const base = await Promise.resolve(component.getRequestParams());
+              const parameters = Array.from(base || []).map(cloneParameter);
+              const pagingMode = view?.metadata?.paging ?? view?.metadata?.Paging
+                ?? target?.viewMetadata?.paging ?? target?.viewMetadata?.Paging;
+              if (pagingMode !== null && pagingMode !== undefined) {
+                limitFn.call(provider, parameters, pagingMode, pageLimit, false);
+                offsetFn.call(provider, parameters, pagingMode, page, pageLimit, false);
+                const request = new api.serviceModule.TessaViewRequest(view.metadata);
+                request.calculateRowCounting = page === 1;
+                request.canUseCache = false;
+                if ('parameters' in request || !('Parameters' in request)) request.parameters = parameters;
+                else request.Parameters = parameters;
+                return { request, strategy: 'view-paging-provider-array', parameters };
+              }
+            }
+          }
           return null;
         } finally {
           for (let i = saved.length - 1; i >= 0; i -= 1) restoreOwn(saved[i]);
