@@ -14846,6 +14846,58 @@
         if (plan.counts.skip !== 0 || plan.counts.add !== 3 || plan.counts.update !== 1 || plan.counts.delete !== 2) throw new Error(`Ожидалось UPDATE 1 / ADD 3 / DELETE 2 / SKIP 0; получено ${JSON.stringify(plan.counts)}. ${JSON.stringify(plan.skippedRows || [])}`);
         return { detail: 'Одна копия стала UPDATE, остальные три — ADD; два отсутствующих оригинала — DELETE.', data: compactPlan(plan) };
       });
+      await runCheck('dictionary-mixed-value-isolation', 'Одно ошибочное значение в ячейке не ломает остальные', async () => {
+        const invalidValue = `__UAT_INVALID_MIXED_${seed}__`;
+        const inventory = buildWritableFieldInventory(base.book, structure, catalog)
+          .filter(item => item.strategy === 'dictionary' && item.entries?.length >= 2);
+        const sources = shuffled((base.book.rows || []).filter(row => rowHasRole(base.book, row)), rng).slice(0, 30);
+        let lastEvidence = null;
+
+        for (const source of sources) {
+          for (const column of shuffled(inventory, rng)) {
+            const currentValues = new Set(splitCell(source.values?.[column.index] || '').map(canon));
+            const entries = shuffled((column.entries || []).filter(entry => {
+              const text = canon(entry.selector || entry.display);
+              return text && !currentValues.has(text);
+            }), rng).slice(0, 8);
+            if (entries.length < 2) continue;
+
+            for (let i = 0; i < entries.length - 1; i += 1) {
+              const first = entries[i], second = entries[i + 1];
+              const test = cloneWorkbook(base.book);
+              const row = test.rows.find(item => Number(item.excelRow) === Number(source.excelRow));
+              if (!row) continue;
+              const firstText = String(first.selector || first.display || '');
+              const secondText = String(second.selector || second.display || '');
+              row.values[column.index] = `${firstText}; ${invalidValue}; ${secondText}`;
+              const idIndex = companionIndex(test, column.token);
+              if (idIndex >= 0) row.values[idIndex] = '';
+
+              const plan = E.buildPlan(test, structure, baseline, info);
+              const action = (plan.actions || []).find(item => item.type === 'update' && Number(item.excelRow?.excelRow) === Number(row.excelRow));
+              const rejected = (plan.skippedValues || []).find(item =>
+                Number(item?.excelRow) === Number(row.excelRow)
+                && canon(item?.key || '') === canon(column.token)
+                && canon(item?.value ?? item?.display ?? '') === canon(invalidValue));
+              const change = (action?.changes || []).find(item => canon(item?.key || '') === canon(column.token));
+              const after = (change?.after || []).map(canon);
+              const leaked = after.includes(canon(invalidValue));
+              lastEvidence = { counts: plan.counts, skippedRows: plan.skippedRows || [], skippedFields: plan.skippedFields || [], skippedValues: plan.skippedValues || [] };
+
+              if (action && rejected && !leaked
+                && after.includes(canon(firstText)) && after.includes(canon(secondText))
+                && (plan.counts?.skip || 0) === 0) {
+                return {
+                  detail: 'В mixed-cell два валидных значения остались в UPDATE, одно ошибочное изолировано в skippedValues.',
+                  data: { excelRow: row.excelRow, field: column.token, kept: [firstText, secondText], skipped: invalidValue },
+                };
+              }
+            }
+          }
+        }
+        throw new Error(`Не удалось доказать value-level isolation на collision-safe mixed-cell: ${JSON.stringify(lastEvidence)}`);
+      });
+
       await runCheck('dictionary-stale-companion', 'Изменение текста при старом скрытом ID', async () => {
         const safe = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng);
         const test = cloneWorkbook(base.book);
