@@ -444,7 +444,7 @@ export function applyV11510LiveStability(input) {
     if (!matrixPath || !entries.has(matrixPath)) throw new Error('UAT edit could not locate the matrix worksheet XML.');
 
     const ref = \`\${indexToCol(colIndex)}\${rowNumber}\`;
-    const escapedRef = ref.replace(/[.*+?^\\${}()|[\\]\\]/g, '\\\\$&');
+    const escapedRef = ref.replace(/[.*+?^{}$()|[\\]\\]/g, '\\\\    const escapedRef = ref.replace(/[.*+?^\\${}()|[\\]\\]/g, '\\\\$&');');
     let xml = decoder.decode(entries.get(matrixPath));
     const styleOf = attrs => {
       const match = String(attrs || '').match(/\\bs="([^"]+)"/i);
