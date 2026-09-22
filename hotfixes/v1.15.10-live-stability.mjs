@@ -444,7 +444,6 @@ export function applyV11510LiveStability(input) {
     if (!matrixPath || !entries.has(matrixPath)) throw new Error('UAT edit could not locate the matrix worksheet XML.');
 
     const ref = \`\${indexToCol(colIndex)}\${rowNumber}\`;
-    const escapedRef = ref.replace(/[.*+?^{}$()|[\\]\\]/g, '\\\\    const escapedRef = ref.replace(/[.*+?^\\${}()|[\\]\\]/g, '\\\\$&');');
     let xml = decoder.decode(entries.get(matrixPath));
     const styleOf = attrs => {
       const match = String(attrs || '').match(/\\bs="([^"]+)"/i);
@@ -453,8 +452,8 @@ export function applyV11510LiveStability(input) {
     const replacementFor = attrs =>
       \`<c r="\${ref}" t="inlineStr"\${styleOf(attrs)}><is><t xml:space="preserve">\${xmlEscape(value)}</t></is></c>\`;
 
-    const fullCell = new RegExp(\`<c\\b([^>]*\\br="\${escapedRef}"[^>]*)>[\\s\\S]*?<\\/c>\`, 'i');
-    const selfCell = new RegExp(\`<c\\b([^>]*\\br="\${escapedRef}"[^>]*)\\/>\`, 'i');
+    const fullCell = new RegExp(\`<c\\b([^>]*\\br="\${ref}"[^>]*)>[\\s\\S]*?<\\/c>\`, 'i');
+    const selfCell = new RegExp(\`<c\\b([^>]*\\br="\${ref}"[^>]*)\\/>\`, 'i');
     if (fullCell.test(xml)) {
       xml = xml.replace(fullCell, (_, attrs) => replacementFor(attrs));
     } else if (selfCell.test(xml)) {
