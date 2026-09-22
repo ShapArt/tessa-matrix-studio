@@ -4695,20 +4695,17 @@
       return { component, currentPage, pageLimit, calculatedRowCount, pageCount: Math.max(1, pageCount) };
     }
 
-    // SERVER_PAGED_NATIVE_VIEW_V1
-    // Read the same native matrix view through TESSA View API instead of driving the
-    // visible grid page-by-page. Current view parameters are cloned from the mounted
-    // component, then only PageOffset/PageLimit are replaced. The result is accepted
-    // only when hidden MatrixRowID/MatrixVersionID are present and membership count
-    // agrees with the authoritative main-card section; otherwise caller falls back to
-    // the old UI paging path.
+    // SERVER_PAGED_NATIVE_VIEW_V3
+    // Build each page request through the mounted native control without ever calling
+    // setPageAndRefresh(). TESSA's setupPagingParameters expects the request-parameter
+    // LIST (IList<RequestParameter>), not the TessaViewRequest itself. The preferred
+    // path uses createDataRequest() with a short-lived page state; fallback passes a
+    // real Array to setupPagingParameters(). UI state is restored before network I/O.
     async collectNativeMatrixViewLinksServerPaged(options = {}) {
       const nativeControl = this.findNativeMatrixControl();
       if (!nativeControl) return null;
       const { target, controlName } = nativeControl;
       const component = target?.viewComponent || target?.component || target;
-      if (typeof component?.getRequestParams !== 'function') return null;
-
       const api = this.viewApi();
       if (!api?.service || !api?.serviceModule?.TessaViewRequest) return null;
 
@@ -4731,40 +4728,18 @@
       }
       if (!view?.metadata) return null;
 
-      let baseParameters;
-      try {
-        baseParameters = await Promise.resolve(component.getRequestParams());
-      } catch (error) {
-        log(`Серверный paging «${controlName}»: не удалось получить параметры текущего view: ${error.message || error}.`, 'warn');
-        return null;
-      }
-      let baseList;
-      try { baseList = Array.from(baseParameters || []); }
-      catch (_) { return null; }
-
-      const PagingProvider = api.serviceModule.ViewPagingParameters
-        || api.platformModule?.ViewPagingParameters
-        || null;
-      let pagingProvider = PagingProvider?.default || PagingProvider?.Default || null;
-      if (!pagingProvider && typeof PagingProvider === 'function') {
-        try { pagingProvider = new PagingProvider(); } catch (_) { /* unsupported constructor */ }
-      }
-      const provideLimit = pagingProvider?.providePageLimitParameter || pagingProvider?.ProvidePageLimitParameter;
-      const provideOffset = pagingProvider?.providePageOffsetParameter || pagingProvider?.ProvidePageOffsetParameter;
-      if (typeof provideLimit !== 'function' || typeof provideOffset !== 'function') return null;
-
-      const meta = view.metadata || metadataCandidates[0] || {};
-      const pagingMode = meta.paging ?? meta.Paging ?? metadataCandidates[0]?.paging ?? metadataCandidates[0]?.Paging;
-      if (pagingMode === null || pagingMode === undefined) return null;
+      const initialPaging = this.nativePagingInfo(target);
       const requestedLimit = Number(
         options.pageLimit
-        ?? meta.exportDataPageLimit
-        ?? meta.ExportDataPageLimit
-        ?? meta.pageLimit
-        ?? meta.PageLimit
-        ?? 500
+        ?? view?.metadata?.exportDataPageLimit
+        ?? view?.metadata?.ExportDataPageLimit
+        ?? view?.metadata?.pageLimit
+        ?? view?.metadata?.PageLimit
+        ?? initialPaging.pageLimit
+        ?? 50
       );
-      const pageLimit = Math.max(20, Math.min(1000, Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.trunc(requestedLimit) : 500));
+      const pageLimit = Math.max(20, Math.min(1000,
+        Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.trunc(requestedLimit) : 50));
       const sectionCount = this.rawMatrixSectionLinks().length;
       const maxPages = Math.max(1, Math.min(10000, sectionCount ? Math.ceil(sectionCount / pageLimit) + 2 : 10000));
       const collected = [];
@@ -4772,31 +4747,97 @@
       const pagesVisited = [];
       let reportedRowCount = 0;
 
+      const resultValue = value => safePlain(this.unwrapTyped(value), { maxDepth: 4, maxKeys: 50, maxArray: 50 });
       const cloneParameter = item => {
         try {
           if (typeof item?.clone === 'function') return item.clone();
           if (typeof item?.Clone === 'function') return item.Clone();
-        } catch (_) { /* immutable/shared request parameter is still safe in a new list */ }
+        } catch (_) { /* request parameters are treated as immutable if no clone exists */ }
         return item;
       };
-      const resultValue = value => safePlain(this.unwrapTyped(value), { maxDepth: 4, maxKeys: 50, maxArray: 50 });
+      const rememberOwn = (obj, key) => ({
+        obj, key,
+        had: !!obj && Object.prototype.hasOwnProperty.call(obj, key),
+        value: obj?.[key],
+      });
+      const restoreOwn = item => {
+        if (!item?.obj) return;
+        try {
+          if (item.had) item.obj[item.key] = item.value;
+          else delete item.obj[item.key];
+        } catch (_) { /* best effort */ }
+      };
+      const setPageState = (obj, page, limit, saved) => {
+        if (!obj) return;
+        for (const [key, value] of [['currentPage', page], ['_currentPage', page], ['pageLimit', limit], ['_pageLimit', limit]]) {
+          try {
+            if (key in obj || Object.prototype.hasOwnProperty.call(obj, key)) {
+              saved.push(rememberOwn(obj, key));
+              obj[key] = value;
+            }
+          } catch (_) { /* read-only member */ }
+        }
+      };
+      const pageParamEvidence = parameters => Array.from(parameters || []).map(item => ({
+        name: normalizeSpace(item?.name ?? item?.Name ?? item?.alias ?? item?.Alias ?? item?.parameterName ?? item?.ParameterName ?? ''),
+        value: safePlain(item?.value ?? item?.Value ?? item?.values ?? item?.Values ?? null, { maxDepth: 3, maxKeys: 20, maxArray: 20 }),
+      })).filter(item => /pageoffset|pagelimit/i.test(item.name));
+
+      const buildRequest = async page => {
+        const saved = [];
+        try {
+          setPageState(component, page, pageLimit, saved);
+          if (target !== component) setPageState(target, page, pageLimit, saved);
+
+          // Preferred contract: native control already knows how to build the exact request
+          // for its own view. createDataRequest performs no visible page refresh.
+          if (typeof target?.createDataRequest === 'function') {
+            const nativeRequest = await Promise.resolve(target.createDataRequest());
+            if (nativeRequest) {
+              nativeRequest.calculateRowCounting = page === 1;
+              nativeRequest.canUseCache = false;
+              return { request: nativeRequest, strategy: 'createDataRequest', parameters: nativeRequest.parameters ?? nativeRequest.Parameters ?? [] };
+            }
+          }
+
+          // Compatibility contract: get current request parameters, then let the native
+          // control replace PageOffset/PageLimit in the ARRAY. Previous UAT evidence
+          // e.findIndex-is-not-a-function proved that passing the request object here is wrong.
+          if (typeof component?.getRequestParams === 'function' && typeof target?.setupPagingParameters === 'function') {
+            const base = await Promise.resolve(component.getRequestParams());
+            const parameters = Array.from(base || []).map(cloneParameter);
+            await Promise.resolve(target.setupPagingParameters(parameters));
+            const request = new api.serviceModule.TessaViewRequest(view.metadata);
+            request.calculateRowCounting = page === 1;
+            request.canUseCache = false;
+            if ('parameters' in request || !('Parameters' in request)) request.parameters = parameters;
+            else request.Parameters = parameters;
+            return { request, strategy: 'setupPagingParameters-array', parameters };
+          }
+          return null;
+        } finally {
+          for (let i = saved.length - 1; i >= 0; i -= 1) restoreOwn(saved[i]);
+        }
+      };
 
       try {
         for (let page = 1; page <= maxPages; page += 1) {
           if (APP.abortRequested) throw new Error('Операция остановлена пользователем.');
           await options.assertContext?.();
+          const visiblePageBefore = this.nativePagingInfo(target).currentPage;
+          const built = await buildRequest(page);
+          if (!built?.request) return null;
 
-          const request = new api.serviceModule.TessaViewRequest(view.metadata);
-          request.calculateRowCounting = page === 1;
-          request.canUseCache = true;
-          const parameters = baseList.map(cloneParameter);
-          if ('parameters' in request || !('Parameters' in request)) request.parameters = parameters;
-          else request.Parameters = parameters;
-          const requestParameters = request.parameters ?? request.Parameters;
-          provideLimit.call(pagingProvider, requestParameters, pagingMode, pageLimit, false);
-          provideOffset.call(pagingProvider, requestParameters, pagingMode, page, pageLimit, false);
+          const visiblePageAfterBuild = this.nativePagingInfo(target).currentPage;
+          if (visiblePageAfterBuild !== visiblePageBefore) {
+            log(`Серверный paging «${controlName}» изменил видимую страницу во время построения request. Использую UI fallback.`, 'warn');
+            return null;
+          }
 
-          const result = await view.getData(request);
+          const pageEvidence = pageParamEvidence(built.parameters);
+          log(`Server paging ${controlName}: page=${page}, strategy=${built.strategy}, paging=${JSON.stringify(pageEvidence)}`, 'debug');
+
+          const result = await view.getData(built.request);
           const columns = Array.from(result?.columns || result?.Columns || []).map(column =>
             normalizeSpace(column?.alias ?? column?.name ?? column?.Alias ?? column?.Name ?? column)
           );
@@ -4806,14 +4847,15 @@
           const orderIndex = canonicalColumns.indexOf(canonicalValue('Order'));
           if (cardIndex < 0 || versionIndex < 0) return null;
 
-          const resultRows = Array.from(result?.rows || result?.Rows || []);
+          const rawRows = Array.from(result?.rows || result?.Rows || []);
+          const rowsForPage = rawRows.slice(0, pageLimit); // TESSA may return one look-ahead row.
           const rowCount = Number(result?.rowCount ?? result?.RowCount ?? 0) || 0;
           if (rowCount > 0) reportedRowCount = rowCount;
           pagesVisited.push(page);
 
           let added = 0;
-          for (let index = 0; index < resultRows.length; index += 1) {
-            const raw = Array.from(resultRows[index] || []);
+          for (let index = 0; index < rowsForPage.length; index += 1) {
+            const raw = Array.from(rowsForPage[index] || []);
             const rowCardId = resultValue(raw[cardIndex]);
             const versionId = resultValue(raw[versionIndex]);
             if (!rowCardId || !versionId) continue;
@@ -4828,19 +4870,25 @@
               rowCardId: String(rowCardId),
               versionId: String(versionId),
               rowName: order !== null && order !== undefined && String(order) !== '' ? `Строка ${order}` : `Строка ${collected.length + 1}`,
-              source: 'native-view-server-paged',
+              source: 'native-view-server-paged-v3',
             });
             added += 1;
           }
 
-          if (!resultRows.length || added === 0) break;
+          if (!rawRows.length || added === 0) break;
           if (reportedRowCount > 0 && collected.length >= reportedRowCount) break;
-          if (resultRows.length < pageLimit) break;
           if (sectionCount > 0 && collected.length >= sectionCount) break;
+          if (rawRows.length <= pageLimit && rowsForPage.length < pageLimit) break;
         }
       } catch (error) {
         if (/остановлена пользователем/i.test(String(error?.message || error))) throw error;
         log(`Серверный paging «${controlName}» недоступен: ${error.message || error}. Использую UI fallback.`, 'warn');
+        return null;
+      }
+
+      // A direct server read is valid only if the visible UI page never moved.
+      if (this.nativePagingInfo(target).currentPage !== initialPaging.currentPage) {
+        log(`Серверный paging «${controlName}» изменил visible currentPage. Использую UI fallback.`, 'warn');
         return null;
       }
 
@@ -4863,6 +4911,7 @@
         pagingUsed: pagesVisited.length > 1,
         dynamicPaging: false,
         serverPaging: true,
+        strategy: 'native-request-v3',
         pageLimit,
         reportedRowCount: reportedRowCount || null,
       };
@@ -14764,14 +14813,37 @@
         return { detail: 'Одна копия стала UPDATE, остальные три — ADD; два отсутствующих оригинала — DELETE.', data: compactPlan(plan) };
       });
       await runCheck('dictionary-stale-companion', 'Изменение текста при старом скрытом ID', async () => {
-        const columns = mutableCriterionColumns(base.book, catalog, 2); if (!columns.length) return { status: 'NOT_RUN', detail: 'Нет подходящего справочника.' };
-        const test = cloneWorkbook(base.book), row = chooseSourceRow(test, rng), column = shuffled(columns, rng)[0];
-        const oldHidden = companionIndex(test, column.key) >= 0 ? row.values[companionIndex(test, column.key)] : '';
-        const entry = shuffled(column.entries.filter(item => canon(item.selector || item.display) !== canon(row.values[column.index])), rng)[0]; setDictionaryValue(test, row, column.key, entry, true);
-        const plan = E.buildPlan(test, structure, baseline, info); if (plan.counts.skip) throw new Error(JSON.stringify(plan.skippedRows));
-        const update = plan.actions.find(action => action.type === 'update'); if (!update) throw new Error(`Изменение не распознано как UPDATE: ${JSON.stringify(plan.counts)}`);
-        const resolved = update.excelRow?.ids?.[column.key]?.[0] || ''; if (!resolved || canon(resolved) === canon(oldHidden)) throw new Error('Старый companion ID не был пересопоставлен по новому видимому значению.');
-        return { detail: 'Видимое значение победило устаревший companion ID; ID пересобран из справочника.' };
+        const safe = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng);
+        const test = cloneWorkbook(base.book);
+        const row = test.rows.find(item => Number(item.excelRow) === Number(safe.source.excelRow));
+        if (!row) throw new Error('UAT setup: исходная строка безопасного UPDATE не найдена.');
+        const column = safe.column;
+        const idIndex = companionIndex(test, column.key);
+        const oldHidden = idIndex >= 0 ? row.values[idIndex] : '';
+
+        // Keep the old hidden companion deliberately: visible text must win and be
+        // re-resolved to the new dictionary ID. Candidate was pre-proven collision-safe,
+        // so a duplicate SKIP here is a real stale-companion defect, not flaky UAT data.
+        setDictionaryValue(test, row, column.key, safe.entry, true);
+        if (idIndex >= 0) row.values[idIndex] = oldHidden;
+
+        const plan = E.buildPlan(test, structure, baseline, info);
+        if ((plan.counts?.update || 0) !== 1
+          || (plan.counts?.skip || 0) !== 0
+          || (plan.counts?.add || 0) !== 0
+          || (plan.counts?.delete || 0) !== 0) {
+          throw new Error(`UAT setup/case должен давать ровно 1 UPDATE без дублей: ${JSON.stringify({ counts: plan.counts, skippedRows: plan.skippedRows || [] })}`);
+        }
+        const update = (plan.actions || []).find(action => action.type === 'update');
+        if (!update) throw new Error(`Изменение не распознано как UPDATE: ${JSON.stringify(plan.counts)}`);
+        const resolved = update.excelRow?.ids?.[column.key]?.[0] || '';
+        if (!resolved || canon(resolved) === canon(oldHidden)) {
+          throw new Error('Старый companion ID не был пересопоставлен по новому видимому значению.');
+        }
+        return {
+          detail: 'Collision-safe UPDATE: видимое значение победило устаревший companion ID; ID пересобран из справочника.',
+          data: { excelRow: row.excelRow, field: column.key, oldHidden, resolved },
+        };
       });
       await runCheck('dictionary-invalid', 'Некорректное значение справочника', async () => {
         const columns = mutableCriterionColumns(base.book, catalog, 2); if (!columns.length) return { status: 'NOT_RUN', detail: 'Нет подходящего справочника.' };
