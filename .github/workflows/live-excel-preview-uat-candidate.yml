@@ -33,7 +33,7 @@ permissions:
 
 jobs:
   build:
-    name: Build exact v1.15.9 UAT artifact
+    name: Build exact v1.15.10 UAT artifact
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,7 +57,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CANDIDATE_VERSION='1.15.9'
+          CANDIDATE_VERSION='1.15.10'
           mkdir -p dist
           cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
 
@@ -82,6 +82,7 @@ jobs:
           node hotfixes/v1.14.2-full-uat-copied-identity-collision-safe.mjs dist/tessa-matrix-studio.user.js
           node hotfixes/v1.14.2-full-uat-action-coverage-final.mjs dist/tessa-matrix-studio.user.js
           node hotfixes/v1.14.2-full-uat-version-provenance.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.15.10-live-stability.mjs dist/tessa-matrix-studio.user.js
 
           node --check dist/tessa-matrix-studio.user.js
           grep -Fqx "// @version      $CANDIDATE_VERSION" dist/tessa-matrix-studio.user.js
@@ -123,7 +124,15 @@ jobs:
           grep -Fq 'COMPACT_ROLE_CATALOG_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'VALUE_LEVEL_RECOVERY_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'PREVIEW_BASELINE_INCREMENTAL_SNAPSHOT_V1' dist/tessa-matrix-studio.user.js
-          grep -Fq 'SERVER_PAGED_NATIVE_VIEW_V3' dist/tessa-matrix-studio.user.js
+          grep -Fq 'SERVER_PAGED_NATIVE_VIEW_V4' dist/tessa-matrix-studio.user.js
+          grep -Fq 'TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V4' dist/tessa-matrix-studio.user.js
+          grep -Fq 'TMS_V1_15_10_PAGING_V4_REFRESH_EDIT_V2' dist/tessa-matrix-studio.user.js
+          grep -Fq 'UAT_REAL_XLSX_EDIT_V2' dist/tessa-matrix-studio.user.js
+          grep -Fq "'candidate-build-provenance'" dist/tessa-matrix-studio.user.js
+          if grep -Fq 'TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V2' dist/tessa-matrix-studio.user.js; then
+            echo 'Stale paging V2 code survived candidate composition.' >&2
+            exit 1
+          fi
           grep -Fq 'FULL_UAT_RESOURCE_SAFETY_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'FULL_UAT_DICTIONARY_INVALID_VALUE_LEVEL_V1' dist/tessa-matrix-studio.user.js
           grep -Fq "'resource-input-limit'" dist/tessa-matrix-studio.user.js
@@ -132,6 +141,7 @@ jobs:
           grep -Fq "'resource-spreadsheet-bounds'" dist/tessa-matrix-studio.user.js
           grep -Fq "'memory-bounded-roundtrip'" dist/tessa-matrix-studio.user.js
 
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.15.10-live-stability.mjs
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.15-reliability.mjs
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/preview-incremental-snapshot.mjs
 
@@ -162,12 +172,12 @@ jobs:
       - name: Upload exact UAT candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: tessa-matrix-studio-v1.15.9-live-excel-uat-${{ github.run_id }}
+          name: tessa-matrix-studio-v1.15.10-live-excel-uat-${{ github.run_id }}
           path: |
             dist/tessa-matrix-studio.user.js
             dist/tessa-matrix-studio.meta.js
             dist/SHA256SUMS.txt
-            dist/tessa-matrix-studio-v1.15.9-UAT.zip
+            dist/tessa-matrix-studio-v1.15.10-UAT.zip
             dist/candidate-manifest.json
           if-no-files-found: error
           retention-days: 14
