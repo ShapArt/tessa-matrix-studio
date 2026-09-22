@@ -43,7 +43,7 @@ assert.ok(refreshStart >= 0 && refreshEnd > refreshStart, 'dictionary refresh UA
 const refreshBlock = output.slice(refreshStart, refreshEnd);
 assert.ok(refreshBlock.includes('patchWorkbookVisibleCellForUat'), 'dictionary refresh UAT must patch physical XLSX');
 assert.ok(refreshBlock.includes('visibleAfter'), 'dictionary refresh UAT must verify visible cell after refresh');
-assert.ok(refreshBlock.includes('counts?.update || 0) !== 1', 'dictionary refresh UAT must require exactly one update');
+assert.ok(refreshBlock.includes('counts?.update || 0) !== 1'), 'dictionary refresh UAT must require exactly one update');
 assert.ok(!refreshBlock.includes('edited?.book || cloneWorkbook'), 'old in-memory-only refresh setup must be absent');
 
 console.log('v1.15.10 live stability transform: PASS');
