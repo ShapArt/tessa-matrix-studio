@@ -15616,7 +15616,14 @@
             for (const selectedItem of selected) {
               const change = update.changes?.find(item => item.key === selectedItem.token);
               if (!change) throw new Error('Пакетный UPDATE потерял изменение ' + selectedItem.token + '.');
-              expectedByToken.set(selectedItem.token, canonicalFieldValues(change.after || []));
+              const rawExpectedAfter = canonicalFieldValues(change.after || []);
+              // FULL_UAT_BOOLEAN_SEMANTIC_V2
+              const expectedAfter = selectedItem.item.strategy === 'boolean'
+                ? rawExpectedAfter.map(value =>
+                  ['да', 'true', '1'].includes(value) ? 'true'
+                    : ['нет', 'false', '0'].includes(value) ? 'false' : value)
+                : rawExpectedAfter;
+              expectedByToken.set(selectedItem.token, expectedAfter);
               const evidence = evidenceByToken.get(selectedItem.token);
               evidence.candidate = candidateEvidenceValue(selectedItem.candidate);
             }
