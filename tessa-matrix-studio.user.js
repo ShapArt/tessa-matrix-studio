@@ -1486,7 +1486,7 @@
           method,
           compressedSize,
           uncompressedSize,
-          compressed: bytes.slice(dataStart, dataStart + compressedSize),
+          compressedStart: dataStart,
         });
       }
       offset += recordLength;
@@ -1501,18 +1501,19 @@
     const decoded = [];
     const actualState = { total: 0 };
     for (const descriptor of descriptors) {
+      const compressed = bytes.subarray(descriptor.compressedStart, descriptor.compressedStart + descriptor.compressedSize);
       let raw;
       if (descriptor.method === 0) {
         if (descriptor.compressedSize !== descriptor.uncompressedSize) {
           throw xlsxArchiveError(`размер несжатого файла ${descriptor.name} не совпадает с ZIP-каталогом.`);
         }
-        raw = descriptor.compressed;
+        raw = compressed;
         actualState.total += raw.byteLength;
         if (actualState.total > limits.MaxTotalUncompressedBytes) {
           throw xlsxArchiveError(`суммарный распакованный размер превышает безопасный лимит ${archiveLimitLabel(limits.MaxTotalUncompressedBytes)}.`);
         }
       } else {
-        raw = await inflateRawLimited(descriptor.compressed, descriptor, limits, actualState);
+        raw = await inflateRawLimited(compressed, descriptor, limits, actualState);
       }
       if (raw.byteLength !== descriptor.uncompressedSize) {
         throw xlsxArchiveError(`фактический распакованный размер файла ${descriptor.name} не совпадает с ZIP-каталогом.`);
@@ -1873,6 +1874,18 @@
   }
 
   const WORKBOOK_ARCHIVES = new WeakMap();
+  const SELECTED_FILE_BUFFER_CACHE = new WeakMap();
+
+  async function selectedFileArrayBuffer(file) {
+    if (!file) throw new Error('Выберите файл .xlsx.');
+    let pending = SELECTED_FILE_BUFFER_CACHE.get(file);
+    if (!pending) {
+      pending = Promise.resolve().then(() => file.arrayBuffer());
+      SELECTED_FILE_BUFFER_CACHE.set(file, pending);
+    }
+    try { return await pending; }
+    catch (error) { SELECTED_FILE_BUFFER_CACHE.delete(file); throw error; }
+  }
 
   async function readXlsxArrayBuffer(arrayBuffer, fileName = 'matrix.xlsx', options = {}) {
     const skipSheetNames = new Set((options.skipSheetNames || []).map(name => String(name).trim()).filter(Boolean));
@@ -1900,6 +1913,7 @@
       const raw = entries.get(descriptor.path);
       if (!raw) continue;
       parsedSheets.set(descriptor.name, parseSheetXml(decoder.decode(raw), shared, styles));
+      await yieldToMain();
     }
     const roundtripSheets = sheetDescriptors.filter(item => ROUNDTRIP.AcceptedFormats.includes(readMetadataPairs(parsedSheets.get(item.name)?.rows || [], 40)[ROUNDTRIP.FormatKey]));
     if (roundtripSheets.length > 1) throw new Error('В книге несколько листов матрицы TESSA. Оставьте один рабочий лист и повторите проверку.');
@@ -2046,7 +2060,7 @@
       const data = value instanceof Uint8Array ? value : encoder.encode(String(value));
       const deflated = await deflateRaw(data);
       const compressed = deflated && deflated.length < data.length ? deflated : data;
-      return { name, data, compressed, method: compressed === data ? 0 : 8, crc: crc32(data) };
+      return { name, uncompressedSize: data.length, compressed, method: compressed === data ? 0 : 8, crc: crc32(data) };
     });
 
     const localParts = [];
@@ -2064,7 +2078,7 @@
       lv.setUint16(12, dosDate, true);
       lv.setUint32(14, entry.crc, true);
       lv.setUint32(18, entry.compressed.length, true);
-      lv.setUint32(22, entry.data.length, true);
+      lv.setUint32(22, entry.uncompressedSize, true);
       lv.setUint16(26, nameBytes.length, true);
       lv.setUint16(28, 0, true);
       local.set(nameBytes, 30);
@@ -2081,7 +2095,7 @@
       cv.setUint16(14, dosDate, true);
       cv.setUint32(16, entry.crc, true);
       cv.setUint32(20, entry.compressed.length, true);
-      cv.setUint32(24, entry.data.length, true);
+      cv.setUint32(24, entry.uncompressedSize, true);
       cv.setUint16(28, nameBytes.length, true);
       cv.setUint16(30, 0, true);
       cv.setUint16(32, 0, true);
@@ -2379,7 +2393,7 @@
     return await new Promise(resolve => {
       try {
         const tx = db.transaction(DICTIONARY_CACHE.StoreName, 'readwrite');
-        tx.objectStore(DICTIONARY_CACHE.StoreName).put({ key, savedAt: Date.now(), catalog: clonePlain(catalog) });
+        tx.objectStore(DICTIONARY_CACHE.StoreName).put({ key, savedAt: Date.now(), catalog });
         tx.oncomplete = () => { db.close(); resolve(true); };
         tx.onerror = () => { try { db.close(); } catch (_) {} resolve(false); };
         tx.onabort = () => { try { db.close(); } catch (_) {} resolve(false); };
@@ -3914,7 +3928,7 @@
 
   async function readSelectedWorkbookWithLiveCatalog(file, { needBridge = false, forceDictionaryRefresh = false } = {}) {
     if (!file) throw new Error('Выберите файл .xlsx.');
-    const workbook = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name, {
+    const workbook = await readXlsxArrayBuffer(await selectedFileArrayBuffer(file), file.name, {
       skipSheetNames: ['Словари'],
       selectiveInflate: true,
     });
@@ -5510,17 +5524,18 @@
       try {
         const result = await view.getData(request);
         const columns = Array.from(result?.columns || []);
-        const rows = Array.from(result?.rows || []).slice(0, maxRows).map(row => Array.from(row || []).map(value => safePlain(this.unwrapTyped(value), { maxDepth: 5 })));
+        const rawRows = Array.from(result?.rows || []);
+        const rows = rawRows.slice(0, maxRows).map(row => Array.from(row || []).map(value => safePlain(this.unwrapTyped(value), { maxDepth: 5 })));
         return {
           alias: viewAlias,
           references: this.dictionaryReferences(view.metadata),
           columns,
           schemeTypes: Array.from(result?.schemeTypes || []).map(item => item?.toString?.() || String(item)),
           rowCount: result?.rowCount ?? rows.length,
-          returnedRows: Array.from(result?.rows || []).length,
-          complete: (result?.rowCount ?? rows.length) <= Array.from(result?.rows || []).length,
+          returnedRows: rawRows.length,
+          complete: (result?.rowCount ?? rows.length) <= rawRows.length,
           rows,
-          truncated: Number(result?.rowCount ?? rows.length) > rows.length || Array.from(result?.rows || []).length > rows.length,
+          truncated: Number(result?.rowCount ?? rows.length) > rows.length || rawRows.length > rows.length,
           info: safePlain(result?.info, { maxDepth: 7, maxKeys: 500, maxArray: 2000 }),
         };
       } catch (error) {
@@ -8757,9 +8772,8 @@
     }
     APP.workbook = workbook;
     if (workbook.dictionaryCatalog && workbook.roundtrip?.enabled) {
-      APP.dictionaryCatalog = normalizeDictionaryCatalog(clonePlain(workbook.dictionaryCatalog));
-      APP.dictionaryCatalog.stats.cache = { hit: true, key: dictionaryCacheKey(structure), savedAt: Date.now(), ageMs: 0, source: 'live-tessa' };
-      writeDictionaryCache(dictionaryCacheKey(structure), APP.dictionaryCatalog).catch(() => {});
+      APP.dictionaryCatalog = normalizeDictionaryCatalog(workbook.dictionaryCatalog);
+      APP.dictionaryCatalog.stats.cache = { ...(APP.dictionaryCatalog.stats.cache || {}), hit: true, key: dictionaryCacheKey(structure), source: 'live-tessa' };
     }
     APP.bridge = bridge;
     APP.structure = structure;
@@ -11030,7 +11044,7 @@
     });
     if (file) await run('file-read', 'Чтение выбранного Excel', async () => {
       if (file.size > XLSX_ARCHIVE_LIMITS.MaxInputBytes) throw new Error('Выбранный Excel превышает лимит размера.');
-      const buffer = await file.arrayBuffer(); capture('selected.xlsx', new Uint8Array(buffer));
+      const buffer = await selectedFileArrayBuffer(file); capture('selected.xlsx', new Uint8Array(buffer));
       selected = await readXlsxArrayBuffer(buffer, file.name);
       return { detail: `${selected.rows.length} строк; ${selected.headers.filter(Boolean).length} столбцов.` };
     });
@@ -12824,7 +12838,7 @@
     const file = document.querySelector('#tms-file')?.files?.[0];
     let source;
     if (file) {
-      source = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
+      source = await readXlsxArrayBuffer(await selectedFileArrayBuffer(file), file.name);
     } else if (window.__TESSA_MATRIX_SYNC_TEST_MODE__ && APP.structure && APP.snapshot && APP.dictionaryCatalog) {
       const grid = buildRoundtripGrid(APP.structure, APP.snapshot, {}, APP.dictionaryCatalog);
       source = {
