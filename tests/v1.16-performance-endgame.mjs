@@ -19,6 +19,8 @@ for (const marker of [
   'pickerSearchCache: new Map()',
   'PERF_PICKER_SEARCH_CACHE_V1',
   'PERF_ROUNDTRIP_ROW_STREAM_V1',
+  'PERF_BASELINE_SHEET_STREAM_V1',
+  'buildBaselineSheetZipValue(baselineSourceRows)',
   'zipTextParts([worksheetPrefix, ...matrixRowChunks, worksheetSuffix])',
   'includeRows: false',
   'pickerMatchingRows(catalog, terms, roleType)',
@@ -58,3 +60,5 @@ assert(source.includes('entries.set(dictionaryPath, artifacts.dictionaryZipValue
 console.log('v1.16 performance endgame static contract: PASS');
 
 assert(!source.includes('const visualRowCount = Math.max(1, grid.rows.length)'), 'roundtrip export must not materialize a second row grid');
+
+assert(!source.includes("const baselineRows = [['MatrixRowID', 'MatrixVersionID', 'BaseFingerprint']];"), 'baseline ledger must not materialize a giant 2D table');
