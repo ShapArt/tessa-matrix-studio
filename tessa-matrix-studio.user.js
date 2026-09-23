@@ -1953,10 +1953,27 @@
       if (values.some(v => normalizeSpace(v))) data.push({ excelRow: r + 1, values, cellMeta });
     }
     const format = metadata[ROUNDTRIP.FormatKey] || null;
+    const roundtripEnabled = ROUNDTRIP.AcceptedFormats.includes(format);
+    const dictionaryCatalog = options.dictionaryCatalog || parseEmbeddedDictionaryCatalog(parsedSheets);
+    const baselineRows = parseBaselineRows(parsedSheets);
+    const sheetNames = [...parsedSheets.keys()];
+
+    // PERF_PARSED_SHEET_COMPACTION_V1
+    // In the production selective-inflate path, the matrix/baseline have already been
+    // projected into compact workbook rows and baseline DTOs. Keeping their raw 2D
+    // SpreadsheetML parse trees as well would roughly double live heap for no benefit.
+    // Structure remains because dictionary refresh needs its rows; all original ZIP
+    // bytes stay in WORKBOOK_ARCHIVES when retainArchive is enabled.
+    if (roundtripEnabled && options.selectiveInflate === true) {
+      parsedSheets.delete(matrixDescriptor.name);
+      parsedSheets.delete(ROUNDTRIP.BaselineSheet);
+      parsedSheets.delete(ROUNDTRIP.DictionarySheet);
+    }
+
     const workbook = {
       fileName,
       sheetName: matrixDescriptor.name,
-      sheetNames: [...parsedSheets.keys()],
+      sheetNames,
       headerRow: headerRowIndex + 1,
       schemaRow: schemaRowIndex >= 0 ? schemaRowIndex + 1 : null,
       headers: trimmedHeaders,
@@ -1964,15 +1981,15 @@
       rows: data,
       metadata,
       parsedSheets,
-      dictionaryCatalog: options.dictionaryCatalog || parseEmbeddedDictionaryCatalog(parsedSheets),
+      dictionaryCatalog,
       roundtrip: {
-        enabled: ROUNDTRIP.AcceptedFormats.includes(format),
+        enabled: roundtripEnabled,
         format,
         matrixId: metadata[ROUNDTRIP.MatrixIdKey] || null,
         templateId: metadata[ROUNDTRIP.TemplateIdKey] || null,
         previousVersionId: metadata[ROUNDTRIP.PreviousVersionIdKey] || null,
         templateMode: metadata[ROUNDTRIP.TemplateModeKey] || null,
-        baselineRows: parseBaselineRows(parsedSheets),
+        baselineRows,
       },
     };
     if (options.retainArchive !== false) WORKBOOK_ARCHIVES.set(workbook, entries);
