@@ -17,7 +17,7 @@ assert.match(source, /const recoveryReady = Boolean\(baselineCaptured && baselin
 assert.match(source, /if \(!recoveryReady && report\.writesAttempted === 0\) \{[\s\S]{0,900}?status: 'NOT_REQUIRED'[\s\S]{0,900}?'final-restore-proof'[\s\S]{0,300}?'NOT_RUN'/,
   'no-write preflight abort must not execute baseline recovery or become UNSAFE');
 assert.match(source, /if \(version !== '1\.16\.3'\)/,
-  'exact candidate provenance must validate the candidate version itself');
+  'candidate provenance must validate the composed candidate version itself');
 assert.doesNotMatch(source, /if \(version !== '1\.16\.1'\)/,
   'stale v1.16.1 provenance gate must not survive v1.16.3 composition');
 assert.match(source, /FULL_UAT_UI_PREFLIGHT_V1[\s\S]{0,700}?E\.assertWritableMatrixDraft\(preflightBridge\);[\s\S]{0,300}?E\.assertNativeEditMode\(\);/,
