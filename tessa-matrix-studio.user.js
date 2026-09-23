@@ -15492,9 +15492,13 @@
           if (!updatePlan) throw new Error('Не удалось подобрать безопасное UPDATE временной строки.'); registerFieldMutationObligations(updatePlan, 'write-update-delete', rowCardId); await applySingle(updatePlan, 'write-update-delete: UPDATE'); const afterUpdate = await freshSnapshot(); if (!afterUpdate.snapshot.rows.some(row => canon(row.rowCardId) === canon(rowCardId))) throw new Error('Временная строка исчезла после UPDATE.'); if (!await cleanupCreatedRow(rowCardId, 'write-update-delete')) throw new Error('Cleanup после UPDATE не подтверждён.'); const final = await freshSnapshot(); if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) throw new Error('После UPDATE cleanup baseline не восстановлен.'); return { detail: 'Временная строка изменена через штатный Store/read-back и полностью удалена.' };
         } catch (error) { await cleanupCreatedRow(rowCardId, 'write-update-delete-finally'); throw error; }
       });
-      await runCheck('write-every-field', 'Сервер: каждое доступное поле → read-back → restore', async () => {
+      // FULL_UAT_BATCHED_FIELD_WRITES_V1
+      // Every writable field is still mutated and read back, but safe changes are grouped
+      // into one row UPDATE and restored together. This keeps field coverage while cutting
+      // the live write/read-back count from ~2×fields to ~2×batches.
+      await runCheck('write-every-field', 'Сервер: все доступные поля пакетами → read-back → restore', async () => {
         const temp = await createTemporaryRow('write-every-field'), rowCardId = temp.created.rowCardId;
-        const audit = { rowCardId, inventory: [], evidence: [] };
+        const audit = { rowCardId, inventory: [], evidence: [], batches: [], batchSize: 6 };
         report.fieldMutationAudit = audit;
         let fatalRestore = null;
         try {
@@ -15503,136 +15507,273 @@
           const initialPackage = await workbookFromSnapshot(structure, initial.snapshot, bridge, currentCatalog);
           const initialBook = initialPackage.book;
           const initialTarget = findRowByCard(initialBook, rowCardId);
-          if (!initialTarget) throw new Error('Временная строка не найдена перед проверкой полей.');
+          const initialSnapshotRow = initial.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
+          if (!initialTarget || !initialSnapshotRow) throw new Error('Временная строка не найдена перед проверкой полей.');
+
           const inventory = buildWritableFieldInventory(initialBook, structure, currentCatalog);
-          audit.inventory = inventory.map(item => ({ token: item.token, label: item.label, kind: item.kind, strategy: item.strategy, index: item.index }));
+          audit.inventory = inventory.map(item => ({
+            token: item.token, label: item.label, kind: item.kind, strategy: item.strategy, index: item.index,
+          }));
           if (!inventory.length) return { status: 'NOT_RUN', detail: 'В текущей структуре нет доступных для записи criterion/function полей.' };
 
-          for (const inventoryItem of inventory) {
-            let mutationApplied = false;
-            let mutationObligationIds = [];
-            let original = null;
-            let originalSemantic = [];
+          const evidenceByToken = new Map();
+          for (const item of inventory) {
+            const hiddenIndex = companionIndex(initialBook, item.token);
             const evidence = {
-              token: inventoryItem.token,
-              label: inventoryItem.label,
-              kind: inventoryItem.kind,
-              before: null,
+              token: item.token,
+              label: item.label,
+              kind: item.kind,
+              before: {
+                visible: String(initialTarget.values?.[item.index] ?? ''),
+                hidden: hiddenIndex >= 0 ? String(initialTarget.values?.[hiddenIndex] ?? '') : '',
+                semantic: canonicalFieldValues(initialSnapshotRow.flat?.[item.token] || []),
+              },
               candidate: null,
               observedAfter: null,
               restoreResult: 'not-needed',
               status: 'NOT_RUN',
             };
+            evidenceByToken.set(item.token, evidence);
             audit.evidence.push(evidence);
-            try {
-              const current = await freshSnapshot(); bridge = current.bridge;
-              currentCatalog = catalogForSnapshot(current.snapshot);
-              const prepared = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog);
-              const book = prepared.book;
-              const target = findRowByCard(book, rowCardId);
-              const snapshotRow = current.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
-              if (!target || !snapshotRow) throw new Error('Временная строка не найдена перед изолированной мутацией.');
-              const liveItem = buildWritableFieldInventory(book, structure, currentCatalog).find(item => item.token === inventoryItem.token);
-              if (!liveItem) {
-                evidence.status = 'NOT_RUN'; evidence.restoreResult = 'not-needed'; evidence.reason = 'Поле исчезло из актуальной структуры.';
-                continue;
-              }
-              const hiddenIndex = companionIndex(book, liveItem.token);
-              original = { visible: String(target.values?.[liveItem.index] ?? ''), hidden: hiddenIndex >= 0 ? String(target.values?.[hiddenIndex] ?? '') : '' };
-              originalSemantic = canonicalFieldValues(snapshotRow.flat?.[liveItem.token] || []);
-              evidence.before = { visible: original.visible, hidden: original.hidden, semantic: [...originalSemantic] };
+          }
 
-              let selected = null;
-              for (const candidate of fieldCandidateValues(liveItem, original.visible).slice(0, 24)) {
-                const attempt = cloneWorkbook(book);
+          let remaining = inventory.map(item => item.token);
+          const maxBatchSize = audit.batchSize;
+
+          while (remaining.length && !fatalRestore) {
+            const current = await freshSnapshot(); bridge = current.bridge;
+            currentCatalog = catalogForSnapshot(current.snapshot);
+            const prepared = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog);
+            const baseBook = prepared.book;
+            const baseTarget = findRowByCard(baseBook, rowCardId);
+            const baseSnapshotRow = current.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
+            if (!baseTarget || !baseSnapshotRow) throw new Error('Временная строка не найдена перед пакетной мутацией.');
+
+            const liveInventory = buildWritableFieldInventory(baseBook, structure, currentCatalog);
+            const liveByToken = new Map(liveInventory.map(item => [item.token, item]));
+            let workingBook = cloneWorkbook(baseBook);
+            const selected = [];
+
+            for (const token of remaining) {
+              if (selected.length >= maxBatchSize) break;
+              const liveItem = liveByToken.get(token);
+              if (!liveItem) continue;
+              const currentVisible = String(baseTarget.values?.[liveItem.index] ?? '');
+              let picked = null;
+
+              for (const candidate of fieldCandidateValues(liveItem, currentVisible).slice(0, 24)) {
+                const attempt = cloneWorkbook(workingBook);
                 const attemptRow = findRowByCard(attempt, rowCardId);
+                if (!attemptRow) break;
                 setFieldCandidate(attempt, attemptRow, liveItem, candidate);
                 let plan = E.buildPlan(attempt, structure, current.snapshot, bridge.matrixInfo());
                 plan = applySafety(plan, bridge);
                 const executable = (plan.actions || []).filter(action => action.type !== 'noop');
-                const update = executable.length === 1 && executable[0].type === 'update' && canon(executable[0].currentRow?.rowCardId) === canon(rowCardId) ? executable[0] : null;
+                const update = executable.length === 1
+                  && executable[0].type === 'update'
+                  && canon(executable[0].currentRow?.rowCardId) === canon(rowCardId)
+                  ? executable[0] : null;
                 const change = update?.changes?.find(item => item.key === liveItem.token);
                 if (update && change && !plan.counts?.skip && !plan.safety?.blocked) {
-                  selected = { candidate, plan, expectedAfter: canonicalFieldValues(change.after || []) };
+                  picked = { candidate, attempt, plan };
                   break;
                 }
               }
-              if (!selected) {
-                evidence.status = 'NOT_RUN'; evidence.restoreResult = 'not-needed'; evidence.reason = 'Не найдено безопасное альтернативное значение, дающее единственный UPDATE.';
-                continue;
-              }
 
-              evidence.candidate = candidateEvidenceValue(selected.candidate);
-              mutationObligationIds = registerFieldMutationObligations(selected.plan, `write-every-field:${liveItem.token}`, rowCardId);
-              await applySingle(selected.plan, `write-every-field ${liveItem.token}: UPDATE`);
+              if (!picked) continue;
+              workingBook = picked.attempt;
+              selected.push({ token, item: liveItem, candidate: picked.candidate });
+            }
+
+            if (!selected.length) {
+              // With an empty batch, failure means there is no safe isolated alternative
+              // for the remaining fields in the current live row.
+              for (const token of remaining) {
+                const evidence = evidenceByToken.get(token);
+                const liveItem = liveByToken.get(token);
+                evidence.status = 'NOT_RUN';
+                evidence.reason = liveItem
+                  ? 'Не найдено безопасное альтернативное значение, дающее единственный UPDATE.'
+                  : 'Поле исчезло из актуальной структуры.';
+              }
+              break;
+            }
+
+            let batchPlan = E.buildPlan(workingBook, structure, current.snapshot, bridge.matrixInfo());
+            batchPlan = applySafety(batchPlan, bridge);
+            const executable = (batchPlan.actions || []).filter(action => action.type !== 'noop');
+            const update = executable.length === 1
+              && executable[0].type === 'update'
+              && canon(executable[0].currentRow?.rowCardId) === canon(rowCardId)
+              ? executable[0] : null;
+            if (!update || batchPlan.counts?.skip || batchPlan.safety?.blocked) {
+              throw new Error('Пакетный field-UAT не построил единственный безопасный UPDATE.');
+            }
+
+            const selectedTokens = new Set(selected.map(item => item.token));
+            const expectedByToken = new Map();
+            for (const selectedItem of selected) {
+              const change = update.changes?.find(item => item.key === selectedItem.token);
+              if (!change) throw new Error('Пакетный UPDATE потерял изменение ' + selectedItem.token + '.');
+              expectedByToken.set(selectedItem.token, canonicalFieldValues(change.after || []));
+              const evidence = evidenceByToken.get(selectedItem.token);
+              evidence.candidate = candidateEvidenceValue(selectedItem.candidate);
+            }
+
+            const batchId = 'field-batch-' + String(audit.batches.length + 1).padStart(2, '0');
+            const mutationObligationIds = registerFieldMutationObligations(batchPlan, batchId, rowCardId);
+            const writesBefore = report.writesCompleted;
+            let mutationApplied = false;
+            let batchError = null;
+            try {
+              await applySingle(batchPlan, batchId + ': UPDATE');
               mutationApplied = true;
               const after = await freshSnapshot(); bridge = after.bridge;
               const afterRow = after.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
-              if (!afterRow) throw new Error('Временная строка исчезла после мутации поля.');
-              const observedAfter = canonicalFieldValues(afterRow.flat?.[liveItem.token] || []);
-              evidence.observedAfter = [...observedAfter];
-              if (!sameArray(observedAfter, selected.expectedAfter)) {
-                throw new Error(`Read-back ${liveItem.token} не совпал с ожидаемым значением: expected=${JSON.stringify(selected.expectedAfter)} actual=${JSON.stringify(observedAfter)}.`);
+              if (!afterRow) throw new Error('Временная строка исчезла после пакетной мутации.');
+
+              for (const selectedItem of selected) {
+                const evidence = evidenceByToken.get(selectedItem.token);
+                const observed = canonicalFieldValues(afterRow.flat?.[selectedItem.token] || []);
+                evidence.observedAfter = [...observed];
+                if (!sameArray(observed, expectedByToken.get(selectedItem.token) || [])) {
+                  evidence.status = 'FAIL';
+                  evidence.error = 'Read-back не совпал с ожидаемым значением.';
+                  batchError ||= new Error(
+                    'Read-back ' + selectedItem.token + ' не совпал: expected='
+                    + JSON.stringify(expectedByToken.get(selectedItem.token) || [])
+                    + ' actual=' + JSON.stringify(observed)
+                  );
+                } else {
+                  evidence.status = 'PASS';
+                }
               }
-              evidence.status = 'PASS';
             } catch (error) {
-              evidence.status = 'FAIL';
-              evidence.error = String(error?.message || error);
+              batchError = error;
+              for (const selectedItem of selected) {
+                const evidence = evidenceByToken.get(selectedItem.token);
+                if (evidence.status !== 'PASS') {
+                  evidence.status = 'FAIL';
+                  evidence.error = String(error?.message || error);
+                }
+              }
             } finally {
-              if (mutationApplied && original) {
+              if (mutationApplied) {
                 try {
                   const restoreState = await freshSnapshot(); bridge = restoreState.bridge;
                   const restoreCatalog = catalogForSnapshot(restoreState.snapshot);
                   const restorePackage = await workbookFromSnapshot(structure, restoreState.snapshot, bridge, restoreCatalog);
                   const restoreBook = restorePackage.book;
                   const restoreRow = findRowByCard(restoreBook, rowCardId);
-                  const restoreItem = buildWritableFieldInventory(restoreBook, structure, restoreCatalog).find(item => item.token === inventoryItem.token);
-                  if (!restoreRow || !restoreItem) throw new Error('Поле или временная строка недоступны для restore.');
-                  restoreRow.values[restoreItem.index] = original.visible;
-                  const restoreHiddenIndex = companionIndex(restoreBook, restoreItem.token);
-                  if (restoreHiddenIndex >= 0) restoreRow.values[restoreHiddenIndex] = original.hidden;
+                  if (!restoreRow) throw new Error('Временная строка недоступна для пакетного restore.');
+
+                  for (const selectedItem of selected) {
+                    const restoreItem = buildWritableFieldInventory(restoreBook, structure, restoreCatalog)
+                      .find(item => item.token === selectedItem.token);
+                    const evidence = evidenceByToken.get(selectedItem.token);
+                    if (!restoreItem) throw new Error('Поле ' + selectedItem.token + ' недоступно для restore.');
+                    restoreRow.values[restoreItem.index] = evidence.before.visible;
+                    const hiddenIndex = companionIndex(restoreBook, restoreItem.token);
+                    if (hiddenIndex >= 0) restoreRow.values[hiddenIndex] = evidence.before.hidden;
+                  }
+
                   let restorePlan = E.buildPlan(restoreBook, structure, restoreState.snapshot, bridge.matrixInfo());
                   restorePlan = applySafety(restorePlan, bridge);
                   const restoreExecutable = (restorePlan.actions || []).filter(action => action.type !== 'noop');
-                  const beforeRestoreRow = restoreState.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
-                  if (!sameArray(canonicalFieldValues(beforeRestoreRow?.flat?.[restoreItem.token] || []), originalSemantic)) {
-                    if (restoreExecutable.length !== 1 || restoreExecutable[0].type !== 'update' || canon(restoreExecutable[0].currentRow?.rowCardId) !== canon(rowCardId) || restorePlan.counts?.skip || restorePlan.safety?.blocked) {
-                      throw new Error(`restore не построил единственный безопасный UPDATE для ${restoreItem.token}.`);
+
+                  const needsRestore = selected.some(selectedItem => {
+                    const liveRow = restoreState.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
+                    return !sameArray(
+                      canonicalFieldValues(liveRow?.flat?.[selectedItem.token] || []),
+                      evidenceByToken.get(selectedItem.token).before.semantic || []
+                    );
+                  });
+
+                  if (needsRestore) {
+                    if (restoreExecutable.length !== 1
+                      || restoreExecutable[0].type !== 'update'
+                      || canon(restoreExecutable[0].currentRow?.rowCardId) !== canon(rowCardId)
+                      || restorePlan.counts?.skip
+                      || restorePlan.safety?.blocked) {
+                      throw new Error('Пакетный restore не построил единственный безопасный UPDATE.');
                     }
-                    await applySingle(restorePlan, `write-every-field ${restoreItem.token}: restore`);
+                    await applySingle(restorePlan, batchId + ': restore');
                   }
+
                   const restored = await freshSnapshot(); bridge = restored.bridge;
                   const restoredRow = restored.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
-                  const restoredSemantic = canonicalFieldValues(restoredRow?.flat?.[restoreItem.token] || []);
-                  if (!sameArray(restoredSemantic, originalSemantic)) throw new Error(`restore read-back ${restoreItem.token} не совпал с исходным значением.`);
-                  evidence.restoreResult = 'verified';
-                  for (const obligationId of mutationObligationIds) resolveCleanupObligation(obligationId, { status: 'verified', resolvedAt: now(), resolvedBy: 'field-readback-restore' });
+                  if (!restoredRow) throw new Error('Временная строка исчезла после пакетного restore.');
+
+                  for (const selectedItem of selected) {
+                    const evidence = evidenceByToken.get(selectedItem.token);
+                    const restoredSemantic = canonicalFieldValues(restoredRow.flat?.[selectedItem.token] || []);
+                    if (!sameArray(restoredSemantic, evidence.before.semantic || [])) {
+                      throw new Error('restore read-back ' + selectedItem.token + ' не совпал с исходным значением.');
+                    }
+                    evidence.restoreResult = 'verified';
+                  }
+                  for (const obligationId of mutationObligationIds) {
+                    resolveCleanupObligation(obligationId, {
+                      status: 'verified',
+                      resolvedAt: now(),
+                      resolvedBy: 'batched-field-readback-restore',
+                    });
+                  }
                 } catch (restoreError) {
                   cleanupUnsafe = true;
-                  evidence.restoreResult = `FAILED: ${String(restoreError?.message || restoreError)}`;
-                  evidence.status = 'FAIL';
                   fatalRestore = restoreError;
+                  for (const selectedItem of selected) {
+                    const evidence = evidenceByToken.get(selectedItem.token);
+                    evidence.restoreResult = 'FAILED: ' + String(restoreError?.message || restoreError);
+                    evidence.status = 'FAIL';
+                  }
                 }
               }
             }
-            if (fatalRestore) break;
+
+            audit.batches.push({
+              id: batchId,
+              tokens: selected.map(item => item.token),
+              fields: selected.length,
+              writes: report.writesCompleted - writesBefore,
+              status: fatalRestore || batchError ? 'FAIL' : 'PASS',
+              error: fatalRestore ? String(fatalRestore?.message || fatalRestore)
+                : batchError ? String(batchError?.message || batchError) : null,
+            });
+
+            remaining = remaining.filter(token => !selectedTokens.has(token));
+            if (batchError) {
+              // Keep testing independent later batches only if cleanup was proven.
+              if (fatalRestore) break;
+            }
           }
 
           const passCount = audit.evidence.filter(item => item.status === 'PASS').length;
           const failCount = audit.evidence.filter(item => item.status === 'FAIL').length;
           const notRunCount = audit.evidence.filter(item => item.status === 'NOT_RUN').length;
-          if (fatalRestore) throw new Error(`Не удалось доказать restore одного из полей: ${String(fatalRestore?.message || fatalRestore)}.`);
-          if (failCount) throw new Error(`Каждое поле проверено не полностью: PASS ${passCount}, FAIL ${failCount}, NOT_RUN ${notRunCount}.`);
-          if (!passCount) return { status: 'NOT_RUN', detail: `Ни для одного из ${inventory.length} полей не найдено безопасной альтернативы.`, data: audit };
-          return { status: 'PASS', detail: `Изолированно проверено ${passCount} полей; NOT_RUN ${notRunCount}. Для каждой записи выполнен read-back и restore.`, data: audit };
+          audit.summary = {
+            total: audit.evidence.length,
+            pass: passCount,
+            fail: failCount,
+            notRun: notRunCount,
+            batches: audit.batches.length,
+            writes: audit.batches.reduce((sum, item) => sum + Number(item.writes || 0), 0),
+          };
+
+          if (fatalRestore) throw fatalRestore;
+          if (failCount) throw new Error(
+            'Пакетная проверка полей: FAIL ' + failCount + ' из ' + audit.evidence.length
+            + '. См. fieldMutationAudit.'
+          );
+          return {
+            detail: 'Поля проверены пакетами: PASS ' + passCount
+              + ', NOT RUN ' + notRunCount
+              + ', пакетов ' + audit.batches.length
+              + ', write-операций ' + audit.summary.writes + '.',
+            data: audit.summary,
+          };
         } finally {
-          const cleaned = await cleanupCreatedRow(rowCardId, 'write-every-field');
-          if (!cleaned) cleanupUnsafe = true;
-          const final = await freshSnapshot();
-          if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) {
-            cleanupUnsafe = true;
-            throw new Error('После every-field UAT исходная матрица отличается от baseline.');
-          }
+          if (!await cleanupCreatedRow(rowCardId, 'write-every-field-finally')) cleanupUnsafe = true;
         }
       });
       await runCheck('write-clear-delete', 'Сервер: ADD → очистка поля → read-back → cleanup', async () => {
