@@ -2991,7 +2991,7 @@
       [ROUNDTRIP.SchemaRowKey, String(schemaRow)],
       [ROUNDTRIP.TemplateModeKey, 'ROUNDTRIP'],
     ];
-    return { columns, rows, metadata, headerRow, schemaRow, dictionaryCatalog: catalog };
+    return { columns, rows, metadata, headerRow, schemaRow, dictionaryCatalog: catalog, customColumns, includeActions };
   }
 
   function genericSheetXml(rows, widths = [], options = {}) {
@@ -3079,15 +3079,7 @@
     pendingMatrixRows.push(`<row r="${grid.headerRow}" ht="46" customHeight="1">${grid.columns.map((column, index) => xlsxStringCell(grid.headerRow, index, column.header, column.kind === 'criterion' ? 2 : column.kind === 'function' ? 3 : 4)).join('')}</row>`);
     for (let rowIndex = 0; rowIndex < snapshot.rows.length; rowIndex += 1) {
       const snapshotRow = snapshot.rows[rowIndex];
-      const values = roundtripRowValues(snapshotRow, structure, grid.dictionaryCatalog, (options.customColumns || []).map((item, index) => ({
-        header: normalizeSpace(item.header) || `Пользовательская колонка ${index + 1}`,
-        schema: '',
-        key: `custom:${index}`,
-        kind: 'custom',
-        hidden: false,
-        width: Number(item.width) || 26,
-        sourceIndex: item.sourceIndex,
-      })), grid.columns.some(column => column.key === 'system:action'));
+      const values = roundtripRowValues(snapshotRow, structure, grid.dictionaryCatalog, grid.customColumns, grid.includeActions);
       const rowNumber = dataStartRow + rowIndex;
       const bodyStyle = rowIndex % 2 ? 8 : 5;
       const lines = values.reduce((max, value, index) => {
