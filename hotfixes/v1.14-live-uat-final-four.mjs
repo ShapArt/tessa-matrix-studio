@@ -28,7 +28,7 @@ replaceExact(
 // that is intentionally correct for user-supplied archives. Build the replacement service
 // XML and its named ranges directly from the already-normalized live catalog instead.
 // The external 128 MiB/512 MiB archive guards remain unchanged.
-if (source.includes('PERF_DIRECT_DICTIONARY_REFRESH_V2')) {
+if (/PERF_DIRECT_DICTIONARY_REFRESH_V[23]/.test(source)) {
   // Newer source already implements the same fix in a more memory-efficient form:
   // direct dictionary XML, cooperative yields and no donor workbook roundtrip.
   if (!source.includes('REFRESH_DICTIONARY_DIRECT_XML_V2')) {
