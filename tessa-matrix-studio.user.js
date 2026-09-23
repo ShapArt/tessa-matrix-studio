@@ -1878,6 +1878,8 @@
 
   async function selectedFileArrayBuffer(file) {
     if (!file) throw new Error('Выберите файл .xlsx.');
+    const cacheable = Number(file.size || 0) <= 8 * 1024 * 1024;
+    if (!cacheable) return await file.arrayBuffer();
     let pending = SELECTED_FILE_BUFFER_CACHE.get(file);
     if (!pending) {
       pending = Promise.resolve().then(() => file.arrayBuffer());
@@ -8853,6 +8855,7 @@
       }
     }
     APP.workbook = workbook;
+    APP.selectedFileRef = file;
     if (workbook.dictionaryCatalog && workbook.roundtrip?.enabled) {
       APP.dictionaryCatalog = normalizeDictionaryCatalog(workbook.dictionaryCatalog);
       APP.dictionaryCatalog.stats.cache = { ...(APP.dictionaryCatalog.stats.cache || {}), hit: true, key: dictionaryCacheKey(structure), source: 'live-tessa' };
@@ -8884,6 +8887,7 @@
     clearReviewedChangesArtifact(APP);
     APP.plan = null;
     APP.workbook = null;
+    APP.selectedFileRef = null;
     APP.review = createPlanReviewState();
     APP.previewView = createPreviewViewState();
     APP.capabilityActions = [];
@@ -12945,8 +12949,13 @@
   async function openValuePicker() {
     const file = document.querySelector('#tms-file')?.files?.[0];
     let source;
-    if (file) {
-      source = await readXlsxArrayBuffer(await selectedFileArrayBuffer(file), file.name);
+    if (file && APP.selectedFileRef === file && APP.workbook?.dictionaryCatalog) {
+      // Reuse the already parsed workbook + live catalog from Preview. Re-reading the
+      // hidden «Словари» sheet here used to be one of the heaviest user-facing paths.
+      source = APP.workbook;
+    } else if (file) {
+      const selected = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true });
+      source = selected.workbook;
     } else if (window.__TESSA_MATRIX_SYNC_TEST_MODE__ && APP.structure && APP.snapshot && APP.dictionaryCatalog) {
       const grid = buildRoundtripGrid(APP.structure, APP.snapshot, {}, APP.dictionaryCatalog);
       source = {
