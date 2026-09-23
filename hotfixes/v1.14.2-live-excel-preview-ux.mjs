@@ -101,8 +101,8 @@ export function applyLiveExcelPreviewUx(input) {
 
 `);
 
-  const oldPersonalRoleExport = "        values.push(items.map(item => dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, '')).join('\\n'));";
-  const newPersonalRoleExport = "        values.push(items.map(item => Number(item.roleTypeId) === PERSONAL_ROLE_TYPE_ID ? employeeSafeSelector((dictionaryLookup(dict)?.byId?.get(canonicalValue(item.id) + '|' + canonicalValue(item.roleTypeId)) || [])[0] || item) : (dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, ''))).join('\\n'));";
+  const oldPersonalRoleExport = "values.push(items.map(item => dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, '')).join('\\n'));";
+  const newPersonalRoleExport = "values.push(items.map(item => Number(item.roleTypeId) === PERSONAL_ROLE_TYPE_ID ? employeeSafeSelector((dictionaryLookup(dict)?.byId?.get(canonicalValue(item.id) + '|' + canonicalValue(item.roleTypeId)) || [])[0] || item) : (dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, ''))).join('\\n'));";
   if (source.includes(oldPersonalRoleExport)) source = source.replace(oldPersonalRoleExport, newPersonalRoleExport);
   else if (!source.includes(newPersonalRoleExport)) throw new Error('Function-role Excel export anchor not found');
 
