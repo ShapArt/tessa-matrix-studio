@@ -11,7 +11,7 @@ const ctx={
  canonicalValue:v=>String(v??'').trim().toLowerCase(),
  pageParamEvidence:params=>params,
  hasExplicitPaging:params=>{const n=new Set(params.map(x=>String(x.name).toLowerCase()));return n.has('pagelimit')&&n.has('pageoffset')},
- Number,Array,Object,String,Set,console,
+ pageLimit:50,Number,Array,Object,String,Set,console,
 };
 vm.createContext(ctx);
 vm.runInContext(block+'\nthis.api={pagingNumber,pagingValues,isPagingUsableForPage};',ctx);
@@ -21,7 +21,7 @@ assert.equal(pagingNumber({Value:'51'}),51);
 assert.equal(pagingNumber(null),null);
 const p=(limit,offset)=>[{name:'PageLimit',value:limit},{name:'PageOffset',value:offset}];
 assert.equal(isPagingUsableForPage(p(50,0),1,null),true);
-assert.equal(isPagingUsableForPage(p(50,null),1,null),false);
+assert.equal(isPagingUsableForPage(p(50,null),1,null),false);\nassert.equal(isPagingUsableForPage(p(20,0),1,null),false);
 assert.equal(isPagingUsableForPage(p(50,0),2,0),false);
 assert.equal(isPagingUsableForPage(p('50','50'),2,0),true);
 assert.deepEqual({...pagingValues(p('50','100'))},{limit:50,offset:100});
