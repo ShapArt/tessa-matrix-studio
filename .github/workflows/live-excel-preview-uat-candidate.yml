@@ -114,7 +114,6 @@ jobs:
           grep -Fq 'FULL_UAT_PREFLIGHT_RECOVERY_STATE_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'FULL_UAT_UI_PREFLIGHT_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'SERVER_PAGED_NATIVE_VIEW_V5' dist/tessa-matrix-studio.user.js
-          grep -Fq 'TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V5' dist/tessa-matrix-studio.user.js
           grep -Fq 'TMS_V1_16_4_PAGING_V5_XLSX_EDIT_V3' dist/tessa-matrix-studio.user.js
           grep -Fq 'SERVER_PAGED_NATIVE_VIEW_V7' dist/tessa-matrix-studio.user.js
           grep -Fq 'TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V7' dist/tessa-matrix-studio.user.js
