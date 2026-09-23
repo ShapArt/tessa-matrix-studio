@@ -16,7 +16,7 @@ assert.match(source, /const recoveryReady = Boolean\(baselineCaptured && baselin
   'recovery must require a complete baseline context');
 assert.match(source, /if \(!recoveryReady && report\.writesAttempted === 0\) \{[\s\S]{0,900}?status: 'NOT_REQUIRED'[\s\S]{0,900}?'final-restore-proof'[\s\S]{0,300}?'NOT_RUN'/,
   'no-write preflight abort must not execute baseline recovery or become UNSAFE');
-assert.match(source, /if \(version !== '1\.16\.(?:3|4|6|7|8|9)'\)/,
+assert.match(source, /if \(version !== '1\.16\.(?:3|4|6|7|8|9|10)'\)/,
   'candidate provenance must validate the composed candidate version itself');
 assert.doesNotMatch(source, /if \(version !== '1\.16\.1'\)/,
   'stale v1.16.1 provenance gate must not survive v1.16.3 composition');
