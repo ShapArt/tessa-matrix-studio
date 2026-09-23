@@ -2890,6 +2890,40 @@
   // identity-колонки, справочники и пользовательская инструкция.
   // ---------------------------------------------------------------------------
 
+  // PERF_ROUNDTRIP_ROW_STREAM_V1
+  function roundtripRowValues(snapshotRow, structure, catalog, customColumns = [], includeActions = false) {
+    const values = [];
+    for (const condition of structure.conditions) {
+      const key = definitionKey('criterion', condition.criterionRowId);
+      const dict = catalog.catalogs?.[catalog.columnCatalogIds?.[key]];
+      const items = snapshotRow.values?.[condition.criterionRowId] || [];
+      const isBoolean = canonicalValue(condition.operandTypeId) === canonicalValue(OPERAND.Boolean);
+      values.push(items.map(item => isBoolean
+        ? booleanDisplay(item.value ?? item.id ?? item.display)
+        : (item.display || dictionarySelector(dict, item.id, null, ''))).join('\n'));
+      values.push(items.map(item => {
+        if (isBoolean) {
+          const semantic = booleanSemantic(item.value ?? item.id ?? item.display);
+          return semantic === null ? '' : semantic ? 'true' : 'false';
+        }
+        return item.id !== null && item.id !== undefined && item.id !== '' ? String(item.id) : '';
+      }).filter(Boolean).join('\n'));
+    }
+    for (const fn of structure.functions) {
+      const key = definitionKey('function', fn.id);
+      const dict = catalog.catalogs?.[catalog.columnCatalogIds?.[key]];
+      const items = snapshotRow.roles?.[fn.id] || [];
+      values.push(items.map(item => dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, '')).join('\n'));
+      values.push(items.map(item => `${item.id}|${item.roleTypeId}`).join('\n'));
+    }
+    for (let customIndex = 0; customIndex < customColumns.length; customIndex += 1) {
+      values.push(snapshotRow.customValues?.[customIndex] ?? '');
+    }
+    if (includeActions) values.push(snapshotRow.action || '');
+    values.push(snapshotRow.rowCardId || '', snapshotRow.versionId || '', snapshotRow.fingerprint || '');
+    return values;
+  }
+
   function buildRoundtripGrid(structure, snapshot, matrixInfo, dictionaryCatalog = null, options = {}) {
     const catalog = mergeSnapshotIntoDictionaryCatalog(dictionaryCatalog, structure, snapshot);
     const columns = [];
@@ -2937,33 +2971,9 @@
     columns.push({ header: '__TESSA_VERSION_ID', schema: 'system:versionId', key: 'system:versionId', kind: 'system-hidden', hidden: true, width: 3 });
     columns.push({ header: '__TESSA_BASE_FINGERPRINT', schema: 'system:baseFingerprint', key: 'system:baseFingerprint', kind: 'system-hidden', hidden: true, width: 3 });
 
-    const rows = options.includeRows === false ? [] : snapshot.rows.map(snapshotRow => {
-      const values = [];
-      for (const condition of structure.conditions) {
-        const key = definitionKey('criterion', condition.criterionRowId);
-        const dict = catalog.catalogs?.[catalog.columnCatalogIds?.[key]];
-        const items = snapshotRow.values?.[condition.criterionRowId] || [];
-        const isBoolean = canonicalValue(condition.operandTypeId) === canonicalValue(OPERAND.Boolean);
-        values.push(items.map(item => isBoolean ? booleanDisplay(item.value ?? item.id ?? item.display) : (item.display || dictionarySelector(dict, item.id, null, ''))).join('\n'));
-        values.push(items.map(item => {
-          if (isBoolean) { const semantic = booleanSemantic(item.value ?? item.id ?? item.display); return semantic === null ? '' : semantic ? 'true' : 'false'; }
-          return item.id !== null && item.id !== undefined && item.id !== '' ? String(item.id) : '';
-        }).filter(Boolean).join('\n'));
-      }
-      for (const fn of structure.functions) {
-        const key = definitionKey('function', fn.id);
-        const dict = catalog.catalogs?.[catalog.columnCatalogIds?.[key]];
-        const items = snapshotRow.roles?.[fn.id] || [];
-        values.push(items.map(item => dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, '')).join('\n'));
-        values.push(items.map(item => `${item.id}|${item.roleTypeId}`).join('\n'));
-      }
-      for (let customIndex = 0; customIndex < customColumns.length; customIndex += 1) {
-        values.push(snapshotRow.customValues?.[customIndex] ?? '');
-      }
-      if (includeActions) values.push(snapshotRow.action || '');
-      values.push(snapshotRow.rowCardId || '', snapshotRow.versionId || '', snapshotRow.fingerprint || '');
-      return values;
-    });
+    const rows = options.includeRows === false
+      ? []
+      : snapshot.rows.map(snapshotRow => roundtripRowValues(snapshotRow, structure, catalog, customColumns, includeActions));
 
     const headerRow = 14;
     const schemaRow = 13;
@@ -3046,26 +3056,40 @@
   }
 
   async function createRoundtripXlsxBytes(structure, snapshot, matrixInfo, dictionaryCatalog = null, options = {}) {
-    const grid = buildRoundtripGrid(structure, snapshot, matrixInfo, dictionaryCatalog, options);
+    const grid = buildRoundtripGrid(structure, snapshot, matrixInfo, dictionaryCatalog, { ...options, includeRows: false });
     const lastCol = indexToCol(grid.columns.length - 1);
     const dataStartRow = grid.headerRow + 1;
-    const visualRowCount = Math.max(1, grid.rows.length);
+    const visualRowCount = Math.max(1, snapshot.rows.length);
     const lastDataRow = dataStartRow + visualRowCount - 1;
     const validationLastRow = Math.min(1048576, Math.max(10000, lastDataRow + 5000));
     const highlighted = new Set((options.highlights || []).map(item => `${canonicalValue(item.rowCardId)}|${item.key}`));
-    const sheetRows = [];
+    const matrixRowChunks = [];
+    let pendingMatrixRows = [];
+    const flushMatrixRows = () => {
+      if (!pendingMatrixRows.length) return;
+      matrixRowChunks.push(pendingMatrixRows.join(''));
+      pendingMatrixRows = [];
+    };
     grid.metadata.forEach(([key, value], index) => {
       const rowNumber = index + 1;
       const hidden = rowNumber >= 5 ? ' hidden="1"' : '';
-      sheetRows.push(`<row r="${rowNumber}"${hidden}>${xlsxStringCell(rowNumber, 0, key, 1)}${xlsxStringCell(rowNumber, 1, value, 7)}</row>`);
+      pendingMatrixRows.push(`<row r="${rowNumber}"${hidden}>${xlsxStringCell(rowNumber, 0, key, 1)}${xlsxStringCell(rowNumber, 1, value, 7)}</row>`);
     });
-    sheetRows.push(`<row r="${grid.schemaRow}" hidden="1">${grid.columns.map((column, index) => xlsxStringCell(grid.schemaRow, index, column.schema, 0)).join('')}</row>`);
-    sheetRows.push(`<row r="${grid.headerRow}" ht="46" customHeight="1">${grid.columns.map((column, index) => xlsxStringCell(grid.headerRow, index, column.header, column.kind === 'criterion' ? 2 : column.kind === 'function' ? 3 : 4)).join('')}</row>`);
-    grid.rows.forEach((values, rowIndex) => {
+    pendingMatrixRows.push(`<row r="${grid.schemaRow}" hidden="1">${grid.columns.map((column, index) => xlsxStringCell(grid.schemaRow, index, column.schema, 0)).join('')}</row>`);
+    pendingMatrixRows.push(`<row r="${grid.headerRow}" ht="46" customHeight="1">${grid.columns.map((column, index) => xlsxStringCell(grid.headerRow, index, column.header, column.kind === 'criterion' ? 2 : column.kind === 'function' ? 3 : 4)).join('')}</row>`);
+    for (let rowIndex = 0; rowIndex < snapshot.rows.length; rowIndex += 1) {
+      const snapshotRow = snapshot.rows[rowIndex];
+      const values = roundtripRowValues(snapshotRow, structure, grid.dictionaryCatalog, (options.customColumns || []).map((item, index) => ({
+        header: normalizeSpace(item.header) || `Пользовательская колонка ${index + 1}`,
+        schema: '',
+        key: `custom:${index}`,
+        kind: 'custom',
+        hidden: false,
+        width: Number(item.width) || 26,
+        sourceIndex: item.sourceIndex,
+      })), grid.columns.some(column => column.key === 'system:action'));
       const rowNumber = dataStartRow + rowIndex;
       const bodyStyle = rowIndex % 2 ? 8 : 5;
-      // Approximate wrapping using visible column widths. Hidden ID payloads must
-      // not inflate row height; Excel's 409-point ceiling keeps huge cells usable.
       const lines = values.reduce((max, value, index) => {
         if (grid.columns[index]?.hidden) return max;
         const width = Math.max(8, Number(grid.columns[index]?.width || 28) - 3);
@@ -3073,10 +3097,13 @@
         return Math.max(max, wrapped);
       }, 1);
       const height = Math.min(409, Math.max(32, lines * 15 + 10));
-      sheetRows.push(`<row r="${rowNumber}" ht="${height}" customHeight="1">${values.map((value, colIndex) => value === null || value === undefined || value === ''
+      pendingMatrixRows.push(`<row r="${rowNumber}" ht="${height}" customHeight="1">${values.map((value, colIndex) => value === null || value === undefined || value === ''
         ? `<c r="${indexToCol(colIndex)}${rowNumber}" s="${bodyStyle}"/>`
-        : xlsxStringCell(rowNumber, colIndex, value, highlighted.has(`${canonicalValue(snapshot.rows[rowIndex]?.rowCardId)}|${grid.columns[colIndex]?.key}`) ? 15 : bodyStyle)).join('')}</row>`);
-    });
+        : xlsxStringCell(rowNumber, colIndex, value, highlighted.has(`${canonicalValue(snapshotRow?.rowCardId)}|${grid.columns[colIndex]?.key}`) ? 15 : bodyStyle)).join('')}</row>`);
+      if (pendingMatrixRows.length >= 256) flushMatrixRows();
+      if (rowIndex && rowIndex % 1000 === 0) await yieldToMain();
+    }
+    flushMatrixRows();
     const cols = grid.columns.map((column, index) => `<col min="${index + 1}" max="${index + 1}" width="${column.width}" style="5" customWidth="1"${column.hidden ? ' hidden="1"' : ''}/>`).join('');
 
     const dictionaryArtifacts = await buildDictionaryRefreshArtifacts(grid.dictionaryCatalog);
@@ -3104,7 +3131,9 @@
     for (const [rangeName, refs] of validationGroups) validations.push(`<dataValidation type="list" allowBlank="1" showDropDown="0" showInputMessage="0" showErrorMessage="0" sqref="${refs.join(' ')}"><formula1>${rangeName}</formula1></dataValidation>`);
     if (booleanRefs.length) validations.push(`<dataValidation type="list" allowBlank="1" showDropDown="0" showInputMessage="0" showErrorMessage="1" sqref="${booleanRefs.join(' ')}"><formula1>"Да,Нет"</formula1></dataValidation>`);
 
-    const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastCol}${lastDataRow}"/><sheetViews><sheetView workbookViewId="0"><pane xSplit="1" ySplit="${grid.headerRow}" topLeftCell="B${dataStartRow}" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>${cols}</cols><sheetData>${sheetRows.join('')}</sheetData><autoFilter ref="A${grid.headerRow}:${lastCol}${lastDataRow}"/><dataValidations count="${validations.length}">${validations.join('')}</dataValidations></worksheet>`;
+    const worksheetPrefix = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastCol}${lastDataRow}"/><sheetViews><sheetView workbookViewId="0"><pane xSplit="1" ySplit="${grid.headerRow}" topLeftCell="B${dataStartRow}" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>${cols}</cols><sheetData>`;
+    const worksheetSuffix = `</sheetData><autoFilter ref="A${grid.headerRow}:${lastCol}${lastDataRow}"/><dataValidations count="${validations.length}">${validations.join('')}</dataValidations></worksheet>`;
+    const worksheet = zipTextParts([worksheetPrefix, ...matrixRowChunks, worksheetSuffix]);
 
     const structureRows = [['Ключ столбца', 'Тип', 'ID', 'Наименование', 'Тип значения', 'Источник', 'CatalogID', 'Редактирование']];
     structure.conditions.forEach(item => {
