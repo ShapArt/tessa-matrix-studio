@@ -3853,15 +3853,37 @@
       const old = workbook.dictionaryCatalog?.catalogs?.[oldId];
       if (!old) continue;
       if (!originals.has(newId)) originals.set(newId, new Map());
-      for (const entry of old.entries || []) originals.get(newId).set(`${canonicalValue(entry.id)}|${canonicalValue(entry.roleTypeId)}`, entry);
+      for (const entry of old.entries || []) {
+        originals.get(newId).set(`${canonicalValue(entry.id)}|${canonicalValue(entry.roleTypeId)}`, entry);
+      }
     }
+
+    // Keep fresh catalog entries by reference whenever selector history is unchanged.
+    // High-cardinality refreshes used to clone every role/partner object, briefly
+    // doubling the catalog in memory before the XLSX was even rebuilt.
     const catalogs = {};
     for (const [id, catalog] of Object.entries(fresh.catalogs || {})) {
-      catalogs[id] = { ...catalog, entries: catalog.entries.map(entry => {
-        const old = originals.get(id)?.get(`${canonicalValue(entry.id)}|${canonicalValue(entry.roleTypeId)}`);
-        return { ...entry, selector: old && canonicalValue(old.display) === canonicalValue(entry.display) ? old.selector : undefined,
-          previousSelectors: old ? [...new Set([old.selector, old.display, ...(old.previousSelectors || []), ...(entry.previousSelectors || [])].filter(Boolean))] : entry.previousSelectors };
-      }) };
+      const originalIndex = originals.get(id);
+      let changed = false;
+      const entries = (catalog.entries || []).map(entry => {
+        const old = originalIndex?.get(`${canonicalValue(entry.id)}|${canonicalValue(entry.roleTypeId)}`);
+        if (!old) return entry;
+        const selector = canonicalValue(old.display) === canonicalValue(entry.display) ? old.selector : undefined;
+        const previousSelectors = [...new Set([
+          old.selector,
+          old.display,
+          ...(old.previousSelectors || []),
+          ...(entry.previousSelectors || []),
+        ].filter(Boolean))];
+        const sameSelector = normalizeSpace(selector || '') === normalizeSpace(entry.selector || '');
+        const beforePrevious = (entry.previousSelectors || []).map(normalizeSpace).filter(Boolean);
+        const samePrevious = beforePrevious.length === previousSelectors.length
+          && beforePrevious.every((value, index) => value === normalizeSpace(previousSelectors[index]));
+        if (sameSelector && samePrevious) return entry;
+        changed = true;
+        return { ...entry, selector, previousSelectors };
+      });
+      catalogs[id] = changed ? { ...catalog, entries } : catalog;
     }
     return normalizeDictionaryCatalog({ ...fresh, catalogs });
   }
