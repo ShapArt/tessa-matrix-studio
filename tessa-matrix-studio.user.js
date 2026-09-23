@@ -5509,7 +5509,7 @@
       const query = alias => { if (!queries.has(alias)) queries.set(alias, this.queryViewSample(alias, 200000, { forceRefresh })); return queries.get(alias); };
 
       // Самые тяжёлые представления (GchPartners и MtxRoles) читаются параллельно.
-      const criterionJobs = [...criterionGroups.entries()].map(async ([catalogId, group]) => {
+      const criterionResultsPromise = mapConcurrent([...criterionGroups.entries()], 3, async ([catalogId, group]) => {
         const label = group.conditions.map(item => item.criterionName).join(' / ');
         let entries = [], projection = null, sourceCount = 0;
         if (group.alias) {
@@ -5557,7 +5557,7 @@
         return { roleCatalogId, roleAlias, roleEntries };
       })();
 
-      const [criterionResults, roleResult] = await Promise.all([Promise.all(criterionJobs), roleJob]);
+      const [criterionResults, roleResult] = await Promise.all([criterionResultsPromise, roleJob]);
       for (const item of criterionResults) catalog.catalogs[item.catalogId] = item.catalog;
 
       // FunctionType.ID and RoleTypeID are separate domains in the live TESSA build.
