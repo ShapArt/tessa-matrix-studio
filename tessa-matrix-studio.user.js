@@ -2629,12 +2629,15 @@
     const cached = DICTIONARY_LOOKUP_CACHE.get(catalog);
     if (cached) return cached;
 
-    const items = Array.from(catalog.entries || []);
+    // PERF_LAZY_DICTIONARY_SEARCH_INDEX_V1
+    // Exact ID/name resolution is used by every Preview/Export, while fuzzy picker
+    // search is not. Keep the 100k-entry search haystack lazy so ordinary roundtrips
+    // do not allocate another large string per dictionary record.
+    const items = Array.isArray(catalog.entries) ? catalog.entries : Array.from(catalog.entries || []);
     const byId = new Map();
     const bySelector = new Map();
     const byDisplay = new Map();
     const byEmployeeAlias = new Map();
-    const searchRows = [];
     const append = (map, key, item) => {
       if (!key) return;
       if (!map.has(key)) map.set(key, []);
@@ -2651,15 +2654,27 @@
       append(bySelector, canonicalValue(item.selector), item);
       append(byDisplay, canonicalValue(item.display), item);
       for (const alias of employeeResolvableAliases(item)) append(byEmployeeAlias, canonicalValue(alias), item);
-      searchRows.push({
-        item,
-        haystack: searchCanonical(`${item.selector || ''} ${item.display || ''} ${item.qualifier || ''} ${item.searchText || ''} ${item.details || ''} ${(item.previousSelectors || []).join(' ')}`),
-      });
     }
 
     const isBoolean = canonicalValue(catalog.sourceView || '') === 'boolean'
       || (items.length > 0 && items.every(item => item.kind === 'Boolean' || ['true', 'false'].includes(canonicalValue(item.id))));
-    const lookup = { items, byId, bySelector, byDisplay, byEmployeeAlias, searchRows, isBoolean, resolutionCache: new Map(), pickerSearchCache: new Map() };
+    const lookup = {
+      items, byId, bySelector, byDisplay, byEmployeeAlias, isBoolean,
+      resolutionCache: new Map(), pickerSearchCache: new Map(), _searchRows: null,
+    };
+    Object.defineProperty(lookup, 'searchRows', {
+      enumerable: true,
+      configurable: false,
+      get() {
+        if (!lookup._searchRows) {
+          lookup._searchRows = items.map(item => ({
+            item,
+            haystack: searchCanonical(`${item.selector || ''} ${item.display || ''} ${item.qualifier || ''} ${item.searchText || ''} ${item.details || ''} ${(item.previousSelectors || []).join(' ')}`),
+          }));
+        }
+        return lookup._searchRows;
+      },
+    });
     DICTIONARY_LOOKUP_CACHE.set(catalog, lookup);
     return lookup;
   }
