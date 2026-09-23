@@ -20,6 +20,7 @@ for (const marker of [
   'PERF_PICKER_SEARCH_CACHE_V1',
   'PERF_ROUNDTRIP_ROW_STREAM_V1',
   'PERF_BASELINE_SHEET_STREAM_V1',
+  'PERF_PARSED_SHEET_COMPACTION_V1',
   'buildBaselineSheetZipValue(baselineSourceRows)',
   'zipTextParts([worksheetPrefix, ...matrixRowChunks, worksheetSuffix])',
   'includeRows: false',
