@@ -15539,9 +15539,10 @@
 
           let remaining = inventory.map(item => item.token);
           const maxBatchSize = audit.batchSize;
+          let reusableState = null;
 
           while (remaining.length && !fatalRestore) {
-            const current = await freshSnapshot(); bridge = current.bridge;
+            const current = reusableState || await freshSnapshot(); reusableState = null; bridge = current.bridge;
             currentCatalog = catalogForSnapshot(current.snapshot);
             const prepared = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog);
             const baseBook = prepared.book;
@@ -15625,10 +15626,12 @@
             const writesBefore = report.writesCompleted;
             let mutationApplied = false;
             let batchError = null;
+            let afterState = null;
             try {
               await applySingle(batchPlan, batchId + ': UPDATE');
               mutationApplied = true;
-              const after = await freshSnapshot(); bridge = after.bridge;
+              afterState = await freshSnapshot(); bridge = afterState.bridge;
+              const after = afterState;
               const afterRow = after.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
               if (!afterRow) throw new Error('Временная строка исчезла после пакетной мутации.');
 
@@ -15660,7 +15663,7 @@
             } finally {
               if (mutationApplied) {
                 try {
-                  const restoreState = await freshSnapshot(); bridge = restoreState.bridge;
+                  const restoreState = afterState || await freshSnapshot(); bridge = restoreState.bridge;
                   const restoreCatalog = catalogForSnapshot(restoreState.snapshot);
                   const restorePackage = await workbookFromSnapshot(structure, restoreState.snapshot, bridge, restoreCatalog);
                   const restoreBook = restorePackage.book;
@@ -15701,6 +15704,7 @@
                   }
 
                   const restored = await freshSnapshot(); bridge = restored.bridge;
+                  reusableState = restored;
                   const restoredRow = restored.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
                   if (!restoredRow) throw new Error('Временная строка исчезла после пакетного restore.');
 
