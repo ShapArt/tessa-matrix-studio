@@ -61,7 +61,7 @@ export function apply(input){
       const isPagingUsableForPage = (parameters, page, previousOffset = null) => {
         if (!hasExplicitPaging(parameters)) return false;
         const values = pagingValues(parameters);
-        if (!Number.isFinite(values.limit) || values.limit <= 0) return false;
+        if (!Number.isFinite(values.limit) || values.limit < pageLimit) return false;
         if (!Number.isFinite(values.offset) || values.offset < 0) return false;
         if (page > 1 && previousOffset !== null && values.offset <= previousOffset) return false;
         return true;
