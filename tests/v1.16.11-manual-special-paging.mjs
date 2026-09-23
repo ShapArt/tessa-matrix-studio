@@ -10,7 +10,7 @@ assert.match(source, /SERVER_PAGED_NATIVE_VIEW_V12/);
 assert.match(source, /TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V12/);
 assert.match(source, /TMS_V1_16_11_PAGING_V12_MANUAL_SPECIAL_PARAMS/);
 
-const start = source.indexOf("owner === target ? 'target-createDataRequest-v5'");
+const start = Math.max(source.indexOf("owner === target ? 'target-createDataRequest-v5'"), source.indexOf("owner === target ? 'target-self-contained-v13'"));
 const end = source.indexOf('// Mounted control helper', start);
 assert.ok(start >= 0 && end > start, 'createDataRequest builder must exist');
 const block = source.slice(start, end);
