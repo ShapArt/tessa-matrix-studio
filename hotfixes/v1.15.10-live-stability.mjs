@@ -580,10 +580,10 @@ export function applyV11510LiveStability(input) {
         if (actualPerformanceBuild !== expectedPerformanceBuild) {
           throw new Error(\`Загружена сборка без performance endgame: performanceBuild=\${actualPerformanceBuild || '(нет)'}, ожидался \${expectedPerformanceBuild}.\`);
         }
-        if (version !== '1.16.0') {
-          throw new Error(\`Загружена версия \${version || '(нет)'}, ожидалась 1.16.0.\`);
+        if (version !== '1.16.1') {
+          throw new Error(\`Загружена версия \${version || '(нет)'}, ожидалась 1.16.1.\`);
         }
-        return { detail: \`Подтверждён v1.16.0 · \${actualBuild} · \${actualPerformanceBuild}.\`, data: { version, build: actualBuild, performanceBuild: actualPerformanceBuild } };
+        return { detail: \`Подтверждён v1.16.1 · \${actualBuild} · \${actualPerformanceBuild}.\`, data: { version, build: actualBuild, performanceBuild: actualPerformanceBuild } };
       });
 `;
   source = replaceOnce(
