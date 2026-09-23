@@ -120,7 +120,7 @@ jobs:
           grep -Fq 'TMS_V1_16_6_PAGING_V7_VALIDATED_OFFSETS' dist/tessa-matrix-studio.user.js
           grep -Fq 'paging-values-invalid' dist/tessa-matrix-studio.user.js
           grep -Fq 'duplicate-page-detected' dist/tessa-matrix-studio.user.js
-          grep -Fq 'String.raw`<c\\b' dist/tessa-matrix-studio.user.js
+          grep -Fq 'String.raw`<c\b' dist/tessa-matrix-studio.user.js
           grep -Fq "'action-apply'" dist/tessa-matrix-studio.user.js
           grep -Fq "'action-reconcile'" dist/tessa-matrix-studio.user.js
           grep -Fq 'await E.runReconciliationRead(' dist/tessa-matrix-studio.user.js
