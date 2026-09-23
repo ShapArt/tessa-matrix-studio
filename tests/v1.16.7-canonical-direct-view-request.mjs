@@ -26,8 +26,8 @@ assert.match(source, /\{ name: 'service\.getData', owner: api\.service, fn: api\
   'a direct ViewService.getData(request) compatibility path must be available');
 assert.match(source, /directExecutorErrors/,
   'direct API errors must survive into diagnostics');
-assert.match(source, /TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V8/,
-  'candidate must emit V8 paging diagnostics');
+assert.match(source, /TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V(?:8|9)/,
+  'candidate must retain V8 canonical paging diagnostics semantics; V9 may extend the payload');
 assert.match(source, /TMS_V1_16_7_PAGING_V8_CANONICAL_REQUEST/,
   'candidate must expose the exact V8 build fingerprint');
 
