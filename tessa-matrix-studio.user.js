@@ -3859,9 +3859,8 @@
       }
     }
 
-    // Keep fresh catalog entries by reference whenever selector history is unchanged.
-    // High-cardinality refreshes used to clone every role/partner object, briefly
-    // doubling the catalog in memory before the XLSX was even rebuilt.
+    // Structural sharing is intentional here. A refresh may contain tens of thousands
+    // of roles/partners; cloning every unchanged object briefly doubles peak heap.
     const catalogs = {};
     for (const [id, catalog] of Object.entries(fresh.catalogs || {})) {
       const originalIndex = originals.get(id);
@@ -3869,20 +3868,33 @@
       const entries = (catalog.entries || []).map(entry => {
         const old = originalIndex?.get(`${canonicalValue(entry.id)}|${canonicalValue(entry.roleTypeId)}`);
         if (!old) return entry;
-        const selector = canonicalValue(old.display) === canonicalValue(entry.display) ? old.selector : undefined;
-        const previousSelectors = [...new Set([
+
+        const sameDisplay = canonicalValue(old.display) === canonicalValue(entry.display);
+        const selector = sameDisplay && normalizeSpace(old.selector)
+          ? old.selector
+          : entry.selector;
+        const currentPrevious = (entry.previousSelectors || []).map(normalizeSpace).filter(Boolean);
+        const legacyCandidates = [
+          ...(old.previousSelectors || []),
           old.selector,
           old.display,
-          ...(old.previousSelectors || []),
-          ...(entry.previousSelectors || []),
-        ].filter(Boolean))];
+        ].map(normalizeSpace).filter(Boolean).filter(value =>
+          canonicalValue(value) !== canonicalValue(selector || '')
+          && canonicalValue(value) !== canonicalValue(entry.display || '')
+        );
+        const previousSelectors = [...new Set([...currentPrevious, ...legacyCandidates])];
+
         const sameSelector = normalizeSpace(selector || '') === normalizeSpace(entry.selector || '');
-        const beforePrevious = (entry.previousSelectors || []).map(normalizeSpace).filter(Boolean);
-        const samePrevious = beforePrevious.length === previousSelectors.length
-          && beforePrevious.every((value, index) => value === normalizeSpace(previousSelectors[index]));
+        const samePrevious = currentPrevious.length === previousSelectors.length
+          && currentPrevious.every((value, index) => value === previousSelectors[index]);
         if (sameSelector && samePrevious) return entry;
+
         changed = true;
-        return { ...entry, selector, previousSelectors };
+        return {
+          ...entry,
+          selector,
+          previousSelectors: previousSelectors.length ? previousSelectors : undefined,
+        };
       });
       catalogs[id] = changed ? { ...catalog, entries } : catalog;
     }
