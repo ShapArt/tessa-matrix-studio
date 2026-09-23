@@ -2015,10 +2015,27 @@
     return table;
   })();
 
-  function crc32(bytes) {
-    let crc = 0xFFFFFFFF;
+  function crc32Update(state, bytes) {
+    let crc = state >>> 0;
     for (const byte of bytes) crc = CRC32_TABLE[(crc ^ byte) & 0xFF] ^ (crc >>> 8);
-    return (crc ^ 0xFFFFFFFF) >>> 0;
+    return crc >>> 0;
+  }
+
+  function crc32(bytes) {
+    return (crc32Update(0xFFFFFFFF, bytes) ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  function zipTextParts(parts) {
+    const safeParts = Array.from(parts || []).map(part => String(part ?? ''));
+    return {
+      __tmsZipTextParts: true,
+      parts: safeParts,
+      estimatedBytes: safeParts.reduce((sum, part) => sum + part.length * 2, 0),
+    };
+  }
+
+  function isZipTextParts(value) {
+    return Boolean(value && value.__tmsZipTextParts === true && Array.isArray(value.parts));
   }
 
   function concatBytes(parts) {
@@ -2053,6 +2070,50 @@
     }
   }
 
+  async function deflateRawTextParts(parts) {
+    try {
+      if (typeof CompressionStream !== 'function') return null;
+      const stream = new Blob(parts).stream().pipeThrough(new CompressionStream('deflate-raw'));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function encodeTextParts(parts, encoder) {
+    return concatBytes((parts || []).map(part => encoder.encode(part)));
+  }
+
+  async function prepareZipValue(value, encoder) {
+    if (!isZipTextParts(value)) {
+      const data = value instanceof Uint8Array ? value : encoder.encode(String(value));
+      const deflated = await deflateRaw(data);
+      const compressed = deflated && deflated.length < data.length ? deflated : data;
+      return {
+        uncompressedSize: data.length,
+        compressed,
+        method: compressed === data ? 0 : 8,
+        crc: crc32(data),
+      };
+    }
+
+    let crcState = 0xFFFFFFFF;
+    let uncompressedSize = 0;
+    for (let index = 0; index < value.parts.length; index += 1) {
+      const bytes = encoder.encode(value.parts[index]);
+      uncompressedSize += bytes.byteLength;
+      crcState = crc32Update(crcState, bytes);
+      if (index && index % 32 === 0) await yieldToMain();
+    }
+    const crc = (crcState ^ 0xFFFFFFFF) >>> 0;
+    const deflated = await deflateRawTextParts(value.parts);
+    if (deflated && deflated.length < uncompressedSize) {
+      return { uncompressedSize, compressed: deflated, method: 8, crc };
+    }
+    const data = encodeTextParts(value.parts, encoder);
+    return { uncompressedSize, compressed: data, method: 0, crc };
+  }
+
   async function makeZip(entries) {
     const encoder = new TextEncoder();
     const now = new Date();
@@ -2062,6 +2123,7 @@
     const estimatedInputBytes = (entries || []).reduce((sum, entry) => {
       const value = entry?.[1];
       if (value instanceof Uint8Array) return sum + value.byteLength;
+      if (isZipTextParts(value)) return sum + Math.max(0, Number(value.estimatedBytes) || 0);
       return sum + String(value ?? '').length * 2;
     }, 0);
     const zipConcurrency = estimatedInputBytes >= 64 * 1024 * 1024
@@ -2070,10 +2132,8 @@
         ? Math.min(2, PERFORMANCE.ZipConcurrency)
         : PERFORMANCE.ZipConcurrency;
     const prepared = await mapConcurrent(entries, zipConcurrency, async ([name, value]) => {
-      const data = value instanceof Uint8Array ? value : encoder.encode(String(value));
-      const deflated = await deflateRaw(data);
-      const compressed = deflated && deflated.length < data.length ? deflated : data;
-      return { name, uncompressedSize: data.length, compressed, method: compressed === data ? 0 : 8, crc: crc32(data) };
+      const preparedValue = await prepareZipValue(value, encoder);
+      return { name, ...preparedValue };
     });
 
     const localParts = [];
@@ -3073,7 +3133,7 @@
     }
 
     const instructionSheet = instructionSheetXml();
-    const dictionarySheet = dictionaryArtifacts.dictionaryXml;
+    const dictionarySheet = dictionaryArtifacts.dictionaryZipValue;
     const structureSheet = genericSheetXml(structureRows, [46, 14, 38, 42, 38, 28, 24, 70]);
     const schemaChangesSheet = genericSheetXml(changeRows, [32, 16, 40, 44, 72, 12, 40, 72]);
     const baselineSheet = genericSheetXml(baselineRows, [40, 40, 48], { autoFilter: false });
@@ -3901,19 +3961,25 @@
     return normalizeDictionaryCatalog({ ...fresh, catalogs });
   }
 
-  // PERF_DIRECT_DICTIONARY_REFRESH_V2
+  // PERF_DIRECT_DICTIONARY_REFRESH_V3
   async function buildDictionaryRefreshArtifacts(dictionaryCatalog) {
     const normalized = normalizeDictionaryCatalog(dictionaryCatalog || { catalogs: {}, columnCatalogIds: {}, stats: { errors: [] } });
     const header = ['CatalogID', 'Словарь', 'Выбор в Excel', 'Отображение', 'ID', 'RoleTypeID', 'Источник', 'Доп. данные', 'Прежние названия'];
     const widths = [28, 42, 56, 48, 40, 14, 28, 72, 22];
-    const xmlRows = [];
+    const bodyChunks = [];
+    let pendingRows = [];
+    const flushRows = () => {
+      if (!pendingRows.length) return;
+      bodyChunks.push(pendingRows.join(''));
+      pendingRows = [];
+    };
     const rowXml = (values, rowNumber, headerRow = false) => {
       const style = headerRow ? 2 : 5;
       return '<row r="' + rowNumber + '"' + (headerRow ? ' ht="28" customHeight="1"' : '') + '>'
         + values.map((value, colIndex) => xlsxStringCell(rowNumber, colIndex, value, style)).join('')
         + '</row>';
     };
-    xmlRows.push(rowXml(header, 1, true));
+    pendingRows.push(rowXml(header, 1, true));
 
     const namedRanges = [];
     const rangeByCatalog = new Map();
@@ -3924,7 +3990,7 @@
       const startRow = dictionaryRow;
       let firstCatalogRow = true;
       for (const item of itemCatalog.entries || []) {
-        xmlRows.push(rowXml([
+        pendingRows.push(rowXml([
           itemCatalog.id,
           firstCatalogRow ? (itemCatalog.label || itemCatalog.id) : '',
           item.selector,
@@ -3938,6 +4004,7 @@
         firstCatalogRow = false;
         dictionaryRow += 1;
         processed += 1;
+        if (pendingRows.length >= 512) flushRows();
         if (processed % 2000 === 0) await yieldToMain();
       }
       if (dictionaryRow > startRow) {
@@ -3949,21 +4016,22 @@
         });
       }
     }
+    flushRows();
 
     const lastCol = indexToCol(header.length - 1);
     const lastRow = Math.max(1, dictionaryRow - 1);
     const cols = Array.from({ length: header.length }, (_, index) =>
       '<col min="' + (index + 1) + '" max="' + (index + 1) + '" width="' + (widths[index] || 22) + '" customWidth="1"/>'
     ).join('');
-    const dictionaryXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    const prefix = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
       + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
       + '<dimension ref="A1:' + lastCol + lastRow + '"/>'
       + '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
-      + '<sheetFormatPr defaultRowHeight="15"/><cols>' + cols + '</cols>'
-      + '<sheetData>' + xmlRows.join('') + '</sheetData>'
-      + '<autoFilter ref="A1:' + lastCol + lastRow + '"/></worksheet>';
+      + '<sheetFormatPr defaultRowHeight="15"/><cols>' + cols + '</cols><sheetData>';
+    const suffix = '</sheetData><autoFilter ref="A1:' + lastCol + lastRow + '"/></worksheet>';
+    const dictionaryZipValue = zipTextParts([prefix, ...bodyChunks, suffix]);
 
-    return { dictionaryXml, namedRanges, rangeByCatalog, entryCount: processed };
+    return { dictionaryZipValue, namedRanges, rangeByCatalog, entryCount: processed };
   }
 
   async function refreshWorkbookDictionaries(workbook, structure, catalog) {
@@ -3982,7 +4050,7 @@
 
       catalog = preserveWorkbookSelectors(workbook, catalog);
       const artifacts = await buildDictionaryRefreshArtifacts(catalog);
-      entries.set(dictionaryPath, artifacts.dictionaryXml);
+      entries.set(dictionaryPath, artifacts.dictionaryZipValue);
 
       const structureRows = workbook.parsedSheets.get(ROUNDTRIP.StructureSheet).rows.map(row => [...row]);
       for (const row of structureRows.slice(1)) row[6] = catalog.columnCatalogIds?.[row[0]] || '';
