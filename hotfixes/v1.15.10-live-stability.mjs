@@ -566,15 +566,20 @@ export function applyV11510LiveStability(input) {
 
   const provenance = `      await runCheck('candidate-build-provenance', 'Версия и paging-adapter текущего кандидата', async () => {
         const expectedBuild = '${BUILD}';
+        const expectedPerformanceBuild = 'TMS_V1_16_0_PERF_ENDGAME_V1';
         const actualBuild = String(E.buildFingerprint || '');
+        const actualPerformanceBuild = String(E.performanceBuild || '');
         const version = String(E.studioVersion?.() || E.version || '');
         if (actualBuild !== expectedBuild) {
           throw new Error(\`Загружен другой/старый userscript: build=\${actualBuild || '(нет)'}, ожидался \${expectedBuild}.\`);
         }
-        if (version !== '1.15.10') {
-          throw new Error(\`Загружена версия \${version || '(нет)'}, ожидалась 1.15.10.\`);
+        if (actualPerformanceBuild !== expectedPerformanceBuild) {
+          throw new Error(\`Загружена сборка без performance endgame: performanceBuild=\${actualPerformanceBuild || '(нет)'}, ожидался \${expectedPerformanceBuild}.\`);
         }
-        return { detail: \`Подтверждён v1.15.10 · \${actualBuild}.\`, data: { version, build: actualBuild } };
+        if (version !== '1.16.0') {
+          throw new Error(\`Загружена версия \${version || '(нет)'}, ожидалась 1.16.0.\`);
+        }
+        return { detail: \`Подтверждён v1.16.0 · \${actualBuild} · \${actualPerformanceBuild}.\`, data: { version, build: actualBuild, performanceBuild: actualPerformanceBuild } };
       });
 `;
   source = replaceOnce(
@@ -586,8 +591,8 @@ export function applyV11510LiveStability(input) {
 
   source = replaceOnce(
     source,
-    "    version: APP.version,\n    // FULL_UAT_VERSION_PROVENANCE_V1",
-    "    version: APP.version,\n    buildFingerprint: APP.buildFingerprint,\n    // FULL_UAT_VERSION_PROVENANCE_V1",
+    "    version: APP.version,\n    performanceBuild: APP.performanceBuild,\n    // FULL_UAT_VERSION_PROVENANCE_V1",
+    "    version: APP.version,\n    performanceBuild: APP.performanceBuild,\n    buildFingerprint: APP.buildFingerprint,\n    // FULL_UAT_VERSION_PROVENANCE_V1",
     'export build fingerprint',
   );
 
