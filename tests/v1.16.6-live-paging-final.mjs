@@ -9,7 +9,7 @@ assert.match(source,/const isPagingUsableForPage = \(parameters, page, previousO
 assert.match(source,/Number\.isFinite\(values\.limit\)/);
 assert.match(source,/Number\.isFinite\(values\.offset\)/);
 assert.match(source,/page > 1 && previousOffset !== null && values\.offset <= previousOffset/);
-assert.match(source,/if \(!isPagingUsableForPage\(parameters, page, lastAcceptedOffset\)\)/);
+assert.match(source,/if \(!isPagingUsableForPage\((?:parameters|pagingParameters), page, lastAcceptedOffset\)\)/);
 assert.match(source,/paging-values-invalid/);
 assert.match(source,/duplicate-page-detected/);
 assert.match(source,/if \(page > 1 && pageVersions\.length && previousPageVersions\.length/);
