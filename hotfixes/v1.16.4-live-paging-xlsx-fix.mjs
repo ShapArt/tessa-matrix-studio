@@ -4,13 +4,13 @@ const BUILD = 'TMS_V1_16_4_PAGING_V5_XLSX_EDIT_V3';
 
 function replaceOnce(source, before, after, label) {
   const count = source.split(before).length - 1;
-  if (count !== 1) throw new Error(\`\${label}: expected exactly one match, got \${count}\`);
+  if (count !== 1) throw new Error(`${label}: expected exactly one match, got ${count}`);
   return source.replace(before, after);
 }
 
 export function applyV1164LivePagingXlsxFix(input) {
   let source = String(input ?? '');
-  if (source.includes(\`pagingXlsxFixBuild: '\${BUILD}'\`)) return source;
+  if (source.includes(`pagingXlsxFixBuild: '${BUILD}'`)) return source;
 
   source = replaceOnce(
     source,
@@ -38,7 +38,7 @@ export function applyV1164LivePagingXlsxFix(input) {
     'explicit paging proof helper',
   );
 
-  const oldCreate = \`        // Native request builder already knows all contextual parameters. We alter only
+  const oldCreate = `        // Native request builder already knows all contextual parameters. We alter only
         // transient page state and restore it before network I/O.
         for (const owner of owners) {
           built = await tryBuilder(page, owner === target ? 'target-createDataRequest' : 'component-createDataRequest', async () => {
@@ -58,9 +58,9 @@ export function applyV1164LivePagingXlsxFix(input) {
           });
           if (built) return built;
         }
-\`;
+`;
 
-  const newCreate = \`        // Native request builder knows contextual filters, but live seed 696022484 proved
+  const newCreate = `        // Native request builder knows contextual filters, but live seed 696022484 proved
         // that createDataRequest() can return a request with NO PageLimit/PageOffset.
         // Never call that "server paging". Enrich its real Array<RequestParameter> through
         // the mounted control helper while page state is transiently pinned, then require
@@ -98,23 +98,23 @@ export function applyV1164LivePagingXlsxFix(input) {
           });
           if (built) return built;
         }
-\`;
+`;
   source = replaceOnce(source, oldCreate, newCreate, 'createDataRequest explicit paging');
 
   source = replaceOnce(
     source,
-    \`          const columns = Array.from(result?.columns || result?.Columns || []).map(column =>
+    `          const columns = Array.from(result?.columns || result?.Columns || []).map(column =>
             normalizeSpace(column?.alias ?? column?.name ?? column?.Alias ?? column?.Name ?? column)
           );
-\`,
-    \`          const columns = Array.from(result?.columns || result?.Columns || []).map(column =>
+`,
+    `          const columns = Array.from(result?.columns || result?.Columns || []).map(column =>
             normalizeSpace(
               Array.isArray(column) ? column[0]
                 : column?.Item1 ?? column?.item1
                   ?? column?.alias ?? column?.name ?? column?.Alias ?? column?.Name ?? column
             )
           );
-\`,
+`,
     'tuple-shaped TessaViewResult.Columns',
   );
 
@@ -134,14 +134,14 @@ export function applyV1164LivePagingXlsxFix(input) {
 
   source = replaceOnce(
     source,
-    "    const fullCell = new RegExp(\`<c\\\\b([^>]*\\\\br=\"\${ref}\"[^>]*)>[\\\\s\\\\S]*?<\\\\/c>\`, 'i');\n    const selfCell = new RegExp(\`<c\\\\b([^>]*\\\\br=\"\${ref}\"[^>]*)\\\\/>\`, 'i');\n",
-    "    const fullCell = new RegExp(String.raw\`<c\\\\b([^>]*\\\\br=\"\${ref}\"[^>]*)>[\\\\s\\\\S]*?<\\\\/c>\`, 'i');\n    const selfCell = new RegExp(String.raw\`<c\\\\b([^>]*\\\\br=\"\${ref}\"[^>]*)\\\\/>\`, 'i');\n",
+    "    const fullCell = new RegExp(`<c\\\\b([^>]*\\\\br=\"${ref}\"[^>]*)>[\\\\s\\\\S]*?<\\\\/c>`, 'i');\n    const selfCell = new RegExp(`<c\\\\b([^>]*\\\\br=\"${ref}\"[^>]*)\\\\/>`, 'i');\n",
+    "    const fullCell = new RegExp(String.raw`<c\\\\b([^>]*\\\\br=\"${ref}\"[^>]*)>[\\\\s\\\\S]*?<\\\\/c>`, 'i');\n    const selfCell = new RegExp(String.raw`<c\\\\b([^>]*\\\\br=\"${ref}\"[^>]*)\\\\/>`, 'i');\n",
     'physical XLSX cell regex',
   );
   source = replaceOnce(
     source,
-    "      const rowRe = new RegExp(\`(<row\\\\b[^>]*\\\\br=\"\${rowNumber}\"[^>]*>)([\\\\s\\\\S]*?)(<\\\\/row>)\`, 'i');\n",
-    "      const rowRe = new RegExp(String.raw\`(<row\\\\b[^>]*\\\\br=\"\${rowNumber}\"[^>]*>)([\\\\s\\\\S]*?)(<\\\\/row>)\`, 'i');\n",
+    "      const rowRe = new RegExp(`(<row\\\\b[^>]*\\\\br=\"${rowNumber}\"[^>]*>)([\\\\s\\\\S]*?)(<\\\\/row>)`, 'i');\n",
+    "      const rowRe = new RegExp(String.raw`(<row\\\\b[^>]*\\\\br=\"${rowNumber}\"[^>]*>)([\\\\s\\\\S]*?)(<\\\\/row>)`, 'i');\n",
     'physical XLSX row regex',
   );
 
@@ -150,15 +150,15 @@ export function applyV1164LivePagingXlsxFix(input) {
   source = source.replace("Подтверждён v1.16.3", "Подтверждён v1.16.4");
 
   for (const marker of [
-    \`pagingXlsxFixBuild: '\${BUILD}'\`,
+    `pagingXlsxFixBuild: '${BUILD}'`,
     'SERVER_PAGED_NATIVE_VIEW_V5',
     'TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V5',
     'const hasExplicitPaging = parameters =>',
     'Array.isArray(column) ? column[0]',
     "source: 'native-view-server-paged-v5'",
     'if (rawRows.length < pageLimit) break;',
-    'const fullCell = new RegExp(String.raw\`<c\\\\b',
-    'const rowRe = new RegExp(String.raw\`(<row\\\\b',
+    'const fullCell = new RegExp(String.raw`<c\\\\b',
+    'const rowRe = new RegExp(String.raw`(<row\\\\b',
     "version !== '1.16.4'",
   ]) {
     if (!source.includes(marker)) throw new Error('v1.16.4 verification failed: ' + marker);
