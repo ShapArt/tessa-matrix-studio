@@ -19,6 +19,8 @@ for (const marker of [
   'pickerSearchCache: new Map()',
   'PERF_PICKER_SEARCH_CACHE_V1',
   'PERF_LAZY_DICTIONARY_SEARCH_INDEX_V1',
+  'PERF_LAZY_DICTIONARY_TEXT_INDEX_V1',
+  "for (const property of ['bySelector', 'byDisplay', 'byEmployeeAlias'])",
   "Object.defineProperty(lookup, 'searchRows'",
   'PERF_ROUNDTRIP_ROW_STREAM_V1',
   'PERF_BASELINE_SHEET_STREAM_V1',
