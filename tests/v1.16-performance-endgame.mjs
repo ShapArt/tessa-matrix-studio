@@ -38,6 +38,10 @@ for (const marker of [
   'FULL_UAT_BATCHED_FIELD_WRITES_V1',
   'batchSize: 6',
   'batched-field-readback-restore',
+  'let reusableState = null',
+  'const restoreState = afterState || await freshSnapshot()',
+  'reusableState = restored',
+  'FULL_UAT_BOOLEAN_SEMANTIC_V2',
   'if (sameSelector && samePrevious) return entry',
 ]) assert(source.includes(marker), 'missing performance marker: ' + marker);
 
