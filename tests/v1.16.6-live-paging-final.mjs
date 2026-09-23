@@ -15,6 +15,7 @@ assert.match(source,/duplicate-page-detected/);
 assert.match(source,/if \(page > 1 && pageVersions\.length && previousPageVersions\.length/);
 assert.match(source,/lastAcceptedOffset = currentPagingValues\.offset/);
 assert.match(source,/TMS_V1_16_6_PAGING_V7_VALIDATED_OFFSETS/);
-assert.match(source,/version !== '1\.16\.(?:6|7|8|9|10|11|12)'/);
+const candidateVersion = source.match(/^\/\/ @version\s+([\d.]+)$/m)?.[1];
+assert.ok(candidateVersion && source.includes(`if (version !== '${candidateVersion}')`));
 assert.match(source,/if \(!sectionCount && reportedRowCount > 0 && collected\.length >= reportedRowCount\) break;/);
 console.log('v1.16.6 validated paging regression: PASS');
