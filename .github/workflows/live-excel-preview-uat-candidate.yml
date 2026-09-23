@@ -1,4 +1,4 @@
-name: v1.16 Performance Endgame UAT Candidate
+name: v1.16.2 Full UAT Recovery UAT Candidate
 
 on:
   pull_request:
@@ -11,6 +11,7 @@ on:
       - 'hotfixes/v1.14.2-full-uat-version-provenance.mjs'
       - 'hotfixes/v1.14.2-full-uat-copied-identity-collision-safe.mjs'
       - 'hotfixes/v1.14.2-full-uat-action-coverage-final.mjs'
+      - 'hotfixes/v1.16.2-full-uat-pinned-context.mjs'
       - 'tests/live-colleague-excel-regressions.mjs'
       - 'tests/v1.14.2-full-uat-clear-regression.mjs'
       - 'tests/v1.14.2-full-uat-version-provenance.mjs'
@@ -34,7 +35,7 @@ permissions:
 
 jobs:
   build:
-    name: Build exact v1.16.1 UAT artifact
+    name: Build exact v1.16.2 UAT artifact
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,7 +59,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CANDIDATE_VERSION='1.16.1'
+          CANDIDATE_VERSION='1.16.2'
           mkdir -p dist
           cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
 
@@ -84,6 +85,7 @@ jobs:
           node hotfixes/v1.14.2-full-uat-action-coverage-final.mjs dist/tessa-matrix-studio.user.js
           node hotfixes/v1.14.2-full-uat-version-provenance.mjs dist/tessa-matrix-studio.user.js
           node hotfixes/v1.15.10-live-stability.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.16.2-full-uat-pinned-context.mjs dist/tessa-matrix-studio.user.js
 
           node --check dist/tessa-matrix-studio.user.js
           grep -Fqx "// @version      $CANDIDATE_VERSION" dist/tessa-matrix-studio.user.js
@@ -97,6 +99,7 @@ jobs:
           grep -Fq 'FULL_UAT_VERSION_PROVENANCE_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'FULL_UAT_COPIED_IDENTITY_COLLISION_SAFE_V1' dist/tessa-matrix-studio.user.js
           grep -Fq 'FULL_UAT_ACTION_COVERAGE_FINAL_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'FULL_UAT_PINNED_CONTEXT_RECOVERY_V1' dist/tessa-matrix-studio.user.js
           grep -Fq "'action-apply'" dist/tessa-matrix-studio.user.js
           grep -Fq "'action-reconcile'" dist/tessa-matrix-studio.user.js
           grep -Fq 'await E.runReconciliationRead(' dist/tessa-matrix-studio.user.js
@@ -176,18 +179,18 @@ jobs:
 
           USER_SHA="$(sha256sum dist/tessa-matrix-studio.user.js | awk '{print $1}')"
           COMMIT_SHA="$(git rev-parse HEAD)"
-          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "v1.16-performance-endgame-live-uat",\n  "sourceWorkbook": "TESSA_Матрица_ОРД-основная_78792326_СПРАВОЧНИКИ.xlsx",\n  "expectedChecks": ["multi-position-picker-copy", "picker-delimiter-safe-v2", "visible-preview-error-count", "explicit-not-applied-count", "bounded-resolution-center", "counter-driven-preview-filters", "blocked-role-baseline-fallback", "value-level-recovery", "compact-role-catalog", "baseline-incremental-preview", "full-uat-export-scope", "deterministic-live-clear", "dictionary-invalid-field-value-fail-closed", "resource-input-size-guard", "resource-zip-entry-guard", "resource-path-traversal-guard", "resource-spreadsheet-coordinate-guard", "bounded-memory-repeat-roundtrip", "heap-headroom-after-production-shadow", "production-shadow-prod-envelope", "historical-alias-migration", "cross-matrix-production-scale", "full-uat-version-provenance", "copied-identity-collision-safe", "full-uat-apply-reconcile-evidence"]\n}\n' \
+          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "v1.16.2-full-uat-pinned-context-live-uat",\n  "sourceWorkbook": "TESSA_Матрица_ОРД-основная_78792326_СПРАВОЧНИКИ.xlsx",\n  "expectedChecks": ["multi-position-picker-copy", "picker-delimiter-safe-v2", "visible-preview-error-count", "explicit-not-applied-count", "bounded-resolution-center", "counter-driven-preview-filters", "blocked-role-baseline-fallback", "value-level-recovery", "compact-role-catalog", "baseline-incremental-preview", "full-uat-export-scope", "deterministic-live-clear", "dictionary-invalid-field-value-fail-closed", "resource-input-size-guard", "resource-zip-entry-guard", "resource-path-traversal-guard", "resource-spreadsheet-coordinate-guard", "bounded-memory-repeat-roundtrip", "heap-headroom-after-production-shadow", "production-shadow-prod-envelope", "historical-alias-migration", "cross-matrix-production-scale", "full-uat-version-provenance", "copied-identity-collision-safe", "full-uat-apply-reconcile-evidence"]\n}\n' \
             "$CANDIDATE_VERSION" "$COMMIT_SHA" "$USER_SHA" > dist/candidate-manifest.json
 
       - name: Upload exact UAT candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: tessa-matrix-studio-v1.16.1-performance-endgame-uat-${{ github.run_id }}
+          name: tessa-matrix-studio-v1.16.2-full-uat-recovery-${{ github.run_id }}
           path: |
             dist/tessa-matrix-studio.user.js
             dist/tessa-matrix-studio.meta.js
             dist/SHA256SUMS.txt
-            dist/tessa-matrix-studio-v1.16.1-UAT.zip
+            dist/tessa-matrix-studio-v1.16.2-UAT.zip
             dist/candidate-manifest.json
           if-no-files-found: error
           retention-days: 14
