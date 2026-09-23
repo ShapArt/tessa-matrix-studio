@@ -19,9 +19,9 @@ assert.match(source, /await assertActiveUatContextBeforeWrite\(\);[\s\S]{0,600}?
 
 assert.match(source, /const noWriteAbort = Boolean\(report\.fatalError\) && report\.writesAttempted === 0;/,
   'pre-write abort must be recognized explicitly');
-assert.match(source, /'action-apply'[\s\S]{0,1800}?noWriteAbort \? 'NOT_RUN' :/,
+assert.match(source, /noWriteAbort \? 'NOT_RUN' : \(applyOk \? 'PASS' : 'FAIL'\)/,
   'Apply must be NOT_RUN rather than FAIL when UAT aborts before any mutation');
-assert.match(source, /'action-reconcile'[\s\S]{0,2200}?noWriteAbort[\s\S]{0,900}?'NOT_RUN'/,
+assert.match(source, /if \(noWriteAbort\) \{[\s\S]{0,500}?'action-reconcile'[\s\S]{0,500}?'NOT_RUN'/,
   'Reconcile must be NOT_RUN rather than fake-fail without any mutation receipt');
 assert.match(source, /fatalError: report\.fatalError \|\| null/,
   'compact failure evidence must include the primary fatalError');
