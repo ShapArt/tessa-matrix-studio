@@ -3875,55 +3875,121 @@
     return normalizeDictionaryCatalog({ ...fresh, catalogs });
   }
 
+  // PERF_DIRECT_DICTIONARY_REFRESH_V1
+  function buildDictionaryRefreshArtifacts(dictionaryCatalog) {
+    const normalized = normalizeDictionaryCatalog(dictionaryCatalog || { catalogs: {}, columnCatalogIds: {}, stats: { errors: [] } });
+    const dictionaryRows = [['CatalogID', 'Словарь', 'Выбор в Excel', 'Отображение', 'ID', 'RoleTypeID', 'Источник', 'Доп. данные', 'Прежние названия']];
+    const namedRanges = [];
+    const rangeByCatalog = new Map();
+    let dictionaryRow = 2;
+    let rangeIndex = 1;
+
+    for (const itemCatalog of Object.values(normalized.catalogs || {})) {
+      const startRow = dictionaryRow;
+      let firstCatalogRow = true;
+      for (const item of itemCatalog.entries || []) {
+        dictionaryRows.push([
+          itemCatalog.id,
+          firstCatalogRow ? (itemCatalog.label || itemCatalog.id) : '',
+          item.selector,
+          item.display,
+          item.id,
+          item.roleTypeId,
+          firstCatalogRow ? (itemCatalog.sourceView || item.source || '') : '',
+          item.details || '',
+          item.previousSelectors?.length ? JSON.stringify(item.previousSelectors) : '',
+        ]);
+        firstCatalogRow = false;
+        dictionaryRow += 1;
+      }
+      if (dictionaryRow > startRow) {
+        const name = '_TMS_DV_' + String(rangeIndex++).padStart(3, '0');
+        rangeByCatalog.set(itemCatalog.id, name);
+        namedRanges.push({
+          name,
+          formula: "'" + ROUNDTRIP.DictionarySheet + "'!$C$" + startRow + ':$C$' + (dictionaryRow - 1),
+        });
+      }
+    }
+
+    return {
+      dictionaryXml: genericSheetXml(dictionaryRows, [28, 42, 56, 48, 40, 14, 28, 72]),
+      namedRanges,
+      rangeByCatalog,
+    };
+  }
+
   async function refreshWorkbookDictionaries(workbook, structure, catalog) {
     if (!workbook.roundtrip?.enabled) throw new Error('Выберите Excel, выгруженный из Studio.');
     const archive = WORKBOOK_ARCHIVES.get(workbook);
     if (!archive) throw new Error('Выберите исходный файл Excel повторно.');
-    const decoder = new TextDecoder();
-    const entries = new Map(archive);
-    const descriptors = parseWorkbookSheets(entries, decoder);
-    const pathOf = name => descriptors.find(item => item.name === name)?.path;
-    const dictionaryPath = pathOf(ROUNDTRIP.DictionarySheet), structurePath = pathOf(ROUNDTRIP.StructureSheet), matrixPath = pathOf(workbook.sheetName);
-    if (!dictionaryPath || !structurePath || !matrixPath) throw new Error('В книге отсутствуют служебные листы справочников.');
-    catalog = preserveWorkbookSelectors(workbook, catalog);
-    const donorBytes = await createRoundtripXlsxBytes(structure, { rows: [] }, {}, catalog);
-    const donor = await unzipArrayBuffer(exactArrayBuffer(donorBytes));
-    const donorDescriptors = parseWorkbookSheets(donor, decoder);
-    const donorPath = name => donorDescriptors.find(item => item.name === name)?.path;
-    // Replace reference data only. Matrix cells, IDs, formulas, row order, styles,
-    // baseline ledger and arbitrary user worksheets stay byte-for-byte intact.
-    const dictionaryXml = decoder.decode(donor.get(donorPath(ROUNDTRIP.DictionarySheet))).replace(/\s+s="\d+"/g, '');
-    entries.set(dictionaryPath, dictionaryXml);
-    const structureRows = workbook.parsedSheets.get(ROUNDTRIP.StructureSheet).rows.map(row => [...row]);
-    for (const row of structureRows.slice(1)) row[6] = catalog.columnCatalogIds?.[row[0]] || '';
-    entries.set(structurePath, genericSheetXml(structureRows, [], { autoFilter: false }).replace(/\s+s="\d+"/g, ''));
-    const namespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
-    const donorWorkbook = decoder.decode(donor.get('xl/workbook.xml'));
-    const ranges = [...donorWorkbook.matchAll(/<definedName\b([^>]*)>([\s\S]*?)<\/definedName>/g)].map(m => ({ name: attr(m[1], 'name'), formula: m[2] }));
-    const ids = Object.values(normalizeDictionaryCatalog(catalog).catalogs).filter(item => item.entries.length).map(item => item.id);
-    const rangeByCatalog = new Map(ids.map((id, i) => [id, ranges[i]?.name]));
-    let workbookXml = decoder.decode(entries.get('xl/workbook.xml'));
-    const namesPattern = /<(?:[\w.-]+:)?definedNames\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?definedNames>/;
-    const existingNames = workbookXml.match(namesPattern)?.[1] || '';
-    const preservedNames = existingNames.replace(/<(?:[\w.-]+:)?definedName\b([^>]*)>[\s\S]*?<\/(?:[\w.-]+:)?definedName>/g, (all, attrs) => /^_TMS_DV_/.test(attr(attrs, 'name') || '') ? '' : all);
-    const namesXml = `<definedNames xmlns="${namespace}">${preservedNames}${ranges.map(r => `<definedName name="${r.name}">${r.formula}</definedName>`).join('')}</definedNames>`;
-    workbookXml = namesPattern.test(workbookXml) ? workbookXml.replace(namesPattern, () => namesXml) : workbookXml.replace(/(<\/(?:[\w.-]+:)?sheets>)/, (_, end) => end + namesXml);
-    entries.set('xl/workbook.xml', workbookXml);
-    let matrixXml = decoder.decode(entries.get(matrixPath));
-    const validationPattern = /<(?:[\w.-]+:)?dataValidations\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?dataValidations>/;
-    const oldValidation = matrixXml.match(validationPattern)?.[1] || '';
-    const preserved = [...oldValidation.matchAll(/<(?:[\w.-]+:)?dataValidation\b[^>]*>[\s\S]*?<\/(?:[\w.-]+:)?dataValidation>/g)].map(m => m[0]).filter(xml => !/_TMS_DV_/.test(xml));
-    const endRow = Math.min(1048576, Math.max(10000, ...(workbook.rows || []).map(r => r.excelRow + 5000)));
-    workbook.schemaTokens.forEach((key, index) => {
-      const range = rangeByCatalog.get(catalog.columnCatalogIds?.[key]);
-      if (range) preserved.push(`<dataValidation type="list" allowBlank="1" showDropDown="0" showInputMessage="0" showErrorMessage="0" sqref="${indexToCol(index)}${workbook.headerRow + 1}:${indexToCol(index)}${endRow}"><formula1>${range}</formula1></dataValidation>`);
-    });
-    const validationXml = `<dataValidations xmlns="${namespace}" count="${preserved.length}">${preserved.join('')}</dataValidations>`;
-    matrixXml = validationPattern.test(matrixXml) ? matrixXml.replace(validationPattern, () => validationXml) : matrixXml.replace(/(<(?:[\w.-]+:)?(?:hyperlinks|printOptions|pageMargins|pageSetup|headerFooter|drawing|extLst)\b|<\/(?:[\w.-]+:)?worksheet>)/, (_, tail) => validationXml + tail);
-    entries.set(matrixPath, matrixXml);
-    const refreshedBytes = await makeZip([...entries]);
-    releaseWorkbookArchive(workbook);
-    return refreshedBytes;
+    try {
+      const decoder = new TextDecoder();
+      const entries = new Map(archive);
+      const descriptors = parseWorkbookSheets(entries, decoder);
+      const pathOf = name => descriptors.find(item => item.name === name)?.path;
+      const dictionaryPath = pathOf(ROUNDTRIP.DictionarySheet);
+      const structurePath = pathOf(ROUNDTRIP.StructureSheet);
+      const matrixPath = pathOf(workbook.sheetName);
+      if (!dictionaryPath || !structurePath || !matrixPath) throw new Error('В книге отсутствуют служебные листы справочников.');
+
+      catalog = preserveWorkbookSelectors(workbook, catalog);
+      const artifacts = buildDictionaryRefreshArtifacts(catalog);
+      entries.set(dictionaryPath, artifacts.dictionaryXml);
+
+      const structureRows = workbook.parsedSheets.get(ROUNDTRIP.StructureSheet).rows.map(row => [...row]);
+      for (const row of structureRows.slice(1)) row[6] = catalog.columnCatalogIds?.[row[0]] || '';
+      entries.set(structurePath, genericSheetXml(structureRows, [], { autoFilter: false }).replace(/\s+s="\d+"/g, ''));
+
+      const namespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+      let workbookXml = decoder.decode(entries.get('xl/workbook.xml'));
+      const namesPattern = /<(?:[\w.-]+:)?definedNames\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?definedNames>/;
+      const existingNames = workbookXml.match(namesPattern)?.[1] || '';
+      const preservedNames = existingNames.replace(
+        /<(?:[\w.-]+:)?definedName\b([^>]*)>[\s\S]*?<\/(?:[\w.-]+:)?definedName>/g,
+        (all, attrs) => /^_TMS_DV_/.test(attr(attrs, 'name') || '') ? '' : all,
+      );
+      const namesXml = '<definedNames xmlns="' + namespace + '">'
+        + preservedNames
+        + artifacts.namedRanges.map(item => '<definedName name="' + item.name + '">' + item.formula + '</definedName>').join('')
+        + '</definedNames>';
+      workbookXml = namesPattern.test(workbookXml)
+        ? workbookXml.replace(namesPattern, () => namesXml)
+        : workbookXml.replace(/(<\/(?:[\w.-]+:)?sheets>)/, (_, tail) => tail + namesXml);
+      entries.set('xl/workbook.xml', workbookXml);
+
+      let matrixXml = decoder.decode(entries.get(matrixPath));
+      const validationPattern = /<(?:[\w.-]+:)?dataValidations\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?dataValidations>/;
+      const oldValidation = matrixXml.match(validationPattern)?.[1] || '';
+      const preserved = [...oldValidation.matchAll(
+        /<(?:[\w.-]+:)?dataValidation\b[^>]*>[\s\S]*?<\/(?:[\w.-]+:)?dataValidation>/g
+      )].map(match => match[0]).filter(xml => !/_TMS_DV_/.test(xml));
+      const endRow = Math.min(1048576, Math.max(10000, ...(workbook.rows || []).map(row => row.excelRow + 5000)));
+      workbook.schemaTokens.forEach((key, index) => {
+        const range = artifacts.rangeByCatalog.get(catalog.columnCatalogIds?.[key]);
+        if (range) {
+          preserved.push(
+            '<dataValidation type="list" allowBlank="1" showDropDown="0" showInputMessage="0" showErrorMessage="0" sqref="'
+            + indexToCol(index) + (workbook.headerRow + 1) + ':' + indexToCol(index) + endRow
+            + '"><formula1>' + range + '</formula1></dataValidation>'
+          );
+        }
+      });
+      const validationXml = '<dataValidations xmlns="' + namespace + '" count="' + preserved.length + '">'
+        + preserved.join('') + '</dataValidations>';
+      matrixXml = validationPattern.test(matrixXml)
+        ? matrixXml.replace(validationPattern, () => validationXml)
+        : matrixXml.replace(
+          /(<(?:[\w.-]+:)?(?:hyperlinks|printOptions|pageMargins|pageSetup|headerFooter|drawing|extLst)\b|<\/(?:[\w.-]+:)?worksheet>)/,
+          (_, tail) => validationXml + tail,
+        );
+      entries.set(matrixPath, matrixXml);
+
+      await yieldToMain();
+      return await makeZip([...entries]);
+    } finally {
+      releaseWorkbookArchive(workbook);
+    }
   }
 
   async function readSelectedWorkbookWithLiveCatalog(file, { needBridge = false, forceDictionaryRefresh = false } = {}) {
