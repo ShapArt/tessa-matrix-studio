@@ -3928,16 +3928,32 @@
 
   async function readSelectedWorkbookWithLiveCatalog(file, { needBridge = false, forceDictionaryRefresh = false } = {}) {
     if (!file) throw new Error('Выберите файл .xlsx.');
-    const workbook = await readXlsxArrayBuffer(await selectedFileArrayBuffer(file), file.name, {
-      skipSheetNames: ['Словари'],
+
+    const bufferPromise = selectedFileArrayBuffer(file);
+    if (!needBridge) {
+      const workbook = await readXlsxArrayBuffer(await bufferPromise, file.name);
+      return { workbook, bridge: null, structure: null, dictionaryCatalog: null };
+    }
+
+    // XLSX parsing and TESSA bootstrap are independent. Start them together so
+    // network latency is hidden behind local parsing instead of added after it.
+    const bridgePromise = TessaBridge.create();
+    const workbookPromise = bufferPromise.then(buffer => readXlsxArrayBuffer(buffer, file.name, {
+      skipSheetNames: [ROUNDTRIP.DictionarySheet],
       selectiveInflate: true,
-    });
-    if (!needBridge) return { workbook, bridge: null, structure: null, dictionaryCatalog: null };
-    const bridge = await TessaBridge.create();
+    }));
+
+    const bridge = await bridgePromise;
     const templateId = bridge.templateId();
     if (!templateId) throw new Error('В карточке матрицы не найден TemplateID.');
+
     const structure = await bridge.requestStructure(templateId);
-    const dictionaryCatalog = await bridge.loadDictionaryCatalog(structure, { rows: [] }, { forceRefresh: Boolean(forceDictionaryRefresh) });
+    const dictionaryPromise = bridge.loadDictionaryCatalog(
+      structure,
+      { rows: [] },
+      { forceRefresh: Boolean(forceDictionaryRefresh) },
+    );
+    const [workbook, dictionaryCatalog] = await Promise.all([workbookPromise, dictionaryPromise]);
     workbook.dictionaryCatalog = dictionaryCatalog;
     return { workbook, bridge, structure, dictionaryCatalog };
   }
