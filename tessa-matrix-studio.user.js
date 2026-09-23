@@ -4223,7 +4223,7 @@
     }
   }
 
-  async function readSelectedWorkbookWithLiveCatalog(file, { needBridge = false, forceDictionaryRefresh = false } = {}) {
+  async function readSelectedWorkbookWithLiveCatalog(file, { needBridge = false, forceDictionaryRefresh = false, transientDictionary = false } = {}) {
     if (!file) throw new Error('Выберите файл .xlsx.');
 
     const bufferPromise = selectedFileArrayBuffer(file);
@@ -4252,7 +4252,10 @@
     const dictionaryPromise = bridge.loadDictionaryCatalog(
       structure,
       { rows: [] },
-      { forceRefresh: Boolean(forceDictionaryRefresh) },
+      {
+        forceRefresh: Boolean(forceDictionaryRefresh),
+        transient: Boolean(transientDictionary),
+      },
     );
     const [workbook, dictionaryCatalog] = await Promise.all([workbookPromise, dictionaryPromise]);
     workbook.dictionaryCatalog = dictionaryCatalog;
@@ -4262,8 +4265,19 @@
   async function refreshSelectedWorkbookDictionaries(file) {
     if (!file) throw new Error('Сначала выберите изменённый Excel в шаге 2.');
     setProgress(10, 'Читаю ваш Excel', 'Матрица и ваши правки сохранятся');
-    const selected = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true, forceDictionaryRefresh: true });
+    const selected = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true, forceDictionaryRefresh: true, transientDictionary: true });
     const { workbook, bridge, structure, dictionaryCatalog: catalog } = selected;
+    // Explicit refresh is the most memory-sensitive path. Keep the fresh high-cardinality
+    // catalog in this tab and skip an IndexedDB structured-clone write until the user
+    // actually needs persistent cache. The next Preview reuses APP.dictionaryCatalog.
+    APP.dictionaryCatalog = normalizeDictionaryCatalog(catalog);
+    APP.dictionaryCatalog.stats.cache = {
+      ...(APP.dictionaryCatalog.stats.cache || {}),
+      hit: true,
+      transient: true,
+      source: 'refresh-memory',
+      key: dictionaryCacheKey(structure),
+    };
     const matrixInfo = bridge.matrixInfo();
     if (canonicalValue(workbook.roundtrip?.templateId) !== canonicalValue(matrixInfo.TemplateID)) throw new Error('Excel относится к другому шаблону.');
     setProgress(35, 'Обновляю справочники', 'Использую актуальные значения TESSA');
