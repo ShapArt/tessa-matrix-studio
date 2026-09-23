@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 
-const sourcePath = process.env.TMS_TEST_SOURCE || new URL('../tessa-matrix-studio.user.js', import.meta.url).pathname;
+const sourcePath = process.env.TMS_TEST_SOURCE || new URL('../tessa-matrix-studio.user.js', import.meta.url);
 const source = fs.readFileSync(sourcePath, 'utf8');
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 

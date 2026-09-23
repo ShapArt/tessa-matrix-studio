@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 
-const root = path.resolve(new URL('..', import.meta.url).pathname);
+const root = fileURLToPath(new URL('..', import.meta.url));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tms-v114-artifact-'));
 const target = path.join(tmp, 'tessa-matrix-studio.user.js');
 fs.copyFileSync(path.join(root, 'tessa-matrix-studio.user.js'), target);

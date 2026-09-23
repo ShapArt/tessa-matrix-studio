@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 
 const BUILD = 'TMS_V1_15_10_PAGING_V4_REFRESH_EDIT_V2';
@@ -652,7 +653,7 @@ export function applyV11510LiveStability(input) {
   return source;
 }
 
-if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const file = process.argv[2];
   if (!file) throw new Error('usage: node hotfixes/v1.15.10-live-stability.mjs <userscript>');
   const input = fs.readFileSync(file, 'utf8');

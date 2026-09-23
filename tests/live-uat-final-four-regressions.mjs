@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -5,7 +6,7 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
-const root = path.resolve(new URL('..', import.meta.url).pathname);
+const root = fileURLToPath(new URL('..', import.meta.url));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tms-live-final-four-'));
 const target = path.join(tmp, 'tessa-matrix-studio.user.js');
 fs.copyFileSync(path.join(root, 'tessa-matrix-studio.user.js'), target);

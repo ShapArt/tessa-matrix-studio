@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 
 const replaceOnce = (source, before, after, label) => {
@@ -135,7 +136,7 @@ export function applyPreviewCounterFilters(input) {
   return source;
 }
 
-if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const file = process.argv[2];
   if (!file) throw new Error('usage: node hotfixes/v1.14.2-preview-counter-filters.mjs <userscript>');
   const input = fs.readFileSync(file, 'utf8');

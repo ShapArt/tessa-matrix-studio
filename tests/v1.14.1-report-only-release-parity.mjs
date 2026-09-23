@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -6,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { assertReleaseNativeEvidence } from '../tools/release-native-evidence-gate.mjs';
 
-const root = path.resolve(new URL('..', import.meta.url).pathname);
+const root = fileURLToPath(new URL('..', import.meta.url));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tms-v1141-report-release-'));
 const parentPath = path.join(tmp, 'parent-v1.14.0.user.js');
 const candidatePath = path.join(tmp, 'candidate-v1.14.1.user.js');
