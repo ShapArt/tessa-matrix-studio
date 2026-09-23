@@ -158,7 +158,11 @@ export function applyV11510LiveStability(input) {
         return normalizeParameterList(await Promise.resolve(getParamsOwner.getRequestParams()));
       };
 
-      const Provider = api.serviceModule?.ViewPagingParameters || api.platformModule?.ViewPagingParameters || null;
+      const Provider = api.serviceModule?.ViewPagingParameters
+        || api.serviceModule?.ViewSpecialParameters
+        || api.platformModule?.ViewPagingParameters
+        || api.platformModule?.ViewSpecialParameters
+        || null;
       let provider = Provider?.default || Provider?.Default || null;
       if (!provider && typeof Provider === 'function') {
         try { provider = new Provider(); } catch (_) {}
