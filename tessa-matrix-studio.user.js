@@ -4025,7 +4025,11 @@
     const templateId = bridge.templateId();
     if (!templateId) throw new Error('В карточке матрицы не найден TemplateID.');
 
-    const structure = await bridge.requestStructure(templateId);
+    const reusableStructure = APP.structure
+      && canonicalValue(APP.structure.templateId) === canonicalValue(templateId)
+      ? APP.structure
+      : null;
+    const structure = reusableStructure || await bridge.requestStructure(templateId);
     const dictionaryPromise = bridge.loadDictionaryCatalog(
       structure,
       { rows: [] },
@@ -12918,23 +12922,39 @@
     if (!templateId) throw new Error('У матрицы не найден TemplateID.');
 
     setProgress(28, 'Читаю структуру', 'Критерии и функции текущей матрицы');
-    const structure = await performanceStage(
-      'picker.structure',
-      () => bridge.requestStructure(templateId),
-      { operation: 'picker' },
-    );
+    const structure = APP.structure && canonicalValue(APP.structure.templateId) === canonicalValue(templateId)
+      ? APP.structure
+      : await performanceStage(
+        'picker.structure',
+        () => bridge.requestStructure(templateId),
+        { operation: 'picker' },
+      );
 
-    setProgress(48, 'Читаю матрицу', 'Получаю текущее состояние из TESSA');
-    const snapshot = await performanceStage(
+    const matrixId = bridge.mainCard?.id;
+    const currentSectionSignature = bridge.matrixSectionSignature();
+    const sessionSnapshot = getSessionSnapshot(matrixId, structure.templateId);
+    const snapshotAge = sessionSnapshot ? Date.now() - Date.parse(sessionSnapshot.createdAt || 0) : Infinity;
+    const reusableSnapshot = sessionSnapshot
+      && !sessionSnapshot.previewIncremental?.enabled
+      && sessionSnapshot.sectionSignature === currentSectionSignature
+      && snapshotAge >= 0
+      && snapshotAge < 5 * 60 * 1000
+      ? sessionSnapshot
+      : null;
+
+    setProgress(48, reusableSnapshot ? 'Использую свежий снимок матрицы' : 'Читаю матрицу',
+      reusableSnapshot ? 'Повторные CardGet не нужны' : 'Получаю текущее состояние из TESSA');
+    const snapshot = reusableSnapshot || await performanceStage(
       'picker.snapshot',
       () => bridge.loadSnapshot(structure),
       { operation: 'picker' },
     );
+    if (!reusableSnapshot) setSessionSnapshot(snapshot, structure);
 
-    setProgress(70, 'Обновляю справочники', 'Получаю актуальные значения и роли из TESSA');
+    setProgress(70, 'Готовлю справочники', 'Использую кэш, а при необходимости читаю TESSA');
     const dictionaryCatalog = await performanceStage(
       'picker.dictionaries',
-      () => bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true }),
+      () => bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: false }),
       { operation: 'picker', rows: snapshot.rows.length },
     );
 
