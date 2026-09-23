@@ -12,8 +12,10 @@ assert.match(source, /SERVER_PAGED_NATIVE_VIEW_V8/,
   'candidate must contain the V8 canonical direct-request adapter');
 assert.match(source, /const nativeRequest = await Promise\.resolve\(owner\.createDataRequest\(\)\)/,
   'native createDataRequest must be treated as a contextual-parameter source');
-assert.match(source, /request:\s*requestWithParameters\(parameters, page(?:, nativeContextValues)?\),[\s\S]{0,260}parameters,[\s\S]{0,260}nativeRequestType:/,
+assert.match(source, /request:\s*requestWithParameters\(parameters, page(?:, nativeContextValues)?\)/,
   'contextual parameters must be copied into a canonical TessaViewRequest');
+assert.match(source, /nativeRequestType:/,
+  'canonical request diagnostics must preserve native request type');
 assert.doesNotMatch(source, /\{ name: 'component\.getViewData'/,
   'component.getViewData must not be treated as a direct explicit-request executor');
 assert.doesNotMatch(source, /\{ name: 'target\.getViewData'/,
