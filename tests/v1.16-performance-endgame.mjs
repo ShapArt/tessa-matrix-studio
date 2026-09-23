@@ -18,6 +18,8 @@ for (const marker of [
   'dictionaryArtifacts.dictionaryZipValue',
   'pickerSearchCache: new Map()',
   'PERF_PICKER_SEARCH_CACHE_V1',
+  'PERF_LAZY_DICTIONARY_SEARCH_INDEX_V1',
+  "Object.defineProperty(lookup, 'searchRows'",
   'PERF_ROUNDTRIP_ROW_STREAM_V1',
   'PERF_BASELINE_SHEET_STREAM_V1',
   'PERF_PARSED_SHEET_COMPACTION_V1',
@@ -63,3 +65,5 @@ console.log('v1.16 performance endgame static contract: PASS');
 assert(!source.includes('const visualRowCount = Math.max(1, grid.rows.length)'), 'roundtrip export must not materialize a second row grid');
 
 assert(!source.includes("const baselineRows = [['MatrixRowID', 'MatrixVersionID', 'BaseFingerprint']];"), 'baseline ledger must not materialize a giant 2D table');
+
+assert(!source.includes('const searchRows = [];'), 'dictionary search haystack must remain lazy');
