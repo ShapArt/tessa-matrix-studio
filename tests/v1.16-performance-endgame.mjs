@@ -11,9 +11,11 @@ for (const marker of [
   'SELECTED_FILE_BUFFER_CACHE',
   'selectedFileArrayBuffer(file)',
   'await yieldToMain();',
-  'PERF_DIRECT_DICTIONARY_REFRESH_V2',
+  'PERF_DIRECT_DICTIONARY_REFRESH_V3',
+  'zipTextParts(',
+  'deflateRawTextParts(',
   'await buildDictionaryRefreshArtifacts(grid.dictionaryCatalog)',
-  'dictionaryArtifacts.dictionaryXml',
+  'dictionaryArtifacts.dictionaryZipValue',
   'pickerSearchCache: new Map()',
   'PERF_PICKER_SEARCH_CACHE_V1',
   'pickerMatchingRows(catalog, terms, roleType)',
@@ -46,5 +48,6 @@ const refreshEnd = source.indexOf('async function readSelectedWorkbookWithLiveCa
 const refresh = source.slice(refreshStart, refreshEnd);
 assert(refresh.includes('buildDictionaryRefreshArtifacts'), 'direct dictionary refresh helper missing');
 assert(!refresh.includes('createRoundtripXlsxBytes('), 'refresh must not create a second workbook');
+assert(source.includes('entries.set(dictionaryPath, artifacts.dictionaryZipValue)'), 'refresh must stream dictionary XML into ZIP');
 
 console.log('v1.16 performance endgame static contract: PASS');
