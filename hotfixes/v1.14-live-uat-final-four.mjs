@@ -106,7 +106,8 @@ if (/PERF_DIRECT_DICTIONARY_REFRESH_V[23]/.test(source)) {
 // true/false. The field UAT compared display text to server semantics and produced two
 // false FAILs even though both writes and restores were verified. Normalize only the UAT
 // expectation; production storage, parsing and user-visible values stay untouched.
-replaceExact(
+if (!source.includes('FULL_UAT_BOOLEAN_SEMANTIC_V2')) {
+  replaceExact(
 `                  selected = { candidate, plan, expectedAfter: canonicalFieldValues(change.after || []) };`,
 `                  const rawExpectedAfter = canonicalFieldValues(change.after || []);
                   // FULL_UAT_BOOLEAN_SEMANTIC_V2
@@ -114,8 +115,9 @@ replaceExact(
                     ? rawExpectedAfter.map(value => ['да', 'true', '1'].includes(value) ? 'true' : ['нет', 'false', '0'].includes(value) ? 'false' : value)
                     : rawExpectedAfter;
                   selected = { candidate, plan, expectedAfter };`,
-  'Full UAT Boolean semantic read-back expectation',
-);
+    'Full UAT Boolean semantic read-back expectation',
+  );
+}
 
 for (const marker of [
   'FULL_UAT_PICKER_SOURCE_V2',
