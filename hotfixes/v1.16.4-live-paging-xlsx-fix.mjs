@@ -28,7 +28,7 @@ export function applyV1164LivePagingXlsxFix(input) {
 
   source = source.replace(
     "format: 'TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V4',",
-    "format: 'TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V5',",
+    "// TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V4 lineage\n        format: 'TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V5',",
   );
 
   source = replaceOnce(
