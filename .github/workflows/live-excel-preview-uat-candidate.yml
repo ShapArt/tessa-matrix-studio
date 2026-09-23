@@ -128,8 +128,11 @@ jobs:
           grep -Fq 'TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V4' dist/tessa-matrix-studio.user.js
           grep -Fq 'TMS_V1_15_10_PAGING_V4_REFRESH_EDIT_V2' dist/tessa-matrix-studio.user.js
           grep -Fq 'TMS_V1_16_0_PERF_ENDGAME_V1' dist/tessa-matrix-studio.user.js
-          grep -Fq 'PERF_DIRECT_DICTIONARY_REFRESH_V2' dist/tessa-matrix-studio.user.js
+          grep -Fq 'PERF_DIRECT_DICTIONARY_REFRESH_V3' dist/tessa-matrix-studio.user.js
           grep -Fq 'PERF_PICKER_SEARCH_CACHE_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'PERF_ROUNDTRIP_ROW_STREAM_V1' dist/tessa-matrix-studio.user.js
+          grep -Fq 'deflateRawTextParts' dist/tessa-matrix-studio.user.js
+          grep -Fq 'zipTextParts([worksheetPrefix, ...matrixRowChunks, worksheetSuffix])' dist/tessa-matrix-studio.user.js
           grep -Fq 'criterionResultsPromise = mapConcurrent([...criterionGroups.entries()], 3' dist/tessa-matrix-studio.user.js
           grep -Fq 'UAT_REAL_XLSX_EDIT_V2' dist/tessa-matrix-studio.user.js
           grep -Fq "'candidate-build-provenance'" dist/tessa-matrix-studio.user.js
