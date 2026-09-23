@@ -10,7 +10,8 @@ const source = fs.readFileSync(sourcePath, 'utf8');
 assert.match(source, /findPhysicalSafeUpdateCandidate/);
 assert.match(source, /patchWorkbookVisibleCellForUat/);
 assert.match(source, /physicalPlan\.counts\?\.update\s*\|\|\s*0/);
-assert.match(source, /resultingRoleCountForAction/);
+assert.match(source, /physicalPlan\.counts\?\.skip/);
+assert.doesNotMatch(source.slice(source.indexOf('async function findPhysicalSafeUpdateCandidate'), source.indexOf('function findRowByCard')), /resultingRoleCountForAction\(/);
 assert.match(source, /physical-safe-update/);
 assert.doesNotMatch(source, /const edited = findSafeUpdateCandidate\(base\.book, structure, baseline, bridge, catalog, rng\);\s*const visibleValue/s);
 
