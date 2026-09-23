@@ -2058,7 +2058,17 @@
     const year = Math.max(1980, now.getFullYear());
     const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2);
     const dosDate = ((year - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
-    const prepared = await mapConcurrent(entries, PERFORMANCE.ZipConcurrency, async ([name, value]) => {
+    const estimatedInputBytes = (entries || []).reduce((sum, entry) => {
+      const value = entry?.[1];
+      if (value instanceof Uint8Array) return sum + value.byteLength;
+      return sum + String(value ?? '').length * 2;
+    }, 0);
+    const zipConcurrency = estimatedInputBytes >= 64 * 1024 * 1024
+      ? 1
+      : estimatedInputBytes >= 24 * 1024 * 1024
+        ? Math.min(2, PERFORMANCE.ZipConcurrency)
+        : PERFORMANCE.ZipConcurrency;
+    const prepared = await mapConcurrent(entries, zipConcurrency, async ([name, value]) => {
       const data = value instanceof Uint8Array ? value : encoder.encode(String(value));
       const deflated = await deflateRaw(data);
       const compressed = deflated && deflated.length < data.length ? deflated : data;
