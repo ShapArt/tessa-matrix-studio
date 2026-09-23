@@ -9,8 +9,8 @@ const source = fs.readFileSync(sourcePath, 'utf8');
 // setupPagingParameters(). In this Cherkizovo runtime that produced "e is not iterable"
 // before a request could be built. Paging and business context are separate concerns:
 // generate/validate paging against the native request collection, then merge MatrixID.
-assert.match(source, /SERVER_PAGED_NATIVE_VIEW_V11/);
-assert.match(source, /TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V11/);
+assert.match(source, /SERVER_PAGED_NATIVE_VIEW_V(?:11|12)/);
+assert.match(source, /TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V(?:11|12)/);
 assert.match(source, /TMS_V1_16_10_PAGING_V11_ISOLATED_PAGING_CONTEXT/);
 
 const createStart = source.indexOf("owner === target ? 'target-createDataRequest-v5'");
