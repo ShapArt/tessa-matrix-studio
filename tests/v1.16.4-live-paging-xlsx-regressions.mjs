@@ -31,7 +31,7 @@ const rowNumber = 81;
 const fixed = new RegExp(String.raw`(<row\b[^>]*\br="${rowNumber}"[^>]*>)([\s\S]*?)(<\/row>)`, 'i');
 assert.equal(fixed.test(xml), true, 'row 81 fixture must be matched by the fixed regex');
 
-assert.match(source, /version !== '1\.16\.(?:4|6|7|8|9|10|11)'/,
+assert.match(source, /version !== '1\.16\.(?:4|6|7|8|9|10|11|12)'/,
   'candidate provenance must validate the composed live candidate');
 assert.match(source, /TMS_V1_16_4_PAGING_V5_XLSX_EDIT_V3/,
   'candidate must expose the exact v1.16.4 paging/XLSX fix build');
