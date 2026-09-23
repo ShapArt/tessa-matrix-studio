@@ -3006,30 +3006,9 @@
     });
     const cols = grid.columns.map((column, index) => `<col min="${index + 1}" max="${index + 1}" width="${column.width}" style="5" customWidth="1"${column.hidden ? ' hidden="1"' : ''}/>`).join('');
 
-    // Служебный лист хранит только данные, необходимые для обратного сопоставления.
-    // Статус и поисковую строку не дублируем в каждой из десятков тысяч строк:
-    // статус имеет безопасный default, а поисковый индекс восстанавливается в памяти.
-    const dictionaryRows = [['CatalogID', 'Словарь', 'Выбор в Excel', 'Отображение', 'ID', 'RoleTypeID', 'Источник', 'Доп. данные', 'Прежние названия']];
-    const namedRanges = [];
-    const rangeByCatalog = {};
-    let dictionaryRow = 2;
-    let rangeIndex = 1;
-    for (const catalog of Object.values(grid.dictionaryCatalog.catalogs || {})) {
-      const startRow = dictionaryRow;
-      let firstCatalogRow = true;
-      for (const item of catalog.entries || []) {
-        // Название и источник одинаковы для всего каталога. Записываем их только
-        // в первой строке каталога — parser уже сохраняет эти метаданные при инициализации.
-        dictionaryRows.push([catalog.id, firstCatalogRow ? (catalog.label || catalog.id) : '', item.selector, item.display, item.id, item.roleTypeId, firstCatalogRow ? (catalog.sourceView || item.source || '') : '', item.details || '', item.previousSelectors?.length ? JSON.stringify(item.previousSelectors) : '']);
-        firstCatalogRow = false;
-        dictionaryRow += 1;
-      }
-      if (dictionaryRow > startRow) {
-        const name = `_TMS_DV_${String(rangeIndex++).padStart(3, '0')}`;
-        rangeByCatalog[catalog.id] = name;
-        namedRanges.push({ name, formula: `'${ROUNDTRIP.DictionarySheet}'!$C$${startRow}:$C$${dictionaryRow - 1}` });
-      }
-    }
+    const dictionaryArtifacts = await buildDictionaryRefreshArtifacts(grid.dictionaryCatalog);
+    const namedRanges = dictionaryArtifacts.namedRanges;
+    const rangeByCatalog = Object.fromEntries(dictionaryArtifacts.rangeByCatalog);
 
     const validationGroups = new Map();
     const booleanRefs = [];
@@ -3081,7 +3060,7 @@
     }
 
     const instructionSheet = instructionSheetXml();
-    const dictionarySheet = genericSheetXml(dictionaryRows, [28, 42, 56, 48, 40, 14, 28, 72]);
+    const dictionarySheet = dictionaryArtifacts.dictionaryXml;
     const structureSheet = genericSheetXml(structureRows, [46, 14, 38, 42, 38, 28, 24, 70]);
     const schemaChangesSheet = genericSheetXml(changeRows, [32, 16, 40, 44, 72, 12, 40, 72]);
     const baselineSheet = genericSheetXml(baselineRows, [40, 40, 48], { autoFilter: false });
@@ -3875,20 +3854,30 @@
     return normalizeDictionaryCatalog({ ...fresh, catalogs });
   }
 
-  // PERF_DIRECT_DICTIONARY_REFRESH_V1
-  function buildDictionaryRefreshArtifacts(dictionaryCatalog) {
+  // PERF_DIRECT_DICTIONARY_REFRESH_V2
+  async function buildDictionaryRefreshArtifacts(dictionaryCatalog) {
     const normalized = normalizeDictionaryCatalog(dictionaryCatalog || { catalogs: {}, columnCatalogIds: {}, stats: { errors: [] } });
-    const dictionaryRows = [['CatalogID', 'Словарь', 'Выбор в Excel', 'Отображение', 'ID', 'RoleTypeID', 'Источник', 'Доп. данные', 'Прежние названия']];
+    const header = ['CatalogID', 'Словарь', 'Выбор в Excel', 'Отображение', 'ID', 'RoleTypeID', 'Источник', 'Доп. данные', 'Прежние названия'];
+    const widths = [28, 42, 56, 48, 40, 14, 28, 72, 22];
+    const xmlRows = [];
+    const rowXml = (values, rowNumber, headerRow = false) => {
+      const style = headerRow ? 2 : 5;
+      return '<row r="' + rowNumber + '"' + (headerRow ? ' ht="28" customHeight="1"' : '') + '>'
+        + values.map((value, colIndex) => xlsxStringCell(rowNumber, colIndex, value, style)).join('')
+        + '</row>';
+    };
+    xmlRows.push(rowXml(header, 1, true));
+
     const namedRanges = [];
     const rangeByCatalog = new Map();
     let dictionaryRow = 2;
     let rangeIndex = 1;
-
+    let processed = 0;
     for (const itemCatalog of Object.values(normalized.catalogs || {})) {
       const startRow = dictionaryRow;
       let firstCatalogRow = true;
       for (const item of itemCatalog.entries || []) {
-        dictionaryRows.push([
+        xmlRows.push(rowXml([
           itemCatalog.id,
           firstCatalogRow ? (itemCatalog.label || itemCatalog.id) : '',
           item.selector,
@@ -3898,9 +3887,11 @@
           firstCatalogRow ? (itemCatalog.sourceView || item.source || '') : '',
           item.details || '',
           item.previousSelectors?.length ? JSON.stringify(item.previousSelectors) : '',
-        ]);
+        ], dictionaryRow, false));
         firstCatalogRow = false;
         dictionaryRow += 1;
+        processed += 1;
+        if (processed % 2000 === 0) await yieldToMain();
       }
       if (dictionaryRow > startRow) {
         const name = '_TMS_DV_' + String(rangeIndex++).padStart(3, '0');
@@ -3912,11 +3903,20 @@
       }
     }
 
-    return {
-      dictionaryXml: genericSheetXml(dictionaryRows, [28, 42, 56, 48, 40, 14, 28, 72]),
-      namedRanges,
-      rangeByCatalog,
-    };
+    const lastCol = indexToCol(header.length - 1);
+    const lastRow = Math.max(1, dictionaryRow - 1);
+    const cols = Array.from({ length: header.length }, (_, index) =>
+      '<col min="' + (index + 1) + '" max="' + (index + 1) + '" width="' + (widths[index] || 22) + '" customWidth="1"/>'
+    ).join('');
+    const dictionaryXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+      + '<dimension ref="A1:' + lastCol + lastRow + '"/>'
+      + '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+      + '<sheetFormatPr defaultRowHeight="15"/><cols>' + cols + '</cols>'
+      + '<sheetData>' + xmlRows.join('') + '</sheetData>'
+      + '<autoFilter ref="A1:' + lastCol + lastRow + '"/></worksheet>';
+
+    return { dictionaryXml, namedRanges, rangeByCatalog, entryCount: processed };
   }
 
   async function refreshWorkbookDictionaries(workbook, structure, catalog) {
@@ -3934,7 +3934,7 @@
       if (!dictionaryPath || !structurePath || !matrixPath) throw new Error('В книге отсутствуют служебные листы справочников.');
 
       catalog = preserveWorkbookSelectors(workbook, catalog);
-      const artifacts = buildDictionaryRefreshArtifacts(catalog);
+      const artifacts = await buildDictionaryRefreshArtifacts(catalog);
       entries.set(dictionaryPath, artifacts.dictionaryXml);
 
       const structureRows = workbook.parsedSheets.get(ROUNDTRIP.StructureSheet).rows.map(row => [...row]);
