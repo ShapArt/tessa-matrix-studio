@@ -47,6 +47,7 @@
   const APP = {
     name: 'TESSA Matrix Studio',
     version: '1.14.0',
+    performanceBuild: 'TMS_V1_16_0_PERF_ENDGAME_V1',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -13693,6 +13694,7 @@
     baselineExplicitValues, workbookBaselineFastPathIndex, unchangedDesiredRowFromBaseline,
     TessaBridge,
     version: APP.version,
+    performanceBuild: APP.performanceBuild,
     // FULL_UAT_VERSION_PROVENANCE_V1
     studioVersion: () => APP.version,
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE, XLSX_ARCHIVE_LIMITS, SPREADSHEETML_LIMITS },
