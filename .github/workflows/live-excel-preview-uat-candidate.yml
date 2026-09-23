@@ -20,6 +20,7 @@ on:
       - 'tests/v1.14.2-full-uat-action-coverage-regression.mjs'
       - 'tests/v1.16.2-full-uat-pinned-context.mjs'
       - 'tests/v1.16.3-full-uat-preflight-recovery.mjs'
+      - 'tests/v1.16.3-full-uat-readonly-runtime.mjs'
       - 'tests/employee-name-resolver.mjs'
       - 'tests/prod-shadow-workload-profile.mjs'
       - 'tests/prod-shadow-cross-matrix-scale.mjs'
@@ -172,6 +173,7 @@ jobs:
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.14.2-full-uat-action-coverage-regression.mjs
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.16.2-full-uat-pinned-context.mjs
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.16.3-full-uat-preflight-recovery.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.16.3-full-uat-readonly-runtime.mjs
 
           awk 'BEGIN { emit=0 } /^\/\/ ==UserScript==/ { emit=1 } emit { print } /^\/\/ ==\/UserScript==/ { exit }' \
             dist/tessa-matrix-studio.user.js > dist/tessa-matrix-studio.meta.js
