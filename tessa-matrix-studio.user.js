@@ -2569,7 +2569,7 @@
 
     const isBoolean = canonicalValue(catalog.sourceView || '') === 'boolean'
       || (items.length > 0 && items.every(item => item.kind === 'Boolean' || ['true', 'false'].includes(canonicalValue(item.id))));
-    const lookup = { items, byId, bySelector, byDisplay, byEmployeeAlias, searchRows, isBoolean, resolutionCache: new Map() };
+    const lookup = { items, byId, bySelector, byDisplay, byEmployeeAlias, searchRows, isBoolean, resolutionCache: new Map(), pickerSearchCache: new Map() };
     DICTIONARY_LOOKUP_CACHE.set(catalog, lookup);
     return lookup;
   }
@@ -12656,6 +12656,39 @@
     return terms.every(term => row.haystack.includes(term));
   }
 
+  // PERF_PICKER_SEARCH_CACHE_V1
+  function pickerMatchingRows(catalog, terms, roleType) {
+    const lookup = dictionaryLookup(catalog);
+    if (!lookup) return [];
+    const normalizedTerms = Array.from(terms || []).filter(Boolean);
+    const normalizedRoleType = canonicalValue(roleType || 'all') || 'all';
+    const queryKey = normalizedTerms.join(' ');
+    const cacheKey = normalizedRoleType + '|' + queryKey;
+    const cache = lookup.pickerSearchCache || (lookup.pickerSearchCache = new Map());
+    if (cache.has(cacheKey)) return cache.get(cacheKey);
+
+    let sourceRows = lookup.searchRows || [];
+    let bestPrefixLength = -1;
+    for (const [key, rows] of cache.entries()) {
+      const split = key.indexOf('|');
+      const cachedRole = split >= 0 ? key.slice(0, split) : '';
+      const cachedQuery = split >= 0 ? key.slice(split + 1) : '';
+      if (cachedRole !== normalizedRoleType || !cachedQuery || !queryKey.startsWith(cachedQuery)) continue;
+      if (cachedQuery.length > bestPrefixLength) {
+        bestPrefixLength = cachedQuery.length;
+        sourceRows = rows;
+      }
+    }
+
+    const matched = sourceRows.filter(row => pickerSearchMatch(row, normalizedTerms, normalizedRoleType));
+    if (cache.size >= 8 && !cache.has(cacheKey)) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(cacheKey, matched);
+    return matched;
+  }
+
   // Pagination is computed over the in-memory search index. Only one bounded page is
   // returned to the DOM; changing a page never discards the selection Map.
   function searchPickerPage(catalog, options = {}) {
@@ -12663,19 +12696,15 @@
     const terms = searchCanonical(query).split(/\s+/).filter(Boolean);
     const roleType = canonicalValue(options?.roleType || 'all') || 'all';
     const pageSize = Math.max(1, Math.min(200, Math.trunc(Number(options?.pageSize) || 80)));
-    const requestedPage = Math.max(1, Math.trunc(Number(options?.page) || 1));
-    const offset = (requestedPage - 1) * pageSize;
-    const items = [];
-    let total = 0;
-    for (const row of dictionaryLookup(catalog)?.searchRows || []) {
-      if (!pickerSearchMatch(row, terms, roleType)) continue;
-      total++;
-      if (total > offset && items.length < pageSize) items.push(row.item);
-    }
+    const matched = pickerMatchingRows(catalog, terms, roleType);
+    const total = matched.length;
     const pageCount = Math.max(1, Math.ceil(total / pageSize));
-    if (requestedPage > pageCount && total) return searchPickerPage(catalog, { ...options, page: pageCount, pageSize });
+    const requestedPage = Math.max(1, Math.trunc(Number(options?.page) || 1));
+    const page = Math.min(requestedPage, pageCount);
+    const offset = (page - 1) * pageSize;
+    const items = matched.slice(offset, offset + pageSize).map(row => row.item);
     return {
-      items, total, page: Math.min(requestedPage, pageCount), pageSize, pageCount,
+      items, total, page, pageSize, pageCount,
       start: total ? offset + 1 : 0,
       end: total ? offset + items.length : 0,
       query: normalizeSpace(query), roleType,
@@ -12770,10 +12799,7 @@
   function bulkSelectPickerMatches(selected, catalog, options = {}) {
     const terms = searchCanonical(options?.query || '').split(/\s+/).filter(Boolean);
     const roleType = canonicalValue(options?.roleType || 'all') || 'all';
-    const matches = [];
-    for (const row of dictionaryLookup(catalog)?.searchRows || []) {
-      if (pickerSearchMatch(row, terms, roleType)) matches.push(row.item);
-    }
+    const matches = pickerMatchingRows(catalog, terms, roleType).map(row => row.item);
     return bulkSelectPickerItems(selected, matches, options?.maxChars ?? 32767);
   }
 
