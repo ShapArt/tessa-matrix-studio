@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
-import { applyV11510LiveStability } from '../hotfixes/v1.16.0-live-stability.mjs';
+import { applyV11510LiveStability } from '../hotfixes/v1.15.10-live-stability.mjs';
 
 const sourcePath = process.env.TMS_TEST_SOURCE || new URL('../tessa-matrix-studio.user.js', import.meta.url).pathname;
 let source = fs.readFileSync(sourcePath, 'utf8');
