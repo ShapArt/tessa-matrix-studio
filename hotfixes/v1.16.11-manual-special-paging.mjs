@@ -26,40 +26,38 @@ export function apply(input) {
     'V12 diagnostics');
 
   const anchor = `      const buildRequest = async page => {
-        const builders = [];
+        // Most portable path: create PageLimit/PageOffset RequestParameter objects directly.
 `;
   const replacement = `      const buildRequest = async page => {
-        const builders = [];
-
         // V12: construct TESSA's documented special paging parameters directly.
         // Live seeds 2589527719 and 1369359921 proved that Cherkizovo's mounted
         // createDataRequest/setupPagingParameters delegates throw "e is not iterable"
         // before they can return a request. PageOffset/PageLimit are ordinary special
         // request parameters, so avoid those private/minified delegates entirely.
-        builders.push({
-          name: 'manual-special-parameters-v12',
-          run: async () => {
-            const baseContextParameters = withoutPaging(await getBaseParameters());
-            const request = requestWithParameters(baseContextParameters, page);
-            const operators = api.platformModule?.ViewCriteriaOperators || {};
-            const equalsOperator = operators.EqualsTo || operators.Equals || operators.Equality || null;
-            if (!equalsOperator || typeof request?.addParameter !== 'function') return null;
-            const wireLimit = pageLimit + 1; // TESSA requests one look-ahead row.
-            const wireOffset = 1 + ((page - 1) * pageLimit);
-            const addIntParameter = (name, value) => request.addParameter(name, builder => builder
-              .addCriteria(equalsOperator, value, String(value))
-              .asRequestParameter());
-            addIntParameter('PageLimit', wireLimit);
-            addIntParameter('PageOffset', wireOffset);
-            const parameters = normalizeParameterList(
-              request.parameters ?? request.Parameters ?? request.values ?? request.Values ?? []
-            );
-            if (!requiredContextPresent(parameters)) {
-              throw new Error(\`Manual paging context is missing MatrixID. Available: \${parameters.map(parameterName).filter(Boolean).join(', ')}\`);
-            }
-            return { request, parameters };
-          },
+        let built = await tryBuilder(page, 'manual-special-parameters-v12', async () => {
+          const baseContextParameters = withoutPaging(await getBaseParameters());
+          const request = requestWithParameters(baseContextParameters, page);
+          const operators = api.platformModule?.ViewCriteriaOperators || {};
+          const equalsOperator = operators.EqualsTo || operators.Equals || operators.Equality || null;
+          if (!equalsOperator || typeof request?.addParameter !== 'function') return null;
+          const wireLimit = pageLimit + 1; // TESSA requests one look-ahead row.
+          const wireOffset = 1 + ((page - 1) * pageLimit);
+          const addIntParameter = (name, value) => request.addParameter(name, builder => builder
+            .addCriteria(equalsOperator, value, String(value))
+            .asRequestParameter());
+          addIntParameter('PageLimit', wireLimit);
+          addIntParameter('PageOffset', wireOffset);
+          const parameters = normalizeParameterList(
+            request.parameters ?? request.Parameters ?? request.values ?? request.Values ?? []
+          );
+          if (!requiredContextPresent(parameters)) {
+            throw new Error(`Manual paging context is missing MatrixID. Available: ${parameters.map(parameterName).filter(Boolean).join(', ')}`);
+          }
+          return { request, parameters };
         });
+        if (built) return built;
+
+        // Most portable legacy path: create PageLimit/PageOffset RequestParameter objects directly.
 `;
   source = once(source, anchor, replacement, 'manual paging builder');
 
@@ -69,8 +67,8 @@ export function apply(input) {
     'V12 source');
 
   source = once(source,
-    "        if (version !== '1.16.10') {\n          throw new Error(\`Загружена версия \${version || '(нет)'}, ожидалась 1.16.10.\`);\n        }\n        return { detail: \`Подтверждён v1.16.10 · \${actualBuild} · \${actualPerformanceBuild}.`, data: { version, build: actualBuild, performanceBuild: actualPerformanceBuild } };",
-    "        if (version !== '1.16.11') {\n          throw new Error(\`Загружена версия \${version || '(нет)'}, ожидалась 1.16.11.\`);\n        }\n        return { detail: \`Подтверждён v1.16.11 · \${actualBuild} · \${actualPerformanceBuild}.`, data: { version, build: actualBuild, performanceBuild: actualPerformanceBuild } };",
+    "        if (version !== '1.16.10') {\n          throw new Error(`Загружена версия ${version || '(нет)'}, ожидалась 1.16.10.`);\n        }\n        return { detail: `Подтверждён v1.16.10 · ${actualBuild} · ${actualPerformanceBuild}.`, data: { version, build: actualBuild, performanceBuild: actualPerformanceBuild } };",
+    "        if (version !== '1.16.11') {\n          throw new Error(`Загружена версия ${version || '(нет)'}, ожидалась 1.16.11.`);\n        }\n        return { detail: `Подтверждён v1.16.11 · ${actualBuild} · ${actualPerformanceBuild}.`, data: { version, build: actualBuild, performanceBuild: actualPerformanceBuild } };",
     'v1.16.11 provenance');
 
   return source;
