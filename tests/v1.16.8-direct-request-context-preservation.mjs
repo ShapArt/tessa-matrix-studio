@@ -15,7 +15,7 @@ assert.match(source, /(?:request\.values\s*=|mergeContextParameters)/,
   'V9 context-preservation semantics must survive later adapters');
 assert.match(source, /contextParameterNames/);
 assert.match(source, /MatrixID/i);
-assert.match(source, /TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V(?:9|10)/);
+assert.match(source, /TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V(?:9|10|11)/);
 assert.match(source, /TMS_V1_16_8_PAGING_V9_CONTEXT_PRESERVATION/);
 
 console.log('v1.16.8 direct request context preservation contract: PASS');
