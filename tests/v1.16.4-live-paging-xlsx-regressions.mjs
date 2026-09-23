@@ -12,7 +12,7 @@ assert.match(source, /Array\.isArray\(column\)\s*\?\s*column\[0\]/,
   'server paging must read the name from tuple-shaped TessaViewResult.Columns');
 assert.match(source, /const hasExplicitPaging = parameters =>/,
   'direct request builders must prove PageLimit and PageOffset are present');
-assert.match(source, /if \(!(?:hasExplicitPaging\(parameters\)|isPagingUsableForPage\(parameters, page, lastAcceptedOffset\))\) return null;/,
+assert.match(source, /if \(!isPagingUsableForPage\((?:parameters|pagingParameters), page, lastAcceptedOffset\)\) return null;/,
   'a createDataRequest result without usable paging parameters must not be accepted as server-paged');
 assert.match(source, /if \(rawRows\.length < pageLimit\) break;/,
   'a full page equal to pageLimit must not terminate paging early');
