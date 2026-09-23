@@ -2937,7 +2937,7 @@
     columns.push({ header: '__TESSA_VERSION_ID', schema: 'system:versionId', key: 'system:versionId', kind: 'system-hidden', hidden: true, width: 3 });
     columns.push({ header: '__TESSA_BASE_FINGERPRINT', schema: 'system:baseFingerprint', key: 'system:baseFingerprint', kind: 'system-hidden', hidden: true, width: 3 });
 
-    const rows = snapshot.rows.map(snapshotRow => {
+    const rows = options.includeRows === false ? [] : snapshot.rows.map(snapshotRow => {
       const values = [];
       for (const condition of structure.conditions) {
         const key = definitionKey('criterion', condition.criterionRowId);
@@ -13066,7 +13066,7 @@
     APP.snapshot = snapshot;
     APP.dictionaryCatalog = dictionaryCatalog;
 
-    const grid = buildRoundtripGrid(structure, snapshot, {}, dictionaryCatalog);
+    const grid = buildRoundtripGrid(structure, snapshot, {}, dictionaryCatalog, { includeRows: false });
     setProgress(92, 'Справочники готовы', 'Открываю выбор значений');
     return {
       headers: grid.columns.map(column => column.header),
@@ -13090,7 +13090,7 @@
       const selected = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true });
       source = selected.workbook;
     } else if (window.__TESSA_MATRIX_SYNC_TEST_MODE__ && APP.structure && APP.snapshot && APP.dictionaryCatalog) {
-      const grid = buildRoundtripGrid(APP.structure, APP.snapshot, {}, APP.dictionaryCatalog);
+      const grid = buildRoundtripGrid(APP.structure, APP.snapshot, {}, APP.dictionaryCatalog, { includeRows: false });
       source = {
         headers: grid.columns.map(column => column.header),
         schemaTokens: grid.columns.map(column => column.schema),
