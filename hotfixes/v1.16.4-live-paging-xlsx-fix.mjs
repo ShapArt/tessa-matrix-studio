@@ -34,7 +34,7 @@ export function applyV1164LivePagingXlsxFix(input) {
   source = replaceOnce(
     source,
     "      const pageParamEvidence = parameters => normalizeParameterList(parameters).map(item => ({\n        name: parameterName(item),\n        value: safePlain(item?.value ?? item?.Value ?? item?.values ?? item?.Values ?? null, { maxDepth: 3, maxKeys: 20, maxArray: 20 }),\n      })).filter(item => /pageoffset|pagelimit/i.test(item.name));\n",
-    "      const pageParamEvidence = parameters => normalizeParameterList(parameters).map(item => ({\n        name: parameterName(item),\n        value: safePlain(item?.value ?? item?.Value ?? item?.values ?? item?.Values ?? null, { maxDepth: 3, maxKeys: 20, maxArray: 20 }),\n      })).filter(item => /pageoffset|pagelimit/i.test(item.name));\n      const hasExplicitPaging = parameters => {\n        const names = new Set(pageParamEvidence(parameters).map(item => canonicalValue(item.name).replace(/\\\\s+/g, '')));\n        return names.has(canonicalValue('PageLimit')) && names.has(canonicalValue('PageOffset'));\n      };\n",
+    "      const pageParamEvidence = parameters => normalizeParameterList(parameters).map(item => ({\n        name: parameterName(item),\n        value: safePlain(item?.value ?? item?.Value ?? item?.values ?? item?.Values ?? null, { maxDepth: 3, maxKeys: 20, maxArray: 20 }),\n      })).filter(item => /pageoffset|pagelimit/i.test(item.name));\n      const hasExplicitPaging = parameters => {\n        const names = new Set(pageParamEvidence(parameters).map(item => canonicalValue(item.name).replace(/\\s+/g, '')));\n        return names.has(canonicalValue('PageLimit')) && names.has(canonicalValue('PageOffset'));\n      };\n",
     'explicit paging proof helper',
   );
 
@@ -134,14 +134,14 @@ export function applyV1164LivePagingXlsxFix(input) {
 
   source = replaceOnce(
     source,
-    "    const fullCell = new RegExp(`<c\\\\b([^>]*\\\\br=\"${ref}\"[^>]*)>[\\\\s\\\\S]*?<\\\\/c>`, 'i');\n    const selfCell = new RegExp(`<c\\\\b([^>]*\\\\br=\"${ref}\"[^>]*)\\\\/>`, 'i');\n",
-    "    const fullCell = new RegExp(String.raw`<c\\\\b([^>]*\\\\br=\"${ref}\"[^>]*)>[\\\\s\\\\S]*?<\\\\/c>`, 'i');\n    const selfCell = new RegExp(String.raw`<c\\\\b([^>]*\\\\br=\"${ref}\"[^>]*)\\\\/>`, 'i');\n",
+    "    const fullCell = new RegExp(`<c\\b([^>]*\\br=\"${ref}\"[^>]*)>[\\s\\S]*?<\\/c>`, 'i');\n    const selfCell = new RegExp(`<c\\b([^>]*\\br=\"${ref}\"[^>]*)\\/>`, 'i');\n",
+    "    const fullCell = new RegExp(String.raw`<c\\b([^>]*\\br=\"${ref}\"[^>]*)>[\\s\\S]*?<\\/c>`, 'i');\n    const selfCell = new RegExp(String.raw`<c\\b([^>]*\\br=\"${ref}\"[^>]*)\\/>`, 'i');\n",
     'physical XLSX cell regex',
   );
   source = replaceOnce(
     source,
-    "      const rowRe = new RegExp(`(<row\\\\b[^>]*\\\\br=\"${rowNumber}\"[^>]*>)([\\\\s\\\\S]*?)(<\\\\/row>)`, 'i');\n",
-    "      const rowRe = new RegExp(String.raw`(<row\\\\b[^>]*\\\\br=\"${rowNumber}\"[^>]*>)([\\\\s\\\\S]*?)(<\\\\/row>)`, 'i');\n",
+    "      const rowRe = new RegExp(`(<row\\b[^>]*\\br=\"${rowNumber}\"[^>]*>)([\\s\\S]*?)(<\\/row>)`, 'i');\n",
+    "      const rowRe = new RegExp(String.raw`(<row\\b[^>]*\\br=\"${rowNumber}\"[^>]*>)([\\s\\S]*?)(<\\/row>)`, 'i');\n",
     'physical XLSX row regex',
   );
 
@@ -157,8 +157,8 @@ export function applyV1164LivePagingXlsxFix(input) {
     'Array.isArray(column) ? column[0]',
     "source: 'native-view-server-paged-v5'",
     'if (rawRows.length < pageLimit) break;',
-    'const fullCell = new RegExp(String.raw`<c\\\\b',
-    'const rowRe = new RegExp(String.raw`(<row\\\\b',
+    'const fullCell = new RegExp(String.raw`<c\\b',
+    'const rowRe = new RegExp(String.raw`(<row\\b',
     "version !== '1.16.4'",
   ]) {
     if (!source.includes(marker)) throw new Error('v1.16.4 verification failed: ' + marker);
