@@ -7,8 +7,8 @@ const source = fs.readFileSync(sourcePath, 'utf8');
 // Live seed 273171831 proved V9 still lost MatrixID and also called an out-of-scope
 // planner helper from the UAT fixture. TESSA 4.1 renamed Web ViewRequest.values to
 // parameters, so the direct adapter must preserve both API generations explicitly.
-assert.match(source, /SERVER_PAGED_NATIVE_VIEW_V(?:10|11)/);
-assert.match(source, /TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V(?:10|11)/);
+assert.match(source, /SERVER_PAGED_NATIVE_VIEW_V(?:10|11|12)/);
+assert.match(source, /TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V(?:10|11|12)/);
 assert.match(source, /TMS_V1_16_9_PAGING_V10_VERSIONED_CONTEXT/);
 assert.match(source, /'parameters' in request/);
 assert.match(source, /'values' in request/);
