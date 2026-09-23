@@ -1,4 +1,4 @@
-name: v1.16.8 Context-Preserving Direct View Candidate
+name: v1.16.9 Versioned View Context Candidate
 
 on:
   pull_request:
@@ -17,6 +17,7 @@ on:
       - 'hotfixes/v1.16.6-live-paging-final.mjs'
       - 'hotfixes/v1.16.7-canonical-direct-view-request.mjs'
       - 'hotfixes/v1.16.8-context-preservation-physical-uat.mjs'
+      - 'hotfixes/v1.16.9-versioned-view-context-uat-scope.mjs'
       - 'tests/live-colleague-excel-regressions.mjs'
       - 'tests/v1.14.2-full-uat-clear-regression.mjs'
       - 'tests/v1.14.2-full-uat-version-provenance.mjs'
@@ -31,6 +32,7 @@ on:
       - 'tests/v1.16.7-canonical-direct-view-request.mjs'
       - 'tests/v1.16.8-direct-request-context-preservation.mjs'
       - 'tests/v1.16.8-physical-xlsx-safe-update.mjs'
+      - 'tests/v1.16.9-versioned-view-context-and-uat-scope.mjs'
       - 'tests/employee-name-resolver.mjs'
       - 'tests/prod-shadow-workload-profile.mjs'
       - 'tests/prod-shadow-cross-matrix-scale.mjs'
@@ -48,7 +50,7 @@ permissions:
 
 jobs:
   build:
-    name: Build exact v1.16.8 UAT artifact
+    name: Build exact v1.16.9 UAT artifact
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -72,7 +74,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          CANDIDATE_VERSION='1.16.8'
+          CANDIDATE_VERSION='1.16.9'
           mkdir -p dist
           cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
 
@@ -104,6 +106,7 @@ jobs:
           node hotfixes/v1.16.6-live-paging-final.mjs dist/tessa-matrix-studio.user.js
           node hotfixes/v1.16.7-canonical-direct-view-request.mjs dist/tessa-matrix-studio.user.js
           node hotfixes/v1.16.8-context-preservation-physical-uat.mjs dist/tessa-matrix-studio.user.js
+          node hotfixes/v1.16.9-versioned-view-context-uat-scope.mjs dist/tessa-matrix-studio.user.js
 
           node --check dist/tessa-matrix-studio.user.js
           grep -Fqx "// @version      $CANDIDATE_VERSION" dist/tessa-matrix-studio.user.js
@@ -123,12 +126,14 @@ jobs:
           grep -Fq 'SERVER_PAGED_NATIVE_VIEW_V5' dist/tessa-matrix-studio.user.js
           grep -Fq 'TMS_V1_16_4_PAGING_V5_XLSX_EDIT_V3' dist/tessa-matrix-studio.user.js
           grep -Fq 'SERVER_PAGED_NATIVE_VIEW_V7' dist/tessa-matrix-studio.user.js
-          grep -Fq 'TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V9' dist/tessa-matrix-studio.user.js
+          grep -Fq 'TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V10' dist/tessa-matrix-studio.user.js
           grep -Fq 'TMS_V1_16_6_PAGING_V7_VALIDATED_OFFSETS' dist/tessa-matrix-studio.user.js
           grep -Fq 'SERVER_PAGED_NATIVE_VIEW_V8' dist/tessa-matrix-studio.user.js
           grep -Fq 'TMS_V1_16_7_PAGING_V8_CANONICAL_REQUEST' dist/tessa-matrix-studio.user.js
           grep -Fq 'SERVER_PAGED_NATIVE_VIEW_V9' dist/tessa-matrix-studio.user.js
           grep -Fq 'TMS_V1_16_8_PAGING_V9_CONTEXT_PRESERVATION' dist/tessa-matrix-studio.user.js
+          grep -Fq 'SERVER_PAGED_NATIVE_VIEW_V10' dist/tessa-matrix-studio.user.js
+          grep -Fq 'TMS_V1_16_9_PAGING_V10_VERSIONED_CONTEXT' dist/tessa-matrix-studio.user.js
           grep -Fq "{ name: 'view.getData', owner: view, fn: view?.getData }" dist/tessa-matrix-studio.user.js
           grep -Fq "{ name: 'service.getData', owner: api.service, fn: api.service?.getData }" dist/tessa-matrix-studio.user.js
           if grep -Fq "{ name: 'component.getViewData'" dist/tessa-matrix-studio.user.js; then echo 'Unsafe component direct executor survived V8.' >&2; exit 1; fi
@@ -209,6 +214,7 @@ jobs:
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.16.7-canonical-direct-view-request.mjs
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.16.8-direct-request-context-preservation.mjs
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.16.8-physical-xlsx-safe-update.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.16.9-versioned-view-context-and-uat-scope.mjs
 
           awk 'BEGIN { emit=0 } /^\/\/ ==UserScript==/ { emit=1 } emit { print } /^\/\/ ==\/UserScript==/ { exit }' \
             dist/tessa-matrix-studio.user.js > dist/tessa-matrix-studio.meta.js
@@ -222,18 +228,18 @@ jobs:
 
           USER_SHA="$(sha256sum dist/tessa-matrix-studio.user.js | awk '{print $1}')"
           COMMIT_SHA="$(git rev-parse HEAD)"
-          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "v1.16.8-context-preservation-physical-xlsx-live-uat",\n  "sourceWorkbook": "TESSA_Матрица_ОРД-основная_78792326_СПРАВОЧНИКИ.xlsx",\n  "expectedChecks": ["multi-position-picker-copy", "picker-delimiter-safe-v2", "visible-preview-error-count", "explicit-not-applied-count", "bounded-resolution-center", "counter-driven-preview-filters", "blocked-role-baseline-fallback", "value-level-recovery", "compact-role-catalog", "baseline-incremental-preview", "full-uat-export-scope", "deterministic-live-clear", "dictionary-invalid-field-value-fail-closed", "resource-input-size-guard", "resource-zip-entry-guard", "resource-path-traversal-guard", "resource-spreadsheet-coordinate-guard", "bounded-memory-repeat-roundtrip", "heap-headroom-after-production-shadow", "production-shadow-prod-envelope", "historical-alias-migration", "cross-matrix-production-scale", "full-uat-version-provenance", "copied-identity-collision-safe", "full-uat-apply-reconcile-evidence"]\n}\n' \
+          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "v1.16.9-versioned-view-context-live-uat",\n  "sourceWorkbook": "TESSA_Матрица_ОРД-основная_78792326_СПРАВОЧНИКИ.xlsx",\n  "expectedChecks": ["multi-position-picker-copy", "picker-delimiter-safe-v2", "visible-preview-error-count", "explicit-not-applied-count", "bounded-resolution-center", "counter-driven-preview-filters", "blocked-role-baseline-fallback", "value-level-recovery", "compact-role-catalog", "baseline-incremental-preview", "full-uat-export-scope", "deterministic-live-clear", "dictionary-invalid-field-value-fail-closed", "resource-input-size-guard", "resource-zip-entry-guard", "resource-path-traversal-guard", "resource-spreadsheet-coordinate-guard", "bounded-memory-repeat-roundtrip", "heap-headroom-after-production-shadow", "production-shadow-prod-envelope", "historical-alias-migration", "cross-matrix-production-scale", "full-uat-version-provenance", "copied-identity-collision-safe", "full-uat-apply-reconcile-evidence"]\n}\n' \
             "$CANDIDATE_VERSION" "$COMMIT_SHA" "$USER_SHA" > dist/candidate-manifest.json
 
       - name: Upload exact UAT candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: tessa-matrix-studio-v1.16.8-context-preserving-direct-view-${{ github.run_id }}
+          name: tessa-matrix-studio-v1.16.9-versioned-view-context-${{ github.run_id }}
           path: |
             dist/tessa-matrix-studio.user.js
             dist/tessa-matrix-studio.meta.js
             dist/SHA256SUMS.txt
-            dist/tessa-matrix-studio-v1.16.8-UAT.zip
+            dist/tessa-matrix-studio-v1.16.9-UAT.zip
             dist/candidate-manifest.json
           if-no-files-found: error
           retention-days: 14
