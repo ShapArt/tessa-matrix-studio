@@ -2630,14 +2630,12 @@
     if (cached) return cached;
 
     // PERF_LAZY_DICTIONARY_SEARCH_INDEX_V1
-    // Exact ID/name resolution is used by every Preview/Export, while fuzzy picker
-    // search is not. Keep the 100k-entry search haystack lazy so ordinary roundtrips
-    // do not allocate another large string per dictionary record.
+    // PERF_LAZY_DICTIONARY_TEXT_INDEX_V1
+    // Export/roundtrip paths mostly resolve native IDs. Build only the byId index
+    // eagerly; selector/display/employee aliases and fuzzy haystacks are created on
+    // first user-text lookup. This saves several Maps + singleton arrays for 100k roles.
     const items = Array.isArray(catalog.entries) ? catalog.entries : Array.from(catalog.entries || []);
     const byId = new Map();
-    const bySelector = new Map();
-    const byDisplay = new Map();
-    const byEmployeeAlias = new Map();
     const append = (map, key, item) => {
       if (!key) return;
       if (!map.has(key)) map.set(key, []);
@@ -2651,17 +2649,37 @@
         append(byId, `${id}|${roleType}`, item);
         if (roleType) append(byId, `${id}|`, item);
       }
-      append(bySelector, canonicalValue(item.selector), item);
-      append(byDisplay, canonicalValue(item.display), item);
-      for (const alias of employeeResolvableAliases(item)) append(byEmployeeAlias, canonicalValue(alias), item);
     }
 
     const isBoolean = canonicalValue(catalog.sourceView || '') === 'boolean'
       || (items.length > 0 && items.every(item => item.kind === 'Boolean' || ['true', 'false'].includes(canonicalValue(item.id))));
     const lookup = {
-      items, byId, bySelector, byDisplay, byEmployeeAlias, isBoolean,
-      resolutionCache: new Map(), pickerSearchCache: new Map(), _searchRows: null,
+      items, byId, isBoolean,
+      resolutionCache: new Map(), pickerSearchCache: new Map(),
+      _searchRows: null, _textIndexes: null,
     };
+
+    const ensureTextIndexes = () => {
+      if (lookup._textIndexes) return lookup._textIndexes;
+      const bySelector = new Map();
+      const byDisplay = new Map();
+      const byEmployeeAlias = new Map();
+      for (const item of items) {
+        append(bySelector, canonicalValue(item.selector), item);
+        append(byDisplay, canonicalValue(item.display), item);
+        for (const alias of employeeResolvableAliases(item)) append(byEmployeeAlias, canonicalValue(alias), item);
+      }
+      lookup._textIndexes = { bySelector, byDisplay, byEmployeeAlias };
+      return lookup._textIndexes;
+    };
+
+    for (const property of ['bySelector', 'byDisplay', 'byEmployeeAlias']) {
+      Object.defineProperty(lookup, property, {
+        enumerable: true,
+        configurable: false,
+        get() { return ensureTextIndexes()[property]; },
+      });
+    }
     Object.defineProperty(lookup, 'searchRows', {
       enumerable: true,
       configurable: false,
