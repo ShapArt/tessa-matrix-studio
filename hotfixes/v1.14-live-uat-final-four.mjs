@@ -28,20 +28,30 @@ replaceExact(
 // that is intentionally correct for user-supplied archives. Build the replacement service
 // XML and its named ranges directly from the already-normalized live catalog instead.
 // The external 128 MiB/512 MiB archive guards remain unchanged.
-const donorStart = `    const donorBytes = await createRoundtripXlsxBytes(structure, { rows: [] }, {}, catalog);`;
-const namespaceLine = `    const namespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';`;
-const donorStartIndex = source.indexOf(donorStart);
-const namespaceIndex = source.indexOf(namespaceLine, donorStartIndex);
-if (donorStartIndex < 0 || namespaceIndex < 0 || namespaceIndex <= donorStartIndex) {
-  throw new Error('direct dictionary refresh: donor block boundaries not found');
-}
-const donorBlock = source.slice(donorStartIndex, namespaceIndex);
-if (!donorBlock.includes(`const donor = await unzipArrayBuffer(`)
-  || !donorBlock.includes(`const dictionaryXml = decoder.decode(donor.get(donorPath(ROUNDTRIP.DictionarySheet)))`)
-  || !donorBlock.includes(`entries.set(structurePath`)) {
-  throw new Error('direct dictionary refresh: unexpected donor block shape');
-}
-const directDictionaryBlock = `    // REFRESH_DICTIONARY_DIRECT_XML_V2
+if (source.includes('PERF_DIRECT_DICTIONARY_REFRESH_V2')) {
+  // Newer source already implements the same fix in a more memory-efficient form:
+  // direct dictionary XML, cooperative yields and no donor workbook roundtrip.
+  if (!source.includes('REFRESH_DICTIONARY_DIRECT_XML_V2')) {
+    source = source.replace(
+      '// PERF_DIRECT_DICTIONARY_REFRESH_V2',
+      '// PERF_DIRECT_DICTIONARY_REFRESH_V2\n  // REFRESH_DICTIONARY_DIRECT_XML_V2',
+    );
+  }
+} else {
+  const donorStart = `    const donorBytes = await createRoundtripXlsxBytes(structure, { rows: [] }, {}, catalog);`;
+  const namespaceLine = `    const namespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';`;
+  const donorStartIndex = source.indexOf(donorStart);
+  const namespaceIndex = source.indexOf(namespaceLine, donorStartIndex);
+  if (donorStartIndex < 0 || namespaceIndex < 0 || namespaceIndex <= donorStartIndex) {
+    throw new Error('direct dictionary refresh: donor block boundaries not found');
+  }
+  const donorBlock = source.slice(donorStartIndex, namespaceIndex);
+  if (!donorBlock.includes(`const donor = await unzipArrayBuffer(`)
+    || !donorBlock.includes(`const dictionaryXml = decoder.decode(donor.get(donorPath(ROUNDTRIP.DictionarySheet)))`)
+    || !donorBlock.includes(`entries.set(structurePath`)) {
+    throw new Error('direct dictionary refresh: unexpected donor block shape');
+  }
+  const directDictionaryBlock = `    // REFRESH_DICTIONARY_DIRECT_XML_V2
     const refreshCatalog = normalizeDictionaryCatalog(catalog);
     const dictionaryRows = [['CatalogID', 'Словарь', 'Выбор в Excel', 'Отображение', 'ID', 'RoleTypeID', 'Источник', 'Доп. данные', 'Прежние названия']];
     const ranges = [];
@@ -79,17 +89,18 @@ const directDictionaryBlock = `    // REFRESH_DICTIONARY_DIRECT_XML_V2
     for (const row of structureRows.slice(1)) row[6] = catalog.columnCatalogIds?.[row[0]] || '';
     entries.set(structurePath, genericSheetXml(structureRows, [], { autoFilter: false }).replace(/\\s+s="\\d+"/g, ''));
 `;
-source = source.slice(0, donorStartIndex) + directDictionaryBlock + source.slice(namespaceIndex);
+  source = source.slice(0, donorStartIndex) + directDictionaryBlock + source.slice(namespaceIndex);
 
-replaceExact(
+  replaceExact(
 `    const donorWorkbook = decoder.decode(donor.get('xl/workbook.xml'));
     const ranges = [...donorWorkbook.matchAll(/<definedName\\b([^>]*)>([\\s\\S]*?)<\\/definedName>/g)].map(m => ({ name: attr(m[1], 'name'), formula: m[2] }));
     const ids = Object.values(normalizeDictionaryCatalog(catalog).catalogs).filter(item => item.entries.length).map(item => item.id);
     const rangeByCatalog = new Map(ids.map((id, i) => [id, ranges[i]?.name]));
 `,
 ``,
-  'remove donor-derived named ranges',
-);
+    'remove donor-derived named ranges',
+  );
+}
 
 // The workbook-facing Boolean vocabulary is Да/Нет, while the native TESSA read-back is
 // true/false. The field UAT compared display text to server semantics and produced two
