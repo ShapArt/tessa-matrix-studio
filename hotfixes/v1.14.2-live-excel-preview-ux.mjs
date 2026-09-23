@@ -101,10 +101,24 @@ export function applyLiveExcelPreviewUx(input) {
 
 `);
 
-  const oldPersonalRoleExport = "values.push(items.map(item => dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, '')).join('\\n'));";
   const newPersonalRoleExport = "values.push(items.map(item => Number(item.roleTypeId) === PERSONAL_ROLE_TYPE_ID ? employeeSafeSelector((dictionaryLookup(dict)?.byId?.get(canonicalValue(item.id) + '|' + canonicalValue(item.roleTypeId)) || [])[0] || item) : (dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, ''))).join('\\n'));";
-  if (source.includes(oldPersonalRoleExport)) source = source.replace(oldPersonalRoleExport, newPersonalRoleExport);
-  else if (!source.includes(newPersonalRoleExport)) throw new Error('Function-role Excel export anchor not found');
+  const roleLoopAnchor = "const items = snapshotRow.roles?.[fn.id] || [];";
+  const roleLoopStart = source.indexOf(roleLoopAnchor);
+  if (roleLoopStart < 0) throw new Error('Function-role Excel export loop not found');
+  const roleIdsAnchor = "values.push(items.map(item => \`${item.id}|${item.roleTypeId}\`).join('\\n'));";
+  const roleIdsIndex = source.indexOf(roleIdsAnchor, roleLoopStart);
+  if (roleIdsIndex < 0) throw new Error('Function-role hidden ID export anchor not found');
+  let roleExportBlock = source.slice(roleLoopStart, roleIdsIndex);
+  if (!roleExportBlock.includes('PERSONAL_ROLE_TYPE_ID ? employeeSafeSelector')) {
+    const visibleLineStart = roleExportBlock.indexOf('values.push(items.map(item =>');
+    if (visibleLineStart < 0) throw new Error('Function-role visible Excel export anchor not found');
+    const visibleLineEnd = roleExportBlock.indexOf(").join('\\n'));", visibleLineStart);
+    if (visibleLineEnd < 0) throw new Error('Function-role visible Excel export end not found');
+    roleExportBlock = roleExportBlock.slice(0, visibleLineStart)
+      + newPersonalRoleExport
+      + roleExportBlock.slice(visibleLineEnd + ").join('\\n'));".length);
+    source = source.slice(0, roleLoopStart) + roleExportBlock + source.slice(roleIdsIndex);
+  }
 
   const resolutionSignature = '  function renderResolutionCenter(plan) {';
   const resolutionStart = source.indexOf(resolutionSignature);
