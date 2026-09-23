@@ -25,41 +25,41 @@ export function apply(input) {
     "        format: 'TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V12',\n        build: APP.pagingManualSpecialBuild || APP.pagingIsolatedContextBuild || APP.pagingVersionedContextBuild || APP.pagingContextBuild || APP.pagingCanonicalBuild || APP.pagingFinalBuild || APP.pagingXlsxFixBuild || APP.buildFingerprint || null,",
     'V12 diagnostics');
 
-  const anchor = `      const buildRequest = async page => {
-        // Most portable path: create PageLimit/PageOffset RequestParameter objects directly.
-`;
-  const replacement = `      const buildRequest = async page => {
-        // V12: construct TESSA's documented special paging parameters directly.
-        // Live seeds 2589527719 and 1369359921 proved that Cherkizovo's mounted
-        // createDataRequest/setupPagingParameters delegates throw "e is not iterable"
-        // before they can return a request. PageOffset/PageLimit are ordinary special
-        // request parameters, so avoid those private/minified delegates entirely.
-        let built = await tryBuilder(page, 'manual-special-parameters-v12', async () => {
-          const baseContextParameters = withoutPaging(await getBaseParameters());
-          const request = requestWithParameters(baseContextParameters, page);
-          const operators = api.platformModule?.ViewCriteriaOperators || {};
-          const equalsOperator = operators.EqualsTo || operators.Equals || operators.Equality || null;
-          if (!equalsOperator || typeof request?.addParameter !== 'function') return null;
-          const wireLimit = pageLimit + 1; // TESSA requests one look-ahead row.
-          const wireOffset = 1 + ((page - 1) * pageLimit);
-          const addIntParameter = (name, value) => request.addParameter(name, builder => builder
-            .addCriteria(equalsOperator, value, String(value))
-            .asRequestParameter());
-          addIntParameter('PageLimit', wireLimit);
-          addIntParameter('PageOffset', wireOffset);
-          const parameters = normalizeParameterList(
-            request.parameters ?? request.Parameters ?? request.values ?? request.Values ?? []
-          );
-          if (!requiredContextPresent(parameters)) {
-            throw new Error(`Manual paging context is missing MatrixID. Available: ${parameters.map(parameterName).filter(Boolean).join(', ')}`);
-          }
-          return { request, parameters };
-        });
-        if (built) return built;
+  source = once(source,
+`              const nativeRequest = await Promise.resolve(owner.createDataRequest());
+              if (!nativeRequest) return null;
+              const baseContextParameters = await getBaseParameters();
+`,
+`              // V12: the mounted Cherkizovo createDataRequest/setupPagingParameters
+              // delegates both throw "e is not iterable" in live runtime (seed 1369359921).
+              // Build TESSA's documented special paging parameters directly instead.
+              const baseContextParameters = await getBaseParameters();
+              const manualRequest = requestWithParameters(withoutPaging(baseContextParameters), page);
+              const operators = api.platformModule?.ViewCriteriaOperators || {};
+              const equalsOperator = operators.EqualsTo || operators.Equals || operators.Equality || null;
+              if (!equalsOperator || typeof manualRequest?.addParameter !== 'function') return null;
+              const wireLimit = pageLimit + 1;
+              const wireOffset = 1 + ((page - 1) * pageLimit);
+              const addIntParameter = (name, value) => manualRequest.addParameter(name, builder => builder
+                .addCriteria(equalsOperator, value, String(value))
+                .asRequestParameter());
+              addIntParameter('PageLimit', wireLimit);
+              addIntParameter('PageOffset', wireOffset);
+              const manualParameters = normalizeParameterList(
+                manualRequest.parameters ?? manualRequest.Parameters ?? manualRequest.values ?? manualRequest.Values ?? []
+              );
+              if (!requiredContextPresent(manualParameters)) {
+                throw new Error(\`Manual paging context is missing MatrixID. Available: \${manualParameters.map(parameterName).filter(Boolean).join(', ')}\`);
+              }
+              if (!isPagingUsableForPage(manualParameters, page, lastAcceptedOffset)) return null;
+              return { request: manualRequest, parameters: manualParameters, nativeRequestType: 'manual-special-parameters-v12' };
 
-        // Most portable legacy path: create PageLimit/PageOffset RequestParameter objects directly.
-`;
-  source = once(source, anchor, replacement, 'manual paging builder');
+              // Kept below as dead compatibility documentation; V12 intentionally does
+              // not execute the broken mounted delegate on this Cherkizovo runtime.
+              const nativeRequest = await Promise.resolve(owner.createDataRequest());
+              if (!nativeRequest) return null;
+`,
+    'manual paging before mounted createDataRequest');
 
   source = once(source,
     "              source: 'native-view-server-paged-v11',",
