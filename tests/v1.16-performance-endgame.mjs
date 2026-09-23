@@ -35,6 +35,9 @@ for (const marker of [
   'criterionResultsPromise = mapConcurrent([...criterionGroups.entries()], 3',
   'transientDictionary: true',
   "source: 'refresh-memory'",
+  'FULL_UAT_BATCHED_FIELD_WRITES_V1',
+  'batchSize: 6',
+  'batched-field-readback-restore',
   'if (sameSelector && samePrevious) return entry',
 ]) assert(source.includes(marker), 'missing performance marker: ' + marker);
 
@@ -71,3 +74,13 @@ assert(!source.includes('const visualRowCount = Math.max(1, grid.rows.length)'),
 assert(!source.includes("const baselineRows = [['MatrixRowID', 'MatrixVersionID', 'BaseFingerprint']];"), 'baseline ledger must not materialize a giant 2D table');
 
 assert(!source.includes('const searchRows = [];'), 'dictionary search haystack must remain lazy');
+
+const fieldUatStart = source.indexOf("await runCheck('write-every-field'");
+const fieldUatEnd = source.indexOf("await runCheck('write-clear-delete'", fieldUatStart);
+assert(fieldUatStart >= 0 && fieldUatEnd > fieldUatStart, 'batched field UAT block missing');
+const fieldUat = source.slice(fieldUatStart, fieldUatEnd);
+assert(fieldUat.includes('FULL_UAT_BATCHED_FIELD_WRITES_V1'), 'batched field UAT marker missing');
+assert(fieldUat.includes('maxBatchSize'), 'batched field UAT must use bounded batches');
+assert(fieldUat.includes('selected.length >= maxBatchSize'), 'batched field UAT must enforce batch ceiling');
+assert(fieldUat.includes("await applySingle(batchPlan, batchId + ': UPDATE')"), 'batched field UAT mutation apply missing');
+assert(fieldUat.includes("await applySingle(restorePlan, batchId + ': restore')"), 'batched field UAT restore apply missing');
