@@ -22,6 +22,8 @@ for (const marker of [
   'APP.selectedFileRef === file',
   'snapshotAge < 5 * 60 * 1000',
   'rawRows = Array.from(result?.rows || [])',
+  'criterionResultsPromise = mapConcurrent([...criterionGroups.entries()], 3',
+  'if (sameSelector && samePrevious) return entry',
 ]) assert(source.includes(marker), 'missing performance marker: ' + marker);
 
 assert(!source.includes('compressed: bytes.slice(dataStart, dataStart + compressedSize)'),
