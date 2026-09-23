@@ -4026,6 +4026,8 @@
   }
 
   // PERF_DIRECT_DICTIONARY_REFRESH_V3
+  // REFRESH_DICTIONARY_DIRECT_XML_V2
+  // PERF_DIRECT_DICTIONARY_REFRESH_V2
   async function buildDictionaryRefreshArtifacts(dictionaryCatalog) {
     const normalized = normalizeDictionaryCatalog(dictionaryCatalog || { catalogs: {}, columnCatalogIds: {}, stats: { errors: [] } });
     const header = ['CatalogID', 'Словарь', 'Выбор в Excel', 'Отображение', 'ID', 'RoleTypeID', 'Источник', 'Доп. данные', 'Прежние названия'];
