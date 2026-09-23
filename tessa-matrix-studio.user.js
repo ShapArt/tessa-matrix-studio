@@ -15497,6 +15497,7 @@
       // into one row UPDATE and restored together. This keeps field coverage while cutting
       // the live write/read-back count from ~2×fields to ~2×batches.
       await runCheck('write-every-field', 'Сервер: все доступные поля пакетами → read-back → restore', async () => {
+        // FULL_UAT_BATCHED_FIELD_WRITES_V1
         const temp = await createTemporaryRow('write-every-field'), rowCardId = temp.created.rowCardId;
         const audit = { rowCardId, inventory: [], evidence: [], batches: [], batchSize: 6 };
         report.fieldMutationAudit = audit;
