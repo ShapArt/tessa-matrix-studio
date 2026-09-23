@@ -17,7 +17,7 @@ let bridgeCreateCalls = 0;
 let loadSnapshotCalls = 0;
 const E = {
   STUDIO_ACTION_REGISTRY: [],
-  studioVersion: () => '1.16.3',
+  studioVersion: () => '1.16.4',
   TessaBridge: {
     create: async () => {
       bridgeCreateCalls += 1;
