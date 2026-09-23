@@ -80,22 +80,27 @@ jobs:
           # yet. analyze normally waits for processing; the bounded retry only covers
           # eventual consistency between the analysis and alert APIs.
           analysis_sha=""
-          for attempt in 1 2 3 4 5; do
-            analysis_sha="$(
+          observed_shas=""
+          # A busy PR can receive a newer CodeQL analysis while an older workflow is
+          # still finishing. Do not require the exact checkout to remain the newest
+          # analysis; require it to exist in the bounded PR analysis history.
+          for attempt in $(seq 1 20); do
+            analyses="$(
               api_get analyses \
                 --data-urlencode "tool_name=CodeQL" \
                 "${scope[@]}" \
-                --data-urlencode "per_page=1" \
-              | jq -r '.[0].commit_sha // empty'
+                --data-urlencode "per_page=100"
             )"
+            analysis_sha="$(jq -r --arg sha "${GITHUB_SHA}" '[.[] | select(.commit_sha == $sha)][0].commit_sha // empty' <<<"${analyses}")"
+            observed_shas="$(jq -r '[.[].commit_sha] | unique | .[:8] | join(",")' <<<"${analyses}")"
             if [[ "${analysis_sha}" == "${GITHUB_SHA}" ]]; then
               break
             fi
-            if [[ "${attempt}" == "5" ]]; then
-              echo "::error::Latest CodeQL analysis for ${scope_label} is ${analysis_sha:-missing}, expected ${GITHUB_SHA}."
+            if [[ "${attempt}" == "20" ]]; then
+              echo "::error::CodeQL analysis for exact checkout ${GITHUB_SHA} was not exposed for ${scope_label}. Observed: ${observed_shas:-none}."
               exit 1
             fi
-            sleep 2
+            sleep 3
           done
 
           blocking=0
