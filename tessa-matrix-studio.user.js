@@ -3055,6 +3055,57 @@
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:H35"/><sheetViews><sheetView workbookViewId="0" showGridLines="0"/></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols>${cols}</cols><sheetData>${rows.join('')}</sheetData><mergeCells count="${merges.length}">${merges.map(ref => `<mergeCell ref="${ref}"/>`).join('')}</mergeCells></worksheet>`;
   }
 
+  // PERF_BASELINE_SHEET_STREAM_V1
+  async function buildBaselineSheetZipValue(baselineSourceRows) {
+    const bodyChunks = [];
+    let pendingRows = [];
+    let rowNumber = 2;
+    let maxDataChunks = 0;
+    const flush = () => {
+      if (!pendingRows.length) return;
+      bodyChunks.push(pendingRows.join(''));
+      pendingRows = [];
+    };
+
+    for (const row of baselineSourceRows || []) {
+      if (!row.rowCardId && !row.versionId) continue;
+      const fingerprint = row.fingerprint || fingerprintFlat(row.flat || {});
+      const payload = JSON.stringify({ flat: row.flat || {}, values: row.values || {}, roles: row.roles || {} });
+      const dataChunks = [];
+      if (!row.fingerprint || row.fingerprint === fingerprintFlat(row.flat || {})) {
+        for (let offset = 0; offset < payload.length; offset += 30000) dataChunks.push(payload.slice(offset, offset + 30000));
+      }
+      maxDataChunks = Math.max(maxDataChunks, dataChunks.length);
+      const values = [row.rowCardId || '', row.versionId || '', fingerprint, ...dataChunks];
+      pendingRows.push('<row r="' + rowNumber + '">' +
+        values.map((value, colIndex) => xlsxStringCell(rowNumber, colIndex, value, 5)).join('') +
+        '</row>');
+      rowNumber += 1;
+      if (pendingRows.length >= 256) flush();
+      if (rowNumber % 1000 === 0) await yieldToMain();
+    }
+    flush();
+
+    const headers = ['MatrixRowID', 'MatrixVersionID', 'BaseFingerprint'];
+    for (let index = 0; index < maxDataChunks; index += 1) headers.push('BaseData' + (index + 1));
+    const maxCols = Math.max(1, headers.length);
+    const lastCol = indexToCol(maxCols - 1);
+    const lastRow = Math.max(1, rowNumber - 1);
+    const widths = [40, 40, 48];
+    const cols = Array.from({ length: maxCols }, (_, index) =>
+      '<col min="' + (index + 1) + '" max="' + (index + 1) + '" width="' + (widths[index] || 22) + '" customWidth="1"/>'
+    ).join('');
+    const headerXml = '<row r="1" ht="28" customHeight="1">' +
+      headers.map((value, colIndex) => xlsxStringCell(1, colIndex, value, 2)).join('') +
+      '</row>';
+    const prefix = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+      + '<dimension ref="A1:' + lastCol + lastRow + '"/>'
+      + '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+      + '<sheetFormatPr defaultRowHeight="15"/><cols>' + cols + '</cols><sheetData>' + headerXml;
+    return zipTextParts([prefix, ...bodyChunks, '</sheetData></worksheet>']);
+  }
+
   async function createRoundtripXlsxBytes(structure, snapshot, matrixInfo, dictionaryCatalog = null, options = {}) {
     const grid = buildRoundtripGrid(structure, snapshot, matrixInfo, dictionaryCatalog, { ...options, includeRows: false });
     const lastCol = indexToCol(grid.columns.length - 1);
@@ -3143,21 +3194,13 @@
     for (const item of changes.retiredData || []) changeRows.push(['АРХИВ ЗНАЧЕНИЯ', item.kind === 'function' ? 'Функция' : 'Критерий', item.id, item.header || '', 'Значение из старого Excel сохранено только для истории', item.excelRow, item.rowCardId || '', item.value || '']);
     if (changeRows.length === 1) changeRows.push(['БЕЗ ИЗМЕНЕНИЙ', '', '', '', 'Структура Excel соответствует текущему шаблону TESSA', '', '', '']);
 
-    const baselineRows = [['MatrixRowID', 'MatrixVersionID', 'BaseFingerprint']];
     const baselineSourceRows = Array.isArray(options.baselineRows) ? options.baselineRows : (snapshot.rows || []);
-    for (const row of baselineSourceRows) {
-      if (!row.rowCardId && !row.versionId) continue;
-      const payload = JSON.stringify({ flat: row.flat || {}, values: row.values || {}, roles: row.roles || {} });
-      const chunks = !row.fingerprint || row.fingerprint === fingerprintFlat(row.flat || {}) ? (payload.match(/[\s\S]{1,30000}/g) || []) : [];
-      while (baselineRows[0].length < 3 + chunks.length) baselineRows[0].push(`BaseData${baselineRows[0].length - 2}`);
-      baselineRows.push([row.rowCardId || '', row.versionId || '', row.fingerprint || fingerprintFlat(row.flat || {}), ...chunks]);
-    }
+    const baselineSheet = await buildBaselineSheetZipValue(baselineSourceRows);
 
     const instructionSheet = instructionSheetXml();
     const dictionarySheet = dictionaryArtifacts.dictionaryZipValue;
     const structureSheet = genericSheetXml(structureRows, [46, 14, 38, 42, 38, 28, 24, 70]);
     const schemaChangesSheet = genericSheetXml(changeRows, [32, 16, 40, 44, 72, 12, 40, 72]);
-    const baselineSheet = genericSheetXml(baselineRows, [40, 40, 48], { autoFilter: false });
 
     const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="5"><font><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FF292929"/><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="20"/><name val="Aptos Display"/><family val="2"/></font><font><b/><color rgb="FF292929"/><sz val="13"/><name val="Aptos Display"/><family val="2"/></font></fonts><fills count="8"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE31E24"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFB5121B"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF292929"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF0F1"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF5F5F5"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFE699"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFE5E5E5"/></left><right style="thin"><color rgb="FFE5E5E5"/></right><top style="thin"><color rgb="FFE5E5E5"/></top><bottom style="thin"><color rgb="FFE5E5E5"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="16"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="49" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="6" borderId="0" xfId="0"/><xf numFmtId="49" fontId="0" fillId="6" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="3" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="5" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf><xf numFmtId="0" fontId="2" fillId="6" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="49" fontId="0" fillId="7" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
     const sheetNames = ['Матрица', ROUNDTRIP.InstructionSheet, ROUNDTRIP.DictionarySheet, ROUNDTRIP.StructureSheet, ROUNDTRIP.SchemaChangesSheet, ROUNDTRIP.BaselineSheet];
