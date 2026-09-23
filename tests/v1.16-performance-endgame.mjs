@@ -18,6 +18,9 @@ for (const marker of [
   'dictionaryArtifacts.dictionaryZipValue',
   'pickerSearchCache: new Map()',
   'PERF_PICKER_SEARCH_CACHE_V1',
+  'PERF_ROUNDTRIP_ROW_STREAM_V1',
+  'zipTextParts([worksheetPrefix, ...matrixRowChunks, worksheetSuffix])',
+  'includeRows: false',
   'pickerMatchingRows(catalog, terms, roleType)',
   'APP.selectedFileRef === file',
   'snapshotAge < 5 * 60 * 1000',
@@ -53,3 +56,5 @@ assert(!refresh.includes('createRoundtripXlsxBytes('), 'refresh must not create 
 assert(source.includes('entries.set(dictionaryPath, artifacts.dictionaryZipValue)'), 'refresh must stream dictionary XML into ZIP');
 
 console.log('v1.16 performance endgame static contract: PASS');
+
+assert(!source.includes('const visualRowCount = Math.max(1, grid.rows.length)'), 'roundtrip export must not materialize a second row grid');
