@@ -1,4 +1,4 @@
-name: v1.16.13 Typed Paging Runtime Candidate
+name: v1.16.14 Copied Row Preview Candidate
 
 on:
   pull_request:
@@ -58,7 +58,7 @@ permissions:
 
 jobs:
   build:
-    name: Build exact v1.16.13 UAT artifact
+    name: Build exact v1.16.14 UAT artifact
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,7 +82,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          CANDIDATE_VERSION='1.16.13'
+          CANDIDATE_VERSION='1.16.14'
           mkdir -p dist
           cp tessa-matrix-studio.user.js dist/tessa-matrix-studio.user.js
 
@@ -237,6 +237,7 @@ jobs:
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/v1.16.12-self-contained-direct-paging.mjs
 
           TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/native-paging-runtime-contract.mjs
+          TMS_TEST_SOURCE="$PWD/dist/tessa-matrix-studio.user.js" node tests/copied-row-preview-diagnostics.mjs
 
           awk 'BEGIN { emit=0 } /^\/\/ ==UserScript==/ { emit=1 } emit { print } /^\/\/ ==\/UserScript==/ { exit }' \
             dist/tessa-matrix-studio.user.js > dist/tessa-matrix-studio.meta.js
@@ -250,18 +251,18 @@ jobs:
 
           USER_SHA="$(sha256sum dist/tessa-matrix-studio.user.js | awk '{print $1}')"
           COMMIT_SHA="$(git rev-parse HEAD)"
-          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "v1.16.13-typed-paging-runtime-live-uat",\n  "sourceWorkbook": "TESSA_Матрица_ОРД-основная_78792326_СПРАВОЧНИКИ.xlsx",\n  "expectedChecks": ["multi-position-picker-copy", "picker-delimiter-safe-v2", "visible-preview-error-count", "explicit-not-applied-count", "bounded-resolution-center", "counter-driven-preview-filters", "blocked-role-baseline-fallback", "value-level-recovery", "compact-role-catalog", "baseline-incremental-preview", "full-uat-export-scope", "deterministic-live-clear", "dictionary-invalid-field-value-fail-closed", "resource-input-size-guard", "resource-zip-entry-guard", "resource-path-traversal-guard", "resource-spreadsheet-coordinate-guard", "bounded-memory-repeat-roundtrip", "heap-headroom-after-production-shadow", "production-shadow-prod-envelope", "historical-alias-migration", "cross-matrix-production-scale", "full-uat-version-provenance", "copied-identity-collision-safe", "full-uat-apply-reconcile-evidence"]\n}\n' \
+          printf '{\n  "version": "%s",\n  "commit": "%s",\n  "userscriptSha256": "%s",\n  "purpose": "v1.16.14-copied-row-preview-live-uat",\n  "sourceWorkbook": "TESSA_Матрица_ОРД-основная_78792326_СПРАВОЧНИКИ.xlsx",\n  "expectedChecks": ["multi-position-picker-copy", "picker-delimiter-safe-v2", "visible-preview-error-count", "explicit-not-applied-count", "bounded-resolution-center", "counter-driven-preview-filters", "blocked-role-baseline-fallback", "value-level-recovery", "compact-role-catalog", "baseline-incremental-preview", "full-uat-export-scope", "deterministic-live-clear", "dictionary-invalid-field-value-fail-closed", "resource-input-size-guard", "resource-zip-entry-guard", "resource-path-traversal-guard", "resource-spreadsheet-coordinate-guard", "bounded-memory-repeat-roundtrip", "heap-headroom-after-production-shadow", "production-shadow-prod-envelope", "historical-alias-migration", "cross-matrix-production-scale", "full-uat-version-provenance", "copied-identity-collision-safe", "full-uat-apply-reconcile-evidence"]\n}\n' \
             "$CANDIDATE_VERSION" "$COMMIT_SHA" "$USER_SHA" > dist/candidate-manifest.json
 
       - name: Upload exact UAT candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: tessa-matrix-studio-v1.16.13-typed-paging-runtime-${{ github.run_id }}
+          name: tessa-matrix-studio-v1.16.14-copied-row-preview-${{ github.run_id }}
           path: |
             dist/tessa-matrix-studio.user.js
             dist/tessa-matrix-studio.meta.js
             dist/SHA256SUMS.txt
-            dist/tessa-matrix-studio-v1.16.13-UAT.zip
+            dist/tessa-matrix-studio-v1.16.14-UAT.zip
             dist/candidate-manifest.json
           if-no-files-found: error
           retention-days: 14

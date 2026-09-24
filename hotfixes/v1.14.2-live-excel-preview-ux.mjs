@@ -137,7 +137,7 @@ export function applyLiveExcelPreviewUx(input) {
   function previewAttentionSummary(plan, review = APP.review) {
     const effectiveReview = review || createPlanReviewState();
     const reviewed = buildReviewedPlan(plan, effectiveReview);
-    const notApplied = Number(reviewed?.counts?.skip || reviewed?.skippedRows?.length || 0);
+    const notApplied = selectPreviewItems(reviewed, effectiveReview, { filter: 'skip', pageSize: 1 }).total;
     const errors = selectPreviewItems(plan, effectiveReview, { filter: 'error', pageSize: 1 }).total;
     const resolutionItems = collectPlanResolutionItems(plan);
     const resolutionRows = new Set(resolutionItems.map(item => Number(item?.excelRow)).filter(Number.isFinite)).size;

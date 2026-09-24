@@ -8060,7 +8060,7 @@
     if (skippedValues.length) warnings.push(`Пропущено отдельных некорректных значений: ${skippedValues.length}. Остальные значения этих ячеек и строк продолжают обрабатываться.`);
     const nonEmptyFingerprints = desired.filter(row => row.hasData).map(x => x.compareFingerprint || x.fingerprint);
     const duplicates = nonEmptyFingerprints.filter((fp, i) => nonEmptyFingerprints.indexOf(fp) !== i);
-    if (duplicates.length) warnings.push('В Excel обнаружены полностью одинаковые строки. Конфликтующие изменяемые строки будут пропущены.');
+    if (duplicates.length) warnings.push('В Excel обнаружены полностью одинаковые строки. Совпадения с TESSA показаны отдельно; причины пропуска конфликтующих изменений — в списке ниже.');
     if (actions.some(a => a.match?.lowConfidence)) warnings.push('Есть строки с низкой уверенностью сопоставления. Проверьте их в предпросмотре.');
 
     const plan = {
@@ -8226,6 +8226,31 @@
     });
     const hint = reportAvailable ? 'Подробности: «Дополнительно → Скачать отчёт».' : 'Подробности каждой строки — в фильтре «Пропустить».';
     return `<details open class="tms-skipped-box"><summary><b>Не удалось выполнить: ${failures.length}</b></summary>${lines.join('')}<div>${hint}${failures.length > 20 ? ` Показано 20 из ${failures.length}.` : ''}</div></details>`;
+  }
+
+  function existingAddMatches(plan, limit = Infinity) {
+    const sources = new Map((plan?.snapshot?.rows || []).map(row => [canonicalValue(row.rowCardId), row]));
+    const matches = [];
+    for (const action of plan?.actions || []) {
+      if (action?.match?.matchedBy !== 'existing-identical-add' || !action.currentRow) continue;
+      const source = sources.get(canonicalValue(action.match.sourceRowCardId || ''));
+      const changes = [];
+      if (source) for (const column of action.excelRow?.columns?.values?.() || []) {
+        if (arraysEqual(currentCompareValues(source, column), action.excelRow.compare?.[column.key] || [])) continue;
+        changes.push({ label: column.excelHeader || column.name || column.key, before: source.flat?.[column.key] || [], after: action.excelRow.flat?.[column.key] || [] });
+      }
+      matches.push({ excelRow: action.excelRow.excelRow, tessaRow: action.currentRow.index + 1, sourceRow: source ? source.index + 1 : null, changes });
+      if (matches.length >= limit) break;
+    }
+    return matches;
+  }
+
+  function existingAddMatchesHtml(plan) {
+    const count = (plan?.actions || []).filter(action => action?.match?.matchedBy === 'existing-identical-add').length;
+    if (!count) return '';
+    const matches = existingAddMatches(plan, 20);
+    const lines = matches.map(item => `<div class="tms-skip-line"><b>Excel ${escapeHtml(item.excelRow)} → TESSA ${escapeHtml(item.tessaRow)}</b><br>Критерии и исполнители совпадают; новая строка не создаётся.${item.changes.length ? `<br>Распознаны правки относительно исходной строки TESSA ${escapeHtml(item.sourceRow)}: ${item.changes.map(change => `${escapeHtml(change.label)}: ${escapeHtml(change.before.join('; ') || 'пусто')} → ${escapeHtml(change.after.join('; ') || 'пусто')}`).join(' · ')}` : ''}</div>`);
+    return `<details open class="tms-warning tms-existing-adds"><summary><b>Добавляемые строки уже существуют в TESSA: ${count}</b></summary>${lines.join('')}${count > matches.length ? `<div>Показано ${matches.length} из ${count}. Все соответствия есть в отчёте Preview.</div>` : ''}</details>`;
   }
 
   /**
@@ -8501,6 +8526,8 @@
       productionShadow: productionShadowProfile(reviewed),
       skippedRows: [...(reviewed?.skippedRows || [])],
       skippedFields: [...(reviewed?.skippedFields || [])],
+      skippedValues: [...(reviewed?.skippedValues || [])],
+      existingAddMatches: existingAddMatches(reviewed),
       reviewIssues: [...(reviewed?.reviewIssues || [])],
       review: {
         excludedRows: [...(review?.excludedRows || [])],
@@ -9244,6 +9271,18 @@
     return skipped;
   }
 
+  function describeDuplicateDeleteConflict(skip, action, plan, structure) {
+    if (skip?.code !== 'duplicate-found' || !action?.excelRow) return skip;
+    const desiredKey = duplicateRowKey(action.currentRow, action.excelRow, structure);
+    const blockers = (plan.actions || []).filter(item => item.type === 'delete' && item.currentRow
+      && duplicateRowKey(item.currentRow, null, structure) === desiredKey);
+    if (!blockers.length) return skip;
+    const labels = blockers.map(item => `TESSA ${item.currentRow.index + 1}`).join(', ');
+    const changes = (action.changes || []).slice(0, 3).map(change => `${change.label}: ${(change.before || []).join('; ') || 'пусто'} → ${(change.after || []).join('; ') || 'пусто'}`).join(' · ');
+    skip.reason = `Изменение распознано${changes ? ` (${changes})` : ''}, но сервер отклонил его: такие значения пока существуют в ${labels}, запланированной к удалению. Связанные операции остановлены. Измените сочетание значений или выполните удаление отдельно, затем повторите правку на свежей выгрузке.`;
+    return skip;
+  }
+
   // ATOMIC_CROSS_MATRIX_REPLACEMENT_PREVIEW_V1
   function crossMatrixReplacementIntegrity(plan, extraSkippedRows = []) {
     if (!plan?.crossMatrixReplacement?.enabled) return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0, skippedValueCount: 0, reviewExcludedCount: 0 };
@@ -9619,7 +9658,7 @@
       const excelRow = Number(item.action.excelRow?.excelRow);
       if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
       runtimeSkippedActions.add(item.action);
-      runtimeSkips.push(runtimeSkip(item.action, item.error, 'preflight-update'));
+      runtimeSkips.push(describeDuplicateDeleteConflict(runtimeSkip(item.action, item.error, 'preflight-update'), item.action, plan, structure));
     }
 
     preflightProgress(28, 'Проверяю изменяемые строки', `Проверено: ${updateActions.length}`);
@@ -9700,7 +9739,7 @@
       const excelRow = Number(result.action?.excelRow?.excelRow);
       if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
       runtimeSkippedActions.add(result.action);
-      runtimeSkips.push(runtimeSkip(result.action, result.error, 'preflight-add'));
+      runtimeSkips.push(describeDuplicateDeleteConflict(runtimeSkip(result.action, result.error, 'preflight-add'), result.action, plan, structure));
     };
 
     const reportAddProgress = () => {
@@ -12177,6 +12216,20 @@
     return Boolean(normalizeSpace(skip?.code || ''));
   }
 
+  function previewSkippedRows(plan) {
+    const rows = [...(plan?.skippedRows || [])];
+    const present = new Set(rows.map(item => Number(item.excelRow)).filter(value => value > 0));
+    const partial = new Map();
+    for (const item of plan?.skippedValues || []) {
+      const excelRow = Number(item.excelRow);
+      if (!excelRow || present.has(excelRow)) continue;
+      if (!partial.has(excelRow)) partial.set(excelRow, []);
+      partial.get(excelRow).push(`${item.label || 'Поле'}: «${item.value ?? ''}». ${item.reason || 'Значение не применено.'}`);
+    }
+    for (const [excelRow, reasons] of partial) rows.push({ excelRow, source: 'excel-value', code: 'excel-value-not-applied', reason: `Часть значений строки не будет применена. ${reasons.join(' ')}` });
+    return rows;
+  }
+
   function createPreviewViewState(overrides = {}) {
     const pageSize = Math.max(1, Math.min(200, Math.trunc(Number(overrides.pageSize) || 40)));
     const page = Math.max(1, Math.trunc(Number(overrides.page) || 1));
@@ -12218,8 +12271,8 @@
     // ERROR is the stricter subset with a stable machine-readable code.
     if (state.filter === 'all' || state.filter === 'skip' || state.filter === 'error') {
       const skipped = state.filter === 'error'
-        ? (plan?.skippedRows || []).filter(isPreviewErrorSkip)
-        : (plan?.skippedRows || []);
+        ? previewSkippedRows(plan).filter(isPreviewErrorSkip)
+        : previewSkippedRows(plan);
       items = items.concat(skipped.map(skip => ({ kind: 'skip', skip })));
     }
     if (query) items = items.filter(item => (item.kind === 'action'
@@ -12458,7 +12511,8 @@
       ${skipped.length ? `<div class="tms-review-note"><b>${applyState.count === 0
         ? 'Нет изменений для применения.'
         : applyState.blocked ? 'Применение заблокировано.' : `Доступно для применения: ${applyState.count}.`}</b> Пропущено строк: ${skipped.length}. Причины указаны в списке ниже.</div>` : ''}
-      ${hasSourceChanges ? rowFailuresHtml(skipped) : ''}
+      ${rowFailuresHtml(skipped)}
+      ${existingAddMatchesHtml(reviewed)}
       ${skippedFieldsHtml(reviewed.skippedFields)}
       ${skippedValuesHtml(reviewed.skippedValues)}
       ${reviewedSafety.blocked ? `<div class="tms-fatal"><b>Этот набор изменений нельзя безопасно применить</b><br>${(reviewedSafety.blockedReasons || []).map(escapeHtml).join('<br>')}</div>` : ''}
