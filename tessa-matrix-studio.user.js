@@ -12218,15 +12218,21 @@
 
   function previewSkippedRows(plan) {
     const rows = [...(plan?.skippedRows || [])];
-    const present = new Set(rows.map(item => Number(item.excelRow)).filter(value => value > 0));
+    const present = new Map(rows.map((item, index) => [Number(item.excelRow), index]));
     const partial = new Map();
     for (const item of plan?.skippedValues || []) {
       const excelRow = Number(item.excelRow);
-      if (!excelRow || present.has(excelRow)) continue;
+      if (!excelRow) continue;
       if (!partial.has(excelRow)) partial.set(excelRow, []);
       partial.get(excelRow).push(`${item.label || 'Поле'}: «${item.value ?? ''}». ${item.reason || 'Значение не применено.'}`);
     }
-    for (const [excelRow, reasons] of partial) rows.push({ excelRow, source: 'excel-value', code: 'excel-value-not-applied', reason: `Часть значений строки не будет применена. ${reasons.join(' ')}` });
+    for (const [excelRow, reasons] of partial) {
+      const reason = `Часть значений строки не будет применена. ${reasons.join(' ')}`;
+      if (present.has(excelRow)) {
+        const index = present.get(excelRow);
+        rows[index] = { ...rows[index], code: rows[index].code || 'excel-value-not-applied', reason: `${rows[index].reason || ''} ${reason}`.trim() };
+      } else rows.push({ excelRow, source: 'excel-value', code: 'excel-value-not-applied', reason });
+    }
     return rows;
   }
 

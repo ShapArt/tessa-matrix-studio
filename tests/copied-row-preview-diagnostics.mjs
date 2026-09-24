@@ -62,6 +62,10 @@ if (E.previewAttentionSummary) {
 }
 const overlap = { ...invalidPlan, skippedRows: [{ excelRow: 19, code: 'duplicate-found', reason: 'duplicate' }] };
 assert.equal(E.selectPreviewItems(overlap, null, { filter: 'error' }).total, 1, 'count each affected row once');
+const uncoded = { ...invalidPlan, skippedRows: [{ excelRow: 19, reason: 'No roles remain' }] };
+const beforeSelection = JSON.stringify(uncoded);
+assert.equal(E.selectPreviewItems(uncoded, null, { filter: 'error', query: 'second' }).total, 1, 'a whole-row skip must not hide its invalid cell value');
+assert.equal(JSON.stringify(uncoded), beforeSelection, 'diagnostic selection must not mutate the plan');
 
 // The server can still reject a temporary duplicate before a planned deletion.
 // Preserve the safety result and explain the actual dependency, never fake success.
