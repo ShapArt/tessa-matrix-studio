@@ -701,6 +701,19 @@
 …[обрезано ${text.length - max} символов]` : text;
   }
 
+  function isSensitiveDiagnosticKey(key) {
+    const normalized = String(key || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+    return /^(password|passwd|authorization|proxyauthorization|cookie|setcookie|accesstoken|refreshtoken|sessiontoken|token|krtoken|signature|privatekey|clientsecret|secret|apikey|sessionid)$/.test(normalized);
+  }
+
+  function diagnosticJsonReplacer(key, value) {
+    // Even opt-in raw diagnostics must never export signed permission/session tokens.
+    // Redact only the serialized copy; the native request/card remains untouched.
+    if (isSensitiveDiagnosticKey(key)) return '[REDACTED]';
+    if (value instanceof Map) return Object.fromEntries(value);
+    return value;
+  }
+
   function safePlain(value, options = {}, seen = new WeakMap(), depth = 0) {
     const maxDepth = options.maxDepth ?? 10;
     const maxKeys = options.maxKeys ?? 500;
@@ -737,7 +750,7 @@
         let count = 0;
         for (const [key, item] of value.entries()) {
           if (count++ >= maxKeys) { out.__truncated__ = true; break; }
-          out[String(key)] = safePlain(item, options, seen, depth + 1);
+          Object.defineProperty(out, String(key), { value: isSensitiveDiagnosticKey(key) ? '[REDACTED]' : safePlain(item, options, seen, depth + 1), enumerable: true, configurable: true });
         }
         return out;
       } catch (_) { /* use object path */ }
@@ -749,7 +762,7 @@
     let keys = [];
     try { keys = Object.keys(value); } catch (_) { return out; }
     for (const key of keys.slice(0, maxKeys)) {
-      if (/^(password|authorization|accessToken|refreshToken|token)$/i.test(key)) {
+      if (isSensitiveDiagnosticKey(key)) {
         out[key] = '[REDACTED]';
         continue;
       }
@@ -2426,7 +2439,8 @@
 
   function dictionaryStructureSignature(structure) {
     const compact = {
-      projectionVersion: 6,
+      projectionVersion: 7,
+      documentCardTypeId: canonicalValue(structure?.documentCardTypeId),
       templateId: canonicalValue(structure?.templateId),
       conditions: (structure?.conditions || []).map(item => [
         canonicalValue(item.criterionRowId), canonicalValue(item.operandTypeId),
@@ -2439,7 +2453,41 @@
 
   function dictionaryCacheKey(structure) {
     const origin = typeof location !== 'undefined' ? location.origin : 'offline';
-    return `${origin}|${canonicalValue(structure?.templateId)}|${dictionaryStructureSignature(structure)}`;
+    return `${origin}|${dictionaryPrincipalId()}|${canonicalValue(structure?.templateId)}|${dictionaryStructureSignature(structure)}`;
+  }
+
+  function dictionaryPrincipalId() {
+    try {
+      const core = window.tessa?.apiLoader?.(880540);
+      const session = core?.ISession$ && window.tessa?.diContainer?.get(core.ISession$);
+      return canonicalValue(session?.sessionToken?.userId || '');
+    } catch (_) { return ''; }
+  }
+
+  function isDocumentTypeCondition(condition) {
+    return [condition?.autocompleteViewName, condition?.refSection].some(value => canonicalValue(value) === 'gchdoctypes');
+  }
+
+  function assertDocumentTypeAssignments(action, structure, catalog, current = null) {
+    for (const condition of (structure.conditions || []).filter(isDocumentTypeCondition)) {
+      const key = definitionKey('criterion', condition.criterionRowId);
+      if (!action.excelRow?.columns?.has(condition.criterionRowId)) continue;
+      const previous = new Set((current?.values?.[condition.criterionRowId] || []).map(item => canonicalValue(item.id)));
+      const ids = action.excelRow.ids?.[key] || [];
+      const displays = action.excelRow.flat?.[key] || [];
+      const dictionary = catalog?.catalogs?.[catalog?.columnCatalogIds?.[key]];
+      const lookup = dictionaryLookup(dictionary);
+      for (let index = 0; index < displays.length; index += 1) {
+        const id = canonicalValue(ids[index]);
+        if (id && previous.has(id)) continue;
+        if (!dictionary?.documentScope?.verified || !dictionary.documentScope.complete) {
+          throw new Error('Не удалось проверить виды документов по типу карточки шаблона. Обновите справочники и повторите проверку.');
+        }
+        if (!id || !lookup?.byId.has(`${id}|`)) {
+          throw new Error(`Вид документа «${displays[index]}» не соответствует типу карточки шаблона матрицы.`);
+        }
+      }
+    }
   }
 
   function openDictionaryCacheDb() {
@@ -2529,6 +2577,8 @@
         : (lookup?.byId?.get(`${id}|`) || []);
       const pending = changesByCatalog.get(catalogId)?.get(identity);
       const current = pending || existing[0];
+      // Historical values stay in the row/baseline, never in a scoped choice list.
+      if (target.documentScope && !current) return;
       const display = String(entry.display ?? '').trim();
       if (!captionsByCatalog.has(catalogId)) captionsByCatalog.set(catalogId, new Map());
       const captions = captionsByCatalog.get(catalogId);
@@ -2800,6 +2850,13 @@
       if (matching.length === 1) {
         return resolvedItem({ ...matching[0], roleTypeId: matching[0].roleTypeId ?? explicitParts[1] ?? '' }, 'historical-role-id');
       }
+    }
+
+    if (!explicitMatch && column.kind === 'criterion' && explicitId && workbook?.roundtrip?.enabled) {
+      const criterionId = column.key.slice('criterion:'.length);
+      const historical = (workbook.roundtrip.baselineRows || []).flatMap(base => base?.base?.values?.[criterionId] || []);
+      const item = historical.find(value => canonicalValue(value.id) === explicitId && canonicalValue(value.display) === visibleCanonical);
+      if (item) return resolvedItem(item, 'historical-criterion-id');
     }
 
     let matches = lookup.bySelector.get(visibleCanonical) || [];
@@ -5665,8 +5722,15 @@
       const hiddenIndex = columns.findIndex(alias => /(?:^|Is)Hidden$|Disabled$/i.test(String(alias)));
       const activeIndex = columns.findIndex(alias => /(?:^|Is)Active$/i.test(String(alias)));
       const recordKeepingIndex = options.recordKeepingOnly ? partnerRecordKeepingColumnIndex(columns) : -1;
+      const cardTypeIndex = options.documentCardTypeId ? columns.findIndex(alias => canonicalValue(alias) === 'krdoctypecardtypeid') : -1;
+      if (options.documentCardTypeId && cardTypeIndex < 0) throw new Error('В справочнике видов документов отсутствует KrDocTypeCardTypeID. Выбор заблокирован.');
+      // Keep human disambiguation fields, not every technical payload column.
+      const detailIndices = columns.map((alias, index) => ({ alias, index })).filter(({ alias, index }) =>
+        index !== idIndex && index !== displayIndex && index !== roleTypeIndex
+        && (roleMode || /(?:Name|Title|Caption|Code|IsRecordKeeping)$/i.test(String(alias))));
       const entries = [];
       for (const row of rows) {
+        if (options.documentCardTypeId && canonicalValue(row[cardTypeIndex]) !== canonicalValue(options.documentCardTypeId)) continue;
         const id = row[idIndex];
         let display = this.localizeValue(row[displayIndex]);
         if (isGuidLike(display) || /^\$[A-Za-z0-9_.-]+$/.test(display)) continue;
@@ -5679,15 +5743,14 @@
         const nativeDisplay = display;
         const employee = roleMode ? employeeProjectionFields(row, columns, roleTypeId, nativeDisplay, value => this.localizeValue(value)) : null;
         if (employee?.displayName) display = employee.displayName;
-        const details = columns.map((alias, index) => {
-          if (index === idIndex || index === displayIndex || index === roleTypeIndex) return '';
+        const details = detailIndices.map(({ alias, index }) => {
           const value = this.localizeValue(row[index]);
           if (value === null || value === undefined || String(value).trim() === '') return '';
           if (typeof value === 'object') return '';
           return `${normalizeSpace(alias)}: ${normalizeSpace(value)}`;
         }).filter(Boolean).join(' | ').slice(0, 4000);
         const qualifier = humanQualifierFromDetails(details, display);
-        const searchText = searchCanonical(`${display} ${qualifier} ${details} ${row.map(value => typeof value === 'object' ? '' : normalizeSpace(this.localizeValue(value))).join(' ')}`);
+        const searchText = searchCanonical(`${display} ${qualifier} ${details}`);
         entries.push({
           id: String(id), display, qualifier, roleTypeId: Number.isFinite(roleTypeId) ? roleTypeId : '',
           source: result.alias, status: 'Доступно', details, searchText,
@@ -5698,15 +5761,29 @@
     }
 
     async loadDictionaryCatalog(structure, snapshot, options = {}) {
+      const partial = Array.isArray(options.requiredCriterionIds) || options.includeRoles === false;
+      if (partial) options = { ...options, forceRefresh: true, transient: true };
+      const selectedConditions = (structure.conditions || []).filter(condition => !Array.isArray(options.requiredCriterionIds) || options.requiredCriterionIds.includes(condition.criterionRowId));
+      let documentScope = null;
+      if (selectedConditions.some(isDocumentTypeCondition)) {
+        try {
+          const template = await this.getCard(structure.templateId);
+          const cardTypeId = this.fieldFromSection(this.section(template, 'MtxRouteTemplate'), 'CardTypeID');
+          if (!isGuidLike(cardTypeId)) throw new Error('Шаблон матрицы не содержит CardTypeID.');
+          documentScope = { cardTypeId: String(cardTypeId), verified: true };
+        } catch (error) { documentScope = { cardTypeId: '', verified: false, error: error.message || String(error) }; }
+        structure = { ...structure, documentCardTypeId: documentScope.cardTypeId };
+      }
       const forceRefresh = Boolean(options.forceRefresh);
+      const cacheAllowed = Boolean(dictionaryPrincipalId()) && !partial && (!documentScope || documentScope.verified);
       const cacheKey = dictionaryCacheKey(structure);
-      if (!forceRefresh && APP.dictionaryCatalog?.stats?.cache?.key === cacheKey) {
+      if (cacheAllowed && !forceRefresh && APP.dictionaryCatalog?.stats?.cache?.key === cacheKey) {
         const merged = mergeSnapshotIntoDictionaryCatalog(APP.dictionaryCatalog, structure, snapshot);
         merged.stats.cache = { ...APP.dictionaryCatalog.stats.cache, hit: true, key: cacheKey, source: 'memory' };
         log(`Словари: использую кэш текущей вкладки (${merged.stats.entries} значений).`);
         return merged;
       }
-      if (!forceRefresh) {
+      if (cacheAllowed && !forceRefresh) {
         const cached = await readDictionaryCache(cacheKey);
         if (cached?.catalog) {
           const merged = mergeSnapshotIntoDictionaryCatalog(cached.catalog, structure, snapshot);
@@ -5715,13 +5792,13 @@
           log(`Словари: использую локальный кэш (${merged.stats.entries} значений, возраст ${Math.max(1, Math.round(ageMs / 60000))} мин.).`);
           return merged;
         }
-      } else if (!options.transient) {
+      } else if (cacheAllowed && !options.transient) {
         await deleteDictionaryCache(cacheKey);
       }
 
       const catalog = { catalogs: {}, columnCatalogIds: {}, stats: { catalogs: 0, entries: 0, errors: [], warnings: [] } };
       const criterionGroups = new Map();
-      for (const condition of structure.conditions) {
+      for (const condition of selectedConditions) {
         const operand = canonicalValue(condition.operandTypeId);
         const key = definitionKey('criterion', condition.criterionRowId);
         if (operand === canonicalValue(OPERAND.Boolean)) {
@@ -5744,8 +5821,10 @@
       // Самые тяжёлые представления (GchPartners и MtxRoles) читаются параллельно.
       const criterionResultsPromise = mapConcurrent([...criterionGroups.entries()], 3, async ([catalogId, group]) => {
         const label = group.conditions.map(item => item.criterionName).join(' / ');
-        let entries = [], projection = null, sourceCount = 0;
-        if (group.alias) {
+        const scope = group.conditions.some(isDocumentTypeCondition) ? documentScope : null;
+        let entries = [], projection = null, sourceCount = 0, scopeComplete = false;
+        if (scope && !scope.verified) catalog.stats.errors.push(`${label}: ${scope.error}`);
+        else if (group.alias) {
           log(`Словарь: ${label} ← ${group.alias}`);
           const result = await query(group.alias);
           if (result.error) catalog.stats.errors.push(`${group.alias}: ${String(result.error).split('\n')[0]}`);
@@ -5761,20 +5840,23 @@
                 wantedKind: group.wantedKind,
                 refSection: group.conditions[0].refSection,
                 recordKeepingOnly: recordKeepingPartner && recordKeepingIndex >= 0,
+                documentCardTypeId: scope?.cardTypeId,
               });
               sourceCount = entries.length;
+              scopeComplete = !result.truncated;
             }
             catch (error) { catalog.stats.errors.push(`${label}: ${error.message}`); }
             if (result.truncated) catalog.stats.errors.push(`${group.alias}: получено ${result.rows.length} из ${result.rowCount}; словарь неполный`);
           }
         } else catalog.stats.errors.push(`${label}: подходящее представление не найдено`);
-        return { catalogId, catalog: { id: catalogId, label, sourceView: group.alias || 'Текущая матрица', projection, sourceCount, entries } };
+        return { catalogId, catalog: { id: catalogId, label, sourceView: group.alias || 'Текущая матрица', projection, sourceCount, entries, ...(scope ? { documentScope: { ...scope, complete: scopeComplete } } : {}) } };
       });
 
       const roleJob = (async () => {
         const roleCatalogId = 'roles:MtxRoles';
         let roleEntries = [];
         let roleAlias = null;
+        if (options.includeRoles === false || !structure.functions?.length) return { roleCatalogId, roleAlias, roleEntries };
         for (const alias of ['MtxRoles']) {
           log(`Словарь ролей: пробую ${alias}`);
           const result = await query(alias);
@@ -5839,7 +5921,7 @@
 
       const normalized = mergeSnapshotIntoDictionaryCatalog(catalog, structure, snapshot);
       normalized.stats.cache = { hit: false, key: cacheKey, savedAt: options.transient ? null : Date.now(), ageMs: 0, ...(options.transient ? { transient: true } : {}) };
-      const cached = options.transient || await writeDictionaryCache(cacheKey, normalized);
+      const cached = options.transient || !cacheAllowed || await writeDictionaryCache(cacheKey, normalized);
       if (!cached) normalized.stats.errors.push('Локальный кэш словарей недоступен; следующая выгрузка снова запросит данные TESSA.');
       return normalized;
     }
@@ -9553,10 +9635,22 @@
     let liveAddRoleCatalog = options.liveAddRoleCatalog || null;
     let liveAddRoleCatalogError = null;
     const needsAddRoleValidation = (plan.actions || []).some(action => action.type === 'add');
+    const documentCriterionIds = (structure.conditions || []).filter(isDocumentTypeCondition).map(condition => condition.criterionRowId);
+    let liveDocumentCatalog = null;
+    if (documentCriterionIds.length && (plan.actions || []).some(action => action.type === 'add' || action.type === 'update')) {
+      try {
+        liveDocumentCatalog = await awaitPreflightAbortable(bridge.loadDictionaryCatalog(structure, fresh, {
+          forceRefresh: true, transient: true, requiredCriterionIds: documentCriterionIds, includeRoles: false,
+        }));
+      } catch (error) {
+        if (isPreflightAbortError(error)) throw error;
+        // New assignments fail closed below; unchanged historical values remain valid.
+      }
+    }
     if (needsAddRoleValidation && !liveAddRoleCatalog && typeof bridge.loadDictionaryCatalog === 'function') {
       try {
         preflightProgress(20, 'Проверяю актуальные роли', 'Сверяю RoleID новых строк с текущим MtxRoles');
-        liveAddRoleCatalog = await awaitPreflightAbortable(bridge.loadDictionaryCatalog(structure, fresh, { forceRefresh: true, transient: true }));
+        liveAddRoleCatalog = await awaitPreflightAbortable(bridge.loadDictionaryCatalog(structure, fresh, { forceRefresh: true, transient: true, requiredCriterionIds: [] }));
       } catch (error) {
         if (isPreflightAbortError(error)) throw error;
         liveAddRoleCatalogError = error;
@@ -9617,6 +9711,7 @@
         }
 
         await awaitPreflightAbortable(hydrateMissingIdsForAction(action, structure, fresh, bridge));
+        assertDocumentTypeAssignments(action, structure, liveDocumentCatalog, current);
         for (const condition of structure.conditions) {
           const column = action.excelRow.columns.get(condition.criterionRowId);
           if (!column) continue;
@@ -9703,6 +9798,7 @@
           throw new Error(`Не удалось перечитать актуальный MtxRoles перед добавлением строки: ${liveAddRoleCatalogError.message || liveAddRoleCatalogError}`);
         }
         if (liveAddRoleCatalog) assertAddRoleIdentitiesAvailable(action, structure, liveAddRoleCatalog);
+        assertDocumentTypeAssignments(action, structure, liveDocumentCatalog);
         for (const condition of structure.conditions) {
           const column = action.excelRow.columns.get(condition.criterionRowId);
           if (!column) continue;
@@ -10770,7 +10866,7 @@
   }
 
   function downloadJson(value, name, replacer = jsonReplacer) {
-    const blob = new Blob([JSON.stringify(value, replacer, 2)], { type: 'application/json;charset=utf-8' });
+    const blob = new Blob([JSON.stringify(value, (key, item) => diagnosticJsonReplacer(key, typeof replacer === 'function' ? replacer(key, item) : item), 2)], { type: 'application/json;charset=utf-8' });
     return triggerBlobDownload(blob, name);
   }
 
@@ -11297,7 +11393,7 @@
       try {
         const bytes = value instanceof Uint8Array ? value : new TextEncoder().encode(JSON.stringify(value, (key, item) => {
           if (key === 'expectedSemanticKey') return undefined;
-          return raw ? item : jsonReplacer(key, item);
+          return raw ? diagnosticJsonReplacer(key, item) : jsonReplacer(key, item);
         }, 2));
         if (!bytes || bytes.length > bounds.itemBytes || capturedBytes + bytes.length > bounds.bytes) throw new Error('Лимит размера пакета');
         entries.push([name, bytes]); capturedBytes += bytes.length;
@@ -11714,7 +11810,7 @@
     const readme = 'TESSA Matrix Studio — проверки без записи\n\nНачните с report.json: checks содержит результат каждого этапа, omitted — данные, не вошедшие в пакет.\nrequests/ содержит бизнес-запросы и ответы. selected.xlsx — исходный выбранный файл; matrix-current.xlsx — свежая выгрузка, если их удалось собрать.\nЕсли Preview содержит ошибку интервала, interval/ содержит полный opt-in raw JSON и отдельный privacy-safe interval-summary.json.\nЗапись, удаление, транзакции и чужая параллельная запись не тестировались. Успешная проверка дубликатов не разрешает Apply без обычного свежего Preview.\nПакет содержит рабочие значения. Передавайте его только тем, кому можно видеть эту матрицу. Cookies, пароли и HTTP-заголовки не собираются.\n';
     const interval = result?.intervalDiagnostics?.value;
     const intervalEntries = interval ? [
-      ['interval/TESSA_Interval_Diagnostics.json', JSON.stringify(interval, null, 2)],
+      ['interval/TESSA_Interval_Diagnostics.json', JSON.stringify(interval, diagnosticJsonReplacer, 2)],
       ['interval/interval-summary.json', JSON.stringify(buildIntervalDiagnosticSummary(interval), null, 2)],
     ] : [];
     const performanceUat = result?.performanceUat || APP.lastPerformanceUat;
@@ -12167,6 +12263,7 @@
   }
 
   function jsonReplacer(key, value) {
+    if (isSensitiveDiagnosticKey(key)) return '[REDACTED]';
     if (key === 'card' || key === 'bridge' || key === 'columnMap') return undefined;
     if (value instanceof Map) return Object.fromEntries(value);
     return value;

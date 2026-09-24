@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 
 const BUILD = 'TMS_V1_16_12_PAGING_V13_SELF_CONTAINED_REQUEST';
-const RUNTIME_BUILD = 'TMS_V1_16_14_PREVIEW_ROW_DIAGNOSTICS';
+const RUNTIME_BUILD = 'TMS_V1_16_15_SCOPED_CATALOGS_SECURITY';
 
 function once(source, before, after, label) {
   const count = source.split(before).length - 1;
@@ -117,8 +117,8 @@ export function apply(input) {
 
   source = once(source,
     "        if (version !== '1.16.11') {\n          throw new Error(\`Загружена версия \${version || '(нет)'}, ожидалась 1.16.11.\`);\n        }\n        return { detail: \`Подтверждён v1.16.11 · \${actualBuild} · \${actualPerformanceBuild}.`, data: { version, build: actualBuild, performanceBuild: actualPerformanceBuild } };",
-    "        if (version !== '1.16.14') {\n          throw new Error(\`Загружена версия \${version || '(нет)'}, ожидалась 1.16.14.\`);\n        }\n        return { detail: \`Подтверждён v1.16.14 · \${actualBuild} · \${actualPerformanceBuild}.`, data: { version, build: actualBuild, performanceBuild: actualPerformanceBuild } };",
-    'v1.16.14 provenance');
+    "        if (version !== '1.16.15') {\n          throw new Error(\`Загружена версия \${version || '(нет)'}, ожидалась 1.16.15.\`);\n        }\n        return { detail: \`Подтверждён v1.16.15 · \${actualBuild} · \${actualPerformanceBuild}.`, data: { version, build: actualBuild, performanceBuild: actualPerformanceBuild } };",
+    'v1.16.15 provenance');
 
   return source;
 }
