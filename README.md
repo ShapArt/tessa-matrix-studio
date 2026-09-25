@@ -510,5 +510,6 @@ npm run build:uat
 - [Политика безопасности](SECURITY.md)
 - [Алгоритмы изменений](docs/CHANGE-ALGORITHMS.md)
 - [Контроли сертификации](docs/CERTIFICATION-CONTROLS.md)
+- [Аудит live UAT 1.17.1](docs/LIVE-UAT-AUDIT-v1.17.1.md)
 - [Сообщить об ошибке](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 - [Скачать последний релиз](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)

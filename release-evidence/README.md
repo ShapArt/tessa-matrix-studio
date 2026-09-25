@@ -2,6 +2,18 @@
 
 Начиная с релизов после введения этого gate публикация production userscript должна быть привязана к живому UAT в TESSA, а не только к synthetic CI.
 
+## Текущий формат schema 5
+
+Для раздельных production/UAT профилей используется `live-uat-exact-artifact`:
+
+- `userscriptSha256` привязывает attestation к production-файлу, который публикуется;
+- `candidateArtifactRunId`, `candidateArtifactName` и `candidateArtifactDigest` привязывают live UAT к неизменяемому GitHub Actions artifact;
+- `liveUat` хранит только статус, счётчики, seed, размер и SHA-256 evidence ZIP;
+- `runnerContract` подтверждает обязательные проверки, cleanup, baseline restore, Apply/Reconcile и version provenance;
+- исходные Excel, Full UAT ZIP, native trace и диагностические ответы в Git не добавляются.
+
+Release workflow повторно получает digest артефакта через GitHub API и сравнивает его с attestation. Production и UAT ожидаемо имеют разные SHA-256, потому что production удаляет test exports и Full UAT runner. При этом UAT-файл обязан байт-в-байт совпадать с exact-кандидатом, который запускался в TESSA.
+
 ## Процесс
 
 1. Подготовить релизную ветку и выставить новую версию в `package.json` / userscript.
