@@ -194,6 +194,28 @@
       .filter(item => item.entries.length >= minimum);
   }
 
+  function documentTypeCriterionKeys(structure) {
+    return (structure?.conditions || [])
+      .filter(condition => [condition?.autocompleteViewName, condition?.refSection].some(value => canon(value) === 'gchdoctypes'))
+      .map(condition => `criterion:${condition.criterionRowId}`);
+  }
+
+  function normalizeAddDocumentTypes(book, row, structure, catalog, rng = Math.random) {
+    for (const key of documentTypeCriterionKeys(structure)) {
+      const valueIndex = tokenIndex(book, key);
+      if (valueIndex < 0 || !String(row.values?.[valueIndex] || '').trim()) continue;
+      const entries = authoritativeEntries(catalog, key);
+      if (!entries.length) throw new Error(`Для ${key} нет разрешённых видов документов текущего типа карточки.`);
+      const allowed = new Set(entries.map(entry => canon(entry.id)).filter(Boolean));
+      const idIndex = companionIndex(book, key);
+      const currentId = canon(String(idIndex >= 0 ? row.values?.[idIndex] || '' : '').split('|')[0]);
+      if (currentId && allowed.has(currentId)) continue;
+      const replacement = shuffled(entries, rng)[0];
+      setDictionaryValue(book, row, key, replacement);
+    }
+    return row;
+  }
+
   function buildWritableFieldInventory(book, structure, currentCatalog) {
     const criterionById = new Map();
     for (const definition of structure?.conditions || []) {
@@ -751,6 +773,10 @@
         const candidateBook = cloneWorkbook(book);
         const candidate = { ...source, excelRow: startRow, values: [...source.values] };
         clearSystemIdentity(candidateBook, candidate, 'add');
+        // Existing matrices can contain historical document types that are legal to
+        // keep but illegal for a new row. Replace those copied values with an entry
+        // from the current CardTypeID-scoped catalog before testing uniqueness.
+        normalizeAddDocumentTypes(candidateBook, candidate, structure, catalog, rng);
         setDictionaryValue(candidateBook, candidate, column.key, entry);
         candidateBook.rows.push(candidate);
         const plan = E.buildPlan(candidateBook, structure, snapshot, bridge.matrixInfo());
@@ -763,7 +789,7 @@
   }
 
   function findSafeUpdateCandidate(book, structure, snapshot, bridge, catalog, rng, options = {}) {
-    const columns = shuffled(mutableCriterionColumns(book, catalog, 2), rng);
+    const columns = shuffled(mutableCriterionColumns(book, catalog, Math.max(2, Number(options.minimumEntries || 2))), rng);
     const sources = options.source ? [options.source] : shuffled((book.rows || []).filter(row => rowHasRole(book, row)), rng);
     for (const source of sources) {
       for (const column of columns) {
@@ -1102,10 +1128,10 @@
         if (actualPerformanceBuild !== expectedPerformanceBuild) {
           throw new Error(`Загружена сборка без performance endgame: performanceBuild=${actualPerformanceBuild || '(нет)'}, ожидался ${expectedPerformanceBuild}.`);
         }
-        if (version !== '1.17.0') {
-          throw new Error(`Загружена версия ${version || '(нет)'}, ожидалась 1.17.0.`);
+        if (version !== '1.17.1') {
+          throw new Error(`Загружена версия ${version || '(нет)'}, ожидалась 1.17.1.`);
         }
-        return { detail: `Подтверждён v1.17.0 · ${actualBuild} · ${actualPerformanceBuild}.`, data: { version, build: actualBuild, performanceBuild: actualPerformanceBuild } };
+        return { detail: `Подтверждён v1.17.1 · ${actualBuild} · ${actualPerformanceBuild}.`, data: { version, build: actualBuild, performanceBuild: actualPerformanceBuild } };
       });
       await runCheck('initial-export-server-paging', 'Выгрузка: server paging без визуального листания', async () => {
         const native = bridge.findNativeMatrixControl();
@@ -1282,7 +1308,7 @@
       });
 
       await runCheck('merge-conflict-resolution', 'Два Excel: конфликт одного поля обнаруживается', async () => {
-        const first = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng);
+        const first = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng, { minimumEntries: 3 });
         const afterFirst = E.mergeWorkbookIntoCurrentSnapshot(first.book, structure, baseline).snapshot;
         const competing = cloneWorkbook(base.book);
         const competingRow = competing.rows.find(row => Number(row.excelRow) === Number(first.row.excelRow));
@@ -1305,7 +1331,24 @@
       });
 
       await runCheck('action-support-bundle', 'Действие: скачать единый пакет', async () => {
-        const artifact = await E.prepareSupportBundle();
+        const previewPlan = E.buildPlan(base.book, structure, baseline, info);
+        const selectedBytes = E.exactArrayBuffer(base.bytes);
+        const selectedFile = {
+          name: 'TESSA_UAT_CURRENT.xlsx',
+          size: base.bytes.byteLength,
+          lastModified: 0,
+          arrayBuffer: async () => selectedBytes.slice(0),
+        };
+        const artifact = await E.prepareSupportBundle(previewPlan, E.createPlanReviewState(), {
+          plan: previewPlan,
+          review: E.createPlanReviewState(),
+          structure,
+          snapshot: baseline,
+          selectedFile,
+          dictionaryCatalog: catalog,
+          bridge,
+          matrixInfo: info,
+        });
         if (!(artifact?.bytes instanceof Uint8Array) || artifact.bytes.length < 4 || artifact.bytes[0] !== 0x50 || artifact.bytes[1] !== 0x4b) {
           throw new Error('Единый пакет не сформирован как ZIP-артефакт.');
         }
@@ -2450,7 +2493,7 @@
       style.textContent = `.tms-picker-import-block{margin-top:12px;padding:12px;border:1px solid rgba(128,128,128,.22);border-radius:10px;background:rgba(128,128,128,.035)}.tms-picker-import-block>summary{font-weight:600;cursor:pointer}.tms-picker-import-hint{margin:8px 0;color:var(--tms-muted,#6b7280);font-size:12px;line-height:1.45}.tms-picker-import-block textarea{display:block;width:100%;box-sizing:border-box;min-height:92px;margin:8px 0;resize:vertical}.tms-picker-import-actions{justify-content:flex-end}.tms-uat-card{margin-top:12px;padding:14px;border:1px solid rgba(128,128,128,.22);border-radius:12px;background:rgba(128,128,128,.035)}.tms-uat-card h4{margin:0 0 6px;font-size:14px}.tms-uat-card p{margin:5px 0 10px;line-height:1.45}.tms-uat-status{margin-top:10px;padding:9px 11px;border-radius:8px;background:rgba(128,128,128,.08);font-size:12px;white-space:pre-wrap}.tms-uat-status[data-state="running"],.tms-uat-status[data-state="PASSED"],.tms-uat-status[data-state="FAILED"],.tms-uat-status[data-state="UNSAFE"]{font-weight:600}`;
       document.head?.appendChild(style);
     }
-    const host = document.querySelector('#tms-test-tools'); if (!host || host.querySelector('#tms-full-uat')) return false;
+    const host = document.querySelector('#tms-uat-actions') || document.querySelector('#tms-test-tools'); if (!host || host.querySelector('#tms-full-uat')) return false;
     const card = document.createElement('div'); card.className = 'tms-uat-card'; card.innerHTML = `<h4>Полный UAT</h4><button id="tms-full-uat" type="button">Запустить полный UAT</button><div id="tms-full-uat-status" class="tms-uat-status" data-state="idle">Не запускался.</div>`; host.appendChild(card);
     const button = card.querySelector('#tms-full-uat'), status = card.querySelector('#tms-full-uat-status');
     button.addEventListener('click', async () => {
@@ -2493,6 +2536,6 @@
     return true;
   }
 
-  window[INSTALL_KEY] = { version: VERSION, seededRandom, hashSeed, snapshotSignature, cloneWorkbook, buildWritableFieldInventory, fieldCandidateValues, actionCoverageFromChecks, createCleanupLedger, baselineRestoreProof, runProductionShadowAudit, runFullUat, installUi };
+  window[INSTALL_KEY] = { version: VERSION, seededRandom, hashSeed, snapshotSignature, cloneWorkbook, buildWritableFieldInventory, fieldCandidateValues, normalizeAddDocumentTypes, findUniqueAddCandidate, actionCoverageFromChecks, createCleanupLedger, baselineRestoreProof, runProductionShadowAudit, runFullUat, installUi };
   if (!globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__) { let attempts = 0; const timer = setInterval(() => { attempts += 1; if (installUi() || attempts > 120) clearInterval(timer); }, 250); installUi(); }
 })();

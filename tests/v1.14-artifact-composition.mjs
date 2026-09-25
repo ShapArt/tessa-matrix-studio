@@ -30,8 +30,8 @@ try {
   const productionSource = production.toString('utf8');
   const uatSource = uat.toString('utf8');
   for (const source of [productionSource, uatSource]) {
-    assert.match(source, /^\/\/ @version\s+1\.17\.0$/m);
-    assert.match(source, /version: '1\.17\.0'/);
+    assert.match(source, /^\/\/ @version\s+1\.17\.1$/m);
+    assert.match(source, /version: '1\.17\.1'/);
     assert.match(source, /TESSA_MATRIX_ROUNDTRIP_V7/);
     assert.match(source, /TESSA_MATRIX_SUPPORT_BUNDLE_V1/);
     assert.match(source, /__TMS_INSTALL_INTERVAL_ADD_VALID_FALLBACK__/);

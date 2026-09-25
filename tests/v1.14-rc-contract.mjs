@@ -16,9 +16,9 @@ const fullUat = fs.readFileSync(new URL('../src/uat/full-uat.js', import.meta.ur
 const changelog = fs.readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
 const readme = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 
-assert.equal(pkg.version, '1.17.0');
-assert.match(source, /^\/\/ @version\s+1\.17\.0$/m);
-assert.match(source, /version:\s*'1\.17\.0'/);
+assert.equal(pkg.version, '1.17.1');
+assert.match(source, /^\/\/ @version\s+1\.17\.1$/m);
+assert.match(source, /version:\s*'1\.17\.1'/);
 assert.match(source, /__TMS_FULL_UAT_V1__/);
 assert.match(source, /TESSA_MATRIX_ROUNDTRIP_V7/);
 assert.match(source, /TESSA_MATRIX_SUPPORT_BUNDLE_V1/);
@@ -33,8 +33,8 @@ for (const marker of [
   'FULL_UAT_RUNTIME_CONTEXT_V1',
 ]) assert.ok(fullUat.includes(marker) || source.includes(marker), `canonical UAT is missing ${marker}`);
 
-assert.match(changelog, /## 1\.17\.0/);
-assert.match(readme, /version-1\.17\.0/);
+assert.match(changelog, /## 1\.17\.1/);
+assert.match(readme, /version-1\.17\.1/);
 assert.match(readme, /Скачать пакет/);
 assert.ok(readme.includes('docs/assets/studio-start-v1.14.1.jpg'), 'historical product screenshot must remain available');
 

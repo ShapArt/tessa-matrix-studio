@@ -56,7 +56,7 @@
     pagingIsolatedContextBuild: 'TMS_V1_16_10_PAGING_V11_ISOLATED_PAGING_CONTEXT',
     pagingManualSpecialBuild: 'TMS_V1_16_11_PAGING_V12_MANUAL_SPECIAL_PARAMS',
     pagingSelfContainedBuild: 'TMS_V1_16_12_PAGING_V13_SELF_CONTAINED_REQUEST',
-    pagingRuntimeContractBuild: 'TMS_V1_17_0_PERF_UX_SECURITY',
+    pagingRuntimeContractBuild: 'TMS_V1_17_1_UAT_SCOPE_SUPPORT_UI',
     performanceBuild: 'TMS_V1_16_0_PERF_ENDGAME_V1',
     plan: null,
     review: createPlanReviewState(),
@@ -2789,7 +2789,7 @@
       || (items.length > 0 && items.every(item => item.kind === 'Boolean' || ['true', 'false'].includes(canonicalValue(item.id))));
     const lookup = {
       items, byId, isBoolean,
-      resolutionCache: new Map(), pickerSearchCache: new Map(),
+      resolutionCache: new Map(), pickerSearchCache: new Map(), pickerRoleRows: new Map(),
       _searchRows: null, _textIndexes: null,
     };
 
@@ -2821,6 +2821,10 @@
         if (!lookup._searchRows) {
           lookup._searchRows = items.map(item => ({
             item,
+            // Role type is normalized once while the lazy search index is built.
+            // Re-normalizing it for every query made a 100k role catalog perform
+            // millions of avoidable string conversions during one picker session.
+            roleType: canonicalValue(item.roleTypeId),
             haystack: searchCanonical(`${item.selector || ''} ${item.display || ''} ${item.qualifier || ''} ${item.searchText || ''} ${item.details || ''} ${(item.previousSelectors || []).join(' ')}`),
           }));
         }
@@ -9931,6 +9935,9 @@
     clearSupportBundleArtifact(APP);
     APP.supportBundleContext = null;
     APP.plan = null;
+    // Drop retained OPC parts before releasing the workbook reference. This is the
+    // largest transient allocation after parsing a high-cardinality XLSX.
+    releaseWorkbookArchive(APP.workbook);
     APP.workbook = null;
     APP.selectedFileRef = null;
     APP.review = createPlanReviewState();
@@ -11660,8 +11667,8 @@
     return [...new Uint8Array(digest)].map(item => item.toString(16).padStart(2, '0')).join('');
   }
 
-  function supportBundleDescriptor(plan = APP.plan, review = APP.review) {
-    const context = APP.supportBundleContext;
+  function supportBundleDescriptor(plan = APP.plan, review = APP.review, contextOverride = null) {
+    const context = contextOverride || APP.supportBundleContext;
     plan = plan || context?.plan;
     review = review || context?.review;
     const structure = context?.structure || APP.structure;
@@ -11670,7 +11677,8 @@
     if (!plan || !structure || !snapshot || !selectedFile) return null;
     const reviewed = buildReviewedPlan(plan, review);
     const changes = reviewedChangesArtifactDescriptor(reviewed, structure);
-    const applied = APP.lastReport?.value;
+    const applied = contextOverride ? contextOverride.applyReport : APP.lastReport?.value;
+    const reconciliation = contextOverride ? contextOverride.reconciliation : APP.lastReconciliation;
     return {
       key: hashText(JSON.stringify({
         changes: changes.key,
@@ -11680,7 +11688,7 @@
         selectedModified: selectedFile?.lastModified || 0,
         applyPlanId: applied?.planId || '',
         applyFinishedAt: applied?.finishedAt || '',
-        reconciliation: APP.lastReconciliation?.finishedAt || APP.lastReconciliation?.status || '',
+        reconciliation: reconciliation?.finishedAt || reconciliation?.status || '',
       })),
       reviewed,
       changes,
@@ -11723,8 +11731,8 @@
     };
   }
 
-  function automaticDiagnosticSummary() {
-    const report = APP.lastReport?.value || {};
+  function automaticDiagnosticSummary(reportOverride = null) {
+    const report = reportOverride || APP.lastReport?.value || {};
     const failed = report?.success === false || report?.partial === true || report?.status === 'failed';
     if (!failed) return null;
     return {
@@ -11747,27 +11755,33 @@
     };
   }
 
-  async function prepareSupportBundle(plan = APP.plan, review = APP.review) {
-    const descriptor = supportBundleDescriptor(plan, review);
+  async function prepareSupportBundle(plan = APP.plan, review = APP.review, contextOverride = null) {
+    // Full UAT and other isolated callers pass an explicit context. This keeps the
+    // production UI cache tied to its selected file while allowing the same audited
+    // package builder to verify a detached roundtrip workbook.
+    const isolated = Boolean(contextOverride);
+    const descriptor = supportBundleDescriptor(plan, review, contextOverride);
     if (!descriptor) {
-      clearSupportBundleArtifact(APP);
-      updateSupportBundleControl();
+      if (!isolated) {
+        clearSupportBundleArtifact(APP);
+        updateSupportBundleControl();
+      }
       return null;
     }
-    if (APP.supportBundleArtifact?.key === descriptor.key) {
+    if (!isolated && APP.supportBundleArtifact?.key === descriptor.key) {
       updateSupportBundleControl({ available: true, ready: true });
       return APP.supportBundleArtifact;
     }
-    if (APP.supportBundleBuild?.key === descriptor.key) {
+    if (!isolated && APP.supportBundleBuild?.key === descriptor.key) {
       updateSupportBundleControl({ available: true, ready: false });
       return APP.supportBundleBuild.promise;
     }
 
-    clearSupportBundleArtifact(APP);
-    const token = APP.supportBundleRequest;
-    updateSupportBundleControl({ available: true, ready: false });
+    if (!isolated) clearSupportBundleArtifact(APP);
+    const token = isolated ? null : APP.supportBundleRequest;
+    if (!isolated) updateSupportBundleControl({ available: true, ready: false });
     const promise = (async () => {
-      const context = APP.supportBundleContext || {};
+      const context = contextOverride || APP.supportBundleContext || {};
       const selectedFile = context.selectedFile || APP.selectedFileRef;
       const selectedBytes = new Uint8Array(await selectedFileArrayBuffer(selectedFile));
       const structure = context.structure || APP.structure;
@@ -11786,10 +11800,11 @@
         { operation: 'support-bundle', rows: descriptor.changes.model.operations.length },
       );
       const previewReport = buildPreviewSupportReport(plan, review);
-      const applyReport = APP.lastReport?.value?.plannedCount !== undefined
-        ? buildApplySupportReport(APP.lastReport.value, APP.capabilities, APP.version)
+      const rawApplyReport = isolated ? context.applyReport : APP.lastReport?.value;
+      const applyReport = rawApplyReport?.plannedCount !== undefined
+        ? buildApplySupportReport(rawApplyReport, APP.capabilities, APP.version)
         : null;
-      const reconciliation = compactReconciliationReport(APP.lastReconciliation);
+      const reconciliation = compactReconciliationReport(isolated ? context.reconciliation : APP.lastReconciliation);
       const summary = {
         format: SUPPORT_BUNDLE_FORMAT,
         createdAt: nowIso(),
@@ -11812,7 +11827,9 @@
       ];
       if (applyReport) entries.push(['reports/apply.json', supportUtf8(applyReport)]);
       if (reconciliation) entries.push(['reports/reconciliation.json', supportUtf8(reconciliation)]);
-      const automaticDiagnostics = automaticDiagnosticSummary();
+      const automaticDiagnostics = isolated
+        ? automaticDiagnosticSummary(rawApplyReport || {})
+        : automaticDiagnosticSummary();
       if (automaticDiagnostics) entries.push(['diagnostics/summary.json', supportUtf8(automaticDiagnostics)]);
       entries.push(['README.txt', supportUtf8([
         'TESSA Matrix Studio — пакет результата',
@@ -11845,23 +11862,25 @@
       if (zip.byteLength > SUPPORT_BUNDLE_MAX_BYTES) {
         throw new Error(`Пакет результата превышает безопасный лимит ${Math.round(SUPPORT_BUNDLE_MAX_BYTES / 1024 / 1024)} МБ.`);
       }
-      if (token !== APP.supportBundleRequest || supportBundleDescriptor(plan, review)?.key !== descriptor.key) return null;
+      if (!isolated && (token !== APP.supportBundleRequest || supportBundleDescriptor(plan, review)?.key !== descriptor.key)) return null;
       const shortId = String(plan.matrixId || snapshot?.matrixId || 'matrix').slice(0, 8);
       const name = `TESSA_Matrix_Package_${shortId}_${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
       const artifact = { key: descriptor.key, name, bytes: zip, blob: new Blob([zip], { type: 'application/zip' }), manifest };
-      APP.supportBundleArtifact = artifact;
-      APP.supportBundleBuild = null;
-      updateSupportBundleControl({ available: true, ready: true });
+      if (!isolated) {
+        APP.supportBundleArtifact = artifact;
+        APP.supportBundleBuild = null;
+        updateSupportBundleControl({ available: true, ready: true });
+      }
       return artifact;
     })().catch(error => {
-      if (token === APP.supportBundleRequest) {
+      if (!isolated && token === APP.supportBundleRequest) {
         APP.supportBundleBuild = null;
         APP.supportBundleArtifact = null;
         updateSupportBundleControl({ available: true, ready: false, error: friendlyErrorMessage(error) });
       }
       throw error;
     });
-    APP.supportBundleBuild = { key: descriptor.key, token, promise };
+    if (!isolated) APP.supportBundleBuild = { key: descriptor.key, token, promise };
     return promise;
   }
 
@@ -14081,8 +14100,11 @@
   }
 
   function pickerSearchMatch(row, terms, roleType) {
-    if (roleType && roleType !== 'all' && canonicalValue(row?.item?.roleTypeId) !== canonicalValue(roleType)) return false;
-    return terms.every(term => row.haystack.includes(term));
+    if (roleType && roleType !== 'all' && row.roleType !== roleType) return false;
+    for (const term of terms) {
+      if (!row.haystack.includes(term)) return false;
+    }
+    return true;
   }
 
   // PERF_PICKER_SEARCH_CACHE_V1
@@ -14090,6 +14112,13 @@
     const lookup = dictionaryLookup(catalog);
     if (!lookup) return [];
     const normalizedTerms = Array.from(terms || []).filter(Boolean);
+    // Numeric/code fragments normally have much higher selectivity than names.
+    // Check them first so most catalog rows fail after a single substring lookup.
+    const matchTerms = normalizedTerms.slice().sort((left, right) => {
+      const rightHasDigit = /\d/.test(right) ? 1 : 0;
+      const leftHasDigit = /\d/.test(left) ? 1 : 0;
+      return rightHasDigit - leftHasDigit || right.length - left.length;
+    });
     const normalizedRoleType = canonicalValue(roleType || 'all') || 'all';
     const queryKey = normalizedTerms.join(' ');
     const cacheKey = normalizedRoleType + '|' + queryKey;
@@ -14097,6 +14126,13 @@
     if (cache.has(cacheKey)) return cache.get(cacheKey);
 
     let sourceRows = lookup.searchRows || [];
+    if (normalizedRoleType !== 'all') {
+      const roleRows = lookup.pickerRoleRows || (lookup.pickerRoleRows = new Map());
+      if (!roleRows.has(normalizedRoleType)) {
+        roleRows.set(normalizedRoleType, sourceRows.filter(row => row.roleType === normalizedRoleType));
+      }
+      sourceRows = roleRows.get(normalizedRoleType) || [];
+    }
     let bestPrefixLength = -1;
     for (const [key, rows] of cache.entries()) {
       const split = key.indexOf('|');
@@ -14109,7 +14145,7 @@
       }
     }
 
-    const matched = sourceRows.filter(row => pickerSearchMatch(row, normalizedTerms, normalizedRoleType));
+    const matched = sourceRows.filter(row => pickerSearchMatch(row, matchTerms, normalizedRoleType));
     if (cache.size >= 8 && !cache.has(cacheKey)) {
       const oldest = cache.keys().next().value;
       if (oldest !== undefined) cache.delete(oldest);
@@ -14637,6 +14673,11 @@
       #tms-panel .tms-step-caption,#tms-panel .tms-muted{font-size:12px;color:var(--tms-muted)}
       #tms-panel .tms-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
       #tms-panel #tms-test-tools>p,#tms-panel #tms-test-tools>.tms-row{margin-top:8px}
+      #tms-panel .tms-action-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+      #tms-panel .tms-action-list button{width:100%}
+      #tms-panel .tms-support-tools{display:grid;gap:8px;padding:12px 0;border-bottom:1px solid var(--tms-line)}
+      #tms-panel .tms-support-note{font-size:12px;color:var(--tms-muted);line-height:1.45}
+      #tms-panel #tms-uat-actions:empty{display:none}
       #tms-panel #tms-tests-result{margin-top:8px;font-size:12px;overflow-wrap:anywhere}
       #tms-panel #tms-tests-result>p{padding:6px 0;color:var(--tms-muted)}
       #tms-panel .tms-test-check{padding:8px 0;border-top:1px solid var(--tms-line)}
@@ -14690,9 +14731,6 @@
       #tms-panel .tms-preview-package span{flex-basis:100%;font-size:12px;color:var(--tms-muted)}
       #tms-panel .tms-preview-pager{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--tms-muted);font-size:12px}
       #tms-panel .tms-empty{padding:16px;color:var(--tms-muted);text-align:center}
-      #tms-panel .tms-tools{padding:12px 0;border-bottom:1px solid var(--tms-line)}
-      #tms-panel .tms-tool-list{display:grid;gap:12px;padding-top:12px}
-      #tms-panel .tms-tool-list p{margin:4px 0 0;color:var(--tms-muted);font-size:12px}
       #tms-panel .tms-package-details>summary{font-size:12px;color:var(--tms-muted)}
       #tms-panel .tms-operation-status:has(.tms-status-line:not([hidden])){margin-top:10px}
       #tms-panel .tms-capability-technical button{margin-top:8px}
@@ -14726,7 +14764,7 @@
       #tms-launch{right:12px;bottom:12px}
       #tms-panel .tms-body{padding:0 12px 12px}
       #tms-panel .tms-counters{grid-template-columns:repeat(3,minmax(0,1fr))}}
-      @media(max-width:400px){#tms-panel .tms-diff-values{grid-template-columns:1fr}
+      @media(max-width:400px){#tms-panel .tms-diff-values,#tms-panel .tms-action-list{grid-template-columns:1fr}
       #tms-panel .tms-help-grid{grid-template-columns:1fr}}
       /* Animate only explicit interaction: opening, pressing and hover. No
          repeating decorative motion or expensive per-row animation on render. */
@@ -14775,15 +14813,14 @@
         <div class="tms-controls">
           <div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button><button type="button" id="tms-open-picker" aria-controls="tms-value-picker" aria-expanded="false" title="Несколько значений для одной ячейки">Собрать значения</button></div><section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section></div>
           <div class="tms-step"><div class="tms-step-label">2 · Изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
-          <details class="tms-tools"><summary>Для ИТ и поддержки</summary><div class="tms-tool-list">
-            <div><button id="tms-download-fresh">Обновить справочники</button></div>
-            <div><button id="tms-refresh-excel" disabled>Объединить с актуальной TESSA</button></div>
-            <details id="tms-test-tools"><summary>Для поддержки</summary>
-              <div class="tms-row"><button id="tms-run-tests" type="button">Проверки</button><button id="tms-download-diagnostics" type="button">Диагностика</button></div>
-              <details><summary>Нативный интерфейс TESSA</summary><p>Снимает технический состав методов/контролов без бизнес-значений. Режим записи позволяет выполнить штатное действие TESSA (например, удалить строку правой кнопкой и сохранить) и скачать фактические вызовы CardService и изменение состава матрицы.</p><div class="tms-row"><button id="tms-native-surface" type="button">Снять интерфейс TESSA</button><button id="tms-native-record-start" type="button">Начать запись нативного действия</button><button id="tms-native-record-stop" type="button" disabled>Остановить и скачать</button></div></details>
-              <details><summary>Проверка с записью</summary><p>Сначала проверьте Excel и выберите операции в Preview. Кнопка применяет именно эти изменения после обычного подтверждения, затем перечитывает результат. Для испытаний используйте отдельный тестовый черновик. Добавление, изменение и удаление проверяются только если есть в выбранном наборе.</p><button id="tms-test-write" type="button">Применить выбранное и проверить запись</button></details><div id="tms-tests-result" role="status" aria-live="polite">Проверки ещё не запускались.</div>
-            </details>
-          </div></details>
+          <div class="tms-step" aria-label="Обслуживание Excel"><div class="tms-step-label">Excel и справочники</div><div class="tms-action-list"><button id="tms-download-fresh" type="button">Обновить справочники</button><button id="tms-refresh-excel" type="button" disabled>Объединить с актуальной TESSA</button></div><div class="tms-step-caption">Обновление создаёт свежий Excel. Объединение переносит ваши изменения на актуальное состояние TESSA.</div></div>
+          <section id="tms-test-tools" class="tms-support-tools" aria-label="Проверки и поддержка">
+            <div class="tms-step-label">Проверки и поддержка</div>
+            <div class="tms-action-list"><button id="tms-run-tests" type="button">Быстрые проверки</button><button id="tms-download-diagnostics" type="button">Скачать диагностику</button><button id="tms-native-surface" type="button">Снять интерфейс TESSA</button><button id="tms-native-record-start" type="button">Записать нативное действие</button><button id="tms-native-record-stop" type="button" disabled>Остановить и скачать</button><button id="tms-test-write" type="button">Проверить выбранную запись</button></div>
+            <p class="tms-support-note">Запись и Full UAT выполняйте в отдельном тестовом черновике. Full UAT создаёт временные строки, проверяет чтение после записи и удаляет их с обязательной сверкой восстановления.</p>
+            <div id="tms-uat-actions"></div>
+            <div id="tms-tests-result" role="status" aria-live="polite">Проверки ещё не запускались.</div>
+          </section>
           <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-download-package" hidden disabled>Скачать пакет</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
           <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
         </div>
@@ -15023,6 +15060,7 @@
     APP.runtimeMonitor.start();
     window.addEventListener('pagehide', () => {
       clearSupportBundleArtifact(APP);
+      releaseWorkbookArchive(APP.workbook);
       restoreNativeRecorderMethods(APP.nativeRecorder);
       APP.nativeRecorder = null;
       APP.runtimeMonitor?.stop();

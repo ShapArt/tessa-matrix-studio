@@ -9,7 +9,7 @@ const canary = fs.readFileSync(new URL('../.github/workflows/delivery-canary.yml
 const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
-assert(packageJson.version === '1.17.0', `release package version must be 1.17.0, got ${packageJson.version}`);
+assert(packageJson.version === '1.17.1', `release package version must be 1.17.1, got ${packageJson.version}`);
 assert(workflow.includes('workflow_run:'), 'release must wait for Quality & Security');
 assert(workflow.includes('workflows: ["Quality & Security"]'), 'release must be chained to Quality & Security');
 assert(workflow.includes("github.event.workflow_run.conclusion == 'success'"), 'release must require green quality checks');

@@ -8,7 +8,7 @@ globalThis.location = { origin: 'https://tessa.example.test' };
 globalThis.document = { body: { innerText: '' }, querySelector: () => null, querySelectorAll: () => [] };
 const source = fs.readFileSync(process.env.TMS_TEST_SOURCE || new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
 vm.runInThisContext(source.replace('window.__TESSA_MATRIX_SYNC_EXPORTS__ = {', 'window.__scopeTest = { assertDocumentTypeAssignments, dictionaryCacheKey, APP }; window.__TESSA_MATRIX_SYNC_EXPORTS__ = {'));
-const E = window.__TESSA_MATRIX_SYNC_EXPORTS__, H = window.__scopeTest;
+const E = window.__TESSA_MATRIX_SYNC_EXPORTS__, H = window.__scopeTest, U = window.__TMS_FULL_UAT_V1__;
 const cardType = '11111111-1111-4111-8111-111111111111';
 const otherType = '22222222-2222-4222-8222-222222222222';
 const structure = { templateId: 'template', conditions: [
@@ -42,6 +42,11 @@ const desired = E.workbookRowsToDesired(workbook, E.buildColumnMap(workbook, str
 assert.equal(desired.ids['criterion:doc'][0], 'foreign');
 H.assertDocumentTypeAssignments({ excelRow: desired }, structure, full, historical.rows[0]);
 assert.throws(() => H.assertDocumentTypeAssignments({ excelRow: desired }, structure, full), /не соответствует/, 'copied historical value is not valid for ADD');
+assert.equal(typeof U?.normalizeAddDocumentTypes, 'function', 'Full UAT document-scope normalizer missing');
+const copiedRow = { ...workbook.rows[0], values: [...workbook.rows[0].values] };
+U.normalizeAddDocumentTypes(workbook, copiedRow, structure, full, () => 0);
+const docCompanionIndex = workbook.schemaTokens.indexOf('companion:criterion:doc');
+assert.equal(copiedRow.values[docCompanionIndex], 'allowed', 'Full UAT must replace a copied historical document type with a CardTypeID-scoped value');
 const valid = { ...desired, flat: { ...desired.flat, 'criterion:doc': ['Приказ'] }, ids: { ...desired.ids, 'criterion:doc': ['allowed'] } };
 H.assertDocumentTypeAssignments({ excelRow: valid }, structure, full);
 let creates = 0;

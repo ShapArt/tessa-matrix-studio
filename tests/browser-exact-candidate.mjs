@@ -111,6 +111,10 @@ try {
     throw new Error(`support bundle preparation timed out: ${JSON.stringify(detail)}`, { cause: error });
   }
   await page.locator('#tms-launch').click();
+  assert.equal(await page.locator('#tms-download-fresh').isVisible(), true, 'dictionary refresh must be directly visible');
+  assert.equal(await page.locator('#tms-refresh-excel').isVisible(), true, 'merge-current must be directly visible');
+  assert.equal(await page.locator('#tms-test-tools details').count(), 0, 'support actions must not be hidden behind nested disclosures');
+  assert.equal(await page.locator('#tms-uat-actions').count(), 1, 'UAT build host must remain available for the Full UAT module');
 
   const expectedCounts = { update: 1, add: 1, delete: 1, skip: 2, error: 1 };
   for (const [filter, count] of Object.entries(expectedCounts)) {
