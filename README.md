@@ -6,7 +6,7 @@
 
 `TESSA → XLSX → массовая правка → точный diff → review → controlled apply`
 
-[![Version](https://img.shields.io/badge/version-1.14.2-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.17.0-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 
 ### [1 · УСТАНОВИТЬ TAMPERMONKEY ДЛЯ CHROME](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
@@ -15,7 +15,7 @@
 
 [РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [ISSUES](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.14.2 · Автор: Шаповалов Артём**
+**v1.17.0 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -29,7 +29,7 @@ TESSA Matrix Studio добавляет в открытую карточку ма
 - точный Preview до любой записи в TESSA;
 - повторную проверку актуального состояния прямо перед Apply;
 - проверку фактического результата после записи;
-- отдельный report-only Excel-отчёт **«было → стало»**;
+- единый ZIP-пакет с текущим, загруженным и report-only Excel **«было → стало»**;
 - диагностику и безопасный fail-closed сценарий при неоднозначности, конфликте версии или повреждённой структуре файла.
 
 ## Как устроен рабочий цикл
@@ -42,6 +42,10 @@ TESSA Matrix Studio добавляет в открытую карточку ма
 На этапе **«Проверить изменения» ничего в TESSA не изменяется**.
 
 После обычного Apply Studio автоматически перечитывает матрицу и сверяет сохранённые строки и значения. Неподтверждённая запись не считается полностью успешной.
+
+В **1.17.0** после Preview доступна одна кнопка **«Скачать пакет»**. ZIP содержит текущую выгрузку TESSA, выбранный пользователем Excel, полный отчёт изменений и SHA-256 manifest. Повторяющиеся справочники в Roundtrip V7 физически хранятся один раз, а справочники кэшируются на 30 минут с изоляцией по пользователю, шаблону и типу карточки. Production и UAT теперь собираются одним детерминированным builder-ом.
+
+![Preview и единая кнопка скачивания пакета в v1.17.0](docs/assets/v1.17-preview.png)
 
 В **1.14.0** неизменённые строки проходят быстрый fingerprint-path, а серверная перепроверка по возможности ограничивается реально затронутыми строками с безопасным fallback. Для сотрудников Excel показывает **ФИО — должность**. После Preview можно нажать **«Скачать изменения в Excel»** и получить отдельный отчёт только по ADD/UPDATE/DELETE/SKIP; он помечен как report-only и не принимается обратно для Apply. В диагностический ZIP добавлен read-only Performance UAT. Числа из CI являются synthetic-замерами локального planner-а и не заменяют live-проверку TESSA.
 
@@ -126,7 +130,7 @@ Studio автоматически подключается к открытой �
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.14.2** в Tampermonkey.
+2. Подтвердите установку версии **1.17.0** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -188,7 +192,7 @@ Studio автоматически подключается к открытой �
 Перед подтверждением проверьте:
 
 - **Название:** `TESSA Matrix Studio — Черкизово`
-- **Версия:** `1.14.2`
+- **Версия:** `1.17.0`
 - **Автор:** `Шаповалов Артём`
 - **Разрешения:** `@grant none`
 - **Область запуска:** только домены TESSA Черкизово
@@ -383,9 +387,8 @@ Studio показывает:
 | **Выбрать Excel** | загрузить отредактированный `.xlsx` |
 | **Актуализировать выбранный Excel** | перенести ваши правки в актуальную Excel-структуру, если в TESSA появились новые поля |
 | **Проверить изменения** | построить diff без записи в TESSA |
-| **Скачать изменения в Excel** | получить report-only XLSX «было → стало» по текущему Preview |
+| **Скачать пакет** | получить единый ZIP с текущим, загруженным и report-only Excel, отчётами и SHA-256 manifest |
 | **Применить к TESSA** | выполнить проверенный план изменений |
-| **Дополнительно → Скачать отчёт** | сохранить последний Apply/ErrorReport JSON; доступен после завершения операции, в том числе после «Проверить результат» |
 | **Отмена** | остановить операцию, если текущий этап допускает отмену |
 
 ---
@@ -492,7 +495,7 @@ npm test
 
 ## Версия и поддержка
 
-Текущая версия: **1.14.2**
+Текущая версия: **1.17.0**
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)

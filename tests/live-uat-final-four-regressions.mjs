@@ -4,28 +4,15 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tms-live-final-four-'));
 const target = path.join(tmp, 'tessa-matrix-studio.user.js');
 fs.copyFileSync(path.join(root, 'tessa-matrix-studio.user.js'), target);
 
-const run = args => {
-  const result = spawnSync(process.execPath, args, { cwd: root, encoding: 'utf8' });
-  if (result.status !== 0) throw new Error(`Command failed: node ${args.join(' ')}\n${result.stdout || ''}\n${result.stderr || ''}`);
-};
-
 try {
-  run(['hotfixes/malformed-range-diagnostic-transform.mjs', target]);
-  run(['hotfixes/v1.13.0-user-row-lifecycle-transform.mjs', target]);
-  fs.appendFileSync(target, `\n${fs.readFileSync(path.join(root, 'hotfixes/interval-add-valid-fallback.js'), 'utf8')}\n`);
-  run(['hotfixes/v1.13.0-full-uat-live-finalize.mjs', target]);
-  run(['hotfixes/v1.14-full-uat-inline-failures.mjs', target]);
-  const finalFourTransform = path.join(root, 'hotfixes/v1.14-live-uat-final-four.mjs');
-  if (fs.existsSync(finalFourTransform)) run(['hotfixes/v1.14-live-uat-final-four.mjs', target]);
-  run(['--check', target]);
-
+  // v1.17 canonicalizes every historical live-UAT fix in the exact UAT build.
+  // This regression executes that artifact directly instead of replaying hotfixes.
   const source = fs.readFileSync(target, 'utf8');
 
   // Seed 874674273: production picker has data (23 catalogs / 133763 entries), but Full UAT

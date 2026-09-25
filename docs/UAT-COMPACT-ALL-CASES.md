@@ -1,12 +1,12 @@
 # Compact ALL-cases UAT
 
-Актуально для **TESSA Matrix Studio v1.9.42**.
+Актуально для **TESSA Matrix Studio v1.17.0**.
 
 Этот UAT заменяет старую стратегию с тысячами однотипных искусственных строк. Нагрузка остаётся в автоматических regression-тестах, а ручной UAT проверяет отдельные пользовательские поведения: один сценарий = один понятный кейс.
 
 ## База
 
-- Matrix format: `TESSA_MATRIX_ROUNDTRIP_V6`
+- Matrix format: `TESSA_MATRIX_ROUNDTRIP_V7`
 - Fresh UAT MatrixID: `f5ec6fe5-55ce-49a7-9fdd-f24a6e7c11cb`
 - TemplateID: `08d65ee3-4d2c-467b-97b2-c7ccb94723fc`
 - Состояние: `Черновик`
