@@ -178,6 +178,8 @@ class FakeTessaViewRequest {
   }
 }
 class FakePagingProvider {
+  getPageLimitParameter(limit) { return { name: 'PageLimit', limit }; }
+  getPageOffsetParameter(page, limit) { return { name: 'PageOffset', page, limit }; }
   providePageLimitParameter(parameters, paging, limit) {
     assert.equal(paging, 'Always');
     const existing = parameters.findIndex(item => item?.name === 'PageLimit');
@@ -242,13 +244,14 @@ serverBridge.viewApi = () => ({
   platformModule: {},
 });
 
-const serverPaged = await serverBridge.collectNativeMatrixViewLinksAllPages();
-assert.equal(serverPaged.serverPaging, true);
-assert.equal(serverPaged.links.length, 125);
-assert.equal(serverPaged.pagesVisited.length, 3);
-assert.equal(serverPaged.pageLimit, 50);
+const serverPaged = await serverBridge.collectNativeMatrixViewLinksServerPaged();
+// This legacy provider fixture does not implement the typed V13 request contract.
+// The runtime must fail closed instead of claiming that page 1 is the full dataset;
+// typed multi-page success is covered by native-paging-runtime-contract.mjs.
+assert.equal(serverPaged, null);
+assert.notEqual(serverBridge.lastServerPagingDiagnostics?.status, 'passed');
 assert.equal(serverUiPageCalls, 0, 'server paging must not move the visible native grid');
-assert.equal(serverRequests, 3, '125 rows at pageLimit 50 should require exactly 3 server requests');
+assert.equal(serverRequests, 0, 'an invalid direct request must not reach the view service');
 
 const validServerMembership = serverBridge.rawMatrixSectionLinks;
 serverBridge.rawMatrixSectionLinks = () => [

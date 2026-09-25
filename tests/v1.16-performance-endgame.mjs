@@ -14,7 +14,7 @@ for (const marker of [
   'PERF_DIRECT_DICTIONARY_REFRESH_V3',
   'zipTextParts(',
   'deflateRawTextParts(',
-  'await buildDictionaryRefreshArtifacts(grid.dictionaryCatalog)',
+  'await buildDictionaryRefreshArtifacts(grid.dictionaryCatalog, { sharedStrings: true })',
   'dictionaryArtifacts.dictionaryZipValue',
   'pickerSearchCache: new Map()',
   'PERF_PICKER_SEARCH_CACHE_V1',

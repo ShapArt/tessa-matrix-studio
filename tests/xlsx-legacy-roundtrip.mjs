@@ -18,8 +18,8 @@ vm.runInThisContext(source, { filename: 'tessa-matrix-studio.user.js' });
 
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 const O = E.constants.OPERAND;
-const CURRENT = 'TESSA_MATRIX_ROUNDTRIP_V6';
-const legacyFormats = [1, 2, 3, 4, 5].map(n => `TESSA_MATRIX_ROUNDTRIP_V${n}`);
+const CURRENT = 'TESSA_MATRIX_ROUNDTRIP_V7';
+const legacyFormats = [1, 2, 3, 4, 5, 6].map(n => `TESSA_MATRIX_ROUNDTRIP_V${n}`);
 
 const structure = {
   templateId: 'legacy-template',
@@ -85,7 +85,7 @@ for (const format of legacyFormats) {
 
   // Pre-V6 workbooks had no trusted baseline ledger for physical missing-row DELETE.
   // Model that historical shape explicitly even though this synthetic ZIP was derived
-  // from a modern export and therefore still contains the V6-only hidden sheet.
+  // from a modern export and therefore still contains the modern hidden ledger sheet.
   const authenticLegacy = cloneWorkbook(workbook);
   authenticLegacy.roundtrip.baselineRows = [];
   let plan = E.buildPlan(authenticLegacy, structure, snapshot);
@@ -102,7 +102,7 @@ for (const format of legacyFormats) {
 }
 
 // Schema refresh/migration must fail safe for a legacy physical deletion: the missing row
-// is restored from current TESSA state, then a newly exported workbook uses current V6.
+// is restored from current TESSA state, then a newly exported workbook uses the current format.
 const v1 = cloneWorkbook(await E.readXlsxArrayBuffer(originalBuffer, 'current.xlsx'));
 v1.roundtrip.format = 'TESSA_MATRIX_ROUNDTRIP_V1';
 v1.roundtrip.enabled = true;
@@ -113,8 +113,8 @@ assert(migratedSnapshot.rows.length === 3 && migratedSnapshot.rows.some(item => 
   `legacy schema refresh must restore untrusted missing row instead of deleting it: ${JSON.stringify(migratedSnapshot.rows.map(item => item.versionId))}`);
 const migratedBytes = await E.createRoundtripXlsxBytes(structure, migratedSnapshot, info, catalog);
 const migratedBuffer = migratedBytes.buffer.slice(migratedBytes.byteOffset, migratedBytes.byteOffset + migratedBytes.byteLength);
-const migrated = await E.readXlsxArrayBuffer(migratedBuffer, 'migrated-v6.xlsx');
+const migrated = await E.readXlsxArrayBuffer(migratedBuffer, 'migrated-v7.xlsx');
 assert(migrated.roundtrip.format === CURRENT, `legacy refresh must emit current format, got ${migrated.roundtrip.format}`);
-assert(migrated.roundtrip.baselineRows?.length === 3, 'migrated V6 workbook must contain a complete baseline ledger');
+assert(migrated.roundtrip.baselineRows?.length === 3, 'migrated workbook must contain a complete baseline ledger');
 
-console.log('TESSA Matrix Studio V1-V5 compatibility/migration regression: OK');
+console.log('TESSA Matrix Studio V1-V6 compatibility/migration regression: OK');

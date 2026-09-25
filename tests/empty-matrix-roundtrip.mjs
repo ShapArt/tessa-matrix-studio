@@ -46,9 +46,9 @@ const bytes = await E.createRoundtripXlsxBytes(structure, snapshot, info, catalo
 const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 const workbook = await E.readXlsxArrayBuffer(buffer, 'empty-roundtrip.xlsx');
 
-assert(workbook.roundtrip?.format === 'TESSA_MATRIX_ROUNDTRIP_V6', JSON.stringify(workbook.roundtrip));
+assert(workbook.roundtrip?.format === 'TESSA_MATRIX_ROUNDTRIP_V7', JSON.stringify(workbook.roundtrip));
 assert(workbook.rows.length === 0, `empty export imported ${workbook.rows.length} data rows`);
-assert((workbook.roundtrip?.baselineRows || []).length === 0, 'empty matrix must have an empty V6 baseline ledger');
+assert((workbook.roundtrip?.baselineRows || []).length === 0, 'empty matrix must have an empty baseline ledger');
 
 const orgIndex = workbook.headers.indexOf('Организация');
 const orgIdIndex = workbook.headers.indexOf('Организация__ID');

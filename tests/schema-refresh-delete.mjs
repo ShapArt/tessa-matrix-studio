@@ -63,7 +63,7 @@ const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byt
 const baseline = await E.readXlsxArrayBuffer(buffer, 'qa-schema-delete.xlsx');
 
 assert(baseline.rows.length === 3, `expected 3 exported rows, got ${baseline.rows.length}`);
-assert(baseline.roundtrip.format === 'TESSA_MATRIX_ROUNDTRIP_V6', `physical DELETE safety requires V6 ledger, got ${baseline.roundtrip.format}`);
+assert(baseline.roundtrip.format === 'TESSA_MATRIX_ROUNDTRIP_V7', `physical DELETE safety requires the current ledger, got ${baseline.roundtrip.format}`);
 assert(baseline.roundtrip.baselineRows?.length === 3, `expected 3 baseline ledger rows, got ${baseline.roundtrip.baselineRows?.length || 0}`);
 assert(baseline.roundtrip.baselineRows.some(row => row.versionId === 'version-b' && row.baseFingerprint === exportedSnapshot.rows[1].fingerprint),
   'baseline ledger does not preserve row B identity/fingerprint outside the editable row');
