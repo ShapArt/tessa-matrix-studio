@@ -42,7 +42,7 @@ atomic UPDATE + DELETE** or bypass the native server duplicate check.
 ## Verification
 
 The candidate is composed from the checked-in workflow recipe using
-`node tools/build-paging-candidate.mjs <output>`.
+`node tools/build-candidate.mjs --profile uat --out <output>`.
 
 - `npm test`: repository regression suite, including the new behavioral test.
 - Exact-artifact workflow: 27 test programs against the composed userscript.

@@ -6,7 +6,8 @@ const exists = path => fs.existsSync(new URL(path, root));
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
 const manifest = JSON.parse(read('tests/coverage-manifest.json'));
-const pkg = JSON.parse(read('package.json'));
+const suite = JSON.parse(read('tests/suite.json'));
+const suiteTests = new Set(suite.tests || []);
 const script = read('tessa-matrix-studio.user.js');
 const strategy = read('docs/TEST-STRATEGY.md');
 
@@ -25,7 +26,7 @@ for (const feature of manifest.features) {
   if (feature.writeCritical) {
     assert(typeof feature.runtimeEvidence === 'string' && feature.runtimeEvidence.trim(), `${feature.id}: runtime evidence capability is missing`);
     for (const path of feature.contract) {
-      assert(pkg.scripts.test.includes(`node ${path}`), `${feature.id}: contract test is not in npm test: ${path}`);
+      assert(suiteTests.has(path), `${feature.id}: contract test is not in npm test: ${path}`);
     }
   }
 }

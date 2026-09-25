@@ -9,4 +9,5 @@
 - Add focused regression coverage for every production or live UAT failure, then run `npm test` against the rebuilt exact candidate.
 - Keep production and UAT versioned from `package.json`. Update README, changelog, issue template and release checks together.
 - A release requires server ACL evidence and live Full UAT cleanup/restore proof. Client-side button state is not authorization.
-- Prefer small focused commits on `perf/ux-security-v1.17`; keep the draft PR and rollback instructions current.
+- Prefer a short-lived focused branch from `main`, small reviewable commits and an up-to-date PR description.
+- Keep one canonical implementation. Historical hotfixes, recovery workflows and generated userscripts belong in Git history or release assets, not in the active tree.

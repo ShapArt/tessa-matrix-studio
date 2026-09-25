@@ -2,8 +2,6 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const scriptPath = new URL('../tessa-matrix-studio.user.js', import.meta.url);
-const intervalHotfixPath = new URL('../hotfixes/interval-add-valid-fallback.js', import.meta.url);
-const rangeTransformPath = new URL('../hotfixes/malformed-range-diagnostic-transform.mjs', import.meta.url);
 const code = fs.readFileSync(scriptPath, 'utf8');
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
@@ -11,29 +9,11 @@ const assert = (condition, message) => {
   if (!condition) throw new Error(message);
 };
 
-const parseVersion = value => String(value || '').split('.').map(part => Number(part));
-const isComposedPatchAhead = (next, base) => {
-  const a = parseVersion(next);
-  const b = parseVersion(base);
-  return a.length === 3 && b.length === 3
-    && a.every(Number.isInteger) && b.every(Number.isInteger)
-    && a[0] === b[0] && a[1] === b[1] && a[2] > b[2];
-};
-
 // Metadata checks protect the public installation/update path.
 const metadataVersion = code.match(/^\/\/ @version\s+([^\s]+)$/m)?.[1];
 assert(metadataVersion, 'userscript @version metadata is missing');
 
-// The large base userscript is intentionally frozen while tiny, independently-tested
-// production hotfixes are composed by release.yml. A composed public release may therefore
-// advance multiple patch versions beyond the base, but never change major/minor here.
-if (metadataVersion !== pkg.version) {
-  assert(fs.existsSync(intervalHotfixPath), `userscript version ${metadataVersion} differs from package ${pkg.version} without interval composition`);
-  assert(fs.existsSync(rangeTransformPath), `userscript version ${metadataVersion} differs from package ${pkg.version} without range transform`);
-  assert(isComposedPatchAhead(pkg.version, metadataVersion), `composed release ${pkg.version} must be a later patch of base userscript ${metadataVersion}`);
-} else {
-  assert(metadataVersion === pkg.version, `userscript version ${metadataVersion} must match package version ${pkg.version}`);
-}
+assert(metadataVersion === pkg.version, `userscript version ${metadataVersion} must match package version ${pkg.version}`);
 
 assert(code.includes('// @author       Шаповалов Артём'), 'wrong author');
 assert(code.includes('// @match        https://tessa.cherkizovsky.net/*'), 'main TESSA domain is missing');
@@ -43,8 +23,7 @@ assert(code.includes(`// @updateURL    ${latestMetaUrl}`), 'Tampermonkey updateU
 assert(code.includes(`// @downloadURL  ${latestScriptUrl}`), 'Tampermonkey downloadURL must use the full latest-release userscript asset');
 assert(!code.includes('cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js'), 'stale jsDelivr @main update path must not remain in userscript metadata');
 
-// Internal runtime diagnostics of the BASE source must report that source version.
-// Composed releases are separately verified by release.yml after APP.version rewrite.
+// Internal runtime diagnostics must report the same single-source version.
 assert(code.includes(`version: '${metadataVersion}',`), `APP.version is out of sync with userscript metadata ${metadataVersion}`);
 
 // Load in test mode: bootstrap must not require a live TESSA page.

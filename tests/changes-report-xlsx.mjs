@@ -1,13 +1,9 @@
 import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
-import { applyChangesReportFullRow } from '../hotfixes/v1.14.1-changes-report-full-row.mjs';
-
-const baseCode = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
-const code = applyChangesReportFullRow(baseCode);
+const code = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
 assert.ok(code.includes('REVIEWED_CHANGES_REPORT_V3'), 'v1.14.1 Russian changes-report marker missing');
 assert.ok(!code.includes('Детали изменений'), 'changes workbook must contain only one visible report sheet');
-assert.equal(applyChangesReportFullRow(code), code, 'changes-report transform must be idempotent for release composition');
 
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;

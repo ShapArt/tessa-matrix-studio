@@ -15,11 +15,10 @@ assert(workflow.includes('workflows: ["Quality & Security"]'), 'release must be 
 assert(workflow.includes("github.event.workflow_run.conclusion == 'success'"), 'release must require green quality checks');
 assert(workflow.includes('github.event.workflow_run.head_sha'), 'release must checkout the exact verified commit');
 assert(workflow.includes('gh release view --json tagName'), 'release must compare against the latest published tag');
-assert(/git diff --name-only\s+"\$PREVIOUS_TAG"\.\.HEAD/.test(workflow), 'change gate must cover the full release range');
-for (const watched of ['src/', 'tools/build-candidate.mjs', 'package.json', 'package-lock.json']) {
-  assert(workflow.includes(watched), `release change gate must watch ${watched}`);
-}
-
+assert(workflow.includes('node tools/build-candidate.mjs --profile production --out "$CURRENT"'),
+  'change gate must build the exact production artifact');
+assert(workflow.includes('cmp --silent "$PUBLISHED" "$CURRENT"'),
+  'change gate must compare bytes with the published production artifact');
 const installIndex = workflow.indexOf('npm ci --ignore-scripts --no-audit --no-fund');
 const verifyIndex = workflow.indexOf('- name: Verify');
 assert(installIndex >= 0 && verifyIndex > installIndex, 'locked dependencies must be installed before verification');

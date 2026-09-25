@@ -12,7 +12,7 @@ HTTPS-хостах, в основном фрейме. Дополнительны
 Сначала собрать и проверить итоговый userscript:
 
 ```text
-node tools/build-paging-candidate.mjs dist/tessa-matrix-studio.user.js
+node tools/build-candidate.mjs --profile production --out dist/tessa-matrix-studio.user.js
 npm test
 node tools/build-enterprise-package.mjs dist/tessa-matrix-studio.user.js deployment/enterprise-config.example.json dist/enterprise
 ```
@@ -81,6 +81,6 @@ Administrative Templates → Microsoft Edge → Extensions; GPO или проф�
    завершения/остановки текущей операции.
 
 К заявке приложить исходный commit, сборку, SHA256, результаты тестов и
-[отчёт по безопасности](SECURITY-REVIEW-2026-09-24.md). Назначить владельца ключа,
+[отчёт по безопасности](SECURITY-REVIEW-v1.17.0.md). Назначить владельца ключа,
 обновлений и регламент хранения диагностик. Сертификацию МОПО оформляет организация;
 автотесты не являются заключением о сертификации.
