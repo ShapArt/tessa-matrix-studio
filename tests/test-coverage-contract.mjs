@@ -8,7 +8,7 @@ const assert = (condition, message) => { if (!condition) throw new Error(message
 const manifest = JSON.parse(read('tests/coverage-manifest.json'));
 const suite = JSON.parse(read('tests/suite.json'));
 const suiteTests = new Set(suite.tests || []);
-const script = read('tessa-matrix-studio.user.js');
+const script = read('src/core.user.js');
 const strategy = read('docs/TEST-STRATEGY.md');
 
 assert(manifest.schemaVersion === 1, 'coverage manifest schema version must be 1');
