@@ -1,15 +1,13 @@
 import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
-import { applyMalformedRangeDiagnosticTransform } from '../hotfixes/malformed-range-diagnostic-transform.mjs';
 
 globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 globalThis.location = { origin: 'https://tessa.example.test' };
 globalThis.document = { body: { innerText: '' }, querySelector: () => null, querySelectorAll: () => [] };
 
-const baseSource = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
-const source = applyMalformedRangeDiagnosticTransform(baseSource);
+const source = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
 vm.runInThisContext(source, { filename: 'tessa-matrix-studio.user.js' });
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 

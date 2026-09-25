@@ -94,11 +94,17 @@ replaceExact(
 `      const okLow = confirmApply('Есть строки с низкой уверенностью сопоставления. Продолжить после проверки предпросмотра?');`,
   'low-confidence confirmation policy',
 );
-replaceExact(
-`      const ok = window.confirm(\`Применить корректные изменения к TESSA?\\n\\nИзменить: ${'${c.update}'}\\nДобавить: ${'${c.add}'}\\nУдалить: ${'${c.delete}'}\\nПропустить: ${'${c.skip || 0}'}${'${plan.skippedFields?.length ? `\\nОставить без изменения отдельных полей: ${plan.skippedFields.length}` : \'\'}'}\\n\\nОшибочные строки и указанные в Preview поля не будут применены.\`);`,
-`      const ok = confirmApply(\`Применить корректные изменения к TESSA?\\n\\nИзменить: ${'${c.update}'}\\nДобавить: ${'${c.add}'}\\nУдалить: ${'${c.delete}'}\\nПропустить: ${'${c.skip || 0}'}${'${plan.skippedFields?.length ? `\\nОставить без изменения отдельных полей: ${plan.skippedFields.length}` : \'\'}'}\\n\\nОшибочные строки и указанные в Preview поля не будут применены.\`);`,
-  'standard confirmation policy',
-);
+{
+  const legacy = `      const ok = window.confirm(\`Применить корректные изменения к TESSA?\\n\\nИзменить: ${'${c.update}'}\\nДобавить: ${'${c.add}'}\\nУдалить: ${'${c.delete}'}\\nПропустить: ${'${c.skip || 0}'}${'${plan.skippedFields?.length ? \`\\nОставить без изменения отдельных полей: ${plan.skippedFields.length}\` : \'\'}'}\\n\\nОшибочные строки и указанные в Preview поля не будут применены.\`);`;
+  const v115 = `      const ok = window.confirm(\`Применить корректные изменения к TESSA?\\n\\nИзменить: ${'${c.update}'}\\nДобавить: ${'${c.add}'}\\nУдалить: ${'${c.delete}'}\\nПропустить строки: ${'${c.skip || 0}'}${'${plan.skippedFields?.length ? \`\\nОставить без изменения полей: ${plan.skippedFields.length}\` : \'\'}'}${'${plan.skippedValues?.length ? \`\\nПропустить отдельных значений: ${plan.skippedValues.length}\` : \'\'}'}\\n\\nВ TESSA попадут только значения, прошедшие проверку.\`);`;
+  if (source.includes(legacy)) {
+    replaceExact(legacy, legacy.replace('window.confirm(', 'confirmApply('), 'standard confirmation policy');
+  } else if (source.includes(v115)) {
+    replaceExact(v115, v115.replace('window.confirm(', 'confirmApply('), 'v1.15 standard confirmation policy');
+  } else {
+    throw new Error('standard confirmation policy: supported confirmation block not found');
+  }
+}
 
 // Keep ordinary Apply on the native editor Save pipeline, but let the pre-confirmed Full
 // UAT transaction defer that Save. The accepted row receipts remain available immediately
@@ -151,19 +157,55 @@ if (!source.includes('const diagnosticNativeCardCache = new Map();')) {
 
 // Full UAT packages use the same audited ZIP writer as XLSX/diagnostics instead of
 // introducing another archive implementation in the runtime hotfix.
-replaceExact(
-`    TessaBridge,
+// v1.15 also exports immutable XLSX/SpreadsheetML resource ceilings so Full UAT can
+// exercise the same production OOM-prevention guards. Keep the historical transform
+// compatible with both export shapes.
+{
+  const legacy = `    TessaBridge,
+    constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },`;
+  const resourceAware = `    TessaBridge,
+    constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE, XLSX_ARCHIVE_LIMITS, SPREADSHEETML_LIMITS },`;
+
+  // Newer branches may already export makeZip earlier in the object together with
+  // additional performance helpers. Detect the export object semantically instead of
+  // depending on one historical adjacency ("TessaBridge, makeZip,").
+  const exportStart = source.indexOf('window.__TESSA_MATRIX_SYNC_EXPORTS__ = {');
+  const exportEnd = exportStart >= 0 ? source.indexOf('\n  };', exportStart) : -1;
+  const exportBlock = exportStart >= 0 && exportEnd > exportStart ? source.slice(exportStart, exportEnd) : '';
+  const makeZipAlreadyExported = /(?:^|[,\s])makeZip(?:[,\s]|$)/m.test(exportBlock);
+
+  if (source.includes(legacy)) {
+    replaceExact(
+      legacy,
+      `    TessaBridge, makeZip,
     constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },`,
-`    TessaBridge, makeZip,
-    constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },`,
-  'export makeZip for Full UAT',
-);
+      'export makeZip for Full UAT',
+    );
+  } else if (source.includes(resourceAware)) {
+    replaceExact(
+      resourceAware,
+      `    TessaBridge, makeZip,
+    constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE, XLSX_ARCHIVE_LIMITS, SPREADSHEETML_LIMITS },`,
+      'export makeZip for resource-aware Full UAT',
+    );
+  } else if (!makeZipAlreadyExported) {
+    throw new Error('export makeZip for Full UAT: supported export block not found');
+  }
+}
 
 if ((source.match(/DUPLICATE_IDENTITY_COPY_AS_ADD_V1/g) || []).length !== 2) {
   throw new Error('Copied identity patch marker count mismatch.');
 }
-for (const marker of ['tms-picker-import-block', 'TessaBridge, makeZip,', 'const confirmApply =', 'FULL_UAT_DEFER_MAIN_SAVE_V1', "reason: 'deferred-by-caller'", 'diagnosticNativeCardCache']) {
+for (const marker of ['tms-picker-import-block', 'const confirmApply =', 'FULL_UAT_DEFER_MAIN_SAVE_V1', "reason: 'deferred-by-caller'", 'diagnosticNativeCardCache']) {
   if (!source.includes(marker)) throw new Error(`v1.13.0 transform verification failed: ${marker}`);
+}
+{
+  const exportStart = source.indexOf('window.__TESSA_MATRIX_SYNC_EXPORTS__ = {');
+  const exportEnd = exportStart >= 0 ? source.indexOf('\n  };', exportStart) : -1;
+  const exportBlock = exportStart >= 0 && exportEnd > exportStart ? source.slice(exportStart, exportEnd) : '';
+  if (!/(?:^|[,\s])makeZip(?:[,\s]|$)/m.test(exportBlock)) {
+    throw new Error('v1.13.0 transform verification failed: makeZip export missing');
+  }
 }
 
 fs.writeFileSync(target, source, 'utf8');

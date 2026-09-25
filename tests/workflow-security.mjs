@@ -89,4 +89,16 @@ const codeqlPermissions = permissionsFromBlock(jobBlock(qualityLines, 'codeql'),
 assert(codeqlPermissions.get('contents') === 'read', 'codeql job must retain contents: read');
 assert(codeqlPermissions.get('security-events') === 'write', 'codeql job must receive security-events: write');
 
+// Provenance rule: PR workflows otherwise receive a synthetic merge commit from
+// actions/checkout. A distributed UAT candidate must point at the reviewed head SHA.
+const liveCandidateText = fs.readFileSync(new URL('live-excel-preview-uat-candidate.yml', workflowDir), 'utf8');
+assert(
+  liveCandidateText.includes('ref: ${{ github.event.pull_request.head.sha || github.sha }}'),
+  'live UAT candidate must checkout the exact PR head SHA',
+);
+assert(
+  liveCandidateText.includes('COMMIT_SHA="$(git rev-parse HEAD)"'),
+  'live UAT candidate manifest must record its exact checkout SHA',
+);
+
 console.log('TESSA Matrix Studio workflow supply-chain and least-privilege checks: OK');

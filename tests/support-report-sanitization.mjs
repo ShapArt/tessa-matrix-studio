@@ -120,10 +120,11 @@ await new Promise(resolve => setTimeout(resolve, 5));
 assert(events.some(event => event[0] === 'remove'), `anchor cleanup missing: ${JSON.stringify(events)}`);
 assert(events.some(event => event[0] === 'revoke' && event[1] === 'blob:tessa-support'), `object URL cleanup missing: ${JSON.stringify(events)}`);
 
-// The support button is a download action, not a dead link. It must remain usable after
-// invalidatePlanStateAfterApply clears APP.plan by falling back to APP.lastSupportReport.
-assert(code.includes('Скачать отчёт для поддержки'), 'support-report button must say that it downloads a file');
-assert(code.includes('APP.lastSupportReport'), 'support report must survive preview invalidation after Apply');
-assert(!code.includes("if (APP.busy || !APP.plan) return;\n      downloadJson(buildPreviewSupportReport"), 'support download must not be gated by APP.plan after Apply');
+// Preview, Apply and diagnostics are now delivered by one bounded support ZIP. The
+// retained context keeps that package available after Apply consumes APP.plan.
+assert(code.includes('id="tms-download-package"'), 'unified support package button is missing');
+assert(code.includes('TESSA_MATRIX_SUPPORT_BUNDLE_V1'), 'support bundle contract is missing');
+assert(code.includes('APP.supportBundleContext'), 'support bundle context must survive Preview invalidation after Apply');
+assert(!code.includes('Скачать отчёт для поддержки'), 'obsolete support-report button creates duplicate user actions');
 
 console.log('TESSA Matrix Studio privacy-safe support report + persistent browser download: OK');

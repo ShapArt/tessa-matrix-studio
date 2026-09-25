@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 
 const replaceFunction = (source, signature, replacement) => {
@@ -101,10 +102,24 @@ export function applyLiveExcelPreviewUx(input) {
 
 `);
 
-  const oldPersonalRoleExport = "        values.push(items.map(item => dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, '')).join('\\n'));";
-  const newPersonalRoleExport = "        values.push(items.map(item => Number(item.roleTypeId) === PERSONAL_ROLE_TYPE_ID ? employeeSafeSelector((dictionaryLookup(dict)?.byId?.get(canonicalValue(item.id) + '|' + canonicalValue(item.roleTypeId)) || [])[0] || item) : (dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, ''))).join('\\n'));";
-  if (!source.includes(oldPersonalRoleExport)) throw new Error('Function-role Excel export anchor not found');
-  source = source.replace(oldPersonalRoleExport, newPersonalRoleExport);
+  const newPersonalRoleExport = "values.push(items.map(item => Number(item.roleTypeId) === PERSONAL_ROLE_TYPE_ID ? employeeSafeSelector((dictionaryLookup(dict)?.byId?.get(canonicalValue(item.id) + '|' + canonicalValue(item.roleTypeId)) || [])[0] || item) : (dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, ''))).join('\\n'));";
+  const roleLoopAnchor = "const items = snapshotRow.roles?.[fn.id] || [];";
+  const roleLoopStart = source.indexOf(roleLoopAnchor);
+  if (roleLoopStart < 0) throw new Error('Function-role Excel export loop not found');
+  const roleIdsAnchor = "values.push(items.map(item => \`${item.id}|${item.roleTypeId}\`).join('\\n'));";
+  const roleIdsIndex = source.indexOf(roleIdsAnchor, roleLoopStart);
+  if (roleIdsIndex < 0) throw new Error('Function-role hidden ID export anchor not found');
+  let roleExportBlock = source.slice(roleLoopStart, roleIdsIndex);
+  if (!roleExportBlock.includes('PERSONAL_ROLE_TYPE_ID ? employeeSafeSelector')) {
+    const visibleLineStart = roleExportBlock.indexOf('values.push(items.map(item =>');
+    if (visibleLineStart < 0) throw new Error('Function-role visible Excel export anchor not found');
+    const visibleLineEnd = roleExportBlock.indexOf(").join('\\n'));", visibleLineStart);
+    if (visibleLineEnd < 0) throw new Error('Function-role visible Excel export end not found');
+    roleExportBlock = roleExportBlock.slice(0, visibleLineStart)
+      + newPersonalRoleExport
+      + roleExportBlock.slice(visibleLineEnd + ").join('\\n'));".length);
+    source = source.slice(0, roleLoopStart) + roleExportBlock + source.slice(roleIdsIndex);
+  }
 
   const resolutionSignature = '  function renderResolutionCenter(plan) {';
   const resolutionStart = source.indexOf(resolutionSignature);
@@ -122,7 +137,7 @@ export function applyLiveExcelPreviewUx(input) {
   function previewAttentionSummary(plan, review = APP.review) {
     const effectiveReview = review || createPlanReviewState();
     const reviewed = buildReviewedPlan(plan, effectiveReview);
-    const notApplied = Number(reviewed?.counts?.skip || reviewed?.skippedRows?.length || 0);
+    const notApplied = selectPreviewItems(reviewed, effectiveReview, { filter: 'skip', pageSize: 1 }).total;
     const errors = selectPreviewItems(plan, effectiveReview, { filter: 'error', pageSize: 1 }).total;
     const resolutionItems = collectPlanResolutionItems(plan);
     const resolutionRows = new Set(resolutionItems.map(item => Number(item?.excelRow)).filter(Number.isFinite)).size;
@@ -270,7 +285,7 @@ export function applyLiveExcelPreviewUx(input) {
   return source;
 }
 
-if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const file = process.argv[2];
   if (!file) throw new Error('usage: node hotfixes/v1.14.2-live-excel-preview-ux.mjs <userscript>');
   const input = fs.readFileSync(file, 'utf8');

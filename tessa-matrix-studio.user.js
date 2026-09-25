@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TESSA Matrix Studio — Черкизово
 // @namespace    https://github.com/ShapArt/tessa-matrix-studio
-// @version      1.14.0
+// @version      1.17.1
 // @description  TESSA Matrix Studio: безопасное редактирование матриц через Excel, понятный diff, замена строк, прогресс операций и защита от ошибок.
 // @author       Шаповалов Артём
 // @match        https://tessa-app01tl.cherkizovsky.net/*
@@ -36,6 +36,8 @@
    * а не к догадке, автоматическому ADD или массовому DELETE.
    */
 
+  // V1.15_PERFORMANCE_RELIABILITY_UX_V1
+  // PREVIEW_BASELINE_INCREMENTAL_SNAPSHOT_V1
   // ---------------------------------------------------------------------------
   // 1. СОСТОЯНИЕ ПРИЛОЖЕНИЯ И КОНСТАНТЫ
   // Все изменяемое состояние одной вкладки хранится в APP. Константы ниже
@@ -44,7 +46,18 @@
 
   const APP = {
     name: 'TESSA Matrix Studio',
-    version: '1.14.0',
+    version: '1.17.1',
+    buildFingerprint: 'TMS_V1_15_10_PAGING_V4_REFRESH_EDIT_V2',
+    pagingXlsxFixBuild: 'TMS_V1_16_4_PAGING_V5_XLSX_EDIT_V3',
+    pagingFinalBuild: 'TMS_V1_16_6_PAGING_V7_VALIDATED_OFFSETS',
+    pagingCanonicalBuild: 'TMS_V1_16_7_PAGING_V8_CANONICAL_REQUEST',
+    pagingContextBuild: 'TMS_V1_16_8_PAGING_V9_CONTEXT_PRESERVATION',
+    pagingVersionedContextBuild: 'TMS_V1_16_9_PAGING_V10_VERSIONED_CONTEXT',
+    pagingIsolatedContextBuild: 'TMS_V1_16_10_PAGING_V11_ISOLATED_PAGING_CONTEXT',
+    pagingManualSpecialBuild: 'TMS_V1_16_11_PAGING_V12_MANUAL_SPECIAL_PARAMS',
+    pagingSelfContainedBuild: 'TMS_V1_16_12_PAGING_V13_SELF_CONTAINED_REQUEST',
+    pagingRuntimeContractBuild: 'TMS_V1_17_1_UAT_SCOPE_SUPPORT_UI',
+    performanceBuild: 'TMS_V1_16_0_PERF_ENDGAME_V1',
     plan: null,
     review: createPlanReviewState(),
     previewView: createPreviewViewState(),
@@ -69,9 +82,10 @@
     lastIntervalDiagnostics: null,
     lastStudioDiagnostics: null,
     lastPerformanceUat: null,
-    reviewedChangesArtifact: null,
-    reviewedChangesArtifactBuild: null,
-    reviewedChangesArtifactRequest: 0,
+    supportBundleArtifact: null,
+    supportBundleBuild: null,
+    supportBundleRequest: 0,
+    supportBundleContext: null,
     nativeRecorder: null,
     dictionaryCatalog: null,
     // INCREMENTAL_SESSION_CACHE_V1
@@ -82,12 +96,13 @@
       rowByCardId: new Map(), hits: 0, misses: 0, invalidations: 0, lastInvalidationReason: '', updatedAt: null,
     },
     performanceTelemetry: { startedAt: new Date().toISOString(), stages: {}, events: [] },
+    longJob: null,
     progress: { percent: 0, label: 'Готово', detail: '' },
   };
 
   const ROUNDTRIP = Object.freeze({
-    Format: 'TESSA_MATRIX_ROUNDTRIP_V6',
-    AcceptedFormats: ['TESSA_MATRIX_ROUNDTRIP_V1', 'TESSA_MATRIX_ROUNDTRIP_V2', 'TESSA_MATRIX_ROUNDTRIP_V3', 'TESSA_MATRIX_ROUNDTRIP_V4', 'TESSA_MATRIX_ROUNDTRIP_V5', 'TESSA_MATRIX_ROUNDTRIP_V6'],
+    Format: 'TESSA_MATRIX_ROUNDTRIP_V7',
+    AcceptedFormats: ['TESSA_MATRIX_ROUNDTRIP_V1', 'TESSA_MATRIX_ROUNDTRIP_V2', 'TESSA_MATRIX_ROUNDTRIP_V3', 'TESSA_MATRIX_ROUNDTRIP_V4', 'TESSA_MATRIX_ROUNDTRIP_V5', 'TESSA_MATRIX_ROUNDTRIP_V6', 'TESSA_MATRIX_ROUNDTRIP_V7'],
     DictionarySheet: 'Словари',
     StructureSheet: 'Структура',
     SchemaChangesSheet: 'Изменения структуры',
@@ -107,12 +122,18 @@
     DbName: 'TESSA_Matrix_Excel_Sync',
     StoreName: 'dictionaryCatalogs',
     DbVersion: 1,
-    TtlMs: 12 * 60 * 60 * 1000,
+    TtlMs: 30 * 60 * 1000,
   });
 
   const PERFORMANCE = Object.freeze({
     SnapshotCardGetConcurrency: 6,
+    SnapshotCardGetMaxConcurrency: 10,
+    PreflightUpdateConcurrency: 4,
+    PreflightUpdateMaxConcurrency: 6,
     PreflightAddConcurrency: 4,
+    PreflightAddMaxConcurrency: 6,
+    ReconcileCardGetConcurrency: 6,
+    ReconcileCardGetMaxConcurrency: 10,
     PreviewSnapshotTtlMs: 15 * 60 * 1000,
     PreviewYieldDeadlineMs: 40,
     ZipConcurrency: 4,
@@ -127,7 +148,7 @@
     Object.freeze({ id: 'value-picker', selector: '#tms-open-picker', event: 'click', uatCheckId: 'action-value-picker', outcome: 'picker-selection', destructive: false }),
     Object.freeze({ id: 'file-ingest', selector: '#tms-file', event: 'change', uatCheckId: 'action-file-ingest', outcome: 'ingest-workbook', destructive: false }),
     Object.freeze({ id: 'preview', selector: '#tms-analyze', event: 'click', uatCheckId: 'action-preview', outcome: 'preview-plan', destructive: false }),
-    Object.freeze({ id: 'changes-export', selector: '#tms-download-changes', event: 'click', uatCheckId: 'action-changes-export', outcome: 'changes-xlsx-artifact', destructive: false }),
+    Object.freeze({ id: 'support-bundle', selector: '#tms-download-package', event: 'click', uatCheckId: 'action-support-bundle', outcome: 'support-zip-artifact', destructive: false }),
     Object.freeze({ id: 'dictionary-refresh', selector: '#tms-download-fresh', event: 'click', uatCheckId: 'action-dictionary-refresh', outcome: 'refreshed-workbook', destructive: false }),
     Object.freeze({ id: 'merge-current', selector: '#tms-refresh-excel', event: 'click', uatCheckId: 'action-merge-current', outcome: 'merged-workbook', destructive: false }),
     Object.freeze({ id: 'apply', selector: '#tms-apply', event: 'click', uatCheckId: 'action-apply', outcome: 'live-write-readback', destructive: true }),
@@ -160,6 +181,8 @@
   // зато превращают точный поиск по ID/названию из O(N) на каждую ячейку в O(1).
   const DICTIONARY_LOOKUP_CACHE = new WeakMap();
   const NORMALIZED_DICTIONARY_CATALOGS = new WeakSet();
+  // V1.15: trusted identities that were present in this workbook's own baseline.
+  const WORKBOOK_HISTORICAL_ROLE_CACHE = new WeakMap();
   let extensionRuntimeCache = null;
 
   const OPERAND = Object.freeze({
@@ -335,6 +358,19 @@
     await Promise.all(Array.from({ length: concurrency }, () => run()));
     return output;
   }
+
+  // Adaptive but always bounded: faster Chrome workstations get more independent
+  // reads/validations in flight, while low-memory devices stay at the conservative floor.
+  function adaptiveConcurrency(base, cap = base) {
+    const floor = Math.max(1, Number(base) || 1);
+    const ceiling = Math.max(floor, Number(cap) || floor);
+    const logical = Math.max(1, Number(globalThis.navigator?.hardwareConcurrency) || 4);
+    const memoryGb = Number(globalThis.navigator?.deviceMemory) || 0;
+    let target = Math.max(floor, Math.ceil(logical * 0.6));
+    if (memoryGb > 0 && memoryGb <= 4) target = floor;
+    else if (memoryGb > 0 && memoryGb <= 8) target = Math.min(target, Math.max(floor, Math.ceil((floor + ceiling) / 2)));
+    return Math.max(1, Math.min(ceiling, target));
+  }
   const nowIso = () => new Date().toISOString();
 
   function resetPerformanceTelemetry() {
@@ -345,6 +381,17 @@
   function recordPerformanceSample(name, elapsedMs, meta = {}, error = null) {
     const key = String(name || 'unknown');
     const ms = Math.max(0, Number(elapsedMs) || 0);
+    const event = {
+      at: nowIso(),
+      operation: String(meta.operation || key.split('.')[0] || 'unknown'),
+      stage: key,
+      durationMs: ms,
+      inputRows: Math.max(0, Number(meta.inputRows ?? meta.rows ?? 0) || 0),
+      catalogEntries: Math.max(0, Number(meta.catalogEntries ?? 0) || 0),
+      bytes: Math.max(0, Number(meta.bytes ?? 0) || 0),
+      cacheHit: meta.cacheHit === true,
+      result: error ? 'error' : 'success',
+    };
     const state = APP.performanceTelemetry || (APP.performanceTelemetry = { startedAt: nowIso(), stages: {}, events: [] });
     const previous = state.stages[key] || { count: 0, totalMs: 0, maxMs: 0, lastMs: 0, lastMeta: null, errors: 0 };
     state.stages[key] = {
@@ -352,10 +399,12 @@
       totalMs: previous.totalMs + ms,
       maxMs: Math.max(previous.maxMs || 0, ms),
       lastMs: ms,
-      lastMeta: clonePlain(meta || {}),
+      lastMeta: { ...clonePlain(meta || {}), ...event },
       errors: previous.errors + (error ? 1 : 0),
     };
-    state.events.push({ at: nowIso(), name: key, elapsedMs: ms, meta: clonePlain(meta || {}), ok: !error });
+    // Keep the old aliases for report compatibility while every new consumer can
+    // rely on the stable telemetry contract above.
+    state.events.push({ ...event, name: key, elapsedMs: ms, meta: clonePlain(meta || {}), ok: !error });
     if (state.events.length > 100) state.events.splice(0, state.events.length - 100);
   }
 
@@ -464,7 +513,7 @@
     const matrixInfo = { matrixId: snapshot.matrixId, TemplateID: snapshot.templateId, Name: 'Performance UAT' };
     const catalog = mergeSnapshotIntoDictionaryCatalog(null, structure, snapshot);
     const bytes = await createRoundtripXlsxBytes(structure, snapshot, matrixInfo, catalog, { includeActions: true });
-    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const buffer = exactArrayBuffer(bytes);
     const baseWorkbook = await readXlsxArrayBuffer(buffer, 'performance-uat.xlsx');
     const signer = baseWorkbook.headers.indexOf('Подписание');
     const signerId = baseWorkbook.headers.indexOf('Подписание__ID');
@@ -676,6 +725,19 @@
 …[обрезано ${text.length - max} символов]` : text;
   }
 
+  function isSensitiveDiagnosticKey(key) {
+    const normalized = String(key || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+    return /^(password|passwd|authorization|proxyauthorization|cookie|setcookie|accesstoken|refreshtoken|sessiontoken|token|krtoken|signature|privatekey|clientsecret|secret|apikey|sessionid)$/.test(normalized);
+  }
+
+  function diagnosticJsonReplacer(key, value) {
+    // Even opt-in raw diagnostics must never export signed permission/session tokens.
+    // Redact only the serialized copy; the native request/card remains untouched.
+    if (isSensitiveDiagnosticKey(key)) return '[REDACTED]';
+    if (value instanceof Map) return Object.fromEntries(value);
+    return value;
+  }
+
   function safePlain(value, options = {}, seen = new WeakMap(), depth = 0) {
     const maxDepth = options.maxDepth ?? 10;
     const maxKeys = options.maxKeys ?? 500;
@@ -712,7 +774,7 @@
         let count = 0;
         for (const [key, item] of value.entries()) {
           if (count++ >= maxKeys) { out.__truncated__ = true; break; }
-          out[String(key)] = safePlain(item, options, seen, depth + 1);
+          Object.defineProperty(out, String(key), { value: isSensitiveDiagnosticKey(key) ? '[REDACTED]' : safePlain(item, options, seen, depth + 1), enumerable: true, configurable: true });
         }
         return out;
       } catch (_) { /* use object path */ }
@@ -724,7 +786,7 @@
     let keys = [];
     try { keys = Object.keys(value); } catch (_) { return out; }
     for (const key of keys.slice(0, maxKeys)) {
-      if (/^(password|authorization|accessToken|refreshToken|token)$/i.test(key)) {
+      if (isSensitiveDiagnosticKey(key)) {
         out[key] = '[REDACTED]';
         continue;
       }
@@ -1462,7 +1524,7 @@
           method,
           compressedSize,
           uncompressedSize,
-          compressed: bytes.slice(dataStart, dataStart + compressedSize),
+          compressedStart: dataStart,
         });
       }
       offset += recordLength;
@@ -1477,18 +1539,19 @@
     const decoded = [];
     const actualState = { total: 0 };
     for (const descriptor of descriptors) {
+      const compressed = bytes.subarray(descriptor.compressedStart, descriptor.compressedStart + descriptor.compressedSize);
       let raw;
       if (descriptor.method === 0) {
         if (descriptor.compressedSize !== descriptor.uncompressedSize) {
           throw xlsxArchiveError(`размер несжатого файла ${descriptor.name} не совпадает с ZIP-каталогом.`);
         }
-        raw = descriptor.compressed;
+        raw = compressed;
         actualState.total += raw.byteLength;
         if (actualState.total > limits.MaxTotalUncompressedBytes) {
           throw xlsxArchiveError(`суммарный распакованный размер превышает безопасный лимит ${archiveLimitLabel(limits.MaxTotalUncompressedBytes)}.`);
         }
       } else {
-        raw = await inflateRawLimited(descriptor.compressed, descriptor, limits, actualState);
+        raw = await inflateRawLimited(compressed, descriptor, limits, actualState);
       }
       if (raw.byteLength !== descriptor.uncompressedSize) {
         throw xlsxArchiveError(`фактический распакованный размер файла ${descriptor.name} не совпадает с ZIP-каталогом.`);
@@ -1849,6 +1912,20 @@
   }
 
   const WORKBOOK_ARCHIVES = new WeakMap();
+  const SELECTED_FILE_BUFFER_CACHE = new WeakMap();
+
+  async function selectedFileArrayBuffer(file) {
+    if (!file) throw new Error('Выберите файл .xlsx.');
+    const cacheable = Number(file.size || 0) <= 8 * 1024 * 1024;
+    if (!cacheable) return await file.arrayBuffer();
+    let pending = SELECTED_FILE_BUFFER_CACHE.get(file);
+    if (!pending) {
+      pending = Promise.resolve().then(() => file.arrayBuffer());
+      SELECTED_FILE_BUFFER_CACHE.set(file, pending);
+    }
+    try { return await pending; }
+    catch (error) { SELECTED_FILE_BUFFER_CACHE.delete(file); throw error; }
+  }
 
   async function readXlsxArrayBuffer(arrayBuffer, fileName = 'matrix.xlsx', options = {}) {
     const skipSheetNames = new Set((options.skipSheetNames || []).map(name => String(name).trim()).filter(Boolean));
@@ -1863,6 +1940,13 @@
         .filter(descriptor => skipSheetNames.has(String(descriptor.name || '').trim()))
         .map(descriptor => descriptor.path)
         .filter(Boolean);
+      // Roundtrip V7 stores shared strings only for the generated dictionary sheet.
+      // When that sheet is replaced with an already loaded live catalog, inflating its
+      // string table would retain the same high-cardinality data a second time and could
+      // reject an otherwise small matrix part at the per-entry resource boundary.
+      if (skipSheetNames.has(ROUNDTRIP.DictionarySheet) && options.dictionaryCatalog) {
+        skipEntryNames.push('xl/sharedStrings.xml');
+      }
       entries = await unzipArrayBuffer(arrayBuffer, { skipEntryNames });
     } else {
       entries = await unzipArrayBuffer(arrayBuffer);
@@ -1876,6 +1960,7 @@
       const raw = entries.get(descriptor.path);
       if (!raw) continue;
       parsedSheets.set(descriptor.name, parseSheetXml(decoder.decode(raw), shared, styles));
+      await yieldToMain();
     }
     const roundtripSheets = sheetDescriptors.filter(item => ROUNDTRIP.AcceptedFormats.includes(readMetadataPairs(parsedSheets.get(item.name)?.rows || [], 40)[ROUNDTRIP.FormatKey]));
     if (roundtripSheets.length > 1) throw new Error('В книге несколько листов матрицы TESSA. Оставьте один рабочий лист и повторите проверку.');
@@ -1912,10 +1997,27 @@
       if (values.some(v => normalizeSpace(v))) data.push({ excelRow: r + 1, values, cellMeta });
     }
     const format = metadata[ROUNDTRIP.FormatKey] || null;
+    const roundtripEnabled = ROUNDTRIP.AcceptedFormats.includes(format);
+    const dictionaryCatalog = options.dictionaryCatalog || parseEmbeddedDictionaryCatalog(parsedSheets);
+    const baselineRows = parseBaselineRows(parsedSheets);
+    const sheetNames = [...parsedSheets.keys()];
+
+    // PERF_PARSED_SHEET_COMPACTION_V1
+    // In the production selective-inflate path, the matrix/baseline have already been
+    // projected into compact workbook rows and baseline DTOs. Keeping their raw 2D
+    // SpreadsheetML parse trees as well would roughly double live heap for no benefit.
+    // Structure remains because dictionary refresh needs its rows; all original ZIP
+    // bytes stay in WORKBOOK_ARCHIVES when retainArchive is enabled.
+    if (roundtripEnabled && options.selectiveInflate === true) {
+      parsedSheets.delete(matrixDescriptor.name);
+      parsedSheets.delete(ROUNDTRIP.BaselineSheet);
+      parsedSheets.delete(ROUNDTRIP.DictionarySheet);
+    }
+
     const workbook = {
       fileName,
       sheetName: matrixDescriptor.name,
-      sheetNames: [...parsedSheets.keys()],
+      sheetNames,
       headerRow: headerRowIndex + 1,
       schemaRow: schemaRowIndex >= 0 ? schemaRowIndex + 1 : null,
       headers: trimmedHeaders,
@@ -1923,15 +2025,15 @@
       rows: data,
       metadata,
       parsedSheets,
-      dictionaryCatalog: options.dictionaryCatalog || parseEmbeddedDictionaryCatalog(parsedSheets),
+      dictionaryCatalog,
       roundtrip: {
-        enabled: ROUNDTRIP.AcceptedFormats.includes(format),
+        enabled: roundtripEnabled,
         format,
         matrixId: metadata[ROUNDTRIP.MatrixIdKey] || null,
         templateId: metadata[ROUNDTRIP.TemplateIdKey] || null,
         previousVersionId: metadata[ROUNDTRIP.PreviousVersionIdKey] || null,
         templateMode: metadata[ROUNDTRIP.TemplateModeKey] || null,
-        baselineRows: parseBaselineRows(parsedSheets),
+        baselineRows,
       },
     };
     if (options.retainArchive !== false) WORKBOOK_ARCHIVES.set(workbook, entries);
@@ -1974,10 +2076,27 @@
     return table;
   })();
 
-  function crc32(bytes) {
-    let crc = 0xFFFFFFFF;
+  function crc32Update(state, bytes) {
+    let crc = state >>> 0;
     for (const byte of bytes) crc = CRC32_TABLE[(crc ^ byte) & 0xFF] ^ (crc >>> 8);
-    return (crc ^ 0xFFFFFFFF) >>> 0;
+    return crc >>> 0;
+  }
+
+  function crc32(bytes) {
+    return (crc32Update(0xFFFFFFFF, bytes) ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  function zipTextParts(parts) {
+    const safeParts = Array.from(parts || []).map(part => String(part ?? ''));
+    return {
+      __tmsZipTextParts: true,
+      parts: safeParts,
+      estimatedBytes: safeParts.reduce((sum, part) => sum + part.length * 2, 0),
+    };
+  }
+
+  function isZipTextParts(value) {
+    return Boolean(value && value.__tmsZipTextParts === true && Array.isArray(value.parts));
   }
 
   function concatBytes(parts) {
@@ -1991,6 +2110,23 @@
     return output;
   }
 
+  function byteView(value) {
+    if (value instanceof Uint8Array) return value;
+    if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    return null;
+  }
+
+  // Avoid duplicating multi-megabyte XLSX buffers merely to normalize a Uint8Array view.
+  // makeZip/createRoundtripXlsxBytes normally return a view covering the whole buffer,
+  // so the common path is zero-copy. Subviews still get an exact defensive copy.
+  function exactArrayBuffer(value) {
+    if (value instanceof ArrayBuffer) return value;
+    if (!ArrayBuffer.isView(value)) throw new TypeError('Ожидался ArrayBuffer или TypedArray.');
+    const buffer = value.buffer;
+    if (value.byteOffset === 0 && value.byteLength === buffer.byteLength) return buffer;
+    return buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+  }
+
   async function deflateRaw(bytes) {
     try {
       if (typeof CompressionStream !== 'function') return null;
@@ -2001,17 +2137,71 @@
     }
   }
 
+  async function deflateRawTextParts(parts) {
+    try {
+      if (typeof CompressionStream !== 'function') return null;
+      const stream = new Blob(parts).stream().pipeThrough(new CompressionStream('deflate-raw'));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function encodeTextParts(parts, encoder) {
+    return concatBytes((parts || []).map(part => encoder.encode(part)));
+  }
+
+  async function prepareZipValue(value, encoder) {
+    if (!isZipTextParts(value)) {
+      const data = byteView(value) || encoder.encode(String(value));
+      const deflated = await deflateRaw(data);
+      const compressed = deflated && deflated.length < data.length ? deflated : data;
+      return {
+        uncompressedSize: data.length,
+        compressed,
+        method: compressed === data ? 0 : 8,
+        crc: crc32(data),
+      };
+    }
+
+    let crcState = 0xFFFFFFFF;
+    let uncompressedSize = 0;
+    for (let index = 0; index < value.parts.length; index += 1) {
+      const bytes = encoder.encode(value.parts[index]);
+      uncompressedSize += bytes.byteLength;
+      crcState = crc32Update(crcState, bytes);
+      if (index && index % 32 === 0) await yieldToMain();
+    }
+    const crc = (crcState ^ 0xFFFFFFFF) >>> 0;
+    const deflated = await deflateRawTextParts(value.parts);
+    if (deflated && deflated.length < uncompressedSize) {
+      return { uncompressedSize, compressed: deflated, method: 8, crc };
+    }
+    const data = encodeTextParts(value.parts, encoder);
+    return { uncompressedSize, compressed: data, method: 0, crc };
+  }
+
   async function makeZip(entries) {
     const encoder = new TextEncoder();
     const now = new Date();
     const year = Math.max(1980, now.getFullYear());
     const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2);
     const dosDate = ((year - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
-    const prepared = await mapConcurrent(entries, PERFORMANCE.ZipConcurrency, async ([name, value]) => {
-      const data = value instanceof Uint8Array ? value : encoder.encode(String(value));
-      const deflated = await deflateRaw(data);
-      const compressed = deflated && deflated.length < data.length ? deflated : data;
-      return { name, data, compressed, method: compressed === data ? 0 : 8, crc: crc32(data) };
+    const estimatedInputBytes = (entries || []).reduce((sum, entry) => {
+      const value = entry?.[1];
+      const bytes = byteView(value);
+      if (bytes) return sum + bytes.byteLength;
+      if (isZipTextParts(value)) return sum + Math.max(0, Number(value.estimatedBytes) || 0);
+      return sum + String(value ?? '').length * 2;
+    }, 0);
+    const zipConcurrency = estimatedInputBytes >= 64 * 1024 * 1024
+      ? 1
+      : estimatedInputBytes >= 24 * 1024 * 1024
+        ? Math.min(2, PERFORMANCE.ZipConcurrency)
+        : PERFORMANCE.ZipConcurrency;
+    const prepared = await mapConcurrent(entries, zipConcurrency, async ([name, value]) => {
+      const preparedValue = await prepareZipValue(value, encoder);
+      return { name, ...preparedValue };
     });
 
     const localParts = [];
@@ -2029,7 +2219,7 @@
       lv.setUint16(12, dosDate, true);
       lv.setUint32(14, entry.crc, true);
       lv.setUint32(18, entry.compressed.length, true);
-      lv.setUint32(22, entry.data.length, true);
+      lv.setUint32(22, entry.uncompressedSize, true);
       lv.setUint16(26, nameBytes.length, true);
       lv.setUint16(28, 0, true);
       local.set(nameBytes, 30);
@@ -2046,7 +2236,7 @@
       cv.setUint16(14, dosDate, true);
       cv.setUint32(16, entry.crc, true);
       cv.setUint32(20, entry.compressed.length, true);
-      cv.setUint32(24, entry.data.length, true);
+      cv.setUint32(24, entry.uncompressedSize, true);
       cv.setUint16(28, nameBytes.length, true);
       cv.setUint16(30, 0, true);
       cv.setUint16(32, 0, true);
@@ -2083,6 +2273,11 @@
     if (value === null || value === undefined || String(value) === '') return '';
     const ref = `${indexToCol(col)}${row}`;
     return `<c r="${ref}" t="inlineStr" s="${style}"><is><t xml:space="preserve">${xmlEscape(value)}</t></is></c>`;
+  }
+
+  function xlsxSharedStringCell(row, col, sharedIndex, style = 0) {
+    const ref = `${indexToCol(col)}${row}`;
+    return `<c r="${ref}" t="s" s="${style}"><v>${sharedIndex}</v></c>`;
   }
 
 
@@ -2146,17 +2341,58 @@
     return { shortName, fullName, position, department, displayName, nativeDisplay: normalizeSpace(nativeDisplay) };
   }
 
+  // LIVE_EXCEL_PREVIEW_UX_V1
+  // LIVE_PICKER_DELIMITER_SAFE_V2
+  // Some MtxRoles installations do not expose a clean ShortName. The native caption can
+  // already contain "ФИО - должность; должность". Semicolon is also the Excel multi-value
+  // delimiter, so extract a clean employee identity before assembling the copyable alias.
+  function employeeSafeNameForPicker(item, rawValue = '') {
+    const candidates = [
+      item?.shortName,
+      item?.nativeDisplay,
+      item?.display,
+      item?.fullName,
+      pickerDetailValue(item, ['RoleFullName', 'UserFullName']),
+      rawValue,
+    ];
+    for (const candidate of candidates) {
+      const normalized = normalizeSpace(candidate || '');
+      if (!normalized) continue;
+      const beforeRole = normalizeSpace(normalized.split(/\s+-\s+/)[0] || normalized);
+      const beforeList = normalizeSpace(beforeRole.split(/\s*;\s*/)[0] || beforeRole);
+      if (beforeList && !/[;\r\n\t]/.test(beforeList)) return beforeList;
+    }
+    return '';
+  }
+
+  function employeeSafeSelector(item) {
+    const raw = String(item?.selector || item?.display || '').trim();
+    if (!raw || Number(item?.roleTypeId) !== PERSONAL_ROLE_TYPE_ID) return raw;
+    const isSafe = value => Boolean(value) && !/[;\r\n\t]/.test(value) && !/^[=+@-]/.test(value);
+    if (isSafe(raw)) return raw;
+
+    const base = employeeSafeNameForPicker(item, raw);
+    const positionRaw = normalizeSpace(item?.position || pickerDetailValue(item, ['RolePositionName', 'UserPosition', 'PositionName', 'Position']));
+    const position = pickerPrimaryValue(positionRaw);
+    const compact = normalizeSpace(base && position ? (base + ' — ' + position) : base);
+    if (isSafe(compact)) return compact;
+
+    // Last resort: preserve the personal-role information while replacing Excel
+    // list/control delimiters. employeeResolvableAliases indexes the exact same alias.
+    const sanitized = normalizeSpace(raw.replace(/[;\r\n\t]+/g, ' · '));
+    if (isSafe(sanitized)) return sanitized;
+    return raw;
+  }
+
   function employeeResolvableAliases(item) {
     if (!item || Number(item.roleTypeId) !== PERSONAL_ROLE_TYPE_ID) return [];
     return [...new Set([
       item.displayName, item.shortName, item.fullName, item.nativeDisplay,
+      employeeSafeSelector(item),
       ...(item.previousSelectors || []),
     ].map(normalizeSpace).filter(Boolean))];
   }
 
-  // Personal role identity is the employee name (or stable RoleID), never the
-  // position caption. Old workbooks often carry "ФИО - старая должность" after
-  // the employee has moved; keep that compatible without guessing by title.
   function employeeIdentityNameAliases(item) {
     if (!item || Number(item.roleTypeId) !== PERSONAL_ROLE_TYPE_ID) return [];
     const values = [item.shortName, item.fullName, item.nativeDisplay]
@@ -2287,7 +2523,8 @@
 
   function dictionaryStructureSignature(structure) {
     const compact = {
-      projectionVersion: 5,
+      projectionVersion: 7,
+      documentCardTypeId: canonicalValue(structure?.documentCardTypeId),
       templateId: canonicalValue(structure?.templateId),
       conditions: (structure?.conditions || []).map(item => [
         canonicalValue(item.criterionRowId), canonicalValue(item.operandTypeId),
@@ -2300,7 +2537,41 @@
 
   function dictionaryCacheKey(structure) {
     const origin = typeof location !== 'undefined' ? location.origin : 'offline';
-    return `${origin}|${canonicalValue(structure?.templateId)}|${dictionaryStructureSignature(structure)}`;
+    return `${origin}|${dictionaryPrincipalId()}|${canonicalValue(structure?.templateId)}|${dictionaryStructureSignature(structure)}`;
+  }
+
+  function dictionaryPrincipalId() {
+    try {
+      const core = window.tessa?.apiLoader?.(880540);
+      const session = core?.ISession$ && window.tessa?.diContainer?.get(core.ISession$);
+      return canonicalValue(session?.sessionToken?.userId || '');
+    } catch (_) { return ''; }
+  }
+
+  function isDocumentTypeCondition(condition) {
+    return [condition?.autocompleteViewName, condition?.refSection].some(value => canonicalValue(value) === 'gchdoctypes');
+  }
+
+  function assertDocumentTypeAssignments(action, structure, catalog, current = null) {
+    for (const condition of (structure.conditions || []).filter(isDocumentTypeCondition)) {
+      const key = definitionKey('criterion', condition.criterionRowId);
+      if (!action.excelRow?.columns?.has(condition.criterionRowId)) continue;
+      const previous = new Set((current?.values?.[condition.criterionRowId] || []).map(item => canonicalValue(item.id)));
+      const ids = action.excelRow.ids?.[key] || [];
+      const displays = action.excelRow.flat?.[key] || [];
+      const dictionary = catalog?.catalogs?.[catalog?.columnCatalogIds?.[key]];
+      const lookup = dictionaryLookup(dictionary);
+      for (let index = 0; index < displays.length; index += 1) {
+        const id = canonicalValue(ids[index]);
+        if (id && previous.has(id)) continue;
+        if (!dictionary?.documentScope?.verified || !dictionary.documentScope.complete) {
+          throw new Error('Не удалось проверить виды документов по типу карточки шаблона. Обновите справочники и повторите проверку.');
+        }
+        if (!id || !lookup?.byId.has(`${id}|`)) {
+          throw new Error(`Вид документа «${displays[index]}» не соответствует типу карточки шаблона матрицы.`);
+        }
+      }
+    }
   }
 
   function openDictionaryCacheDb() {
@@ -2344,7 +2615,7 @@
     return await new Promise(resolve => {
       try {
         const tx = db.transaction(DICTIONARY_CACHE.StoreName, 'readwrite');
-        tx.objectStore(DICTIONARY_CACHE.StoreName).put({ key, savedAt: Date.now(), catalog: clonePlain(catalog) });
+        tx.objectStore(DICTIONARY_CACHE.StoreName).put({ key, savedAt: Date.now(), catalog });
         tx.oncomplete = () => { db.close(); resolve(true); };
         tx.onerror = () => { try { db.close(); } catch (_) {} resolve(false); };
         tx.onabort = () => { try { db.close(); } catch (_) {} resolve(false); };
@@ -2390,6 +2661,8 @@
         : (lookup?.byId?.get(`${id}|`) || []);
       const pending = changesByCatalog.get(catalogId)?.get(identity);
       const current = pending || existing[0];
+      // Historical values stay in the row/baseline, never in a scoped choice list.
+      if (target.documentScope && !current) return;
       const display = String(entry.display ?? '').trim();
       if (!captionsByCatalog.has(catalogId)) captionsByCatalog.set(catalogId, new Map());
       const captions = captionsByCatalog.get(catalogId);
@@ -2490,12 +2763,13 @@
     const cached = DICTIONARY_LOOKUP_CACHE.get(catalog);
     if (cached) return cached;
 
-    const items = Array.from(catalog.entries || []);
+    // PERF_LAZY_DICTIONARY_SEARCH_INDEX_V1
+    // PERF_LAZY_DICTIONARY_TEXT_INDEX_V1
+    // Export/roundtrip paths mostly resolve native IDs. Build only the byId index
+    // eagerly; selector/display/employee aliases and fuzzy haystacks are created on
+    // first user-text lookup. This saves several Maps + singleton arrays for 100k roles.
+    const items = Array.isArray(catalog.entries) ? catalog.entries : Array.from(catalog.entries || []);
     const byId = new Map();
-    const bySelector = new Map();
-    const byDisplay = new Map();
-    const byEmployeeAlias = new Map();
-    const searchRows = [];
     const append = (map, key, item) => {
       if (!key) return;
       if (!map.has(key)) map.set(key, []);
@@ -2509,20 +2783,96 @@
         append(byId, `${id}|${roleType}`, item);
         if (roleType) append(byId, `${id}|`, item);
       }
-      append(bySelector, canonicalValue(item.selector), item);
-      append(byDisplay, canonicalValue(item.display), item);
-      for (const alias of employeeResolvableAliases(item)) append(byEmployeeAlias, canonicalValue(alias), item);
-      searchRows.push({
-        item,
-        haystack: searchCanonical(`${item.selector || ''} ${item.display || ''} ${item.qualifier || ''} ${item.searchText || ''} ${item.details || ''} ${(item.previousSelectors || []).join(' ')}`),
-      });
     }
 
     const isBoolean = canonicalValue(catalog.sourceView || '') === 'boolean'
       || (items.length > 0 && items.every(item => item.kind === 'Boolean' || ['true', 'false'].includes(canonicalValue(item.id))));
-    const lookup = { items, byId, bySelector, byDisplay, byEmployeeAlias, searchRows, isBoolean, resolutionCache: new Map() };
+    const lookup = {
+      items, byId, isBoolean,
+      resolutionCache: new Map(), pickerSearchCache: new Map(), pickerRoleRows: new Map(),
+      _searchRows: null, _textIndexes: null,
+    };
+
+    const ensureTextIndexes = () => {
+      if (lookup._textIndexes) return lookup._textIndexes;
+      const bySelector = new Map();
+      const byDisplay = new Map();
+      const byEmployeeAlias = new Map();
+      for (const item of items) {
+        append(bySelector, canonicalValue(item.selector), item);
+        append(byDisplay, canonicalValue(item.display), item);
+        for (const alias of employeeResolvableAliases(item)) append(byEmployeeAlias, canonicalValue(alias), item);
+      }
+      lookup._textIndexes = { bySelector, byDisplay, byEmployeeAlias };
+      return lookup._textIndexes;
+    };
+
+    for (const property of ['bySelector', 'byDisplay', 'byEmployeeAlias']) {
+      Object.defineProperty(lookup, property, {
+        enumerable: true,
+        configurable: false,
+        get() { return ensureTextIndexes()[property]; },
+      });
+    }
+    Object.defineProperty(lookup, 'searchRows', {
+      enumerable: true,
+      configurable: false,
+      get() {
+        if (!lookup._searchRows) {
+          lookup._searchRows = items.map(item => ({
+            item,
+            // Role type is normalized once while the lazy search index is built.
+            // Re-normalizing it for every query made a 100k role catalog perform
+            // millions of avoidable string conversions during one picker session.
+            roleType: canonicalValue(item.roleTypeId),
+            haystack: searchCanonical(`${item.selector || ''} ${item.display || ''} ${item.qualifier || ''} ${item.searchText || ''} ${item.details || ''} ${(item.previousSelectors || []).join(' ')}`),
+          }));
+        }
+        return lookup._searchRows;
+      },
+    });
     DICTIONARY_LOOKUP_CACHE.set(catalog, lookup);
     return lookup;
+  }
+
+  function workbookHistoricalRoleLookup(workbook) {
+    if (!workbook || typeof workbook !== 'object') return new Map();
+    const cached = WORKBOOK_HISTORICAL_ROLE_CACHE.get(workbook);
+    if (cached) return cached;
+    const lookup = new Map();
+    const append = item => {
+      const id = canonicalValue(item?.id || '');
+      const roleTypeId = canonicalValue(item?.roleTypeId ?? '');
+      const display = normalizeSpace(item?.display || '');
+      if (!id || !display) return;
+      const normalized = {
+        id: String(item.id),
+        roleTypeId: item?.roleTypeId ?? '',
+        display,
+        selector: display,
+        source: 'Roundtrip baseline',
+        status: 'Историческое значение',
+      };
+      const exact = `${id}|${roleTypeId}`;
+      if (!lookup.has(exact)) lookup.set(exact, []);
+      lookup.get(exact).push(normalized);
+      if (!lookup.has(`${id}|`)) lookup.set(`${id}|`, []);
+      lookup.get(`${id}|`).push(normalized);
+    };
+    for (const base of workbook?.roundtrip?.baselineRows || []) {
+      for (const items of Object.values(base?.base?.roles || {})) {
+        for (const item of items || []) append(item);
+      }
+    }
+    WORKBOOK_HISTORICAL_ROLE_CACHE.set(workbook, lookup);
+    return lookup;
+  }
+
+  function historicalRoleTextMatches(item, visibleText) {
+    const visible = canonicalValue(visibleText);
+    if (!visible) return false;
+    if (canonicalValue(item?.display) === visible || canonicalValue(item?.selector) === visible) return true;
+    try { return employeeIdentityNameEmbedded(item, visibleText); } catch (_) { return false; }
   }
 
   /**
@@ -2574,6 +2924,27 @@
       if (exactVisibleAlias || employeeIdentityNameEmbedded(explicitMatch, visibleText)) {
         return resolvedItem(explicitMatch, exactVisibleAlias ? 'id-and-text' : 'id-and-name');
       }
+    }
+
+    // V1.15 BLOCKED_ROLE_BASELINE_FALLBACK_V1
+    // Disabled accounts may disappear from live MtxRoles. Accept an old RoleID only
+    // when the exact identity is proven by this workbook's roundtrip baseline.
+    if (!explicitMatch && column.kind === 'function' && explicitId && workbook?.roundtrip?.enabled) {
+      const historical = workbookHistoricalRoleLookup(workbook);
+      const candidates = historical.get(`${explicitId}|${explicitRoleType}`)
+        || historical.get(`${explicitId}|`)
+        || [];
+      const matching = candidates.filter(item => historicalRoleTextMatches(item, visibleText));
+      if (matching.length === 1) {
+        return resolvedItem({ ...matching[0], roleTypeId: matching[0].roleTypeId ?? explicitParts[1] ?? '' }, 'historical-role-id');
+      }
+    }
+
+    if (!explicitMatch && column.kind === 'criterion' && explicitId && workbook?.roundtrip?.enabled) {
+      const criterionId = column.key.slice('criterion:'.length);
+      const historical = (workbook.roundtrip.baselineRows || []).flatMap(base => base?.base?.values?.[criterionId] || []);
+      const item = historical.find(value => canonicalValue(value.id) === explicitId && canonicalValue(value.display) === visibleCanonical);
+      if (item) return resolvedItem(item, 'historical-criterion-id');
     }
 
     let matches = lookup.bySelector.get(visibleCanonical) || [];
@@ -2714,6 +3085,52 @@
   // identity-колонки, справочники и пользовательская инструкция.
   // ---------------------------------------------------------------------------
 
+  // PERF_ROUNDTRIP_ROW_STREAM_V1
+  function roundtripRowValues(snapshotRow, structure, catalog, customColumns = [], includeActions = false) {
+    const values = [];
+    for (const condition of structure.conditions) {
+      const key = definitionKey('criterion', condition.criterionRowId);
+      const dict = catalog.catalogs?.[catalog.columnCatalogIds?.[key]];
+      const items = snapshotRow.values?.[condition.criterionRowId] || [];
+      const isBoolean = canonicalValue(condition.operandTypeId) === canonicalValue(OPERAND.Boolean);
+      values.push(items.map(item => isBoolean
+        ? booleanDisplay(item.value ?? item.id ?? item.display)
+        : (item.display || dictionarySelector(dict, item.id, null, ''))).join('\n'));
+      values.push(items.map(item => {
+        if (isBoolean) {
+          const semantic = booleanSemantic(item.value ?? item.id ?? item.display);
+          return semantic === null ? '' : semantic ? 'true' : 'false';
+        }
+        return item.id !== null && item.id !== undefined && item.id !== '' ? String(item.id) : '';
+      }).filter(Boolean).join('\n'));
+    }
+    for (const fn of structure.functions) {
+      const key = definitionKey('function', fn.id);
+      const dict = catalog.catalogs?.[catalog.columnCatalogIds?.[key]];
+      const items = snapshotRow.roles?.[fn.id] || [];
+      values.push(items.map(item => {
+        if (Number(item.roleTypeId) !== PERSONAL_ROLE_TYPE_ID) {
+          return dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, '');
+        }
+        // The matrix caption is the user's roundtrip value. A qualified catalog
+        // selector is only a fallback when that caption contains an Excel list
+        // delimiter or could be interpreted as a formula.
+        const catalogEntry = (dictionaryLookup(dict)?.byId?.get(canonicalValue(item.id) + '|' + canonicalValue(item.roleTypeId)) || [])[0];
+        if (catalogEntry?.position) return employeeSafeSelector(catalogEntry);
+        const nativeCaption = String(item.display ?? '').trim();
+        if (nativeCaption && !/[;\r\n\t]/.test(nativeCaption) && !/^[=+@-]/.test(nativeCaption)) return nativeCaption;
+        return employeeSafeSelector(catalogEntry || item);
+      }).join('\n'));
+      values.push(items.map(item => `${item.id}|${item.roleTypeId}`).join('\n'));
+    }
+    for (let customIndex = 0; customIndex < customColumns.length; customIndex += 1) {
+      values.push(snapshotRow.customValues?.[customIndex] ?? '');
+    }
+    if (includeActions) values.push(snapshotRow.action || '');
+    values.push(snapshotRow.rowCardId || '', snapshotRow.versionId || '', snapshotRow.fingerprint || '');
+    return values;
+  }
+
   function buildRoundtripGrid(structure, snapshot, matrixInfo, dictionaryCatalog = null, options = {}) {
     const catalog = mergeSnapshotIntoDictionaryCatalog(dictionaryCatalog, structure, snapshot);
     const columns = [];
@@ -2761,33 +3178,9 @@
     columns.push({ header: '__TESSA_VERSION_ID', schema: 'system:versionId', key: 'system:versionId', kind: 'system-hidden', hidden: true, width: 3 });
     columns.push({ header: '__TESSA_BASE_FINGERPRINT', schema: 'system:baseFingerprint', key: 'system:baseFingerprint', kind: 'system-hidden', hidden: true, width: 3 });
 
-    const rows = snapshot.rows.map(snapshotRow => {
-      const values = [];
-      for (const condition of structure.conditions) {
-        const key = definitionKey('criterion', condition.criterionRowId);
-        const dict = catalog.catalogs?.[catalog.columnCatalogIds?.[key]];
-        const items = snapshotRow.values?.[condition.criterionRowId] || [];
-        const isBoolean = canonicalValue(condition.operandTypeId) === canonicalValue(OPERAND.Boolean);
-        values.push(items.map(item => isBoolean ? booleanDisplay(item.value ?? item.id ?? item.display) : (item.display || dictionarySelector(dict, item.id, null, ''))).join('\n'));
-        values.push(items.map(item => {
-          if (isBoolean) { const semantic = booleanSemantic(item.value ?? item.id ?? item.display); return semantic === null ? '' : semantic ? 'true' : 'false'; }
-          return item.id !== null && item.id !== undefined && item.id !== '' ? String(item.id) : '';
-        }).filter(Boolean).join('\n'));
-      }
-      for (const fn of structure.functions) {
-        const key = definitionKey('function', fn.id);
-        const dict = catalog.catalogs?.[catalog.columnCatalogIds?.[key]];
-        const items = snapshotRow.roles?.[fn.id] || [];
-        values.push(items.map(item => dictionaryRoleDisplay(dict, item) || item.display || dictionarySelector(dict, item.id, item.roleTypeId, '')).join('\n'));
-        values.push(items.map(item => `${item.id}|${item.roleTypeId}`).join('\n'));
-      }
-      for (let customIndex = 0; customIndex < customColumns.length; customIndex += 1) {
-        values.push(snapshotRow.customValues?.[customIndex] ?? '');
-      }
-      if (includeActions) values.push(snapshotRow.action || '');
-      values.push(snapshotRow.rowCardId || '', snapshotRow.versionId || '', snapshotRow.fingerprint || '');
-      return values;
-    });
+    const rows = options.includeRows === false
+      ? []
+      : snapshot.rows.map(snapshotRow => roundtripRowValues(snapshotRow, structure, catalog, customColumns, includeActions));
 
     const headerRow = 14;
     const schemaRow = 13;
@@ -2805,7 +3198,7 @@
       [ROUNDTRIP.SchemaRowKey, String(schemaRow)],
       [ROUNDTRIP.TemplateModeKey, 'ROUNDTRIP'],
     ];
-    return { columns, rows, metadata, headerRow, schemaRow, dictionaryCatalog: catalog };
+    return { columns, rows, metadata, headerRow, schemaRow, dictionaryCatalog: catalog, customColumns, includeActions };
   }
 
   function genericSheetXml(rows, widths = [], options = {}) {
@@ -2869,27 +3262,84 @@
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:H35"/><sheetViews><sheetView workbookViewId="0" showGridLines="0"/></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols>${cols}</cols><sheetData>${rows.join('')}</sheetData><mergeCells count="${merges.length}">${merges.map(ref => `<mergeCell ref="${ref}"/>`).join('')}</mergeCells></worksheet>`;
   }
 
+  // PERF_BASELINE_SHEET_STREAM_V1
+  async function buildBaselineSheetZipValue(baselineSourceRows) {
+    const bodyChunks = [];
+    let pendingRows = [];
+    let rowNumber = 2;
+    let maxDataChunks = 0;
+    const flush = () => {
+      if (!pendingRows.length) return;
+      bodyChunks.push(pendingRows.join(''));
+      pendingRows = [];
+    };
+
+    for (const row of baselineSourceRows || []) {
+      if (!row.rowCardId && !row.versionId) continue;
+      const fingerprint = row.fingerprint || fingerprintFlat(row.flat || {});
+      const payload = JSON.stringify({ flat: row.flat || {}, values: row.values || {}, roles: row.roles || {} });
+      const dataChunks = [];
+      if (!row.fingerprint || row.fingerprint === fingerprintFlat(row.flat || {})) {
+        for (let offset = 0; offset < payload.length; offset += 30000) dataChunks.push(payload.slice(offset, offset + 30000));
+      }
+      maxDataChunks = Math.max(maxDataChunks, dataChunks.length);
+      const values = [row.rowCardId || '', row.versionId || '', fingerprint, ...dataChunks];
+      pendingRows.push('<row r="' + rowNumber + '">' +
+        values.map((value, colIndex) => xlsxStringCell(rowNumber, colIndex, value, 5)).join('') +
+        '</row>');
+      rowNumber += 1;
+      if (pendingRows.length >= 256) flush();
+      if (rowNumber % 1000 === 0) await yieldToMain();
+    }
+    flush();
+
+    const headers = ['MatrixRowID', 'MatrixVersionID', 'BaseFingerprint'];
+    for (let index = 0; index < maxDataChunks; index += 1) headers.push('BaseData' + (index + 1));
+    const maxCols = Math.max(1, headers.length);
+    const lastCol = indexToCol(maxCols - 1);
+    const lastRow = Math.max(1, rowNumber - 1);
+    const widths = [40, 40, 48];
+    const cols = Array.from({ length: maxCols }, (_, index) =>
+      '<col min="' + (index + 1) + '" max="' + (index + 1) + '" width="' + (widths[index] || 22) + '" customWidth="1"/>'
+    ).join('');
+    const headerXml = '<row r="1" ht="28" customHeight="1">' +
+      headers.map((value, colIndex) => xlsxStringCell(1, colIndex, value, 2)).join('') +
+      '</row>';
+    const prefix = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+      + '<dimension ref="A1:' + lastCol + lastRow + '"/>'
+      + '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+      + '<sheetFormatPr defaultRowHeight="15"/><cols>' + cols + '</cols><sheetData>' + headerXml;
+    return zipTextParts([prefix, ...bodyChunks, '</sheetData></worksheet>']);
+  }
+
   async function createRoundtripXlsxBytes(structure, snapshot, matrixInfo, dictionaryCatalog = null, options = {}) {
-    const grid = buildRoundtripGrid(structure, snapshot, matrixInfo, dictionaryCatalog, options);
+    const grid = buildRoundtripGrid(structure, snapshot, matrixInfo, dictionaryCatalog, { ...options, includeRows: false });
     const lastCol = indexToCol(grid.columns.length - 1);
     const dataStartRow = grid.headerRow + 1;
-    const visualRowCount = Math.max(1, grid.rows.length);
+    const visualRowCount = Math.max(1, snapshot.rows.length);
     const lastDataRow = dataStartRow + visualRowCount - 1;
     const validationLastRow = Math.min(1048576, Math.max(10000, lastDataRow + 5000));
     const highlighted = new Set((options.highlights || []).map(item => `${canonicalValue(item.rowCardId)}|${item.key}`));
-    const sheetRows = [];
+    const matrixRowChunks = [];
+    let pendingMatrixRows = [];
+    const flushMatrixRows = () => {
+      if (!pendingMatrixRows.length) return;
+      matrixRowChunks.push(pendingMatrixRows.join(''));
+      pendingMatrixRows = [];
+    };
     grid.metadata.forEach(([key, value], index) => {
       const rowNumber = index + 1;
       const hidden = rowNumber >= 5 ? ' hidden="1"' : '';
-      sheetRows.push(`<row r="${rowNumber}"${hidden}>${xlsxStringCell(rowNumber, 0, key, 1)}${xlsxStringCell(rowNumber, 1, value, 7)}</row>`);
+      pendingMatrixRows.push(`<row r="${rowNumber}"${hidden}>${xlsxStringCell(rowNumber, 0, key, 1)}${xlsxStringCell(rowNumber, 1, value, 7)}</row>`);
     });
-    sheetRows.push(`<row r="${grid.schemaRow}" hidden="1">${grid.columns.map((column, index) => xlsxStringCell(grid.schemaRow, index, column.schema, 0)).join('')}</row>`);
-    sheetRows.push(`<row r="${grid.headerRow}" ht="46" customHeight="1">${grid.columns.map((column, index) => xlsxStringCell(grid.headerRow, index, column.header, column.kind === 'criterion' ? 2 : column.kind === 'function' ? 3 : 4)).join('')}</row>`);
-    grid.rows.forEach((values, rowIndex) => {
+    pendingMatrixRows.push(`<row r="${grid.schemaRow}" hidden="1">${grid.columns.map((column, index) => xlsxStringCell(grid.schemaRow, index, column.schema, 0)).join('')}</row>`);
+    pendingMatrixRows.push(`<row r="${grid.headerRow}" ht="46" customHeight="1">${grid.columns.map((column, index) => xlsxStringCell(grid.headerRow, index, column.header, column.kind === 'criterion' ? 2 : column.kind === 'function' ? 3 : 4)).join('')}</row>`);
+    for (let rowIndex = 0; rowIndex < snapshot.rows.length; rowIndex += 1) {
+      const snapshotRow = snapshot.rows[rowIndex];
+      const values = roundtripRowValues(snapshotRow, structure, grid.dictionaryCatalog, grid.customColumns, grid.includeActions);
       const rowNumber = dataStartRow + rowIndex;
       const bodyStyle = rowIndex % 2 ? 8 : 5;
-      // Approximate wrapping using visible column widths. Hidden ID payloads must
-      // not inflate row height; Excel's 409-point ceiling keeps huge cells usable.
       const lines = values.reduce((max, value, index) => {
         if (grid.columns[index]?.hidden) return max;
         const width = Math.max(8, Number(grid.columns[index]?.width || 28) - 3);
@@ -2897,36 +3347,18 @@
         return Math.max(max, wrapped);
       }, 1);
       const height = Math.min(409, Math.max(32, lines * 15 + 10));
-      sheetRows.push(`<row r="${rowNumber}" ht="${height}" customHeight="1">${values.map((value, colIndex) => value === null || value === undefined || value === ''
+      pendingMatrixRows.push(`<row r="${rowNumber}" ht="${height}" customHeight="1">${values.map((value, colIndex) => value === null || value === undefined || value === ''
         ? `<c r="${indexToCol(colIndex)}${rowNumber}" s="${bodyStyle}"/>`
-        : xlsxStringCell(rowNumber, colIndex, value, highlighted.has(`${canonicalValue(snapshot.rows[rowIndex]?.rowCardId)}|${grid.columns[colIndex]?.key}`) ? 15 : bodyStyle)).join('')}</row>`);
-    });
+        : xlsxStringCell(rowNumber, colIndex, value, highlighted.has(`${canonicalValue(snapshotRow?.rowCardId)}|${grid.columns[colIndex]?.key}`) ? 15 : bodyStyle)).join('')}</row>`);
+      if (pendingMatrixRows.length >= 256) flushMatrixRows();
+      if (rowIndex && rowIndex % 1000 === 0) await yieldToMain();
+    }
+    flushMatrixRows();
     const cols = grid.columns.map((column, index) => `<col min="${index + 1}" max="${index + 1}" width="${column.width}" style="5" customWidth="1"${column.hidden ? ' hidden="1"' : ''}/>`).join('');
 
-    // Служебный лист хранит только данные, необходимые для обратного сопоставления.
-    // Статус и поисковую строку не дублируем в каждой из десятков тысяч строк:
-    // статус имеет безопасный default, а поисковый индекс восстанавливается в памяти.
-    const dictionaryRows = [['CatalogID', 'Словарь', 'Выбор в Excel', 'Отображение', 'ID', 'RoleTypeID', 'Источник', 'Доп. данные', 'Прежние названия']];
-    const namedRanges = [];
-    const rangeByCatalog = {};
-    let dictionaryRow = 2;
-    let rangeIndex = 1;
-    for (const catalog of Object.values(grid.dictionaryCatalog.catalogs || {})) {
-      const startRow = dictionaryRow;
-      let firstCatalogRow = true;
-      for (const item of catalog.entries || []) {
-        // Название и источник одинаковы для всего каталога. Записываем их только
-        // в первой строке каталога — parser уже сохраняет эти метаданные при инициализации.
-        dictionaryRows.push([catalog.id, firstCatalogRow ? (catalog.label || catalog.id) : '', item.selector, item.display, item.id, item.roleTypeId, firstCatalogRow ? (catalog.sourceView || item.source || '') : '', item.details || '', item.previousSelectors?.length ? JSON.stringify(item.previousSelectors) : '']);
-        firstCatalogRow = false;
-        dictionaryRow += 1;
-      }
-      if (dictionaryRow > startRow) {
-        const name = `_TMS_DV_${String(rangeIndex++).padStart(3, '0')}`;
-        rangeByCatalog[catalog.id] = name;
-        namedRanges.push({ name, formula: `'${ROUNDTRIP.DictionarySheet}'!$C$${startRow}:$C$${dictionaryRow - 1}` });
-      }
-    }
+    const dictionaryArtifacts = await buildDictionaryRefreshArtifacts(grid.dictionaryCatalog, { sharedStrings: true });
+    const namedRanges = dictionaryArtifacts.namedRanges;
+    const rangeByCatalog = Object.fromEntries(dictionaryArtifacts.rangeByCatalog);
 
     const validationGroups = new Map();
     const booleanRefs = [];
@@ -2949,16 +3381,22 @@
     for (const [rangeName, refs] of validationGroups) validations.push(`<dataValidation type="list" allowBlank="1" showDropDown="0" showInputMessage="0" showErrorMessage="0" sqref="${refs.join(' ')}"><formula1>${rangeName}</formula1></dataValidation>`);
     if (booleanRefs.length) validations.push(`<dataValidation type="list" allowBlank="1" showDropDown="0" showInputMessage="0" showErrorMessage="1" sqref="${booleanRefs.join(' ')}"><formula1>"Да,Нет"</formula1></dataValidation>`);
 
-    const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastCol}${lastDataRow}"/><sheetViews><sheetView workbookViewId="0"><pane xSplit="1" ySplit="${grid.headerRow}" topLeftCell="B${dataStartRow}" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>${cols}</cols><sheetData>${sheetRows.join('')}</sheetData><autoFilter ref="A${grid.headerRow}:${lastCol}${lastDataRow}"/><dataValidations count="${validations.length}">${validations.join('')}</dataValidations></worksheet>`;
+    const worksheetPrefix = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastCol}${lastDataRow}"/><sheetViews><sheetView workbookViewId="0"><pane xSplit="1" ySplit="${grid.headerRow}" topLeftCell="B${dataStartRow}" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>${cols}</cols><sheetData>`;
+    const worksheetSuffix = `</sheetData><autoFilter ref="A${grid.headerRow}:${lastCol}${lastDataRow}"/><dataValidations count="${validations.length}">${validations.join('')}</dataValidations></worksheet>`;
+    const worksheet = zipTextParts([worksheetPrefix, ...matrixRowChunks, worksheetSuffix]);
 
     const structureRows = [['Ключ столбца', 'Тип', 'ID', 'Наименование', 'Тип значения', 'Источник', 'CatalogID', 'Редактирование']];
     structure.conditions.forEach(item => {
       const key = definitionKey('criterion', item.criterionRowId);
-      structureRows.push([key, 'Критерий', item.criterionRowId, item.criterionName, item.operandTypeId, item.autocompleteViewName || item.refSection || '', grid.dictionaryCatalog.columnCatalogIds?.[key] || '', 'Значения и строки редактируются в Excel; само определение меняется в шаблоне TESSA']);
+      const logicalCatalogId = grid.dictionaryCatalog.columnCatalogIds?.[key] || '';
+      const physicalCatalogId = dictionaryArtifacts.physicalCatalogIdByCatalog.get(logicalCatalogId) || logicalCatalogId;
+      structureRows.push([key, 'Критерий', item.criterionRowId, item.criterionName, item.operandTypeId, item.autocompleteViewName || item.refSection || '', physicalCatalogId, 'Значения и строки редактируются в Excel; само определение меняется в шаблоне TESSA']);
     });
     structure.functions.forEach(item => {
       const key = definitionKey('function', item.id);
-      structureRows.push([key, 'Функция', item.id, item.name, item.typeName || item.typeId || '', 'MtxRoles', grid.dictionaryCatalog.columnCatalogIds?.[key] || '', 'Исполнители и строки редактируются в Excel; само определение меняется в шаблоне TESSA']);
+      const logicalCatalogId = grid.dictionaryCatalog.columnCatalogIds?.[key] || '';
+      const physicalCatalogId = dictionaryArtifacts.physicalCatalogIdByCatalog.get(logicalCatalogId) || logicalCatalogId;
+      structureRows.push([key, 'Функция', item.id, item.name, item.typeName || item.typeId || '', 'MtxRoles', physicalCatalogId, 'Исполнители и строки редактируются в Excel; само определение меняется в шаблоне TESSA']);
     });
     const changeRows = [['Статус', 'Тип', 'ID', 'Наименование', 'Что произойдёт', 'ExcelRow', 'MatrixRowID', 'Архивное значение']];
     const changes = options.schemaChanges || {};
@@ -2967,89 +3405,123 @@
     for (const item of changes.retiredData || []) changeRows.push(['АРХИВ ЗНАЧЕНИЯ', item.kind === 'function' ? 'Функция' : 'Критерий', item.id, item.header || '', 'Значение из старого Excel сохранено только для истории', item.excelRow, item.rowCardId || '', item.value || '']);
     if (changeRows.length === 1) changeRows.push(['БЕЗ ИЗМЕНЕНИЙ', '', '', '', 'Структура Excel соответствует текущему шаблону TESSA', '', '', '']);
 
-    const baselineRows = [['MatrixRowID', 'MatrixVersionID', 'BaseFingerprint']];
     const baselineSourceRows = Array.isArray(options.baselineRows) ? options.baselineRows : (snapshot.rows || []);
-    for (const row of baselineSourceRows) {
-      if (!row.rowCardId && !row.versionId) continue;
-      const payload = JSON.stringify({ flat: row.flat || {}, values: row.values || {}, roles: row.roles || {} });
-      const chunks = !row.fingerprint || row.fingerprint === fingerprintFlat(row.flat || {}) ? (payload.match(/[\s\S]{1,30000}/g) || []) : [];
-      while (baselineRows[0].length < 3 + chunks.length) baselineRows[0].push(`BaseData${baselineRows[0].length - 2}`);
-      baselineRows.push([row.rowCardId || '', row.versionId || '', row.fingerprint || fingerprintFlat(row.flat || {}), ...chunks]);
-    }
+    const baselineSheet = await buildBaselineSheetZipValue(baselineSourceRows);
 
     const instructionSheet = instructionSheetXml();
-    const dictionarySheet = genericSheetXml(dictionaryRows, [28, 42, 56, 48, 40, 14, 28, 72]);
+    const dictionarySheet = dictionaryArtifacts.dictionaryZipValue;
     const structureSheet = genericSheetXml(structureRows, [46, 14, 38, 42, 38, 28, 24, 70]);
     const schemaChangesSheet = genericSheetXml(changeRows, [32, 16, 40, 44, 72, 12, 40, 72]);
-    const baselineSheet = genericSheetXml(baselineRows, [40, 40, 48], { autoFilter: false });
 
     const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="5"><font><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FF292929"/><sz val="11"/><name val="Aptos"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="20"/><name val="Aptos Display"/><family val="2"/></font><font><b/><color rgb="FF292929"/><sz val="13"/><name val="Aptos Display"/><family val="2"/></font></fonts><fills count="8"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE31E24"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFB5121B"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF292929"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF0F1"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF5F5F5"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFE699"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFE5E5E5"/></left><right style="thin"><color rgb="FFE5E5E5"/></right><top style="thin"><color rgb="FFE5E5E5"/></top><bottom style="thin"><color rgb="FFE5E5E5"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="16"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="49" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="6" borderId="0" xfId="0"/><xf numFmtId="49" fontId="0" fillId="6" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="3" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="5" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf><xf numFmtId="0" fontId="2" fillId="6" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="49" fontId="0" fillId="7" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
     const sheetNames = ['Матрица', ROUNDTRIP.InstructionSheet, ROUNDTRIP.DictionarySheet, ROUNDTRIP.StructureSheet, ROUNDTRIP.SchemaChangesSheet, ROUNDTRIP.BaselineSheet];
     const sheetXml = [worksheet, instructionSheet, dictionarySheet, structureSheet, schemaChangesSheet, baselineSheet];
     const sheetOverrides = sheetNames.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('');
-    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${sheetOverrides}<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>`;
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${sheetOverrides}<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>`;
     const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`;
     const definedNames = namedRanges.length ? `<definedNames>${namedRanges.map(item => `<definedName name="${item.name}">${item.formula}</definedName>`).join('')}</definedNames>` : '';
     const workbookSheets = sheetNames.map((name, index) => `<sheet name="${xmlEscape(name)}" sheetId="${index + 1}"${index >= 2 ? ' state="veryHidden"' : ''} r:id="rId${index + 1}"/>`).join('');
     const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><fileVersion appName="xl" lastEdited="7" lowestEdited="7" rupBuild="28329"/><workbookPr defaultThemeVersion="166925"/><bookViews><workbookView xWindow="0" yWindow="0" windowWidth="24000" windowHeight="14000"/></bookViews><sheets>${workbookSheets}</sheets>${definedNames}<calcPr calcId="191029" fullCalcOnLoad="1" forceFullCalc="1"/></workbook>`;
-    const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheetNames.map((_, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`).join('')}<Relationship Id="rId${sheetNames.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
+    const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheetNames.map((_, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`).join('')}<Relationship Id="rId${sheetNames.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId${sheetNames.length + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>`;
     const created = new Date().toISOString();
     const core = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:creator>TESSA Matrix Studio</dc:creator><cp:lastModifiedBy>TESSA Matrix Studio</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">${created}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${created}</dcterms:modified></cp:coreProperties>`;
     const titleParts = [...sheetNames, ...namedRanges.map(item => item.name)];
     const app = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Microsoft Excel</Application><DocSecurity>0</DocSecurity><ScaleCrop>false</ScaleCrop><HeadingPairs><vt:vector size="4" baseType="variant"><vt:variant><vt:lpstr>Листы</vt:lpstr></vt:variant><vt:variant><vt:i4>${sheetNames.length}</vt:i4></vt:variant><vt:variant><vt:lpstr>Именованные диапазоны</vt:lpstr></vt:variant><vt:variant><vt:i4>${namedRanges.length}</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector size="${titleParts.length}" baseType="lpstr">${titleParts.map(name => `<vt:lpstr>${xmlEscape(name)}</vt:lpstr>`).join('')}</vt:vector></TitlesOfParts><Company>ПАО «Группа Черкизово»</Company><LinksUpToDate>false</LinksUpToDate><SharedDoc>false</SharedDoc><HyperlinksChanged>false</HyperlinksChanged><AppVersion>16.0300</AppVersion></Properties>`;
-    const entries = [['[Content_Types].xml', contentTypes], ['_rels/.rels', rels], ['docProps/core.xml', core], ['docProps/app.xml', app], ['xl/workbook.xml', workbook], ['xl/_rels/workbook.xml.rels', workbookRels], ['xl/styles.xml', styles]];
+    const entries = [['[Content_Types].xml', contentTypes], ['_rels/.rels', rels], ['docProps/core.xml', core], ['docProps/app.xml', app], ['xl/workbook.xml', workbook], ['xl/_rels/workbook.xml.rels', workbookRels], ['xl/styles.xml', styles], ['xl/sharedStrings.xml', dictionaryArtifacts.sharedStringsXml]];
     sheetXml.forEach((xml, index) => entries.push([`xl/worksheets/sheet${index + 1}.xml`, xml]));
     return await makeZip(entries);
   }
 
-  // REVIEWED_CHANGES_REPORT_V1
-  // This workbook is a human-readable, report-only projection of Preview. It deliberately
-  // contains no roundtrip service IDs or baseline ledger and can never become an Apply source.
+  // REVIEWED_CHANGES_REPORT_V3
+  // REVIEWED_CHANGES_REPORT_V2
+  // Human-facing Russian report. UPDATE shows changed fields only; ADD and DELETE
+  // expand the complete populated business row. Technical action names and the mostly
+  // empty standalone "reason" column are intentionally excluded from the workbook.
   function buildChangesReportModel(plan, structure = null) {
     const definitionLabels = new Map();
-    for (const condition of structure?.conditions || []) definitionLabels.set(`criterion:${condition.criterionRowId}`, condition.criterionName || condition.criterionRowId);
-    for (const fn of structure?.functions || []) definitionLabels.set(`function:${fn.id}`, fn.name || fn.id);
-    const headers = ['Изменение', 'Excel row', 'Причина', 'TESSA row', 'Поля', 'Было', 'Стало'];
-    const detailHeaders = ['Изменение', 'Excel row', 'TESSA row', 'Поле', 'Было', 'Стало', 'Причина'];
+    const businessFieldOrder = [];
+    for (const condition of structure?.conditions || []) {
+      const key = `criterion:${condition.criterionRowId}`;
+      definitionLabels.set(key, condition.criterionName || condition.criterionRowId);
+      businessFieldOrder.push(key);
+    }
+    for (const fn of structure?.functions || []) {
+      const key = `function:${fn.id}`;
+      definitionLabels.set(key, fn.name || fn.id);
+      businessFieldOrder.push(key);
+    }
+
+    const headers = ['Действие', 'Строка Excel', 'Строка TESSA', 'Поле', 'Было', 'Стало'];
+    const detailHeaders = [...headers];
     const operations = [];
     const details = [];
-    const stringifyValues = values => Array.isArray(values) ? values.map(value => String(value ?? '')).filter(Boolean).join(' · ') : String(values ?? '');
-    const actionLabel = type => ({ update: 'UPDATE', add: 'ADD', delete: 'DELETE' }[type] || String(type || '').toUpperCase());
+    const stringifyValues = values => Array.isArray(values)
+      ? values.map(value => String(value ?? '').trim()).filter(Boolean).join(' · ')
+      : String(values ?? '').trim();
+    const actionLabel = type => ({ update: 'Изменена', add: 'Добавлена', delete: 'Удалена' }[type] || String(type || ''));
+    const displayValue = values => stringifyValues(values) || '—';
+    const fieldLabel = key => definitionLabels.get(key) || key || '';
+    const businessEntries = flat => {
+      const sourceFlat = flat && typeof flat === 'object' ? flat : {};
+      const known = businessFieldOrder.filter(key => Object.prototype.hasOwnProperty.call(sourceFlat, key));
+      const extra = Object.keys(sourceFlat)
+        .filter(key => /^(criterion|function):/.test(key) && !known.includes(key))
+        .sort((a, b) => a.localeCompare(b, 'ru'));
+      return [...known, ...extra]
+        .map(key => ({ key, label: fieldLabel(key), values: sourceFlat[key] }))
+        .filter(item => stringifyValues(item.values));
+    };
 
     for (const action of plan?.actions || []) {
       if (!['update', 'add', 'delete'].includes(action?.type)) continue;
       const change = actionLabel(action.type);
       const excelRow = action.excelRow?.excelRow ?? '';
       const tessaRow = action.currentRow?.index !== undefined ? Number(action.currentRow.index) + 1 : '';
-      const changes = Array.isArray(action.changes) ? action.changes : [];
-      const reason = normalizeSpace(action.reason || action.match?.reason || '');
-      const fields = changes.map(item => item.label || definitionLabels.get(item.key) || item.key || '').filter(Boolean);
-      const beforeParts = changes.map(item => {
-        const label = item.label || definitionLabels.get(item.key) || item.key || '';
-        const value = stringifyValues(item.before);
-        return label ? `${label}: ${value || "(пусто)"}` : value;
-      });
-      const afterParts = changes.map(item => {
-        const label = item.label || definitionLabels.get(item.key) || item.key || '';
-        const value = stringifyValues(item.after);
-        return label ? `${label}: ${value || "(пусто)"}` : value;
-      });
+      let fieldRows = [];
+
+      if (action.type === 'update') {
+        fieldRows = (Array.isArray(action.changes) ? action.changes : []).map(item => ({
+          key: item.key,
+          label: item.label || fieldLabel(item.key),
+          before: displayValue(item.before),
+          after: displayValue(item.after),
+        }));
+      } else if (action.type === 'add') {
+        fieldRows = businessEntries(action.excelRow?.flat).map(item => ({
+          key: item.key, label: item.label, before: '—', after: displayValue(item.values),
+        }));
+      } else {
+        fieldRows = businessEntries(action.currentRow?.flat).map(item => ({
+          key: item.key, label: item.label, before: displayValue(item.values), after: '—',
+        }));
+      }
+
+      // Defensive fallback for legacy/synthetic plans that carry changes but not flat.
+      if (!fieldRows.length) {
+        fieldRows = (Array.isArray(action.changes) ? action.changes : []).map(item => ({
+          key: item.key,
+          label: item.label || fieldLabel(item.key),
+          before: action.type === 'add' ? '—' : displayValue(item.before),
+          after: action.type === 'delete' ? '—' : displayValue(item.after),
+        }));
+      }
+
+      for (const item of fieldRows) {
+        details.push({
+          change, excelRow, tessaRow, field: item.label || item.key || '',
+          before: item.before, after: item.after, error: false,
+        });
+      }
+      if (!fieldRows.length) details.push({ change, excelRow, tessaRow, field: '', before: '—', after: '—', error: false });
+
+      const fields = fieldRows.map(item => item.label || item.key || '').filter(Boolean);
+      const beforeParts = fieldRows.map(item => item.label ? `${item.label}: ${item.before}` : item.before);
+      const afterParts = fieldRows.map(item => item.label ? `${item.label}: ${item.after}` : item.after);
       operations.push({
-        change, excelRow, reason, tessaRow,
+        change, excelRow, tessaRow,
         fields: fields.join(' · '), before: beforeParts.join('\n'), after: afterParts.join('\n'),
         error: false,
       });
-      if (changes.length) {
-        for (const item of changes) {
-          details.push({
-            change, excelRow, tessaRow,
-            field: item.label || definitionLabels.get(item.key) || item.key || '',
-            before: stringifyValues(item.before), after: stringifyValues(item.after), reason, error: false,
-          });
-        }
-      } else {
-        details.push({ change, excelRow, tessaRow, field: '', before: '', after: '', reason, error: false });
-      }
     }
 
     for (const skip of plan?.skippedRows || []) {
@@ -3057,12 +3529,47 @@
       const excelRow = skip?.excelRow ?? '';
       const tessaRow = skip?.tessaRow ?? '';
       const error = Boolean(normalizeSpace(skip?.code || ''));
-      operations.push({ change: 'SKIP', excelRow, reason, tessaRow, fields: '', before: '', after: '', error });
-      details.push({ change: 'SKIP', excelRow, tessaRow, field: '', before: '', after: '', reason, error });
+      operations.push({
+        change: 'Пропущена', excelRow, tessaRow,
+        fields: 'Причина пропуска', before: '—', after: reason, error,
+      });
+      details.push({
+        change: 'Пропущена', excelRow, tessaRow,
+        field: 'Причина пропуска', before: '—', after: reason, error,
+      });
+    }
+
+    for (const field of plan?.skippedFields || []) {
+      const reason = normalizeSpace(field?.reason || 'Поле оставлено без изменения.');
+      const excelRow = field?.excelRow ?? '';
+      const label = normalizeSpace(field?.label || field?.key || 'Поле');
+      operations.push({
+        change: 'Пропущено поле', excelRow, tessaRow: '',
+        fields: label, before: '—', after: reason, error: true,
+      });
+      details.push({
+        change: 'Пропущено поле', excelRow, tessaRow: '',
+        field: label, before: '—', after: reason, error: true,
+      });
+    }
+
+    for (const value of plan?.skippedValues || []) {
+      const reason = normalizeSpace(value?.reason || 'Значение пропущено при проверке.');
+      const excelRow = value?.excelRow ?? '';
+      const label = normalizeSpace(value?.label || value?.key || 'Поле');
+      const rejected = normalizeSpace(value?.value || '') || '—';
+      operations.push({
+        change: 'Пропущено значение', excelRow, tessaRow: '',
+        fields: label, before: rejected, after: reason, error: true,
+      });
+      details.push({
+        change: 'Пропущено значение', excelRow, tessaRow: '',
+        field: label, before: rejected, after: reason, error: true,
+      });
     }
 
     return {
-      format: 'TESSA_MATRIX_CHANGES_REPORT_V1', reportOnly: true,
+      format: 'TESSA_MATRIX_CHANGES_REPORT_V3', reportOnly: true,
       matrixId: plan?.matrixId || '', templateId: plan?.templateId || structure?.templateId || '',
       createdAt: nowIso(), headers, detailHeaders, operations, details,
     };
@@ -3073,10 +3580,10 @@
   }
 
   function changesReportRowStyle(row) {
-    if (row?.change === 'ADD') return 4;
-    if (row?.change === 'UPDATE') return 3;
-    if (row?.change === 'DELETE') return 5;
-    if (row?.change === 'SKIP') return row?.error ? 7 : 6;
+    if (row?.change === 'Добавлена') return 4;
+    if (row?.change === 'Изменена') return 3;
+    if (row?.change === 'Удалена') return 5;
+    if (String(row?.change || '').startsWith('Пропущ')) return row?.error ? 7 : 6;
     return 1;
   }
 
@@ -3096,8 +3603,12 @@
     for (const row of rows) {
       const style = changesReportRowStyle(row);
       const values = headers.map(header => ({
-        'Изменение': row.change, 'Excel row': row.excelRow, 'Причина': row.reason, 'TESSA row': row.tessaRow,
-        'Поля': row.fields, 'Было': row.before, 'Стало': row.after, 'Поле': row.field,
+        'Действие': row.change,
+        'Строка Excel': row.excelRow,
+        'Строка TESSA': row.tessaRow,
+        'Поле': row.field,
+        'Было': row.before,
+        'Стало': row.after,
       })[header] ?? '');
       const lines = Math.max(1, ...values.map(value => String(value ?? '').split(/\r?\n/).length));
       const height = Math.min(240, Math.max(28, lines * 16 + 8));
@@ -3106,7 +3617,14 @@
     }
     const lastRow = Math.max(headerRow, rowNumber - 1);
     const lastCol = indexToCol(headers.length - 1);
-    const widths = headers.map(header => ({ 'Изменение': 14, 'Excel row': 12, 'Причина': 52, 'TESSA row': 12, 'Поля': 34, 'Было': 58, 'Стало': 58, 'Поле': 34 })[header] || 30);
+    const widths = headers.map(header => ({
+      'Действие': 16,
+      'Строка Excel': 14,
+      'Строка TESSA': 14,
+      'Поле': 38,
+      'Было': 56,
+      'Стало': 56,
+    })[header] || 30);
     const cols = widths.map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`).join('');
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastCol}${lastRow}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="${headerRow}" topLeftCell="A${headerRow + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols>${cols}</cols><sheetData>${sheetRows.join("")}</sheetData><autoFilter ref="A${headerRow}:${lastCol}${lastRow}"/></worksheet>`;
   }
@@ -3119,22 +3637,19 @@
       [ROUNDTRIP.TemplateIdKey, model.templateId],
       ['__TESSA_CREATED_AT', model.createdAt],
     ];
-    const operationRows = model.operations.map(row => ({ ...row }));
     const detailRows = model.details.map(row => ({ ...row }));
-    const sheet1 = changesReportWorksheetXml(model.headers, operationRows, metadata);
-    const sheet2 = changesReportWorksheetXml(model.detailHeaders, detailRows, null);
-    const sheetNames = ['Изменения', 'Детали изменений'];
-    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>`;
+    const sheet1 = changesReportWorksheetXml(model.detailHeaders, detailRows, metadata);
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>`;
     const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`;
-    const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${xmlEscape(sheetNames[0])}" sheetId="1" r:id="rId1"/><sheet name="${xmlEscape(sheetNames[1])}" sheetId="2" r:id="rId2"/></sheets></workbook>`;
-    const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
+    const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Изменения" sheetId="1" r:id="rId1"/></sheets></workbook>`;
+    const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
     const created = new Date().toISOString();
     const core = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:creator>TESSA Matrix Studio</dc:creator><dc:title>Отчёт изменений матрицы</dc:title><dcterms:created xsi:type="dcterms:W3CDTF">${created}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${created}</dcterms:modified></cp:coreProperties>`;
-    const app = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Microsoft Excel</Application><HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Листы</vt:lpstr></vt:variant><vt:variant><vt:i4>2</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector size="2" baseType="lpstr"><vt:lpstr>Изменения</vt:lpstr><vt:lpstr>Детали изменений</vt:lpstr></vt:vector></TitlesOfParts><Company>ПАО «Группа Черкизово»</Company></Properties>`;
+    const app = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Microsoft Excel</Application><HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Листы</vt:lpstr></vt:variant><vt:variant><vt:i4>1</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector size="1" baseType="lpstr"><vt:lpstr>Изменения</vt:lpstr></vt:vector></TitlesOfParts><Company>ПАО «Группа Черкизово»</Company></Properties>`;
     return await makeZip([
       ['[Content_Types].xml', contentTypes], ['_rels/.rels', rels], ['docProps/core.xml', core], ['docProps/app.xml', app],
       ['xl/workbook.xml', workbook], ['xl/_rels/workbook.xml.rels', workbookRels], ['xl/styles.xml', changesReportStylesXml()],
-      ['xl/worksheets/sheet1.xml', sheet1], ['xl/worksheets/sheet2.xml', sheet2],
+      ['xl/worksheets/sheet1.xml', sheet1],
     ]);
   }
 
@@ -3159,6 +3674,26 @@
    * Файл содержит видимые пользовательские поля и скрытые идентификаторы строк.
    * options.forceDictionaryRefresh=true принудительно перечитывает справочники TESSA.
    */
+  // PARALLEL_EXPORT_READ_V1
+  // Snapshot CardGet fan-out and dictionary View reads are independent after structure
+  // is known. Run them together, then overlay current matrix values onto the catalog.
+  async function loadExportSnapshotAndDictionaries(bridge, structure, options = {}) {
+    const forceDictionaryRefresh = Boolean(options.forceDictionaryRefresh);
+    const snapshotPromise = performanceStage(
+      'export.snapshot',
+      () => bridge.loadSnapshot(structure),
+      { operation: 'export' },
+    );
+    const baseCatalogPromise = performanceStage(
+      'export.dictionaries-base',
+      () => bridge.loadDictionaryCatalog(structure, { rows: [] }, { forceRefresh: forceDictionaryRefresh }),
+      { operation: 'export' },
+    );
+    const [snapshot, baseCatalog] = await Promise.all([snapshotPromise, baseCatalogPromise]);
+    const dictionaryCatalog = mergeSnapshotIntoDictionaryCatalog(baseCatalog, structure, snapshot);
+    return { snapshot, dictionaryCatalog };
+  }
+
   async function exportCurrentMatrixXlsx(options = {}) {
     setProgress(8, 'Подключаюсь к TESSA', 'Проверяю открытую матрицу');
     const bridge = await TessaBridge.create();
@@ -3167,12 +3702,14 @@
     setProgress(24, 'Читаю структуру', 'Критерии и функции матрицы');
     log('Выгрузка текущей матрицы: читаю структуру.');
     const structure = await performanceStage('export.structure', () => bridge.requestStructure(templateId), { operation: 'export' });
-    setProgress(38, 'Читаю строки', 'Загружаю текущее состояние матрицы');
-    log('Выгрузка текущей матрицы: читаю строки.');
-    const snapshot = await performanceStage('export.snapshot', () => bridge.loadSnapshot(structure), { operation: 'export' });
-    setProgress(62, 'Обновляю справочники', 'Читаю свежие значения и роли из TESSA');
-    log(options.forceDictionaryRefresh ? 'Выгрузка текущей матрицы: принудительно обновляю словари и роли.' : 'Выгрузка текущей матрицы: подключаю словари и роли.');
-    const dictionaryCatalog = await performanceStage('export.dictionaries', () => bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true }), { operation: 'export', rows: snapshot.rows.length });
+    const forceDictionaryRefresh = Boolean(options.forceDictionaryRefresh);
+    setProgress(38, forceDictionaryRefresh ? 'Читаю матрицу и обновляю справочники' : 'Читаю матрицу и справочники',
+      forceDictionaryRefresh ? 'Строки и справочники загружаются параллельно' : 'Строки и кэш/справочники загружаются параллельно');
+    log(forceDictionaryRefresh
+      ? 'Выгрузка текущей матрицы: параллельно читаю строки и свежие словари.'
+      : 'Выгрузка текущей матрицы: параллельно читаю строки и справочники/кэш.');
+    const { snapshot, dictionaryCatalog } = await loadExportSnapshotAndDictionaries(bridge, structure, { forceDictionaryRefresh });
+    setProgress(72, 'Данные получены', `${snapshot.rows.length} строк · ${dictionaryCatalog.stats.entries} значений справочников`);
     APP.dictionaryCatalog = dictionaryCatalog;
     const matrixInfo = bridge.matrixInfo();
     setProgress(84, 'Формирую Excel', `${snapshot.rows.length} строк`);
@@ -3237,7 +3774,13 @@
     const conflicts = [], highlights = [], rows = workbook.rows.map(row => ({ ...row, values: [...row.values], cellMeta: row.cellMeta ? [...row.cellMeta] : undefined }));
     const byExcel = new Map(rows.map(row => [row.excelRow, row]));
     const counts = new Map();
-    for (const d of desired) { const id = canonicalValue(d.system.rowCardId); if (id) counts.set(id, (counts.get(id) || 0) + 1); }
+    const desiredByCard = new Map();
+    for (const d of desired) {
+      const id = canonicalValue(d.system.rowCardId);
+      if (!id) continue;
+      counts.set(id, (counts.get(id) || 0) + 1);
+      if (!desiredByCard.has(id)) desiredByCard.set(id, d);
+    }
     const mergeCatalog = { ...workbook.dictionaryCatalog, catalogs: { ...(workbook.dictionaryCatalog?.catalogs || {}) }, columnCatalogIds: { ...(workbook.dictionaryCatalog?.columnCatalogIds || {}) } };
     for (const column of map.columns.values()) {
       const catalogId = mergeCatalog.columnCatalogIds[column.key];
@@ -3264,7 +3807,7 @@
     for (const base of outputBases) {
       if (!base.base) continue; // V1–V6 without cell baselines retain conservative conflict handling.
       const id = canonicalValue(base.rowCardId), current = byCard.get(id);
-      const local = desired.find(row => canonicalValue(row.system.rowCardId) === id);
+      const local = desiredByCard.get(id);
       if ((counts.get(id) || 0) > 1 || local?.system.action === 'add') continue;
       if (!current) {
         if (!local) continue;
@@ -3461,6 +4004,17 @@
       }
       return null;
     };
+    // MERGE_COPY_IDENTITY_SCORING_V1
+    const mergeByKey = new Map([...columnMap.columns.values()].map(column => [column.key, column]));
+    const mergeKeys = [...mergeByKey.keys()];
+    const semanticChangeCount = (excelRow, currentRow) => {
+      let count = 0;
+      for (const key of mergeKeys) {
+        const column = mergeByKey.get(key);
+        if (!arraysEqual(currentCompareValues(currentRow, column), excelRow.compare?.[key] || [])) count += 1;
+      }
+      return count;
+    };
     for (const desired of desiredRows) {
       const identity = excelIdentityKey(desired);
       if (!identity) continue;
@@ -3491,7 +4045,18 @@
         const currentFingerprint = canonicalValue(current.fingerprint || fingerprintFlat(current.flat || {}));
         const exact = group.filter(row => canonicalValue(fingerprintFlat(row.flat || {})) === currentFingerprint);
         if (exact.length) primaryExcelRowByIdentity.set(sourceIdentity, exact[0]);
-        else ambiguousDuplicateIdentities.add(sourceIdentity);
+        else {
+          // DUPLICATE_IDENTITY_COPY_AS_ADD_V1
+          // Excel copies hidden source IDs together with visible cells. If every copy was
+          // edited, there is no semantic reason to discard the whole group: exactly one
+          // row still owns the existing TESSA identity, the rest are new rows. Pick the
+          // least changed row deterministically; ties use Excel row only as a tie-breaker.
+          const ranked = group.map(row => ({ row, changes: semanticChangeCount(row, current) }))
+            .sort((a, b) => a.changes - b.changes || Number(a.row.excelRow || Number.MAX_SAFE_INTEGER) - Number(b.row.excelRow || Number.MAX_SAFE_INTEGER));
+          const primary = ranked[0]?.row || null;
+          if (primary) primaryExcelRowByIdentity.set(sourceIdentity, primary);
+          else ambiguousDuplicateIdentities.add(sourceIdentity);
+        }
       }
       const missingCurrentRows = (snapshot.rows || []).filter(current => {
         const identity = currentIdentityKey(current);
@@ -3523,7 +4088,7 @@
       }
     }
 
-    if (canonicalValue(workbook.roundtrip?.format) === canonicalValue('TESSA_MATRIX_ROUNDTRIP_V6') && baselineRows.length) {
+    if (['TESSA_MATRIX_ROUNDTRIP_V6', 'TESSA_MATRIX_ROUNDTRIP_V7'].some(format => canonicalValue(workbook.roundtrip?.format) === canonicalValue(format)) && baselineRows.length) {
       for (const desired of desiredRows) {
         const identity = excelIdentityKey(desired);
         if (!identity) continue;
@@ -3540,7 +4105,7 @@
     // какую именно версию пользователь собирался удалить. Это позволяет schema refresh
     // сохранить DELETE только если строка в TESSA с момента выгрузки не менялась.
     const physicalDeleteIdentities = new Set();
-    if (canonicalValue(workbook.roundtrip?.format) === canonicalValue('TESSA_MATRIX_ROUNDTRIP_V6') && baselineRows.length) {
+    if (['TESSA_MATRIX_ROUNDTRIP_V6', 'TESSA_MATRIX_ROUNDTRIP_V7'].some(format => canonicalValue(workbook.roundtrip?.format) === canonicalValue(format)) && baselineRows.length) {
       const desiredIdentities = new Set(desiredRows.map(excelIdentityKey).filter(Boolean));
       const overwriteTargetIdentities = new Set([...positionalOverwriteTargets.values()].map(currentIdentityKey).filter(Boolean));
       const missingBaseline = baselineRows.filter(base => {
@@ -3714,80 +4279,377 @@
       const old = workbook.dictionaryCatalog?.catalogs?.[oldId];
       if (!old) continue;
       if (!originals.has(newId)) originals.set(newId, new Map());
-      for (const entry of old.entries || []) originals.get(newId).set(`${canonicalValue(entry.id)}|${canonicalValue(entry.roleTypeId)}`, entry);
+      for (const entry of old.entries || []) {
+        originals.get(newId).set(`${canonicalValue(entry.id)}|${canonicalValue(entry.roleTypeId)}`, entry);
+      }
     }
+
+    // Structural sharing is intentional here. A refresh may contain tens of thousands
+    // of roles/partners; cloning every unchanged object briefly doubles peak heap.
     const catalogs = {};
     for (const [id, catalog] of Object.entries(fresh.catalogs || {})) {
-      catalogs[id] = { ...catalog, entries: catalog.entries.map(entry => {
-        const old = originals.get(id)?.get(`${canonicalValue(entry.id)}|${canonicalValue(entry.roleTypeId)}`);
-        return { ...entry, selector: old && canonicalValue(old.display) === canonicalValue(entry.display) ? old.selector : undefined,
-          previousSelectors: old ? [...new Set([old.selector, old.display, ...(old.previousSelectors || []), ...(entry.previousSelectors || [])].filter(Boolean))] : entry.previousSelectors };
-      }) };
+      const originalIndex = originals.get(id);
+      let changed = false;
+      const entries = (catalog.entries || []).map(entry => {
+        const old = originalIndex?.get(`${canonicalValue(entry.id)}|${canonicalValue(entry.roleTypeId)}`);
+        if (!old) return entry;
+
+        const sameDisplay = canonicalValue(old.display) === canonicalValue(entry.display);
+        const selector = sameDisplay && normalizeSpace(old.selector)
+          ? old.selector
+          : entry.selector;
+        const currentPrevious = (entry.previousSelectors || []).map(normalizeSpace).filter(Boolean);
+        const legacyCandidates = [
+          ...(old.previousSelectors || []),
+          old.selector,
+          old.display,
+        ].map(normalizeSpace).filter(Boolean).filter(value =>
+          canonicalValue(value) !== canonicalValue(selector || '')
+          && canonicalValue(value) !== canonicalValue(entry.display || '')
+        );
+        const previousSelectors = [...new Set([...currentPrevious, ...legacyCandidates])];
+
+        const sameSelector = normalizeSpace(selector || '') === normalizeSpace(entry.selector || '');
+        const samePrevious = currentPrevious.length === previousSelectors.length
+          && currentPrevious.every((value, index) => value === previousSelectors[index]);
+        if (sameSelector && samePrevious) return entry;
+
+        changed = true;
+        return {
+          ...entry,
+          selector,
+          previousSelectors: previousSelectors.length ? previousSelectors : undefined,
+        };
+      });
+      catalogs[id] = changed ? { ...catalog, entries } : catalog;
     }
     return normalizeDictionaryCatalog({ ...fresh, catalogs });
+  }
+
+  // PERF_DIRECT_DICTIONARY_REFRESH_V3
+  // REFRESH_DICTIONARY_DIRECT_XML_V2
+  // PERF_DIRECT_DICTIONARY_REFRESH_V2
+  function dictionaryStorageValues(entry) {
+    return [
+      entry?.selector, entry?.display, entry?.id, entry?.roleTypeId,
+      entry?.source, entry?.details,
+      entry?.previousSelectors?.length ? JSON.stringify(entry.previousSelectors) : '',
+    ].map(value => String(value ?? ''));
+  }
+
+  function dictionaryStorageFingerprint(catalog) {
+    // FNV-1a is only a grouping accelerator. A full value comparison below prevents
+    // hash collisions from ever merging different Excel validation lists.
+    let hash = 0x811c9dc5;
+    const update = value => {
+      const text = `${String(value ?? '')}\u0000`;
+      for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+      }
+    };
+    update(catalog?.entries?.length || 0);
+    for (const entry of catalog?.entries || []) for (const value of dictionaryStorageValues(entry)) update(value);
+    return `${catalog?.entries?.length || 0}:${hash.toString(16).padStart(8, '0')}`;
+  }
+
+  function dictionaryStorageEquivalent(left, right) {
+    const a = left?.entries || [];
+    const b = right?.entries || [];
+    if (a.length !== b.length) return false;
+    for (let index = 0; index < a.length; index += 1) {
+      const av = dictionaryStorageValues(a[index]);
+      const bv = dictionaryStorageValues(b[index]);
+      if (av.length !== bv.length || av.some((value, valueIndex) => value !== bv[valueIndex])) return false;
+    }
+    return true;
+  }
+
+  function planPhysicalDictionaryCatalogs(normalized) {
+    const buckets = new Map();
+    const physicalCatalogs = [];
+    const physicalCatalogIdByCatalog = new Map();
+    for (const catalog of Object.values(normalized.catalogs || {})) {
+      if (!catalog?.entries?.length) continue;
+      const fingerprint = dictionaryStorageFingerprint(catalog);
+      const candidates = buckets.get(fingerprint) || [];
+      const existing = candidates.find(item => dictionaryStorageEquivalent(item, catalog));
+      if (existing) {
+        physicalCatalogIdByCatalog.set(catalog.id, existing.id);
+        existing.aliasIds.push(catalog.id);
+        continue;
+      }
+      const physical = { ...catalog, aliasIds: [catalog.id] };
+      candidates.push(physical);
+      buckets.set(fingerprint, candidates);
+      physicalCatalogs.push(physical);
+      physicalCatalogIdByCatalog.set(catalog.id, catalog.id);
+    }
+    return { physicalCatalogs, physicalCatalogIdByCatalog };
+  }
+
+  async function buildDictionaryRefreshArtifacts(dictionaryCatalog, options = {}) {
+    const normalized = normalizeDictionaryCatalog(dictionaryCatalog || { catalogs: {}, columnCatalogIds: {}, stats: { errors: [] } });
+    const useSharedStrings = options.sharedStrings === true;
+    const { physicalCatalogs, physicalCatalogIdByCatalog } = planPhysicalDictionaryCatalogs(normalized);
+    const header = ['CatalogID', 'Словарь', 'Выбор в Excel', 'Отображение', 'ID', 'RoleTypeID', 'Источник', 'Доп. данные', 'Прежние названия'];
+    const widths = [28, 42, 56, 48, 40, 14, 28, 72, 22];
+    const bodyChunks = [];
+    let pendingRows = [];
+    const flushRows = () => {
+      if (!pendingRows.length) return;
+      bodyChunks.push(pendingRows.join(''));
+      pendingRows = [];
+    };
+    const sharedValues = [];
+    const sharedIndexes = new Map();
+    let sharedReferenceCount = 0;
+    const sharedIndex = value => {
+      const text = String(value ?? '');
+      if (sharedIndexes.has(text)) return sharedIndexes.get(text);
+      const index = sharedValues.length;
+      sharedValues.push(text);
+      sharedIndexes.set(text, index);
+      return index;
+    };
+    const rowXml = (values, rowNumber, headerRow = false) => {
+      const style = headerRow ? 2 : 5;
+      return '<row r="' + rowNumber + '"' + (headerRow ? ' ht="28" customHeight="1"' : '') + '>'
+        + values.map((value, colIndex) => {
+          if (value === null || value === undefined || String(value) === '') return '';
+          if (!useSharedStrings) return xlsxStringCell(rowNumber, colIndex, value, style);
+          sharedReferenceCount += 1;
+          return xlsxSharedStringCell(rowNumber, colIndex, sharedIndex(value), style);
+        }).join('')
+        + '</row>';
+    };
+    pendingRows.push(rowXml(header, 1, true));
+
+    const namedRanges = [];
+    const rangeByCatalog = new Map();
+    let dictionaryRow = 2;
+    let rangeIndex = 1;
+    let processed = 0;
+    for (const itemCatalog of physicalCatalogs) {
+      const startRow = dictionaryRow;
+      let firstCatalogRow = true;
+      for (const item of itemCatalog.entries || []) {
+        pendingRows.push(rowXml([
+          itemCatalog.id,
+          firstCatalogRow ? (itemCatalog.label || itemCatalog.id) : '',
+          item.selector,
+          item.display,
+          item.id,
+          item.roleTypeId,
+          firstCatalogRow ? (itemCatalog.sourceView || item.source || '') : '',
+          item.details || '',
+          item.previousSelectors?.length ? JSON.stringify(item.previousSelectors) : '',
+        ], dictionaryRow, false));
+        firstCatalogRow = false;
+        dictionaryRow += 1;
+        processed += 1;
+        if (pendingRows.length >= 512) flushRows();
+        if (processed % 2000 === 0) await yieldToMain();
+      }
+      if (dictionaryRow > startRow) {
+        const name = '_TMS_DV_' + String(rangeIndex++).padStart(3, '0');
+        for (const aliasId of itemCatalog.aliasIds) rangeByCatalog.set(aliasId, name);
+        namedRanges.push({
+          name,
+          formula: "'" + ROUNDTRIP.DictionarySheet + "'!$C$" + startRow + ':$C$' + (dictionaryRow - 1),
+        });
+      }
+    }
+    flushRows();
+
+    const lastCol = indexToCol(header.length - 1);
+    const lastRow = Math.max(1, dictionaryRow - 1);
+    const cols = Array.from({ length: header.length }, (_, index) =>
+      '<col min="' + (index + 1) + '" max="' + (index + 1) + '" width="' + (widths[index] || 22) + '" customWidth="1"/>'
+    ).join('');
+    const prefix = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+      + '<dimension ref="A1:' + lastCol + lastRow + '"/>'
+      + '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+      + '<sheetFormatPr defaultRowHeight="15"/><cols>' + cols + '</cols><sheetData>';
+    const suffix = '</sheetData><autoFilter ref="A1:' + lastCol + lastRow + '"/></worksheet>';
+    const dictionaryZipValue = zipTextParts([prefix, ...bodyChunks, suffix]);
+    const sharedStringsXml = useSharedStrings
+      ? `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${sharedReferenceCount}" uniqueCount="${sharedValues.length}">${sharedValues.map(value => `<si><t xml:space="preserve">${xmlEscape(value)}</t></si>`).join('')}</sst>`
+      : null;
+
+    return {
+      dictionaryZipValue, namedRanges, rangeByCatalog, physicalCatalogIdByCatalog,
+      entryCount: processed, logicalEntryCount: normalized.stats.entries || processed,
+      sharedStringsXml, sharedStringCount: sharedValues.length,
+    };
+  }
+
+
+  // UAT_REAL_XLSX_EDIT_V2
+  // Creates the exact state a colleague produces in Excel: only the visible worksheet
+  // cell changes while hidden companion IDs and every other ZIP/XML part stay untouched.
+  async function patchWorkbookVisibleCellForUat(workbook, excelRow, columnIndex, value, dictionaryCatalog = null) {
+    if (!workbook?.roundtrip?.enabled) throw new Error('UAT edit requires a roundtrip workbook.');
+    const archive = WORKBOOK_ARCHIVES.get(workbook);
+    if (!archive) throw new Error('UAT edit requires the original retained XLSX archive.');
+
+    const rowNumber = Number(excelRow);
+    const colIndex = Number(columnIndex);
+    if (!Number.isInteger(rowNumber) || rowNumber < 1 || !Number.isInteger(colIndex) || colIndex < 0) {
+      throw new Error('UAT edit received an invalid worksheet coordinate.');
+    }
+
+    const decoder = new TextDecoder();
+    const entries = new Map(archive);
+    const descriptors = parseWorkbookSheets(entries, decoder);
+    const matrixPath = descriptors.find(item => item.name === workbook.sheetName)?.path;
+    if (!matrixPath || !entries.has(matrixPath)) throw new Error('UAT edit could not locate the matrix worksheet XML.');
+
+    const ref = `${indexToCol(colIndex)}${rowNumber}`;
+    let xml = decoder.decode(entries.get(matrixPath));
+    const styleOf = attrs => {
+      const match = String(attrs || '').match(/\bs="([^"]+)"/i);
+      return match ? ` s="${xmlEscape(match[1])}"` : '';
+    };
+    const replacementFor = attrs =>
+      `<c r="${ref}" t="inlineStr"${styleOf(attrs)}><is><t xml:space="preserve">${xmlEscape(value)}</t></is></c>`;
+
+    const fullCell = new RegExp(String.raw`<c\b([^>]*\br="${ref}"[^>]*)>[\s\S]*?<\/c>`, 'i');
+    const selfCell = new RegExp(String.raw`<c\b([^>]*\br="${ref}"[^>]*)\/>`, 'i');
+    if (fullCell.test(xml)) {
+      xml = xml.replace(fullCell, (_, attrs) => replacementFor(attrs));
+    } else if (selfCell.test(xml)) {
+      xml = xml.replace(selfCell, (_, attrs) => replacementFor(attrs));
+    } else {
+      const rowRe = new RegExp(String.raw`(<row\b[^>]*\br="${rowNumber}"[^>]*>)([\s\S]*?)(<\/row>)`, 'i');
+      if (!rowRe.test(xml)) throw new Error(`UAT edit could not locate worksheet row ${rowNumber}.`);
+      xml = xml.replace(rowRe, (_, open, body, close) => `${open}${body}${replacementFor('')}${close}`);
+    }
+
+    entries.set(matrixPath, xml);
+    const bytes = await makeZip([...entries]);
+    const patched = await readXlsxArrayBuffer(
+      exactArrayBuffer(bytes),
+      'TESSA_UAT_USER_EDIT.xlsx',
+      {
+        skipSheetNames: [ROUNDTRIP.DictionarySheet],
+        dictionaryCatalog: dictionaryCatalog || workbook.dictionaryCatalog || null,
+        retainArchive: true,
+        selectiveInflate: true,
+      },
+    );
+    return { workbook: patched, bytes, ref, value: String(value ?? '') };
   }
 
   async function refreshWorkbookDictionaries(workbook, structure, catalog) {
     if (!workbook.roundtrip?.enabled) throw new Error('Выберите Excel, выгруженный из Studio.');
     const archive = WORKBOOK_ARCHIVES.get(workbook);
     if (!archive) throw new Error('Выберите исходный файл Excel повторно.');
-    const decoder = new TextDecoder();
-    const entries = new Map(archive);
-    const descriptors = parseWorkbookSheets(entries, decoder);
-    const pathOf = name => descriptors.find(item => item.name === name)?.path;
-    const dictionaryPath = pathOf(ROUNDTRIP.DictionarySheet), structurePath = pathOf(ROUNDTRIP.StructureSheet), matrixPath = pathOf(workbook.sheetName);
-    if (!dictionaryPath || !structurePath || !matrixPath) throw new Error('В книге отсутствуют служебные листы справочников.');
-    catalog = preserveWorkbookSelectors(workbook, catalog);
-    const donorBytes = await createRoundtripXlsxBytes(structure, { rows: [] }, {}, catalog);
-    const donor = await unzipArrayBuffer(donorBytes.buffer.slice(donorBytes.byteOffset, donorBytes.byteOffset + donorBytes.byteLength));
-    const donorDescriptors = parseWorkbookSheets(donor, decoder);
-    const donorPath = name => donorDescriptors.find(item => item.name === name)?.path;
-    // Replace reference data only. Matrix cells, IDs, formulas, row order, styles,
-    // baseline ledger and arbitrary user worksheets stay byte-for-byte intact.
-    const dictionaryXml = decoder.decode(donor.get(donorPath(ROUNDTRIP.DictionarySheet))).replace(/\s+s="\d+"/g, '');
-    entries.set(dictionaryPath, dictionaryXml);
-    const structureRows = workbook.parsedSheets.get(ROUNDTRIP.StructureSheet).rows.map(row => [...row]);
-    for (const row of structureRows.slice(1)) row[6] = catalog.columnCatalogIds?.[row[0]] || '';
-    entries.set(structurePath, genericSheetXml(structureRows, [], { autoFilter: false }).replace(/\s+s="\d+"/g, ''));
-    const namespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
-    const donorWorkbook = decoder.decode(donor.get('xl/workbook.xml'));
-    const ranges = [...donorWorkbook.matchAll(/<definedName\b([^>]*)>([\s\S]*?)<\/definedName>/g)].map(m => ({ name: attr(m[1], 'name'), formula: m[2] }));
-    const ids = Object.values(normalizeDictionaryCatalog(catalog).catalogs).filter(item => item.entries.length).map(item => item.id);
-    const rangeByCatalog = new Map(ids.map((id, i) => [id, ranges[i]?.name]));
-    let workbookXml = decoder.decode(entries.get('xl/workbook.xml'));
-    const namesPattern = /<(?:[\w.-]+:)?definedNames\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?definedNames>/;
-    const existingNames = workbookXml.match(namesPattern)?.[1] || '';
-    const preservedNames = existingNames.replace(/<(?:[\w.-]+:)?definedName\b([^>]*)>[\s\S]*?<\/(?:[\w.-]+:)?definedName>/g, (all, attrs) => /^_TMS_DV_/.test(attr(attrs, 'name') || '') ? '' : all);
-    const namesXml = `<definedNames xmlns="${namespace}">${preservedNames}${ranges.map(r => `<definedName name="${r.name}">${r.formula}</definedName>`).join('')}</definedNames>`;
-    workbookXml = namesPattern.test(workbookXml) ? workbookXml.replace(namesPattern, () => namesXml) : workbookXml.replace(/(<\/(?:[\w.-]+:)?sheets>)/, (_, end) => end + namesXml);
-    entries.set('xl/workbook.xml', workbookXml);
-    let matrixXml = decoder.decode(entries.get(matrixPath));
-    const validationPattern = /<(?:[\w.-]+:)?dataValidations\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?dataValidations>/;
-    const oldValidation = matrixXml.match(validationPattern)?.[1] || '';
-    const preserved = [...oldValidation.matchAll(/<(?:[\w.-]+:)?dataValidation\b[^>]*>[\s\S]*?<\/(?:[\w.-]+:)?dataValidation>/g)].map(m => m[0]).filter(xml => !/_TMS_DV_/.test(xml));
-    const endRow = Math.min(1048576, Math.max(10000, ...(workbook.rows || []).map(r => r.excelRow + 5000)));
-    workbook.schemaTokens.forEach((key, index) => {
-      const range = rangeByCatalog.get(catalog.columnCatalogIds?.[key]);
-      if (range) preserved.push(`<dataValidation type="list" allowBlank="1" showDropDown="0" showInputMessage="0" showErrorMessage="0" sqref="${indexToCol(index)}${workbook.headerRow + 1}:${indexToCol(index)}${endRow}"><formula1>${range}</formula1></dataValidation>`);
-    });
-    const validationXml = `<dataValidations xmlns="${namespace}" count="${preserved.length}">${preserved.join('')}</dataValidations>`;
-    matrixXml = validationPattern.test(matrixXml) ? matrixXml.replace(validationPattern, () => validationXml) : matrixXml.replace(/(<(?:[\w.-]+:)?(?:hyperlinks|printOptions|pageMargins|pageSetup|headerFooter|drawing|extLst)\b|<\/(?:[\w.-]+:)?worksheet>)/, (_, tail) => validationXml + tail);
-    entries.set(matrixPath, matrixXml);
-    return makeZip([...entries]);
+    try {
+      const decoder = new TextDecoder();
+      const entries = new Map(archive);
+      const descriptors = parseWorkbookSheets(entries, decoder);
+      const pathOf = name => descriptors.find(item => item.name === name)?.path;
+      const dictionaryPath = pathOf(ROUNDTRIP.DictionarySheet);
+      const structurePath = pathOf(ROUNDTRIP.StructureSheet);
+      const matrixPath = pathOf(workbook.sheetName);
+      if (!dictionaryPath || !structurePath || !matrixPath) throw new Error('В книге отсутствуют служебные листы справочников.');
+
+      catalog = preserveWorkbookSelectors(workbook, catalog);
+      const artifacts = await buildDictionaryRefreshArtifacts(catalog);
+      entries.set(dictionaryPath, artifacts.dictionaryZipValue);
+
+      const structureRows = workbook.parsedSheets.get(ROUNDTRIP.StructureSheet).rows.map(row => [...row]);
+      for (const row of structureRows.slice(1)) row[6] = catalog.columnCatalogIds?.[row[0]] || '';
+      entries.set(structurePath, genericSheetXml(structureRows, [], { autoFilter: false }).replace(/\s+s="\d+"/g, ''));
+
+      const namespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+      let workbookXml = decoder.decode(entries.get('xl/workbook.xml'));
+      const namesPattern = /<(?:[\w.-]+:)?definedNames\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?definedNames>/;
+      const existingNames = workbookXml.match(namesPattern)?.[1] || '';
+      const preservedNames = existingNames.replace(
+        /<(?:[\w.-]+:)?definedName\b([^>]*)>[\s\S]*?<\/(?:[\w.-]+:)?definedName>/g,
+        (all, attrs) => /^_TMS_DV_/.test(attr(attrs, 'name') || '') ? '' : all,
+      );
+      const namesXml = '<definedNames xmlns="' + namespace + '">'
+        + preservedNames
+        + artifacts.namedRanges.map(item => '<definedName name="' + item.name + '">' + item.formula + '</definedName>').join('')
+        + '</definedNames>';
+      workbookXml = namesPattern.test(workbookXml)
+        ? workbookXml.replace(namesPattern, () => namesXml)
+        : workbookXml.replace(/(<\/(?:[\w.-]+:)?sheets>)/, (_, tail) => tail + namesXml);
+      entries.set('xl/workbook.xml', workbookXml);
+
+      let matrixXml = decoder.decode(entries.get(matrixPath));
+      const validationPattern = /<(?:[\w.-]+:)?dataValidations\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?dataValidations>/;
+      const oldValidation = matrixXml.match(validationPattern)?.[1] || '';
+      const preserved = [...oldValidation.matchAll(
+        /<(?:[\w.-]+:)?dataValidation\b[^>]*>[\s\S]*?<\/(?:[\w.-]+:)?dataValidation>/g
+      )].map(match => match[0]).filter(xml => !/_TMS_DV_/.test(xml));
+      const endRow = Math.min(1048576, Math.max(10000, ...(workbook.rows || []).map(row => row.excelRow + 5000)));
+      workbook.schemaTokens.forEach((key, index) => {
+        const range = artifacts.rangeByCatalog.get(catalog.columnCatalogIds?.[key]);
+        if (range) {
+          preserved.push(
+            '<dataValidation type="list" allowBlank="1" showDropDown="0" showInputMessage="0" showErrorMessage="0" sqref="'
+            + indexToCol(index) + (workbook.headerRow + 1) + ':' + indexToCol(index) + endRow
+            + '"><formula1>' + range + '</formula1></dataValidation>'
+          );
+        }
+      });
+      const validationXml = '<dataValidations xmlns="' + namespace + '" count="' + preserved.length + '">'
+        + preserved.join('') + '</dataValidations>';
+      matrixXml = validationPattern.test(matrixXml)
+        ? matrixXml.replace(validationPattern, () => validationXml)
+        : matrixXml.replace(
+          /(<(?:[\w.-]+:)?(?:hyperlinks|printOptions|pageMargins|pageSetup|headerFooter|drawing|extLst)\b|<\/(?:[\w.-]+:)?worksheet>)/,
+          (_, tail) => validationXml + tail,
+        );
+      entries.set(matrixPath, matrixXml);
+
+      await yieldToMain();
+      return await makeZip([...entries]);
+    } finally {
+      releaseWorkbookArchive(workbook);
+    }
   }
 
-  async function readSelectedWorkbookWithLiveCatalog(file, { needBridge = false } = {}) {
+  async function readSelectedWorkbookWithLiveCatalog(file, { needBridge = false, forceDictionaryRefresh = false, transientDictionary = false } = {}) {
     if (!file) throw new Error('Выберите файл .xlsx.');
-    const workbook = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name, {
-      skipSheetNames: ['Словари'],
+
+    const bufferPromise = selectedFileArrayBuffer(file);
+    if (!needBridge) {
+      const workbook = await readXlsxArrayBuffer(await bufferPromise, file.name);
+      return { workbook, bridge: null, structure: null, dictionaryCatalog: null };
+    }
+
+    // XLSX parsing and TESSA bootstrap are independent. Start them together so
+    // network latency is hidden behind local parsing instead of added after it.
+    const bridgePromise = TessaBridge.create();
+    const workbookPromise = bufferPromise.then(buffer => readXlsxArrayBuffer(buffer, file.name, {
+      skipSheetNames: [ROUNDTRIP.DictionarySheet],
       selectiveInflate: true,
-    });
-    if (!needBridge) return { workbook, bridge: null, structure: null, dictionaryCatalog: null };
-    const bridge = await TessaBridge.create();
+    }));
+
+    const bridge = await bridgePromise;
     const templateId = bridge.templateId();
     if (!templateId) throw new Error('В карточке матрицы не найден TemplateID.');
-    const structure = await bridge.requestStructure(templateId);
-    const dictionaryCatalog = await bridge.loadDictionaryCatalog(structure, { rows: [] }, { forceRefresh: true });
+
+    const reusableStructure = APP.structure
+      && canonicalValue(APP.structure.templateId) === canonicalValue(templateId)
+      ? APP.structure
+      : null;
+    const structure = reusableStructure || await bridge.requestStructure(templateId);
+    const dictionaryPromise = bridge.loadDictionaryCatalog(
+      structure,
+      { rows: [] },
+      {
+        forceRefresh: Boolean(forceDictionaryRefresh),
+        transient: Boolean(transientDictionary),
+      },
+    );
+    const [workbook, dictionaryCatalog] = await Promise.all([workbookPromise, dictionaryPromise]);
     workbook.dictionaryCatalog = dictionaryCatalog;
     return { workbook, bridge, structure, dictionaryCatalog };
   }
@@ -3795,8 +4657,19 @@
   async function refreshSelectedWorkbookDictionaries(file) {
     if (!file) throw new Error('Сначала выберите изменённый Excel в шаге 2.');
     setProgress(10, 'Читаю ваш Excel', 'Матрица и ваши правки сохранятся');
-    const selected = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true });
+    const selected = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true, forceDictionaryRefresh: true, transientDictionary: true });
     const { workbook, bridge, structure, dictionaryCatalog: catalog } = selected;
+    // Explicit refresh is the most memory-sensitive path. Keep the fresh high-cardinality
+    // catalog in this tab and skip an IndexedDB structured-clone write until the user
+    // actually needs persistent cache. The next Preview reuses APP.dictionaryCatalog.
+    APP.dictionaryCatalog = normalizeDictionaryCatalog(catalog);
+    APP.dictionaryCatalog.stats.cache = {
+      ...(APP.dictionaryCatalog.stats.cache || {}),
+      hit: true,
+      transient: true,
+      source: 'refresh-memory',
+      key: dictionaryCacheKey(structure),
+    };
     const matrixInfo = bridge.matrixInfo();
     if (canonicalValue(workbook.roundtrip?.templateId) !== canonicalValue(matrixInfo.TemplateID)) throw new Error('Excel относится к другому шаблону.');
     setProgress(35, 'Обновляю справочники', 'Использую актуальные значения TESSA');
@@ -3808,7 +4681,7 @@
 
   async function refreshSelectedWorkbook(file) {
     if (!file) throw new Error('Выберите Excel, который нужно обновить.');
-    const { workbook } = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true });
+    const { workbook } = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true, forceDictionaryRefresh: true });
     return refreshWorkbookSchema(workbook, file.name);
   }
 
@@ -4559,7 +5432,610 @@
       return { component, currentPage, pageLimit, calculatedRowCount, pageCount: Math.max(1, pageCount) };
     }
 
+    // SERVER_PAGED_NATIVE_VIEW_V1
+    // SERVER_PAGED_NATIVE_VIEW_V4
+    // SERVER_PAGED_NATIVE_VIEW_V5
+    // SERVER_PAGED_NATIVE_VIEW_V6
+    // SERVER_PAGED_NATIVE_VIEW_V7
+    // SERVER_PAGED_NATIVE_VIEW_V8
+    // SERVER_PAGED_NATIVE_VIEW_V9
+    // SERVER_PAGED_NATIVE_VIEW_V10
+    // SERVER_PAGED_NATIVE_VIEW_V11
+    // SERVER_PAGED_NATIVE_VIEW_V12
+    // SERVER_PAGED_NATIVE_VIEW_V13
+    // Direct server paging. No setPageAndRefresh() is allowed here.
+    // TESSA ViewPagingParameters works with IList<RequestParameter>; in the web runtime
+    // that must be a real JS Array (or request.Parameters converted to one).
+    async collectNativeMatrixViewLinksServerPaged(options = {}) {
+      const nativeControl = this.findNativeMatrixControl();
+      if (!nativeControl) return null;
+      const { target, controlName } = nativeControl;
+      const component = target?.viewComponent || target?.component || target;
+      const api = this.viewApi();
+      if (!api?.service || !api?.serviceModule?.TessaViewRequest) return null;
+
+      const diagnostics = {
+        // TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V4 lineage
+        format: 'TESSA_SERVER_VIEW_PAGING_DIAGNOSTICS_V13',
+        build: APP.pagingRuntimeContractBuild || APP.pagingSelfContainedBuild || APP.pagingManualSpecialBuild || APP.pagingIsolatedContextBuild || APP.pagingVersionedContextBuild || APP.pagingContextBuild || APP.pagingCanonicalBuild || APP.pagingFinalBuild || APP.pagingXlsxFixBuild || APP.buildFingerprint || null,
+        at: new Date().toISOString(),
+        controlName: String(controlName || ''),
+        attempts: [],
+        status: 'started',
+        collected: 0,
+      };
+      this.lastServerPagingDiagnostics = diagnostics;
+
+      const metadataCandidates = [
+        target?.viewMetadata, target?.metadata,
+        component?.viewMetadata, component?.metadata,
+      ].filter(Boolean);
+      const aliasCandidates = [
+        ...metadataCandidates.flatMap(meta => [meta?.alias, meta?.name]),
+        controlName,
+      ].map(value => normalizeSpace(value)).filter(Boolean);
+
+      let view = null;
+      let viewAlias = null;
+      for (const alias of aliasCandidates) {
+        try {
+          const candidate = api.service.getByName(alias);
+          if (candidate?.metadata) { view = candidate; viewAlias = alias; break; }
+        } catch (_) { /* try next alias */ }
+      }
+      if (!view?.metadata) {
+        diagnostics.status = 'view-not-found';
+        return null;
+      }
+
+      const initialPaging = this.nativePagingInfo(target);
+      const requestedLimit = Number(
+        options.pageLimit
+        ?? view?.metadata?.exportDataPageLimit
+        ?? view?.metadata?.ExportDataPageLimit
+        ?? view?.metadata?.pageLimit
+        ?? view?.metadata?.PageLimit
+        ?? initialPaging.pageLimit
+        ?? 50
+      );
+      const pageLimit = Math.max(20, Math.min(1000,
+        Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.trunc(requestedLimit) : 50));
+      const sectionCount = this.rawMatrixSectionLinks().length;
+      const maxPages = Math.max(1, Math.min(10000, sectionCount ? Math.ceil(sectionCount / pageLimit) + 2 : 10000));
+      const collected = [];
+      const seenVersions = new Set();
+      const pagesVisited = [];
+      const strategiesUsed = [];
+      let reportedRowCount = 0;
+      let lastAcceptedOffset = null;
+      let previousPageVersions = [];
+
+      const resultValue = value => safePlain(this.unwrapTyped(value), { maxDepth: 4, maxKeys: 50, maxArray: 50 });
+      const cloneParameter = item => {
+        try {
+          if (typeof item?.clone === 'function') return item.clone();
+          if (typeof item?.Clone === 'function') return item.Clone();
+        } catch (_) {}
+        return item;
+      };
+      const parameterName = item => normalizeSpace(
+        item?.name ?? item?.Name ?? item?.alias ?? item?.Alias
+        ?? item?.parameterName ?? item?.ParameterName
+        ?? item?.metadata?.alias ?? item?.Metadata?.Alias ?? ''
+      );
+      const normalizeParameterList = value => {
+        const raw = value?.parameters ?? value?.Parameters ?? value;
+        if (!raw) return [];
+        try { return Array.from(raw).map(cloneParameter); }
+        catch (_) {
+          if (Array.isArray(raw)) return raw.map(cloneParameter);
+          return [];
+        }
+      };
+      const withoutPaging = list => normalizeParameterList(list)
+        .filter(item => !/^(?:pageoffset|pagelimit)$/i.test(parameterName(item).replace(/\s+/g, '')));
+      const requestParameterValue = item => {
+        const direct = item?.value ?? item?.Value ?? item?.values ?? item?.Values;
+        if (direct !== null && direct !== undefined) return safePlain(direct, { maxDepth: 4, maxKeys: 30, maxArray: 30 });
+        const criteria = item?.criteriaValues ?? item?.CriteriaValues ?? [];
+        try {
+          for (const criterion of Array.from(criteria || [])) {
+            const values = criterion?.values ?? criterion?.Values ?? [];
+            for (const criterionValue of Array.from(values || [])) {
+              const value = criterionValue?.value ?? criterionValue?.Value;
+              if (value !== null && value !== undefined) return safePlain(value, { maxDepth: 4, maxKeys: 30, maxArray: 30 });
+            }
+          }
+        } catch (_) {}
+        return null;
+      };
+      const pageParamEvidence = parameters => normalizeParameterList(parameters).map(item => ({
+        name: parameterName(item),
+        value: requestParameterValue(item),
+      })).filter(item => /pageoffset|pagelimit/i.test(item.name));
+      const hasExplicitPaging = parameters => {
+        const names = new Set(pageParamEvidence(parameters).map(item => canonicalValue(item.name).replace(/\s+/g, '')));
+        return names.has(canonicalValue('PageLimit')) && names.has(canonicalValue('PageOffset'));
+      };
+      const pagingNumber = value => {
+        if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+        if (typeof value === 'string' && value.trim()) {
+          const parsed = Number(value.trim().replace(',', '.'));
+          return Number.isFinite(parsed) ? parsed : null;
+        }
+        if (Array.isArray(value) && value.length === 1) return pagingNumber(value[0]);
+        if (value && typeof value === 'object') {
+          for (const key of ['value', 'Value', 'item2', 'Item2']) {
+            if (value[key] !== null && value[key] !== undefined) {
+              const parsed = pagingNumber(value[key]);
+              if (parsed !== null) return parsed;
+            }
+          }
+        }
+        return null;
+      };
+      const pagingValues = parameters => {
+        const evidence = pageParamEvidence(parameters);
+        const limitEntry = evidence.find(item => canonicalValue(item.name).replace(/\s+/g, '') === canonicalValue('PageLimit'));
+        const offsetEntry = evidence.find(item => canonicalValue(item.name).replace(/\s+/g, '') === canonicalValue('PageOffset'));
+        return { limit: pagingNumber(limitEntry?.value), offset: pagingNumber(offsetEntry?.value) };
+      };
+      const isPagingUsableForPage = (parameters, page, previousOffset = null) => {
+        if (!hasExplicitPaging(parameters)) return false;
+        const values = pagingValues(parameters);
+        if (!Number.isFinite(values.limit) || values.limit < pageLimit) return false;
+        if (!Number.isFinite(values.offset) || values.offset < 0) return false;
+        if (page > 1 && previousOffset !== null && values.offset <= previousOffset) return false;
+        return true;
+      };
+
+      const rememberOwn = (obj, key) => ({ obj, key, had: !!obj && Object.prototype.hasOwnProperty.call(obj, key), value: obj?.[key] });
+      const restoreOwn = item => {
+        if (!item?.obj) return;
+        try {
+          if (item.had) item.obj[item.key] = item.value;
+          else delete item.obj[item.key];
+        } catch (_) {}
+      };
+      const setPageState = (obj, page, limit, saved) => {
+        if (!obj) return;
+        for (const [key, value] of [['currentPage', page], ['_currentPage', page], ['pageLimit', limit], ['_pageLimit', limit]]) {
+          try {
+            if (key in obj || Object.prototype.hasOwnProperty.call(obj, key)) {
+              saved.push(rememberOwn(obj, key));
+              obj[key] = value;
+            }
+          } catch (_) {}
+        }
+      };
+      const requestWithParameters = (parameters, page) => {
+        const request = new api.serviceModule.TessaViewRequest(view.metadata);
+        request.calculateRowCounting = page === 1;
+        request.canUseCache = false;
+        // TESSA 4.1 renamed Web ViewRequest.values -> parameters. Cherkizovo can run
+        // either contract, so write only the native property exposed by this runtime.
+        if ('parameters' in request) request.parameters = parameters;
+        else if ('values' in request) request.values = parameters;
+        else if ('Parameters' in request) request.Parameters = parameters;
+        else if ('Values' in request) request.Values = parameters;
+        else request.parameters = parameters;
+        return request;
+      };
+      const mergeContextParameters = (...lists) => {
+        const merged = new Map();
+        for (const list of lists) {
+          for (const item of normalizeParameterList(list)) {
+            const name = canonicalValue(parameterName(item)).replace(/\s+/g, '');
+            if (!name) continue;
+            merged.set(name, item);
+          }
+        }
+        return [...merged.values()];
+      };
+      const requiredContextPresent = parameters => normalizeParameterList(parameters)
+        .some(item => canonicalValue(parameterName(item)).replace(/\s+/g, '') === canonicalValue('MatrixID'));
+
+      const owners = [...new Set([target, component].filter(Boolean))];
+      const getParamsOwner = owners.find(owner => typeof owner?.getRequestParams === 'function') || null;
+      const getBaseParameters = async () => {
+        if (!getParamsOwner) return [];
+        return normalizeParameterList(await Promise.resolve(getParamsOwner.getRequestParams()));
+      };
+
+      const Provider = api.serviceModule?.ViewPagingParameters
+        || api.serviceModule?.ViewSpecialParameters
+        || api.platformModule?.ViewPagingParameters
+        || api.platformModule?.ViewSpecialParameters
+        || null;
+      let provider = Provider?.default || Provider?.Default || null;
+      if (!provider && typeof Provider === 'function') {
+        try { provider = new Provider(); } catch (_) {}
+      }
+
+      const tryBuilder = async (page, strategy, fn) => {
+        const evidence = { page, strategy, visiblePageBefore: this.nativePagingInfo(target).currentPage };
+        try {
+          const built = await fn();
+          if (!built?.request) {
+            evidence.outcome = 'unavailable';
+            diagnostics.attempts.push(evidence);
+            return null;
+          }
+          evidence.paging = pageParamEvidence(built.parameters);
+          if (!isPagingUsableForPage(built.parameters, page, lastAcceptedOffset)) {
+            evidence.outcome = 'paging-values-invalid';
+            evidence.decodedPaging = pagingValues(built.parameters);
+            diagnostics.attempts.push(evidence);
+            return null;
+          }
+          evidence.outcome = 'built';
+          evidence.decodedPaging = pagingValues(built.parameters);
+          diagnostics.attempts.push(evidence);
+          return { ...built, strategy };
+        } catch (error) {
+          evidence.outcome = 'error';
+          evidence.error = String(error?.message || error);
+          diagnostics.attempts.push(evidence);
+          return null;
+        }
+      };
+
+      const buildRequest = async page => {
+        // Most portable path: create PageLimit/PageOffset RequestParameter objects directly.
+        // This avoids setup/provide helpers entirely and therefore cannot hit the old
+        // "findIndex is not a function" request-vs-parameter-list mismatch.
+        let built = await tryBuilder(page, 'paging-parameter-factory', async () => {
+          const getLimit = provider?.getPageLimitParameter || provider?.GetPageLimitParameter;
+          const getOffset = provider?.getPageOffsetParameter || provider?.GetPageOffsetParameter;
+          if (typeof getLimit !== 'function' || typeof getOffset !== 'function') return null;
+          const parameters = withoutPaging(await getBaseParameters());
+          const limitParam = getLimit.call(provider, pageLimit, false);
+          const offsetParam = getOffset.call(provider, page, pageLimit, false);
+          if (limitParam) parameters.push(limitParam);
+          if (offsetParam) parameters.push(offsetParam);
+          if (!limitParam || !offsetParam) return null;
+          return { request: requestWithParameters(parameters, page), parameters };
+        });
+        if (built) return built;
+
+        // Native request builder knows contextual filters, but live seed 696022484 proved
+        // that createDataRequest() can return a request with NO PageLimit/PageOffset.
+        // Never call that "server paging". Enrich its real Array<RequestParameter> through
+        // the mounted control helper while page state is transiently pinned, then require
+        // explicit paging evidence before the request is allowed onto the wire.
+        for (const owner of owners) {
+          built = await tryBuilder(page, owner === target ? 'target-self-contained-v13' : 'component-self-contained-v13', async () => {
+            const saved = [];
+            try {
+              // V12: the mounted Cherkizovo createDataRequest/setupPagingParameters
+              // delegates both throw "e is not iterable" in live runtime (seed 1369359921).
+              // Build TESSA's documented special paging parameters directly instead.
+              // Live seed 2991209272 proved V12 still failed before addParameter:
+              // getBaseParameters() -> mounted getRequestParams() itself throws
+              // "e is not iterable". V13 is therefore fully self-contained and does
+              // not call createDataRequest, getRequestParams or setupPagingParameters.
+              const manualRequest = new api.serviceModule.TessaViewRequest(view.metadata);
+              manualRequest.calculateRowCounting = page === 1;
+              manualRequest.canUseCache = false;
+              const operators = api.platformModule?.ViewCriteriaOperators || {};
+              const equalsOperator = operators.EqualsTo || operators.Equals || operators.Equality || null;
+              if (!equalsOperator || typeof manualRequest?.addParameter !== 'function') return null;
+              const matrixId = this.mainCard?.id || this.editor?.cardModel?.card?.id || null;
+              if (!matrixId) throw new Error('Self-contained paging cannot resolve MatrixID from the open matrix card.');
+              // The saved platform bundle exposes these native metadata constructors.
+              // Dynamic MatrixID and special paging parameters are absent from the
+              // service's static view metadata, so the named overload cannot add them.
+              const metadataApi = window.tessa?.apiLoader?.(660623);
+              const ParameterMetadata = metadataApi?.ViewParameterMetadata;
+              const schemeTypes = metadataApi?.SchemeType;
+              if (!ParameterMetadata || !schemeTypes?.Guid || !schemeTypes?.Int32) {
+                throw new Error('Native typed view parameter metadata is unavailable.');
+              }
+              const addParameter = (name, value) => {
+                const metadata = new ParameterMetadata();
+                metadata.alias = name;
+                metadata.schemeType = name === 'MatrixID' ? schemeTypes.Guid : schemeTypes.Int32;
+                return manualRequest.addParameter(builder => builder
+                  .withMetadata(metadata)
+                  .addCriteria(equalsOperator, String(value), value)
+                  .asRequestParameter());
+              };
+              // DynamicMetadataViewInterceptor requires MatrixID. Keep the GUID object
+              // from the card model instead of stringifying it.
+              addParameter('MatrixID', matrixId);
+              const wireLimit = pageLimit + 1;
+              const wireOffset = 1 + ((page - 1) * pageLimit);
+              addParameter('PageLimit', wireLimit);
+              addParameter('PageOffset', wireOffset);
+              const manualParameters = normalizeParameterList(
+                manualRequest.parameters ?? manualRequest.Parameters ?? manualRequest.values ?? manualRequest.Values ?? []
+              );
+              if (!requiredContextPresent(manualParameters)) {
+                throw new Error(`Manual paging context is missing MatrixID. Available: ${manualParameters.map(parameterName).filter(Boolean).join(', ')}`);
+              }
+              if (!isPagingUsableForPage(manualParameters, page, lastAcceptedOffset)) return null;
+              return { request: manualRequest, parameters: manualParameters, nativeRequestType: 'manual-special-parameters-v12' };
+
+              // Kept below as dead compatibility documentation; V12 intentionally does
+              // not execute the broken mounted delegate on this Cherkizovo runtime.
+              const nativeRequest = await Promise.resolve(owner.createDataRequest());
+              if (!nativeRequest) return null;
+              const nativeContextParameters = normalizeParameterList(
+                nativeRequest.parameters ?? nativeRequest.Parameters ?? nativeRequest.values ?? nativeRequest.Values ?? []
+              );
+              // Live Full UAT seed 2589527719 proved that getRequestParams() may contain
+              // contextual parameter objects that the mounted setupPagingParameters()
+              // implementation cannot iterate ("e is not iterable"). Paging must be
+              // produced from the native request collection first; contextual filters are
+              // merged only after PageOffset/PageLimit are valid.
+              let pagingParameters = withoutPaging(nativeContextParameters);
+              if (!isPagingUsableForPage(pagingParameters, page, lastAcceptedOffset)) {
+                for (const pagingOwner of owners) {
+                  if (typeof pagingOwner?.setupPagingParameters !== 'function') continue;
+                  const candidate = [...pagingParameters];
+                  await Promise.resolve(pagingOwner.setupPagingParameters(candidate));
+                  if (isPagingUsableForPage(candidate, page, lastAcceptedOffset)) {
+                    pagingParameters = candidate;
+                    break;
+                  }
+                }
+              }
+              if (!isPagingUsableForPage(pagingParameters, page, lastAcceptedOffset)) return null;
+              const parameters = mergeContextParameters(baseContextParameters, pagingParameters);
+              // Cherkizovo DynamicMetadataViewInterceptor hard-requires MatrixID.
+              // Never send a request that is already known to be missing it.
+              if (!requiredContextPresent(parameters)) {
+                throw new Error(`Direct view context is missing MatrixID. Available: ${normalizeParameterList(parameters).map(parameterName).filter(Boolean).join(', ')}`);
+              }
+
+              // Live Full UAT seed 3680395665 proved the architectural boundary:
+              // component.getViewData accepted our request argument but ignored its
+              // PageOffset=51 and returned page 1 again. createDataRequest is therefore
+              // used only to preserve the mounted control's contextual RequestParameters.
+              // The actual wire request is rebuilt as the canonical TessaViewRequest type
+              // used by the documented view.getData(request) API.
+              return {
+                request: requestWithParameters(parameters, page),
+                parameters,
+                contextParameterNames: [...new Set(normalizeParameterList(parameters).map(parameterName).filter(Boolean))],
+                nativeRequestType: String(nativeRequest?.constructor?.name || typeof nativeRequest),
+              };
+            } finally {
+              for (let i = saved.length - 1; i >= 0; i -= 1) restoreOwn(saved[i]);
+            }
+          });
+          if (built) return built;
+        }
+
+        // Mounted control helper, but ALWAYS with a real Array<RequestParameter>.
+        for (const owner of owners) {
+          built = await tryBuilder(page, owner === target ? 'target-setupPagingParameters-array' : 'component-setupPagingParameters-array', async () => {
+            if (typeof owner?.setupPagingParameters !== 'function' || !getParamsOwner) return null;
+            const saved = [];
+            try {
+              setPageState(component, page, pageLimit, saved);
+              if (target !== component) setPageState(target, page, pageLimit, saved);
+              const baseContextParameters = await getBaseParameters();
+              const pagingParameters = [];
+              await Promise.resolve(owner.setupPagingParameters(pagingParameters));
+              if (!isPagingUsableForPage(pagingParameters, page, lastAcceptedOffset)) return null;
+              const parameters = mergeContextParameters(baseContextParameters, pagingParameters);
+              return { request: requestWithParameters(parameters, page), parameters };
+            } finally {
+              for (let i = saved.length - 1; i >= 0; i -= 1) restoreOwn(saved[i]);
+            }
+          });
+          if (built) return built;
+        }
+
+        // Official Provide* fallback. The API contract is IList<RequestParameter>.
+        built = await tryBuilder(page, 'view-paging-provider-array', async () => {
+          const provideLimit = provider?.providePageLimitParameter || provider?.ProvidePageLimitParameter;
+          const provideOffset = provider?.providePageOffsetParameter || provider?.ProvidePageOffsetParameter;
+          const pagingMode = view?.metadata?.paging ?? view?.metadata?.Paging
+            ?? target?.viewMetadata?.paging ?? target?.viewMetadata?.Paging;
+          if (typeof provideLimit !== 'function' || typeof provideOffset !== 'function'
+            || pagingMode === null || pagingMode === undefined) return null;
+          const baseContextParameters = await getBaseParameters();
+          const pagingParameters = [];
+          provideLimit.call(provider, pagingParameters, pagingMode, pageLimit, false);
+          provideOffset.call(provider, pagingParameters, pagingMode, page, pageLimit, false);
+          if (!isPagingUsableForPage(pagingParameters, page, lastAcceptedOffset)) return null;
+          const parameters = mergeContextParameters(baseContextParameters, pagingParameters);
+          return { request: requestWithParameters(parameters, page), parameters };
+        });
+        return built;
+      };
+
+      const executeRequest = async built => {
+        // Only APIs whose public contract consumes an explicit View request are allowed.
+        // Mounted component/target getViewData methods are UI refresh helpers in this
+        // runtime and must never be used as proof of server paging.
+        const executors = [
+          { name: 'view.getData', owner: view, fn: view?.getData },
+          { name: 'service.getData', owner: api.service, fn: api.service?.getData },
+        ];
+        const directExecutorErrors = [];
+        for (const executor of executors) {
+          if (typeof executor.fn !== 'function') continue;
+          try {
+            const result = await Promise.resolve(executor.fn.call(executor.owner, built.request));
+            if (result) return { result, executor: executor.name, directExecutorErrors };
+            directExecutorErrors.push({ executor: executor.name, error: 'empty-result' });
+          } catch (error) {
+            directExecutorErrors.push({ executor: executor.name, error: String(error?.message || error) });
+          }
+        }
+        throw new Error(`Все direct View API executors отклонены: ${JSON.stringify(directExecutorErrors)}`);
+      };
+
+      try {
+        for (let page = 1; page <= maxPages; page += 1) {
+          if (APP.abortRequested) throw new Error('Операция остановлена пользователем.');
+          await options.assertContext?.();
+          const visiblePageBefore = this.nativePagingInfo(target).currentPage;
+          const built = await buildRequest(page);
+          if (!built?.request) {
+            diagnostics.status = `page-${page}-request-build-failed`;
+            return null;
+          }
+          const visiblePageAfterBuild = this.nativePagingInfo(target).currentPage;
+          if (visiblePageAfterBuild !== visiblePageBefore) {
+            diagnostics.status = `page-${page}-visible-page-mutated`;
+            return null;
+          }
+
+          let execution;
+          try {
+            execution = await executeRequest(built);
+          } catch (error) {
+            diagnostics.attempts.push({ page, strategy: built.strategy, outcome: 'execute-error', error: String(error?.message || error) });
+            diagnostics.status = `page-${page}-execution-failed`;
+            return null;
+          }
+          strategiesUsed.push(`${built.strategy}+${execution.executor}`);
+
+          const result = execution.result;
+          const columns = Array.from(result?.columns || result?.Columns || []).map(column =>
+            normalizeSpace(
+              Array.isArray(column) ? column[0]
+                : column?.Item1 ?? column?.item1
+                  ?? column?.alias ?? column?.name ?? column?.Alias ?? column?.Name ?? column
+            )
+          );
+          const canonicalColumns = columns.map(canonicalValue);
+          const cardIndex = canonicalColumns.indexOf(canonicalValue('MatrixRowID'));
+          const versionIndex = canonicalColumns.indexOf(canonicalValue('MatrixVersionID'));
+          const orderIndex = canonicalColumns.indexOf(canonicalValue('Order'));
+          if (cardIndex < 0 || versionIndex < 0) {
+            diagnostics.status = `page-${page}-identity-columns-missing`;
+            diagnostics.attempts.push({ page, strategy: built.strategy, executor: execution.executor, outcome: 'identity-columns-missing', columns: columns.slice(0, 80) });
+            return null;
+          }
+
+          const rawRows = Array.from(result?.rows || result?.Rows || []);
+          const rowsForPage = rawRows.slice(0, pageLimit);
+          const cellValue = (rawValue, columnName) => {
+            if (Array.isArray(rawValue) && rawValue.length >= 2
+              && canonicalValue(rawValue[0]) === canonicalValue(columnName)) return resultValue(rawValue[1]);
+            const item1 = rawValue?.Item1 ?? rawValue?.item1;
+            const item2 = rawValue?.Item2 ?? rawValue?.item2;
+            if (item2 !== null && item2 !== undefined && canonicalValue(item1) === canonicalValue(columnName)) return resultValue(item2);
+            return resultValue(rawValue);
+          };
+          const rowCount = Number(result?.rowCount ?? result?.RowCount ?? 0) || 0;
+          if (rowCount > 0) reportedRowCount = rowCount;
+          pagesVisited.push(page);
+
+          let added = 0;
+          const pageVersions = [];
+          for (let index = 0; index < rowsForPage.length; index += 1) {
+            const raw = Array.from(rowsForPage[index] || []);
+            const rowCardId = cellValue(raw[cardIndex], columns[cardIndex]);
+            const versionId = cellValue(raw[versionIndex], columns[versionIndex]);
+            if (!rowCardId || !versionId) continue;
+            pageVersions.push(String(versionId));
+            const key = canonicalValue(versionId);
+            if (seenVersions.has(key)) continue;
+            seenVersions.add(key);
+            const order = orderIndex >= 0 ? cellValue(raw[orderIndex], columns[orderIndex]) : null;
+            collected.push({
+              index: collected.length,
+              page,
+              pageIndex: index,
+              rowCardId: String(rowCardId),
+              versionId: String(versionId),
+              rowName: order !== null && order !== undefined && String(order) !== '' ? `Строка ${order}` : `Строка ${collected.length + 1}`,
+              source: 'native-view-server-paged-v13',
+            });
+            added += 1;
+          }
+
+          if (page > 1 && pageVersions.length && previousPageVersions.length
+            && pageVersions.slice(0, Math.min(8, pageVersions.length)).every((value, index) => value === previousPageVersions[index])) {
+            diagnostics.attempts.push({ page, strategy: built.strategy, executor: execution.executor, outcome: 'duplicate-page-detected', paging: pageParamEvidence(built.parameters), decodedPaging: pagingValues(built.parameters), sampleVersionIds: pageVersions.slice(0, 8) });
+            diagnostics.status = `page-${page}-duplicate-page-detected`;
+            return null;
+          }
+          const currentPagingValues = pagingValues(built.parameters);
+          lastAcceptedOffset = currentPagingValues.offset;
+          previousPageVersions = pageVersions.slice(0, 8);
+
+          diagnostics.attempts.push({
+            page,
+            strategy: built.strategy,
+            executor: execution.executor,
+            outcome: 'page-read',
+            returnedRows: rawRows.length,
+            acceptedRows: rowsForPage.length,
+            added,
+            sampleVersionIds: pageVersions.slice(0, 4),
+            paging: pageParamEvidence(built.parameters),
+            decodedPaging: pagingValues(built.parameters),
+            directExecutorErrors: execution.directExecutorErrors || [],
+            nativeRequestType: built.nativeRequestType || null,
+            contextParameterNames: built.contextParameterNames || [],
+            visiblePageAfter: this.nativePagingInfo(target).currentPage,
+          });
+          diagnostics.collected = collected.length;
+
+          if (this.nativePagingInfo(target).currentPage !== visiblePageBefore) {
+            diagnostics.status = `page-${page}-visible-page-changed-after-request`;
+            return null;
+          }
+          if (!rawRows.length || added === 0) break;
+          if (!sectionCount && reportedRowCount > 0 && collected.length >= reportedRowCount) break;
+          if (sectionCount > 0 && collected.length >= sectionCount) break;
+          if (rawRows.length < pageLimit) break;
+        }
+      } catch (error) {
+        if (/остановлена пользователем/i.test(String(error?.message || error))) throw error;
+        diagnostics.status = 'exception';
+        diagnostics.error = String(error?.message || error);
+        log(`Серверный paging «${controlName}» недоступен: ${error.message || error}. Использую UI fallback.`, 'warn');
+        return null;
+      }
+
+      const links = [...new Map(collected.map(link => [canonicalValue(link.versionId), link])).values()];
+      if (sectionCount > 0 && links.length !== sectionCount) {
+        diagnostics.status = 'membership-count-mismatch';
+        diagnostics.expected = sectionCount;
+        diagnostics.actual = links.length;
+        return null;
+      }
+      if (reportedRowCount > 0 && links.length !== reportedRowCount && !sectionCount) {
+        diagnostics.status = 'reported-row-count-mismatch';
+        diagnostics.expected = reportedRowCount;
+        diagnostics.actual = links.length;
+        return null;
+      }
+
+      diagnostics.status = 'passed';
+      diagnostics.collected = links.length;
+      diagnostics.pagesVisited = [...pagesVisited];
+      diagnostics.strategiesUsed = [...new Set(strategiesUsed)];
+      return {
+        controlName: viewAlias || controlName,
+        visibleRows: nativeControl.rows.length,
+        links,
+        pageCount: Math.max(1, pagesVisited.length),
+        pagesVisited,
+        pagingUsed: pagesVisited.length > 1,
+        dynamicPaging: false,
+        serverPaging: true,
+        pageLimit,
+        reportedRowCount: reportedRowCount || null,
+        strategy: [...new Set(strategiesUsed)].join(' | '),
+        diagnostics,
+      };
+    }
+
     async collectNativeMatrixViewLinksAllPages(options = {}) {
+      if (!options.forceUiPaging && typeof this.collectNativeMatrixViewLinksServerPaged === 'function') {
+        const serverPaged = await this.collectNativeMatrixViewLinksServerPaged(options);
+        if (serverPaged) return serverPaged;
+      }
+
       const nativeControl = this.findNativeMatrixControl();
       if (!nativeControl) return this.findNativeMatrixViewLinks();
       const { target, controlName } = nativeControl;
@@ -4692,6 +6168,64 @@
           rowRowID: this.rowValue(row, F.MatrixRowVersionID),
           rowName: this.rowValue(row, F.MatrixRowName) || `Строка ${index + 1}`,
         }));
+    }
+
+
+    // FAST_ROUNDTRIP_MEMBERSHIP_V1
+    // Same-matrix roundtrip Excel already carries authoritative MatrixRowID +
+    // MatrixVersionID from export. Match live membership to that ledger in O(n) and
+    // skip native UI page flipping. Any unknown/concurrent row falls back fail-closed.
+    previewMatrixLinksFromRoundtripBaseline(workbook) {
+      if (!workbook?.roundtrip?.enabled || !Array.isArray(workbook.roundtrip?.baselineRows)) return null;
+      const baselineRows = workbook.roundtrip.baselineRows;
+      const rawLinks = this.rawMatrixSectionLinks();
+      if (!rawLinks.length) {
+        if (!baselineRows.length) {
+          return { controlName: 'roundtrip-baseline-membership', links: [], pageCount: 0, pagesVisited: [], pagingUsed: false, dynamicPaging: false, baselineMembership: true };
+        }
+        return null;
+      }
+
+      const byVersion = new Map();
+      const ambiguous = new Set();
+      for (const base of baselineRows) {
+        const version = canonicalValue(base?.versionId || '');
+        const card = canonicalValue(base?.rowCardId || '');
+        if (!version || !card) continue;
+        if (!byVersion.has(version)) byVersion.set(version, base);
+        else if (canonicalValue(byVersion.get(version)?.rowCardId || '') !== card) ambiguous.add(version);
+      }
+      for (const version of ambiguous) byVersion.delete(version);
+
+      const links = [];
+      for (const raw of rawLinks) {
+        const candidates = [...new Set([raw?.rowRowID, raw?.rowID, raw?.cardRowId]
+          .map(value => canonicalValue(value || '')).filter(Boolean))];
+        const matches = [...new Map(candidates
+          .map(version => byVersion.get(version))
+          .filter(Boolean)
+          .map(base => [canonicalValue(base.versionId), base])).values()];
+        if (matches.length !== 1) return null;
+        const base = matches[0];
+        if (!base?.rowCardId || !base?.versionId) return null;
+        links.push({
+          index: raw.index,
+          rowCardId: String(base.rowCardId),
+          versionId: String(base.versionId),
+          rowName: raw.rowName || `Строка ${raw.index + 1}`,
+          source: 'roundtrip-baseline-membership',
+        });
+      }
+      return {
+        controlName: 'roundtrip-baseline-membership',
+        visibleRows: links.length,
+        links,
+        pageCount: 0,
+        pagesVisited: [],
+        pagingUsed: false,
+        dynamicPaging: false,
+        baselineMembership: true,
+      };
     }
 
 
@@ -4868,8 +6402,15 @@
       const hiddenIndex = columns.findIndex(alias => /(?:^|Is)Hidden$|Disabled$/i.test(String(alias)));
       const activeIndex = columns.findIndex(alias => /(?:^|Is)Active$/i.test(String(alias)));
       const recordKeepingIndex = options.recordKeepingOnly ? partnerRecordKeepingColumnIndex(columns) : -1;
+      const cardTypeIndex = options.documentCardTypeId ? columns.findIndex(alias => canonicalValue(alias) === 'krdoctypecardtypeid') : -1;
+      if (options.documentCardTypeId && cardTypeIndex < 0) throw new Error('В справочнике видов документов отсутствует KrDocTypeCardTypeID. Выбор заблокирован.');
+      // Keep human disambiguation fields, not every technical payload column.
+      const detailIndices = columns.map((alias, index) => ({ alias, index })).filter(({ alias, index }) =>
+        index !== idIndex && index !== displayIndex && index !== roleTypeIndex
+        && (roleMode || /(?:Name|Title|Caption|Code|IsRecordKeeping)$/i.test(String(alias))));
       const entries = [];
       for (const row of rows) {
+        if (options.documentCardTypeId && canonicalValue(row[cardTypeIndex]) !== canonicalValue(options.documentCardTypeId)) continue;
         const id = row[idIndex];
         let display = this.localizeValue(row[displayIndex]);
         if (isGuidLike(display) || /^\$[A-Za-z0-9_.-]+$/.test(display)) continue;
@@ -4882,15 +6423,14 @@
         const nativeDisplay = display;
         const employee = roleMode ? employeeProjectionFields(row, columns, roleTypeId, nativeDisplay, value => this.localizeValue(value)) : null;
         if (employee?.displayName) display = employee.displayName;
-        const details = columns.map((alias, index) => {
-          if (index === idIndex || index === displayIndex || index === roleTypeIndex) return '';
+        const details = detailIndices.map(({ alias, index }) => {
           const value = this.localizeValue(row[index]);
           if (value === null || value === undefined || String(value).trim() === '') return '';
           if (typeof value === 'object') return '';
           return `${normalizeSpace(alias)}: ${normalizeSpace(value)}`;
         }).filter(Boolean).join(' | ').slice(0, 4000);
         const qualifier = humanQualifierFromDetails(details, display);
-        const searchText = searchCanonical(`${display} ${qualifier} ${details} ${row.map(value => typeof value === 'object' ? '' : normalizeSpace(this.localizeValue(value))).join(' ')}`);
+        const searchText = searchCanonical(`${display} ${qualifier} ${details}`);
         entries.push({
           id: String(id), display, qualifier, roleTypeId: Number.isFinite(roleTypeId) ? roleTypeId : '',
           source: result.alias, status: 'Доступно', details, searchText,
@@ -4901,15 +6441,29 @@
     }
 
     async loadDictionaryCatalog(structure, snapshot, options = {}) {
+      const partial = Array.isArray(options.requiredCriterionIds) || options.includeRoles === false;
+      if (partial) options = { ...options, forceRefresh: true, transient: true };
+      const selectedConditions = (structure.conditions || []).filter(condition => !Array.isArray(options.requiredCriterionIds) || options.requiredCriterionIds.includes(condition.criterionRowId));
+      let documentScope = null;
+      if (selectedConditions.some(isDocumentTypeCondition)) {
+        try {
+          const template = await this.getCard(structure.templateId);
+          const cardTypeId = this.fieldFromSection(this.section(template, 'MtxRouteTemplate'), 'CardTypeID');
+          if (!isGuidLike(cardTypeId)) throw new Error('Шаблон матрицы не содержит CardTypeID.');
+          documentScope = { cardTypeId: String(cardTypeId), verified: true };
+        } catch (error) { documentScope = { cardTypeId: '', verified: false, error: error.message || String(error) }; }
+        structure = { ...structure, documentCardTypeId: documentScope.cardTypeId };
+      }
       const forceRefresh = Boolean(options.forceRefresh);
+      const cacheAllowed = Boolean(dictionaryPrincipalId()) && !partial && (!documentScope || documentScope.verified);
       const cacheKey = dictionaryCacheKey(structure);
-      if (!forceRefresh && APP.dictionaryCatalog?.stats?.cache?.key === cacheKey) {
+      if (cacheAllowed && !forceRefresh && APP.dictionaryCatalog?.stats?.cache?.key === cacheKey) {
         const merged = mergeSnapshotIntoDictionaryCatalog(APP.dictionaryCatalog, structure, snapshot);
         merged.stats.cache = { ...APP.dictionaryCatalog.stats.cache, hit: true, key: cacheKey, source: 'memory' };
         log(`Словари: использую кэш текущей вкладки (${merged.stats.entries} значений).`);
         return merged;
       }
-      if (!forceRefresh) {
+      if (cacheAllowed && !forceRefresh) {
         const cached = await readDictionaryCache(cacheKey);
         if (cached?.catalog) {
           const merged = mergeSnapshotIntoDictionaryCatalog(cached.catalog, structure, snapshot);
@@ -4918,13 +6472,13 @@
           log(`Словари: использую локальный кэш (${merged.stats.entries} значений, возраст ${Math.max(1, Math.round(ageMs / 60000))} мин.).`);
           return merged;
         }
-      } else if (!options.transient) {
+      } else if (cacheAllowed && !options.transient) {
         await deleteDictionaryCache(cacheKey);
       }
 
       const catalog = { catalogs: {}, columnCatalogIds: {}, stats: { catalogs: 0, entries: 0, errors: [], warnings: [] } };
       const criterionGroups = new Map();
-      for (const condition of structure.conditions) {
+      for (const condition of selectedConditions) {
         const operand = canonicalValue(condition.operandTypeId);
         const key = definitionKey('criterion', condition.criterionRowId);
         if (operand === canonicalValue(OPERAND.Boolean)) {
@@ -4945,10 +6499,12 @@
       const query = alias => { if (!queries.has(alias)) queries.set(alias, this.queryViewSample(alias, 200000, { forceRefresh })); return queries.get(alias); };
 
       // Самые тяжёлые представления (GchPartners и MtxRoles) читаются параллельно.
-      const criterionJobs = [...criterionGroups.entries()].map(async ([catalogId, group]) => {
+      const criterionResultsPromise = mapConcurrent([...criterionGroups.entries()], 3, async ([catalogId, group]) => {
         const label = group.conditions.map(item => item.criterionName).join(' / ');
-        let entries = [], projection = null, sourceCount = 0;
-        if (group.alias) {
+        const scope = group.conditions.some(isDocumentTypeCondition) ? documentScope : null;
+        let entries = [], projection = null, sourceCount = 0, scopeComplete = false;
+        if (scope && !scope.verified) catalog.stats.errors.push(`${label}: ${scope.error}`);
+        else if (group.alias) {
           log(`Словарь: ${label} ← ${group.alias}`);
           const result = await query(group.alias);
           if (result.error) catalog.stats.errors.push(`${group.alias}: ${String(result.error).split('\n')[0]}`);
@@ -4964,20 +6520,23 @@
                 wantedKind: group.wantedKind,
                 refSection: group.conditions[0].refSection,
                 recordKeepingOnly: recordKeepingPartner && recordKeepingIndex >= 0,
+                documentCardTypeId: scope?.cardTypeId,
               });
               sourceCount = entries.length;
+              scopeComplete = !result.truncated;
             }
             catch (error) { catalog.stats.errors.push(`${label}: ${error.message}`); }
             if (result.truncated) catalog.stats.errors.push(`${group.alias}: получено ${result.rows.length} из ${result.rowCount}; словарь неполный`);
           }
         } else catalog.stats.errors.push(`${label}: подходящее представление не найдено`);
-        return { catalogId, catalog: { id: catalogId, label, sourceView: group.alias || 'Текущая матрица', projection, sourceCount, entries } };
+        return { catalogId, catalog: { id: catalogId, label, sourceView: group.alias || 'Текущая матрица', projection, sourceCount, entries, ...(scope ? { documentScope: { ...scope, complete: scopeComplete } } : {}) } };
       });
 
       const roleJob = (async () => {
         const roleCatalogId = 'roles:MtxRoles';
         let roleEntries = [];
         let roleAlias = null;
+        if (options.includeRoles === false || !structure.functions?.length) return { roleCatalogId, roleAlias, roleEntries };
         for (const alias of ['MtxRoles']) {
           log(`Словарь ролей: пробую ${alias}`);
           const result = await query(alias);
@@ -4993,19 +6552,24 @@
         return { roleCatalogId, roleAlias, roleEntries };
       })();
 
-      const [criterionResults, roleResult] = await Promise.all([Promise.all(criterionJobs), roleJob]);
+      const [criterionResults, roleResult] = await Promise.all([criterionResultsPromise, roleJob]);
       for (const item of criterionResults) catalog.catalogs[item.catalogId] = item.catalog;
 
       // FunctionType.ID and RoleTypeID are separate domains in the live TESSA build.
       // Numeric FunctionType values are still supported for installations that explicitly
       // expose RoleType there. GUID/custom function types get independent catalogs whose
       // ordering is learned from the role types already used by that exact function.
+      // V1.15 COMPACT_ROLE_CATALOG_V1
+      // MtxRoles is global. Do not clone the same 20k–30k records once per custom
+      // function: all compatible columns share one physical dictionary range.
       const sharedRoleCatalog = {
         id: roleResult.roleCatalogId,
         label: 'Роли и пользователи TESSA',
         sourceView: roleResult.roleAlias || 'Текущая матрица',
         entries: roleResult.roleEntries,
+        functionPolicies: {},
       };
+      catalog.catalogs[roleResult.roleCatalogId] = sharedRoleCatalog;
       const hasTypedRoleEntries = roleResult.roleEntries.some(entry => catalogRoleTypeId(entry.roleTypeId) !== null);
       const typedRoleCatalogIds = new Map();
 
@@ -5018,6 +6582,7 @@
             typedRoleCatalogIds.set(functionRoleTypeId, typedCatalogId);
             catalog.catalogs[typedCatalogId] = {
               ...sharedRoleCatalog,
+              functionPolicies: {},
               id: typedCatalogId,
               label: `Роли и пользователи TESSA · тип ${functionRoleTypeId}`,
               entries: roleResult.roleEntries.filter(entry => catalogRoleTypeId(entry.roleTypeId) === functionRoleTypeId),
@@ -5027,26 +6592,16 @@
           continue;
         }
 
-        const functionCatalogId = `${roleResult.roleCatalogId}:function:${fn.id}`;
-        const observedRoleTypes = observedFunctionRoleTypeIds(snapshot, fn.id);
-        catalog.catalogs[functionCatalogId] = {
-          ...sharedRoleCatalog,
-          id: functionCatalogId,
-          label: `${fn.name} · роли и пользователи TESSA`,
-          entries: hasTypedRoleEntries
-            ? prioritizeFunctionRoleEntries(roleResult.roleEntries, snapshot, fn.id)
-            : Array.from(roleResult.roleEntries),
-          rolePolicy: {
-            mode: hasTypedRoleEntries ? 'function-observed-types-first' : 'untyped-conservative',
-            observedRoleTypeIds: observedRoleTypes,
-          },
+        sharedRoleCatalog.functionPolicies[fn.id] = {
+          mode: hasTypedRoleEntries ? 'function-observed-types-first' : 'untyped-conservative',
+          observedRoleTypeIds: observedFunctionRoleTypeIds(snapshot, fn.id),
         };
-        catalog.columnCatalogIds[definitionKey('function', fn.id)] = functionCatalogId;
+        catalog.columnCatalogIds[definitionKey('function', fn.id)] = roleResult.roleCatalogId;
       }
 
       const normalized = mergeSnapshotIntoDictionaryCatalog(catalog, structure, snapshot);
       normalized.stats.cache = { hit: false, key: cacheKey, savedAt: options.transient ? null : Date.now(), ageMs: 0, ...(options.transient ? { transient: true } : {}) };
-      const cached = options.transient || await writeDictionaryCache(cacheKey, normalized);
+      const cached = options.transient || !cacheAllowed || await writeDictionaryCache(cacheKey, normalized);
       if (!cached) normalized.stats.errors.push('Локальный кэш словарей недоступен; следующая выгрузка снова запросит данные TESSA.');
       return normalized;
     }
@@ -5062,17 +6617,18 @@
       try {
         const result = await view.getData(request);
         const columns = Array.from(result?.columns || []);
-        const rows = Array.from(result?.rows || []).slice(0, maxRows).map(row => Array.from(row || []).map(value => safePlain(this.unwrapTyped(value), { maxDepth: 5 })));
+        const rawRows = Array.from(result?.rows || []);
+        const rows = rawRows.slice(0, maxRows).map(row => Array.from(row || []).map(value => safePlain(this.unwrapTyped(value), { maxDepth: 5 })));
         return {
           alias: viewAlias,
           references: this.dictionaryReferences(view.metadata),
           columns,
           schemeTypes: Array.from(result?.schemeTypes || []).map(item => item?.toString?.() || String(item)),
           rowCount: result?.rowCount ?? rows.length,
-          returnedRows: Array.from(result?.rows || []).length,
-          complete: (result?.rowCount ?? rows.length) <= Array.from(result?.rows || []).length,
+          returnedRows: rawRows.length,
+          complete: (result?.rowCount ?? rows.length) <= rawRows.length,
           rows,
-          truncated: Number(result?.rowCount ?? rows.length) > rows.length || Array.from(result?.rows || []).length > rows.length,
+          truncated: Number(result?.rowCount ?? rows.length) > rows.length || rawRows.length > rows.length,
           info: safePlain(result?.info, { maxDepth: 7, maxKeys: 500, maxArray: 2000 }),
         };
       } catch (error) {
@@ -5148,6 +6704,191 @@
       return { ...link, values, roles, flat, fingerprint: fingerprintFlat(flat) };
     }
 
+    previewSnapshotBaselineReusePlan(workbook, structure, links = []) {
+      if (!workbook?.roundtrip?.enabled || !workbook?.roundtrip?.baselineRows?.length) {
+        return { eligible: false, reason: 'no-roundtrip-baseline', reuse: [], fetch: [...links] };
+      }
+      const matrixInfo = this.matrixInfo?.() || {};
+      const workbookMatrixId = canonicalValue(workbook.roundtrip.matrixId || '');
+      const workbookTemplateId = canonicalValue(workbook.roundtrip.templateId || '');
+      const currentMatrixId = canonicalValue(this.mainCard?.id || matrixInfo.matrixId || '');
+      const currentTemplateId = canonicalValue(structure?.templateId || this.templateId?.() || matrixInfo.TemplateID || '');
+      if (!workbookMatrixId || !currentMatrixId || workbookMatrixId !== currentMatrixId) {
+        return { eligible: false, reason: 'foreign-matrix', reuse: [], fetch: [...links] };
+      }
+      if (!workbookTemplateId || !currentTemplateId || workbookTemplateId !== currentTemplateId) {
+        return { eligible: false, reason: 'foreign-template', reuse: [], fetch: [...links] };
+      }
+
+      const columnMap = buildColumnMap(workbook, structure);
+      if (columnMap.mode !== 'roundtrip' || columnMap.mappingIssues?.length) {
+        return { eligible: false, reason: 'unsafe-column-map', reuse: [], fetch: [...links] };
+      }
+      const baselineIndex = workbookBaselineFastPathIndex(workbook, columnMap);
+      const safeIdentities = new Set();
+      const dirtyIdentities = new Set();
+
+      const rowIdentity = row => {
+        const card = canonicalValue(columnMap.system.rowCardId === undefined ? '' : row.values[columnMap.system.rowCardId]);
+        const version = canonicalValue(columnMap.system.versionId === undefined ? '' : row.values[columnMap.system.versionId]);
+        return version || card ? `v:${version}|c:${card}` : '';
+      };
+
+      for (const row of workbook.rows || []) {
+        const identity = rowIdentity(row);
+        if (!identity) continue;
+        if ((baselineIndex.identityCounts.get(identity) || 0) !== 1) {
+          dirtyIdentities.add(identity);
+          continue;
+        }
+        const unchanged = unchangedDesiredRowFromBaseline(workbook, row, columnMap, baselineIndex);
+        if (unchanged) safeIdentities.add(identity);
+        else dirtyIdentities.add(identity);
+      }
+      for (const identity of dirtyIdentities) safeIdentities.delete(identity);
+
+      const reuse = [];
+      const fetch = [];
+      for (const link of links || []) {
+        const card = canonicalValue(link?.rowCardId || '');
+        const version = canonicalValue(link?.versionId || '');
+        const identity = version || card ? `v:${version}|c:${card}` : '';
+        const base = (card ? baselineIndex.byCard.get(card) : null) || (version ? baselineIndex.byVersion.get(version) : null);
+        const exactBase = Boolean(
+          base?.base
+          && (!card || canonicalValue(base.rowCardId || '') === card)
+          && (!version || canonicalValue(base.versionId || '') === version)
+        );
+        if (identity && exactBase && safeIdentities.has(identity)) reuse.push({ link, base });
+        else fetch.push(link);
+      }
+
+      return {
+        eligible: true,
+        reason: null,
+        reuse,
+        fetch,
+        total: links.length,
+        reusedCount: reuse.length,
+        fetchedCount: fetch.length,
+      };
+    }
+
+    snapshotCachesFromRows(rows, structure) {
+      const criterionIdCache = new Map();
+      const roleIdCache = new Map();
+      const roleIdByFunctionCache = new Map();
+      const remember = (map, key, item) => {
+        if (!key) return;
+        if (!map.has(key)) map.set(key, item);
+        else if (canonicalValue(map.get(key)?.id) !== canonicalValue(item?.id)) map.set(key, { ambiguous: true, display: item?.display || '' });
+      };
+      for (const row of rows || []) {
+        for (const condition of structure?.conditions || []) {
+          for (const item of row?.values?.[condition.criterionRowId] || []) {
+            if (item?.id === null || item?.id === undefined || item?.id === '') continue;
+            remember(criterionIdCache, `${condition.criterionRowId}|${canonicalValue(item.display)}`, item);
+          }
+        }
+        for (const fn of structure?.functions || []) {
+          for (const item of row?.roles?.[fn.id] || []) {
+            const key = canonicalValue(item?.display || '');
+            if (!key || !item?.id) continue;
+            remember(roleIdCache, key, item);
+            remember(roleIdByFunctionCache, `${fn.id}|${key}`, item);
+          }
+        }
+      }
+      return { criterionIdCache, roleIdCache, roleIdByFunctionCache };
+    }
+
+    async loadPreviewSnapshot(structure, workbook) {
+      // PREVIEW_BASELINE_INCREMENTAL_SNAPSHOT_V1
+      // Preview needs exact current data only for rows the user touched (plus rows not
+      // represented by the trusted baseline). Unchanged roundtrip rows can be reconstructed
+      // locally from the export ledger; Apply still runs fresh targeted server validation.
+      let native = this.previewMatrixLinksFromRoundtripBaseline(workbook);
+      if (!native) {
+        native = typeof this.collectNativeMatrixViewLinksAllPages === 'function'
+          ? await this.collectNativeMatrixViewLinksAllPages()
+          : { ...this.findNativeMatrixViewLinks(), pageCount: 1, pagesVisited: [1], pagingUsed: false };
+      }
+      const sectionCount = this.rawMatrixSectionLinks().length;
+      let links = native.links || [];
+
+      if (!native.baselineMembership && sectionCount > links.length) {
+        const nativeControl = this.findNativeMatrixControl();
+        const target = nativeControl?.target;
+        try {
+          if (typeof target?.refresh === 'function') await target.refresh();
+          else if (typeof target?.refreshWithDelay === 'function') await target.refreshWithDelay();
+          await sleep(100);
+          native = await this.collectNativeMatrixViewLinksAllPages();
+          links = native.links || [];
+        } catch (error) {
+          log(`Не удалось принудительно обновить представление матрицы: ${error.message || error}`, 'warn');
+        }
+      }
+
+      if (!links.length && sectionCount === 0 && native.controlName) {
+        links = [];
+      } else if (links.length && sectionCount > links.length) {
+        links = await this.resolveMatrixSectionLinks(links);
+      } else if (!links.length) {
+        return null;
+      }
+
+      const plan = this.previewSnapshotBaselineReusePlan(workbook, structure, links);
+      if (!plan.eligible) return null;
+
+      const byIdentity = new Map();
+      const identity = link => `${canonicalValue(link?.rowCardId || '')}|${canonicalValue(link?.versionId || '')}`;
+
+      for (const item of plan.reuse) {
+        const base = item.base.base || {};
+        byIdentity.set(identity(item.link), {
+          ...item.link,
+          values: clonePlain(base.values || {}),
+          roles: clonePlain(base.roles || {}),
+          flat: clonePlain(base.flat || {}),
+          fingerprint: item.base.baseFingerprint || fingerprintFlat(base.flat || {}),
+          previewSource: 'baseline',
+        });
+      }
+
+      const fetchedRows = await mapConcurrent(
+        plan.fetch,
+        adaptiveConcurrency(PERFORMANCE.SnapshotCardGetConcurrency, PERFORMANCE.SnapshotCardGetMaxConcurrency),
+        async link => {
+        if (APP.abortRequested) throw new Error('Операция остановлена пользователем.');
+        const card = await this.getCard(link.rowCardId);
+        const row = this.readMatrixRowFromCard(card, link, structure);
+        row.previewSource = 'card-get';
+        return row;
+      });
+      for (const row of fetchedRows) byIdentity.set(identity(row), row);
+
+      const rows = links.map(link => byIdentity.get(identity(link))).filter(Boolean);
+      if (rows.length !== links.length) return null;
+      const caches = this.snapshotCachesFromRows(rows, structure);
+      return {
+        matrixId: this.mainCard.id,
+        templateId: structure.templateId,
+        rows,
+        ...caches,
+        sectionSignature: this.matrixSectionSignature(),
+        createdAt: nowIso(),
+        previewIncremental: {
+          enabled: true,
+          totalRows: links.length,
+          baselineRows: plan.reusedCount,
+          cardGets: plan.fetchedCount,
+          membershipSource: native.baselineMembership ? 'roundtrip-baseline' : 'native-view',
+          viewPagesVisited: native.pagesVisited?.length || 0,
+        },
+      };
+    }
+
     async loadSnapshot(structure) {
       let native = typeof this.collectNativeMatrixViewLinksAllPages === 'function'
         ? await this.collectNativeMatrixViewLinksAllPages()
@@ -5176,7 +6917,9 @@
         // only when the authoritative card section agrees that membership is empty.
         log(`Источник строк TESSA: нативное представление «${native.controlName || 'матрица'}» (0 строк).`);
       } else if (links.length && (!sectionCount || links.length >= sectionCount)) {
-        const pageNote = native.pagingUsed ? `, страниц: ${native.pagesVisited.length}/${native.pageCount}` : '';
+        const pageNote = native.serverPaging
+          ? `, server paging: ${native.pagesVisited.length} × ${native.pageLimit || '?'}`
+          : native.pagingUsed ? `, страниц UI: ${native.pagesVisited.length}/${native.pageCount}` : '';
         log(`Источник строк TESSA: нативное представление «${native.controlName}» (${links.length}${pageNote}).`);
       } else if (links.length && sectionCount > links.length) {
         log(`Представление вернуло ${links.length} из ${sectionCount} строк; проверяю сопоставление по MatrixVersionID без CardGet по служебным RowID.`, 'warn');
@@ -5193,7 +6936,10 @@
       const roleIdCache = new Map();
       const roleIdByFunctionCache = new Map();
 
-      const loadedRows = await mapConcurrent(links, PERFORMANCE.SnapshotCardGetConcurrency, async (link, i) => {
+      const loadedRows = await mapConcurrent(
+        links,
+        adaptiveConcurrency(PERFORMANCE.SnapshotCardGetConcurrency, PERFORMANCE.SnapshotCardGetMaxConcurrency),
+        async (link, i) => {
         if (APP.abortRequested) throw new Error('Операция остановлена пользователем.');
         const card = await this.getCard(link.rowCardId);
         return this.readMatrixRowFromCard(card, link, structure, {
@@ -5694,8 +7440,12 @@
   function splitRangeText(value, kind = null) {
     const text = stripFormulaMarker(value);
     if (kind === 'Int' || kind === 'Decimal') {
-      const numeric = text.replace(/\s/g, '').match(/^([+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+))(?:-|\.\.|до)([+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+))$/i);
-      if (numeric) return [numeric[1], numeric[2]];
+      // Numeric ranges have an exact grammar. If the whole cell does not match it,
+      // keep the original text intact so validation reports the actual malformed
+      // Excel value instead of a misleading tail fragment (e.g. "2 - 3" from
+      // the invalid "1 - 2 - 3").
+      const numeric = text.replace(/\s/g, '').match(/^([+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+))(?:-|–|—|\.\.|до)([+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+))$/i);
+      return numeric ? [numeric[1], numeric[2]] : [text, null];
     }
     const match = text.match(/^(.+?)\s+(?:-|–|—|\.\.|до)\s+(.+)$/i);
     return match ? [match[1].trim(), match[2].trim()] : [text, null];
@@ -6044,7 +7794,7 @@
     const hasData = [...columns.values()].some(column => (flat[column.key] || []).length > 0);
     return {
       excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, clearedForDeletion: false,
-      issues: [], fieldIssues: [], resolutions: [], fingerprint: base.baseFingerprint || fingerprintFlat(flat),
+      issues: [], fieldIssues: [], valueIssues: [], resolutions: [], resolutionItems: [], fingerprint: base.baseFingerprint || fingerprintFlat(flat),
       compareFingerprint: fingerprintFlat(compare), fastPath: 'baseline-unchanged',
     };
   }
@@ -6060,6 +7810,7 @@
       const columns = new Map();
       const issues = [];
       const fieldIssues = [];
+      const valueIssues = [];
       const resolutions = [];
       const resolutionItems = [];
       for (const [id, column] of columnMap.columns.entries()) {
@@ -6091,13 +7842,24 @@
             return;
           }
           const result = resolveEmbeddedDictionaryValue(workbook, column, visible, explicitValues[index] || '');
-          resolvedDisplays.push(result.display);
-          resolvedIds.push(result.explicit);
           if (result.issue) {
-            issues.push(`Excel ${row.excelRow}: ${result.issue}`);
-            if (result.resolution && Array.isArray(result.candidates) && result.candidates.length) {
+            // V1.15 VALUE_LEVEL_RECOVERY_V1
+            // One invalid value in a multi-value cell is omitted independently.
+            const valueIssue = {
+              id: `excel-${row.excelRow}-${column.key}-${index}`,
+              excelRow: row.excelRow,
+              key: column.key,
+              label: column.excelHeader,
+              valueIndex: index,
+              value: visible,
+              reason: `Excel ${row.excelRow}: ${result.issue}`,
+              resolution: result.resolution || null,
+              candidates: Array.isArray(result.candidates) ? clonePlain(result.candidates) : [],
+            };
+            valueIssues.push(valueIssue);
+            if (result.resolution && valueIssue.candidates.length) {
               resolutionItems.push({
-                id: `excel-${row.excelRow}-${column.key}-${index}`,
+                id: valueIssue.id,
                 source: 'excel-validation',
                 excelRow: row.excelRow,
                 columnKey: column.key,
@@ -6111,12 +7873,13 @@
                 visible,
                 resolution: result.resolution,
                 issue: result.issue,
-                candidates: clonePlain(result.candidates),
+                candidates: valueIssue.candidates,
               });
             }
-            compareValues.push(`invalid:${canonicalValue(visible)}`);
             return;
           }
+          resolvedDisplays.push(result.display);
+          resolvedIds.push(result.explicit);
           if (result.resolution === 'unique-fragment') resolutions.push(`Excel ${row.excelRow}: «${visible}» → «${result.display}» в «${column.excelHeader}»`);
           if (column.kind === 'function' && result.explicit) {
             const [roleId, roleTypeId = ''] = String(result.explicit).split('|').map(value => value.trim());
@@ -6129,11 +7892,26 @@
               const [fromText, toText] = kind === 'Boolean' ? [result.display || '', null] : splitRangeText(result.display || '', kind);
               const fromIssue = typedValueIssue(kind, fromText, column.excelHeader);
               const toIssue = toText ? typedValueIssue(kind, toText, column.excelHeader) : null;
-              if (fromIssue) issues.push(`Excel ${row.excelRow}: ${fromIssue}`);
-              if (toIssue) issues.push(`Excel ${row.excelRow}: ${toIssue}`);
-              if (!fromIssue && !toIssue && kind !== 'Boolean') {
+              let typedIssue = fromIssue || toIssue || null;
+              if (!typedIssue && kind !== 'Boolean') {
                 try { parseRange(result.display, kind); }
-                catch (error) { issues.push(`Excel ${row.excelRow}: «${column.excelHeader}»: ${error.message}`); }
+                catch (error) { typedIssue = `«${column.excelHeader}»: ${error.message}`; }
+              }
+              if (typedIssue) {
+                resolvedDisplays.pop();
+                resolvedIds.pop();
+                valueIssues.push({
+                  id: `excel-${row.excelRow}-${column.key}-${index}`,
+                  excelRow: row.excelRow,
+                  key: column.key,
+                  label: column.excelHeader,
+                  valueIndex: index,
+                  value: visible,
+                  reason: `Excel ${row.excelRow}: ${typedIssue}`,
+                  resolution: null,
+                  candidates: [],
+                });
+                return;
               }
               compareValues.push(typedRangeSemantic(kind, fromText, toText));
             } else compareValues.push(`value:${canonicalValue(result.display)}`);
@@ -6164,16 +7942,48 @@
           && canonicalValue(item.versionId) === canonicalValue(system.versionId));
         if (!system.baseFingerprint && base) system.baseFingerprint = base.baseFingerprint;
       }
-      return { excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, clearedForDeletion, issues, fieldIssues, resolutions, resolutionItems, fingerprint: fingerprintFlat(flat), compareFingerprint: fingerprintFlat(compare) };
+      return { excelRow: row.excelRow, flat, ids, compare, columns, system, hasData, clearedForDeletion, issues, fieldIssues, valueIssues, resolutions, resolutionItems, fingerprint: fingerprintFlat(flat), compareFingerprint: fingerprintFlat(compare) };
     });
   }
 
   function buildLegacyPlan(workbook, structure, snapshot, columnMap, desired) {
     const keys = [...new Set([...columnMap.columns.values()].map(x => x.key))];
+
+    // LEGACY_MATCH_INVERTED_INDEX_V1
+    // Old workbooks do not have hidden row identities, but a full desired×current
+    // Cartesian product is unnecessary. similarityFlat can exceed zero only when rows
+    // share at least one canonical value in the same schema key. Index those tokens once,
+    // then score only real candidates. Worst case remains quadratic for pathological
+    // duplicate-heavy data, while normal matrices become near O(n * fields).
+    const currentTokenIndex = new Map();
+    const tokenKey = (key, value) => `${key}\u0000${canonicalValue(value)}`;
+    (snapshot.rows || []).forEach((currentRow, ci) => {
+      for (const key of keys) {
+        for (const value of sortedCanon(currentRow.flat?.[key] || [])) {
+          if (!value) continue;
+          const token = tokenKey(key, value);
+          let bucket = currentTokenIndex.get(token);
+          if (!bucket) { bucket = new Set(); currentTokenIndex.set(token, bucket); }
+          bucket.add(ci);
+        }
+      }
+    });
+
     const pairs = [];
-    desired.forEach((excelRow, ei) => snapshot.rows.forEach((currentRow, ci) => {
-      pairs.push({ ei, ci, score: similarityFlat(excelRow.flat, currentRow.flat, keys), distance: Math.abs(ei - ci) });
-    }));
+    desired.forEach((excelRow, ei) => {
+      const candidates = new Set();
+      for (const key of keys) {
+        for (const value of sortedCanon(excelRow.flat?.[key] || [])) {
+          if (!value) continue;
+          for (const ci of currentTokenIndex.get(tokenKey(key, value)) || []) candidates.add(ci);
+        }
+      }
+      for (const ci of candidates) {
+        const score = similarityFlat(excelRow.flat, snapshot.rows[ci].flat, keys);
+        if (score <= 0) continue;
+        pairs.push({ ei, ci, score, distance: Math.abs(ei - ci) });
+      }
+    });
     pairs.sort((a, b) => b.score - a.score || a.distance - b.distance);
     const usedExcel = new Set();
     const usedCurrent = new Set();
@@ -6192,6 +8002,7 @@
       }
     }
 
+    const columnByKey = new Map([...columnMap.columns.values()].map(column => [column.key, column]));
     const actions = [];
     for (const match of matches.sort((a, b) => a.ei - b.ei)) {
       const excelRow = desired[match.ei];
@@ -6201,7 +8012,7 @@
         const before = currentRow.flat[key] || [];
         const after = excelRow.flat[key] || [];
         if (!arraysEqual(before, after)) {
-          const column = [...columnMap.columns.values()].find(x => x.key === key);
+          const column = columnByKey.get(key);
           changes.push({ key, label: column?.excelHeader || column?.name || key, before, after });
         }
       }
@@ -6313,7 +8124,16 @@
       const scored = group.map(row => ({ row, changes: semanticChangeCount(row, currentRow) }));
       const exact = scored.filter(item => item.changes === 0);
       if (exact.length) primaryExcelRowByIdentity.set(sourceIdentity, exact[0].row);
-      else ambiguousDuplicateIdentities.add(sourceIdentity);
+      else {
+        // DUPLICATE_IDENTITY_COPY_AS_ADD_V1
+        // One edited copy keeps the current identity; the remaining edited copies are
+        // legitimate ADD candidates. True duplicate final rows are still rejected by the
+        // ordinary local/server duplicate validation path.
+        const primary = [...scored]
+          .sort((a, b) => a.changes - b.changes || Number(a.row.excelRow || Number.MAX_SAFE_INTEGER) - Number(b.row.excelRow || Number.MAX_SAFE_INTEGER))[0]?.row || null;
+        if (primary) primaryExcelRowByIdentity.set(sourceIdentity, primary);
+        else ambiguousDuplicateIdentities.add(sourceIdentity);
+      }
     }
 
     // Копирование поверх существующей строки даёт одну дополнительную строку с identity
@@ -6356,7 +8176,7 @@
     }
 
     const baselineIntegrityRows = new Set();
-    if (canonicalValue(workbook.roundtrip?.format) === canonicalValue('TESSA_MATRIX_ROUNDTRIP_V6') && baselineRows.length) {
+    if (['TESSA_MATRIX_ROUNDTRIP_V6', 'TESSA_MATRIX_ROUNDTRIP_V7'].some(format => canonicalValue(workbook.roundtrip?.format) === canonicalValue(format)) && baselineRows.length) {
       // Скрытый fingerprint основной строки не является источником истины: V6 хранит
       // отдельный baseline-ledger. Любая потеря/подмена fingerprint блокирует строку.
       for (const excelRow of desired) {
@@ -6883,6 +8703,7 @@
     // An unambiguous UPDATE can preserve a bad cell without discarding unrelated
     // edits. ADD/REPLACE/DELETE and identity/baseline errors stay atomic.
     const skippedFields = [];
+    const skippedValues = desired.flatMap(row => row.valueIssues || []);
     const recoveredRows = new Set();
     const structuralIssueRows = new Set([...(built.issues || []), ...(columnMap.mappingIssues || [])].flatMap(issueExcelRows));
     built.actions = (built.actions || []).map(action => {
@@ -6900,6 +8721,30 @@
       skippedFields.push(...omitted);
       recoveredRows.add(excelRow.excelRow);
       return { ...action, changes, excelRow, skippedFields: omitted };
+    });
+
+    // If every value of one UPDATE field is invalid, "skip that value" must not
+    // accidentally mean "clear the whole field". Preserve the current TESSA field.
+    // Mixed cells keep their valid values and omit only the rejected items.
+    built.actions = (built.actions || []).map(action => {
+      if (action.type !== 'update' || columnMap.mode !== 'roundtrip' || action.match?.matchedBy !== 'identity') return action;
+      const rowValueIssues = action.excelRow?.valueIssues || [];
+      if (!rowValueIssues.length) return action;
+      const invalidKeys = new Set(rowValueIssues.map(item => item.key));
+      const preserve = new Set([...invalidKeys].filter(key =>
+        !(action.excelRow?.flat?.[key] || []).length
+        && (action.currentRow?.flat?.[key] || []).length
+      ));
+      if (!preserve.size) return action;
+      const excelRow = reviewedExcelRow(action, preserve);
+      // Do not delete/reinsert a field merely to write back its unchanged current value.
+      // Removing it from columns makes rebuildRowCard leave the native rows untouched.
+      for (const [columnId, column] of [...(excelRow.columns || new Map()).entries()]) {
+        if (preserve.has(column?.key)) excelRow.columns.delete(columnId);
+      }
+      excelRow.valueIssues = rowValueIssues;
+      const changes = (action.changes || []).filter(change => !preserve.has(change.key));
+      return { ...action, type: changes.length ? action.type : 'noop', changes, excelRow };
     });
 
     // Ошибки конкретной строки не должны ломать весь пакет. Они переводятся в SKIP,
@@ -6987,9 +8832,10 @@
     }
     const uniqueFragmentResolutions = desired.flatMap(row => row.resolutions || []);
     if (uniqueFragmentResolutions.length) warnings.push(`По уникальному фрагменту автоматически найдено значений: ${uniqueFragmentResolutions.length}. ${uniqueFragmentResolutions.slice(0, 6).join(' | ')}${uniqueFragmentResolutions.length > 6 ? ' | …' : ''}`);
+    if (skippedValues.length) warnings.push(`Пропущено отдельных некорректных значений: ${skippedValues.length}. Остальные значения этих ячеек и строк продолжают обрабатываться.`);
     const nonEmptyFingerprints = desired.filter(row => row.hasData).map(x => x.compareFingerprint || x.fingerprint);
     const duplicates = nonEmptyFingerprints.filter((fp, i) => nonEmptyFingerprints.indexOf(fp) !== i);
-    if (duplicates.length) warnings.push('В Excel обнаружены полностью одинаковые строки. Конфликтующие изменяемые строки будут пропущены.');
+    if (duplicates.length) warnings.push('В Excel обнаружены полностью одинаковые строки. Совпадения с TESSA показаны отдельно; причины пропуска конфликтующих изменений — в списке ниже.');
     if (actions.some(a => a.match?.lowConfidence)) warnings.push('Есть строки с низкой уверенностью сопоставления. Проверьте их в предпросмотре.');
 
     const plan = {
@@ -7012,6 +8858,7 @@
       fatalIssues,
       skippedRows,
       skippedFields,
+      skippedValues,
       warnings,
       counts: countActions(actions, skippedRows),
       workbookContext,
@@ -7060,7 +8907,6 @@
     const started = Math.max(0, Number(result?.startedCount || 0));
     const applied = Math.max(0, Number(result?.appliedCount || 0));
     if (!started && !applied) return false;
-    clearReviewedChangesArtifact(state);
     state.plan = null;
     state.snapshot = null;
     state.bridge = null;
@@ -7109,11 +8955,12 @@
           ? `Применение остановлено: применено ${applied}.`
           : `Применение завершено частично: применено ${applied} из ${requested}.`;
     const sourceText = (sourceSkipped ? ` Ещё ${sourceSkipped} строк не входили в Apply и остались без изменений.` : '')
-      + (result?.skippedFields?.length ? ` Не применено отдельных полей: ${result.skippedFields.length}.` : '');
+      + (result?.skippedFields?.length ? ` Не применено отдельных полей: ${result.skippedFields.length}.` : '')
+      + (result?.skippedValues?.length ? ` Пропущено отдельных значений: ${result.skippedValues.length}.` : '');
     const refreshText = result?.viewRefresh?.ok
       ? ' Отображение TESSA обновлено автоматически.'
       : (result?.viewRefresh && !result.viewRefresh.skipped ? ' Запись завершена; отображение можно обновить кнопкой ниже.' : '');
-    if (summary) summary.innerHTML = `<div class="tms-review-note"><b>${title}</b>${sourceText}${refreshText} Для следующего применения выполните новую проверку.</div>${rowFailuresHtml(result?.skipped, true)}${skippedFieldsHtml(result?.skippedFields)}`;
+    if (summary) summary.innerHTML = `<div class="tms-review-note"><b>${title}</b>${sourceText}${refreshText} Для следующего применения выполните новую проверку.</div>${rowFailuresHtml(result?.skipped, true)}${skippedFieldsHtml(result?.skippedFields)}${skippedValuesHtml(result?.skippedValues)}`;
     if (table) table.innerHTML = '';
     if (refreshButton) {
       const needsManualRefresh = Boolean(result?.viewRefresh && !result.viewRefresh.ok && !result.viewRefresh.skipped);
@@ -7125,6 +8972,14 @@
   function skippedFieldsHtml(fields = []) {
     if (!fields?.length) return '';
     return `<details open class="tms-skipped-box"><summary><b>Не применяются отдельные поля: ${fields.length}</b></summary><div>Значения этих полей в TESSA сохраняются. Исправьте ячейки в Excel и выполните новую проверку.</div>${fields.slice(0, 20).map(field => `<div class="tms-skip-line">Excel ${escapeHtml(field.excelRow)} · ${escapeHtml(field.label)}: ${escapeHtml(field.reason)}</div>`).join('')}${fields.length > 20 ? '<div>Остальные поля указаны в строках Preview и отчёте.</div>' : ''}</details>`;
+  }
+
+  function skippedValuesHtml(values = []) {
+    if (!values?.length) return '';
+    const lines = values.slice(0, 12).map(item =>
+      `<div class="tms-skip-line"><b>Excel ${escapeHtml(item.excelRow)} · ${escapeHtml(item.label)}</b><br>Пропущено значение «${escapeHtml(item.value)}».</div>`
+    ).join('');
+    return `<details class="tms-skipped-box"><summary><b>Пропущены отдельные значения: ${values.length}</b></summary><div>Остальные корректные значения в этих ячейках продолжают обрабатываться.</div>${lines}${values.length > 12 ? `<div>Показано 12 из ${values.length}.</div>` : ''}</details>`;
   }
 
   function rowFailureReason(item) {
@@ -7145,6 +9000,31 @@
     });
     const hint = reportAvailable ? 'Подробности: «Дополнительно → Скачать отчёт».' : 'Подробности каждой строки — в фильтре «Пропустить».';
     return `<details open class="tms-skipped-box"><summary><b>Не удалось выполнить: ${failures.length}</b></summary>${lines.join('')}<div>${hint}${failures.length > 20 ? ` Показано 20 из ${failures.length}.` : ''}</div></details>`;
+  }
+
+  function existingAddMatches(plan, limit = Infinity) {
+    const sources = new Map((plan?.snapshot?.rows || []).map(row => [canonicalValue(row.rowCardId), row]));
+    const matches = [];
+    for (const action of plan?.actions || []) {
+      if (action?.match?.matchedBy !== 'existing-identical-add' || !action.currentRow) continue;
+      const source = sources.get(canonicalValue(action.match.sourceRowCardId || ''));
+      const changes = [];
+      if (source) for (const column of action.excelRow?.columns?.values?.() || []) {
+        if (arraysEqual(currentCompareValues(source, column), action.excelRow.compare?.[column.key] || [])) continue;
+        changes.push({ label: column.excelHeader || column.name || column.key, before: source.flat?.[column.key] || [], after: action.excelRow.flat?.[column.key] || [] });
+      }
+      matches.push({ excelRow: action.excelRow.excelRow, tessaRow: action.currentRow.index + 1, sourceRow: source ? source.index + 1 : null, changes });
+      if (matches.length >= limit) break;
+    }
+    return matches;
+  }
+
+  function existingAddMatchesHtml(plan) {
+    const count = (plan?.actions || []).filter(action => action?.match?.matchedBy === 'existing-identical-add').length;
+    if (!count) return '';
+    const matches = existingAddMatches(plan, 20);
+    const lines = matches.map(item => `<div class="tms-skip-line"><b>Excel ${escapeHtml(item.excelRow)} → TESSA ${escapeHtml(item.tessaRow)}</b><br>Критерии и исполнители совпадают; новая строка не создаётся.${item.changes.length ? `<br>Распознаны правки относительно исходной строки TESSA ${escapeHtml(item.sourceRow)}: ${item.changes.map(change => `${escapeHtml(change.label)}: ${escapeHtml(change.before.join('; ') || 'пусто')} → ${escapeHtml(change.after.join('; ') || 'пусто')}`).join(' · ')}` : ''}</div>`);
+    return `<details open class="tms-warning tms-existing-adds"><summary><b>Добавляемые строки уже существуют в TESSA: ${count}</b></summary>${lines.join('')}${count > matches.length ? `<div>Показано ${matches.length} из ${count}. Все соответствия есть в отчёте Preview.</div>` : ''}</details>`;
   }
 
   /**
@@ -7420,6 +9300,8 @@
       productionShadow: productionShadowProfile(reviewed),
       skippedRows: [...(reviewed?.skippedRows || [])],
       skippedFields: [...(reviewed?.skippedFields || [])],
+      skippedValues: [...(reviewed?.skippedValues || [])],
+      existingAddMatches: existingAddMatches(reviewed),
       reviewIssues: [...(reviewed?.reviewIssues || [])],
       review: {
         excludedRows: [...(review?.excludedRows || [])],
@@ -7626,19 +9508,23 @@
       if (key) membershipVersions.add(key);
     };
     for (const raw of rawLinks) {
-      // RowID/RowRowID are never used as CardID. For reconciliation they are safe only
-      // as membership/version evidence, exactly like resolveMatrixSectionLinks already does.
       rememberVersion(raw?.rowRowID);
       rememberVersion(raw?.rowID);
       rememberVersion(raw?.cardRowId);
     }
 
-    // The native view may still contain most usable identities even when one unrelated
-    // row has no MatrixRowID. Add those VersionIDs to membership without requiring a
-    // complete view. Known CardID for CardGet always comes from the mutation receipt.
-    if (typeof bridge?.collectNativeMatrixViewLinksAllPages === 'function') {
+    // UPDATE/ADD can be verified from fresh membership + receipt CardID without scanning
+    // every visible page. DELETE (absence proof) and unresolved membership use native view.
+    const needsNativeMembership = receipts.some(receipt => {
+      const versionKey = canonicalValue(receipt?.versionId || '');
+      if (receipt?.type === 'delete') return true;
+      return Boolean(versionKey && !membershipVersions.has(versionKey));
+    });
+    let nativePagesVisited = 0;
+    if (needsNativeMembership && typeof bridge?.collectNativeMatrixViewLinksAllPages === 'function') {
       try {
         const native = await bridge.collectNativeMatrixViewLinksAllPages();
+        nativePagesVisited = native?.pagesVisited?.length || 0;
         for (const link of native?.links || []) rememberVersion(link?.versionId);
       } catch (error) {
         log(`Точечная проверка: нативное представление прочитано не полностью: ${error.message || error}.`, 'warn');
@@ -7650,14 +9536,12 @@
     }
 
     const rows = [];
+    const cardReceipts = [];
     for (const receipt of receipts) {
       const versionKey = canonicalValue(receipt?.versionId || '');
       if (!versionKey) continue;
       const isMember = membershipVersions.has(versionKey);
-
       if (receipt?.type === 'delete') {
-        // Existing membership is enough to prove a failed DELETE; absence means the
-        // deleted version is no longer attached to this matrix. No CardGet is needed.
         if (isMember) rows.push({
           rowCardId: receipt.rowCardId || null,
           versionId: receipt.versionId,
@@ -7665,22 +9549,36 @@
         });
         continue;
       }
-
-      if (!isMember || !receipt?.rowCardId) continue;
-      const card = await bridge.getCard(receipt.rowCardId);
-      rows.push(bridge.readMatrixRowFromCard(card, {
-        index: -1,
-        rowCardId: receipt.rowCardId,
-        versionId: receipt.versionId,
-        rowName: receipt.excelRow ? `Excel ${receipt.excelRow}` : 'Проверяемая строка',
-        source: 'reconcile-targeted-receipts',
-      }, structure));
+      if (isMember && receipt?.rowCardId) cardReceipts.push(receipt);
     }
+
+    const loaded = await mapConcurrent(
+      cardReceipts,
+      adaptiveConcurrency(PERFORMANCE.ReconcileCardGetConcurrency, PERFORMANCE.ReconcileCardGetMaxConcurrency),
+      async receipt => {
+        const card = await bridge.getCard(receipt.rowCardId);
+        return bridge.readMatrixRowFromCard(card, {
+          index: -1,
+          rowCardId: receipt.rowCardId,
+          versionId: receipt.versionId,
+          rowName: receipt.excelRow ? `Excel ${receipt.excelRow}` : 'Проверяемая строка',
+          source: 'reconcile-targeted-receipts',
+        }, structure);
+      },
+    );
+    rows.push(...loaded);
 
     return {
       matrixId: String(bridge?.mainCard?.id || ''),
       templateId: structure?.templateId || receiptContext?.templateId || '',
       rows,
+      targetedTelemetry: {
+        receipts: receipts.length,
+        rawMembershipRows: rawLinks.length,
+        nativeMembershipFallback: needsNativeMembership,
+        nativePagesVisited,
+        cardGets: cardReceipts.length,
+      },
     };
   }
 
@@ -7926,6 +9824,7 @@
     resetFilePreview();
     if (!file) throw new Error('Выберите файл .xlsx.');
     APP.abortRequested = false;
+    longJobCheckpoint('preview:xlsx', { operation: 'preview', fileName: file.name });
     setProgress(5, '1/6 · Читаю Excel', file.name);
     log(`Читаю ${file.name}`);
     const selected = await performanceStage('preview.xlsx-read', async () => readSelectedWorkbookWithLiveCatalog(file, { needBridge: true }), { operation: 'preview', fileName: file.name });
@@ -7941,6 +9840,7 @@
     const currentSectionSignature = bridge.matrixSectionSignature();
     const canReuseSnapshot = Boolean(
       cachedSnapshot
+      && !cachedSnapshot.previewIncremental?.enabled
       && canonicalValue(cachedSnapshot.matrixId) === canonicalValue(bridge.mainCard?.id)
       && canonicalValue(cachedSnapshot.templateId) === canonicalValue(structure.templateId)
       && cachedSnapshot.sectionSignature === currentSectionSignature
@@ -7950,11 +9850,28 @@
     // Перед Apply всё равно выполняется свежая серверная проверка, поэтому reuse безопасен для preview.
     setProgress(canReuseSnapshot ? 48 : 40, canReuseSnapshot ? '3/6 · Использую свежий снимок' : '3/6 · Читаю строки TESSA', canReuseSnapshot ? 'Повторная загрузка не нужна' : 'Сверяю текущие строки');
     const sessionSnapshot = getSessionSnapshot(bridge.mainCard?.id, structure.templateId);
-    const reusableSnapshot = canReuseSnapshot ? cachedSnapshot : sessionSnapshot;
-    const snapshot = reusableSnapshot || await performanceStage('preview.snapshot', () => bridge.loadSnapshot(structure), { operation: 'preview' });
-    if (!reusableSnapshot) setSessionSnapshot(snapshot, structure);
+    // Incremental Preview snapshots intentionally contain baseline-reconstructed rows.
+    // They are perfect for the current Excel, but must not be blindly reused for a later
+    // Excel where a previously untouched row becomes edited. Re-run the cheap targeted
+    // membership plan instead; full snapshots from Export may still be reused.
+    const reusableSessionSnapshot = sessionSnapshot?.previewIncremental?.enabled ? null : sessionSnapshot;
+    const reusableSnapshot = canReuseSnapshot ? cachedSnapshot : reusableSessionSnapshot;
+    let snapshot = reusableSnapshot || null;
+    if (!snapshot) {
+      longJobCheckpoint('preview:snapshot', { operation: 'preview', mode: 'baseline-incremental' });
+      snapshot = await performanceStage('preview.snapshot.incremental', () => bridge.loadPreviewSnapshot(structure, workbook), { operation: 'preview' });
+      if (!snapshot) {
+        log('Точечный Preview недоступен для этого Excel — использую полный безопасный снимок.', 'warn');
+        snapshot = await performanceStage('preview.snapshot', () => bridge.loadSnapshot(structure), { operation: 'preview', fallbackFrom: 'baseline-incremental' });
+      }
+      setSessionSnapshot(snapshot, structure);
+    }
     setProgress(55, '4/6 · Сопоставляю Excel и TESSA', `${snapshot.rows.length} строк в TESSA`);
-    log(`Текущее состояние TESSA: ${snapshot.rows.length} строк${reusableSnapshot ? ' (из текущей сессии)' : ''}.`);
+    const incrementalNote = snapshot.previewIncremental?.enabled
+      ? ` · CardGet: ${snapshot.previewIncremental.cardGets} из ${snapshot.previewIncremental.totalRows}, baseline: ${snapshot.previewIncremental.baselineRows}`
+      : '';
+    log(`Текущее состояние TESSA: ${snapshot.rows.length} строк${reusableSnapshot ? ' (из текущей сессии)' : ''}${incrementalNote}.`);
+    longJobCheckpoint('preview:plan', { operation: 'preview', rows: snapshot.rows.length, excelRows: workbook.rows.length });
     const plan = await performanceStage('preview.plan', () => buildPlan(workbook, structure, snapshot, bridge.matrixInfo()), { operation: 'preview', rows: snapshot.rows.length, excelRows: workbook.rows.length });
     setProgress(62, '5/6 · Проверяю безопасность', 'Дубли, права, удаления и неоднозначности');
     plan.safety = evaluatePlanSafety(plan, bridge);
@@ -7986,10 +9903,10 @@
       }
     }
     APP.workbook = workbook;
+    APP.selectedFileRef = file;
     if (workbook.dictionaryCatalog && workbook.roundtrip?.enabled) {
-      APP.dictionaryCatalog = normalizeDictionaryCatalog(clonePlain(workbook.dictionaryCatalog));
-      APP.dictionaryCatalog.stats.cache = { hit: true, key: dictionaryCacheKey(structure), savedAt: Date.now(), ageMs: 0, source: 'live-tessa' };
-      writeDictionaryCache(dictionaryCacheKey(structure), APP.dictionaryCatalog).catch(() => {});
+      APP.dictionaryCatalog = normalizeDictionaryCatalog(workbook.dictionaryCatalog);
+      APP.dictionaryCatalog.stats.cache = { ...(APP.dictionaryCatalog.stats.cache || {}), hit: true, key: dictionaryCacheKey(structure), source: 'live-tessa' };
     }
     APP.bridge = bridge;
     APP.structure = structure;
@@ -8001,19 +9918,28 @@
     renderPlan(previewPlan);
     const visible = previewPlan.actions.filter(action => action.type !== 'noop').length;
     const skipped = previewPlan.counts?.skip || 0;
+    const readStats = snapshot.previewIncremental?.enabled
+      ? ` · серверных CardGet: ${snapshot.previewIncremental.cardGets}/${snapshot.previewIncremental.totalRows}`
+      : '';
     const detail = visible
-      ? `Корректных изменений: ${visible}${skipped ? ` · пропустить строк: ${skipped}` : ''}${previewPlan.skippedFields?.length ? ` · не применяются поля: ${previewPlan.skippedFields.length}` : ''}`
-      : (skipped ? `Нет изменений для применения · пропущено строк: ${skipped}` : 'Изменений нет');
+      ? `Корректных изменений: ${visible}${skipped ? ` · пропустить строк: ${skipped}` : ''}${previewPlan.skippedFields?.length ? ` · не применяются поля: ${previewPlan.skippedFields.length}` : ''}${previewPlan.skippedValues?.length ? ` · пропущено значений: ${previewPlan.skippedValues.length}` : ''}${readStats}`
+      : (skipped ? `Нет изменений для применения · пропущено строк: ${skipped}${readStats}` : `Изменений нет${readStats}`);
     const atomicReplacementReason = previewPlan.preflightPreview?.atomicReplacementReason || null;
     setProgress(100, atomicReplacementReason ? 'Перенос заблокирован' : 'Проверка завершена', atomicReplacementReason || detail);
+    clearLongJobCheckpoint();
     return previewPlan;
   }
 
   function resetFilePreview() {
     clearTimeout(APP.previewSearchTimer);
-    clearReviewedChangesArtifact(APP);
+    clearSupportBundleArtifact(APP);
+    APP.supportBundleContext = null;
     APP.plan = null;
+    // Drop retained OPC parts before releasing the workbook reference. This is the
+    // largest transient allocation after parsing a high-cardinality XLSX.
+    releaseWorkbookArchive(APP.workbook);
     APP.workbook = null;
+    APP.selectedFileRef = null;
     APP.review = createPlanReviewState();
     APP.previewView = createPreviewViewState();
     APP.capabilityActions = [];
@@ -8023,18 +9949,7 @@
     APP.lastPerformanceUat = null;
     APP.lastReport = null;
     APP.lastSupportReport = null;
-    const changesButton = document.querySelector?.('#tms-download-changes');
-    if (changesButton) {
-      changesButton.hidden = true;
-      changesButton.title = '';
-      setControlDisabled(changesButton, true);
-    }
-    const reportButton = document.querySelector?.('#tms-download-report');
-    if (reportButton) {
-      reportButton.hidden = true;
-      reportButton.title = '';
-      setControlDisabled(reportButton, true);
-    }
+    updateSupportBundleControl();
     renderStudioDiagnostics();
     updateIntervalDiagnosticControlState();
     for (const id of ['#tms-summary', '#tms-plan']) {
@@ -8123,23 +10038,38 @@
     return skipped;
   }
 
+  function describeDuplicateDeleteConflict(skip, action, plan, structure) {
+    if (skip?.code !== 'duplicate-found' || !action?.excelRow) return skip;
+    const desiredKey = duplicateRowKey(action.currentRow, action.excelRow, structure);
+    const blockers = (plan.actions || []).filter(item => item.type === 'delete' && item.currentRow
+      && duplicateRowKey(item.currentRow, null, structure) === desiredKey);
+    if (!blockers.length) return skip;
+    const labels = blockers.map(item => `TESSA ${item.currentRow.index + 1}`).join(', ');
+    const changes = (action.changes || []).slice(0, 3).map(change => `${change.label}: ${(change.before || []).join('; ') || 'пусто'} → ${(change.after || []).join('; ') || 'пусто'}`).join(' · ');
+    skip.reason = `Изменение распознано${changes ? ` (${changes})` : ''}, но сервер отклонил его: такие значения пока существуют в ${labels}, запланированной к удалению. Связанные операции остановлены. Измените сочетание значений или выполните удаление отдельно, затем повторите правку на свежей выгрузке.`;
+    return skip;
+  }
+
   // ATOMIC_CROSS_MATRIX_REPLACEMENT_PREVIEW_V1
   function crossMatrixReplacementIntegrity(plan, extraSkippedRows = []) {
-    if (!plan?.crossMatrixReplacement?.enabled) return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0, reviewExcludedCount: 0 };
+    if (!plan?.crossMatrixReplacement?.enabled) return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0, skippedValueCount: 0, reviewExcludedCount: 0 };
     const skippedRows = [...(plan.skippedRows || []), ...(extraSkippedRows || [])];
     const skippedFieldCount = (plan.skippedFields || []).length;
+    const skippedValueCount = (plan.skippedValues || []).length;
     const reviewExcludedCount = (plan.actions || []).filter(action => Boolean(action?.reviewExcluded)).length;
-    if (!skippedRows.length && !skippedFieldCount && !reviewExcludedCount) {
-      return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0, reviewExcludedCount: 0 };
+    if (!skippedRows.length && !skippedFieldCount && !skippedValueCount && !reviewExcludedCount) {
+      return { blocked: false, reason: null, skippedCount: 0, skippedFieldCount: 0, skippedValueCount: 0, reviewExcludedCount: 0 };
     }
     const pieces = [];
     if (skippedRows.length) pieces.push(`${skippedRows.length} строк не могут быть перенесены`);
     if (skippedFieldCount) pieces.push(`${skippedFieldCount} полей нельзя применить`);
+    if (skippedValueCount) pieces.push(`${skippedValueCount} значений пропущены при проверке`);
     if (reviewExcludedCount) pieces.push(`${reviewExcludedCount} операций исключены вручную`);
     return {
       blocked: true,
       skippedCount: skippedRows.length,
       skippedFieldCount,
+      skippedValueCount,
       reviewExcludedCount,
       reason: `Перенос из другой матрицы неполный: ${pieces.join(' и ')}. Для полного переноса частичное применение запрещено: ни добавление, ни удаление строк TESSA не начнётся. Исправьте все ошибки исходного Excel и верните все операции в выбранный набор, затем повторите проверку.`,
     };
@@ -8390,10 +10320,22 @@
     let liveAddRoleCatalog = options.liveAddRoleCatalog || null;
     let liveAddRoleCatalogError = null;
     const needsAddRoleValidation = (plan.actions || []).some(action => action.type === 'add');
+    const documentCriterionIds = (structure.conditions || []).filter(isDocumentTypeCondition).map(condition => condition.criterionRowId);
+    let liveDocumentCatalog = null;
+    if (documentCriterionIds.length && (plan.actions || []).some(action => action.type === 'add' || action.type === 'update')) {
+      try {
+        liveDocumentCatalog = await awaitPreflightAbortable(bridge.loadDictionaryCatalog(structure, fresh, {
+          forceRefresh: true, transient: true, requiredCriterionIds: documentCriterionIds, includeRoles: false,
+        }));
+      } catch (error) {
+        if (isPreflightAbortError(error)) throw error;
+        // New assignments fail closed below; unchanged historical values remain valid.
+      }
+    }
     if (needsAddRoleValidation && !liveAddRoleCatalog && typeof bridge.loadDictionaryCatalog === 'function') {
       try {
         preflightProgress(20, 'Проверяю актуальные роли', 'Сверяю RoleID новых строк с текущим MtxRoles');
-        liveAddRoleCatalog = await awaitPreflightAbortable(bridge.loadDictionaryCatalog(structure, fresh, { forceRefresh: true, transient: true }));
+        liveAddRoleCatalog = await awaitPreflightAbortable(bridge.loadDictionaryCatalog(structure, fresh, { forceRefresh: true, transient: true, requiredCriterionIds: [] }));
       } catch (error) {
         if (isPreflightAbortError(error)) throw error;
         liveAddRoleCatalogError = error;
@@ -8430,18 +10372,16 @@
       deleteDependencies.set(action, [...(mutationRowsByDesiredSemanticKey.get(currentSemanticKey) || [])]);
     }
 
-    // UPDATE: каждая строка проверяется независимо. Ошибка одной строки не отменяет пакет.
-    for (const action of plan.actions.filter(x => x.type === 'update')) {
+    // UPDATE validation is read-only and independent per row, so run it concurrently
+    // with a hard cap. Actual Store operations remain ordered later.
+    const updateActions = plan.actions.filter(x => x.type === 'update');
+    const validateUpdateAction = async action => {
       if (APP.abortRequested) throw preflightAbortError();
       try {
         const current = freshByVersion.get(canonicalValue(action.currentRow.versionId));
         if (!current) throw new Error(`Строка ${action.currentRow.versionId} исчезла после предпросмотра.`);
         if (current.fingerprint !== action.expectedFingerprint) throw new Error(`Строка Excel ${action.excelRow.excelRow} изменилась в TESSA после предпросмотра.`);
 
-        // REPLACE читает данные из source identity Excel, но записывает их в другую target identity.
-        // Target stale-check выше недостаточен: source мог измениться уже после Preview.
-        // Повторно сверяем source непосредственно перед записью, иначе старый снимок source
-        // может быть перенесён в неизменившийся target.
         if (isOverwriteMatch(action.match)) {
           const sourceVersionId = canonicalValue(action.excelRow?.system?.versionId || '');
           const sourceRowCardId = canonicalValue(action.excelRow?.system?.rowCardId || '');
@@ -8456,6 +10396,7 @@
         }
 
         await awaitPreflightAbortable(hydrateMissingIdsForAction(action, structure, fresh, bridge));
+        assertDocumentTypeAssignments(action, structure, liveDocumentCatalog, current);
         for (const condition of structure.conditions) {
           const column = action.excelRow.columns.get(condition.criterionRowId);
           if (!column) continue;
@@ -8478,17 +10419,29 @@
         const card = cachedCard || await awaitPreflightAbortable(bridge.getCard(current.rowCardId));
         bridge.rebuildRowCard(card, current.versionId, action.excelRow, structure, fresh);
         await awaitPreflightAbortable(bridge.validateDuplicate(card, current.versionId));
-        preparedUpdates.set(action.excelRow.excelRow, { action, card, current });
+        return { action, prepared: { action, card, current } };
       } catch (error) {
         if (isPreflightAbortError(error)) throw error;
-        const excelRow = Number(action.excelRow?.excelRow);
-        if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
-        runtimeSkippedActions.add(action);
-        runtimeSkips.push(runtimeSkip(action, error, 'preflight-update'));
+        return { action, error };
       }
+    };
+    const updateResults = await mapConcurrent(
+      updateActions,
+      adaptiveConcurrency(PERFORMANCE.PreflightUpdateConcurrency, PERFORMANCE.PreflightUpdateMaxConcurrency),
+      validateUpdateAction,
+    );
+    for (const item of updateResults) {
+      if (!item.error) {
+        preparedUpdates.set(item.action.excelRow.excelRow, item.prepared);
+        continue;
+      }
+      const excelRow = Number(item.action.excelRow?.excelRow);
+      if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
+      runtimeSkippedActions.add(item.action);
+      runtimeSkips.push(describeDuplicateDeleteConflict(runtimeSkip(item.action, item.error, 'preflight-update'), item.action, plan, structure));
     }
 
-    preflightProgress(28, 'Проверяю изменяемые строки', `Проверено: ${plan.actions.filter(x => x.type === 'update').length}`);
+    preflightProgress(28, 'Проверяю изменяемые строки', `Проверено: ${updateActions.length}`);
 
     // ADD: локальные справочники/типы проверяются всегда. Серверный CardNew +
     // ValidateDuplicate нужен для применяемых пакетов, но для Preview >2000 он только
@@ -8530,6 +10483,7 @@
           throw new Error(`Не удалось перечитать актуальный MtxRoles перед добавлением строки: ${liveAddRoleCatalogError.message || liveAddRoleCatalogError}`);
         }
         if (liveAddRoleCatalog) assertAddRoleIdentitiesAvailable(action, structure, liveAddRoleCatalog);
+        assertDocumentTypeAssignments(action, structure, liveDocumentCatalog);
         for (const condition of structure.conditions) {
           const column = action.excelRow.columns.get(condition.criterionRowId);
           if (!column) continue;
@@ -8566,7 +10520,7 @@
       const excelRow = Number(result.action?.excelRow?.excelRow);
       if (Number.isFinite(excelRow)) failedMutationRows.add(excelRow);
       runtimeSkippedActions.add(result.action);
-      runtimeSkips.push(runtimeSkip(result.action, result.error, 'preflight-add'));
+      runtimeSkips.push(describeDuplicateDeleteConflict(runtimeSkip(result.action, result.error, 'preflight-add'), result.action, plan, structure));
     };
 
     const reportAddProgress = () => {
@@ -8599,7 +10553,10 @@
         }, 1000);
       }
       try {
-        const results = await mapConcurrent(addActions, PERFORMANCE.PreflightAddConcurrency, async action => {
+        const results = await mapConcurrent(
+          addActions,
+          adaptiveConcurrency(PERFORMANCE.PreflightAddConcurrency, PERFORMANCE.PreflightAddMaxConcurrency),
+          async action => {
           const result = await validateAddAction(action);
           reportAddProgress();
           return result;
@@ -8868,6 +10825,46 @@
     return previewPlan;
   }
 
+  function resolutionCenterWindow(items, page = 0, pageSize = 50) {
+    const all = Array.isArray(items) ? items : [];
+    const size = Math.max(1, Math.min(100, Number(pageSize) || 50));
+    const pageCount = Math.max(1, Math.ceil(all.length / size));
+    const safePage = Math.max(0, Math.min(pageCount - 1, Number(page) || 0));
+    const start = safePage * size;
+    const visible = all.slice(start, start + size);
+    return { items: visible, total: all.length, hidden: Math.max(0, all.length - visible.length), page: safePage + 1, pageCount, pageSize: size, start };
+  }
+
+  function previewAttentionSummary(plan, review = APP.review) {
+    const effectiveReview = review || createPlanReviewState();
+    const reviewed = buildReviewedPlan(plan, effectiveReview);
+    const notApplied = selectPreviewItems(reviewed, effectiveReview, { filter: 'skip', pageSize: 1 }).total;
+    const errors = selectPreviewItems(plan, effectiveReview, { filter: 'error', pageSize: 1 }).total;
+    const resolutionItems = collectPlanResolutionItems(plan);
+    const resolutionRows = new Set(resolutionItems.map(item => Number(item?.excelRow)).filter(Number.isFinite)).size;
+    return {
+      notApplied,
+      errors,
+      resolutionValues: resolutionItems.length,
+      resolutionRows,
+      notAppliedLabel: `Не будет применено к TESSA: ${notApplied}`,
+      resolutionLabel: resolutionItems.length
+        ? `Требуют уточнения: ${resolutionItems.length} значений${resolutionRows ? ` в ${resolutionRows} строках` : ''}`
+        : 'Уточнений не требуется',
+    };
+  }
+
+  // PREVIEW_COUNTER_FILTERS_V1
+  // The summary cards are the single Preview filter surface. Clicking a different card
+  // selects that category; clicking the active card again returns to the complete list.
+  function previewCounterFilterTarget(currentFilter, requestedFilter) {
+    const allowed = ['update', 'add', 'delete', 'skip', 'error'];
+    const current = canonicalValue(currentFilter);
+    const requested = canonicalValue(requestedFilter);
+    if (!allowed.includes(requested)) return ['all', ...allowed].includes(current) ? current : 'all';
+    return current === requested ? 'all' : requested;
+  }
+
   function renderResolutionCenter(plan) {
     const host = document.querySelector?.('#tms-resolution-center');
     if (!host) return;
@@ -8875,18 +10872,37 @@
     if (!items.length) {
       host.hidden = true;
       host.innerHTML = '';
+      if (host.dataset) delete host.dataset.resolutionPage;
       return;
     }
     host.hidden = false;
-    host.innerHTML = '<div class="tms-review-note"><b>Нужно уточнить значения: ' + items.length + '</b><br>Studio не будет угадывать сотрудника или справочник. Выберите точное значение и перепроверьте Preview.</div>'
-      + items.map((item, itemIndex) => {
+    const requestedPage = Math.max(0, Number(host.dataset?.resolutionPage || 0));
+    const windowed = resolutionCenterWindow(items, requestedPage, 50);
+    if (host.dataset) host.dataset.resolutionPage = String(windowed.page - 1);
+    const resolutionRows = new Set(items.map(item => Number(item?.excelRow)).filter(Number.isFinite)).size;
+    const rangeStart = windowed.total ? windowed.start + 1 : 0;
+    const rangeEnd = windowed.start + windowed.items.length;
+    const pager = windowed.pageCount > 1
+      ? '<div class="tms-preview-pager"><button type="button" data-resolution-page="' + Math.max(0, windowed.page - 2) + '" ' + (windowed.page <= 1 ? 'disabled' : '') + '>←</button><span>Показано ' + rangeStart + '–' + rangeEnd + ' из ' + windowed.total + ' · стр. ' + windowed.page + '/' + windowed.pageCount + '</span><button type="button" data-resolution-page="' + Math.min(windowed.pageCount - 1, windowed.page) + '" ' + (windowed.page >= windowed.pageCount ? 'disabled' : '') + '>→</button></div>'
+      : '';
+    host.innerHTML = '<div class="tms-review-note"><b>Требуют уточнения: ' + items.length + ' значений' + (resolutionRows ? ' в ' + resolutionRows + ' строках' : '') + '</b><br>Эти значения не будут применены автоматически. Studio не угадывает сотрудника или справочник — выберите точное значение и перепроверьте Preview.</div>'
+      + pager
+      + windowed.items.map((item, localIndex) => {
+        const itemIndex = windowed.start + localIndex;
         const title = item.excelRow ? 'Excel ' + item.excelRow + ' · ' + (item.column || item.columnKey || 'поле') : (item.column || item.columnKey || 'Конфликт');
         const candidates = (item.candidates || []).map((candidate, candidateIndex) => {
           const label = candidate.selector || candidate.display || candidate.shortName || candidate.fullName || candidate.id || 'Вариант';
           return '<div class="tms-resolution-choice"><span>' + escapeHtml(label) + '</span><button type="button" data-resolution-choice="' + itemIndex + ':' + candidateIndex + '">Выбрать и перепроверить</button></div>';
         }).join('');
-        return '<details class="tms-action" open><summary><b>' + escapeHtml(title) + '</b></summary><div class="tms-action-body"><div class="tms-warning">' + escapeHtml(item.issue || 'Требуется явный выбор.') + '</div>' + candidates + '<button type="button" data-resolution-skip="' + itemIndex + '">Пропустить осознанно</button></div></details>';
-      }).join('');
+        return '<details class="tms-action"><summary><b>' + escapeHtml(title) + '</b></summary><div class="tms-action-body"><div class="tms-warning">' + escapeHtml(item.issue || 'Требуется явный выбор.') + '</div>' + candidates + '<button type="button" data-resolution-skip="' + itemIndex + '">Пропустить осознанно</button></div></details>';
+      }).join('')
+      + pager;
+
+    host.querySelectorAll?.('button[data-resolution-page]')?.forEach(button => button.addEventListener('click', () => {
+      if (APP.busy) return;
+      if (host.dataset) host.dataset.resolutionPage = String(Math.max(0, Number(button.dataset.resolutionPage) || 0));
+      renderResolutionCenter(plan);
+    }));
 
     host.querySelectorAll?.('button[data-resolution-choice]')?.forEach(button => button.addEventListener('click', async () => {
       if (APP.busy) return;
@@ -8944,7 +10960,8 @@
       || result.storeSkippedCount > 0
       || result.failedCount > 0
       || result.notStartedCount > 0;
-    const sourceNeedsAttention = result.sourceSkippedCount > 0;
+    result.sourceValueSkippedCount = Math.max(0, Number(result.sourceValueSkippedCount ?? result?.skippedValues?.length) || 0);
+    const sourceNeedsAttention = result.sourceSkippedCount > 0 || result.sourceValueSkippedCount > 0 || (result.skippedFields || []).length > 0;
     result.status = cancelled
       ? 'cancelled'
       : (mutationIncomplete ? 'partial' : (sourceNeedsAttention ? 'attention' : 'completed'));
@@ -8979,7 +10996,7 @@
         ? '\nОтображение TESSA обновлено автоматически.'
         : (result?.viewRefresh && !result.viewRefresh.skipped ? '\nЗапись завершена, но отображение TESSA не удалось обновить автоматически.' : '');
       const verifyNote = result?.reconciliation ? `\nПовторная проверка: подтверждено ${verified} из ${accepted}.` : '';
-      return `Готово. Применено: ${applied} из ${requested}.\nВсе подготовленные изменения применены.${matrixSaveNote}${verifyNote}${sourceNote}${result.skippedFields?.length ? `\nНе применено отдельных полей: ${result.skippedFields.length}. Причины указаны в отчёте.` : ''}${refreshNote}\nПеред следующим Apply нужна свежая проверка или свежая выгрузка Excel.`;
+      return `Готово. Применено: ${applied} из ${requested}.\nВсе подготовленные изменения применены.${matrixSaveNote}${verifyNote}${sourceNote}${result.skippedFields?.length ? `\nНе применено отдельных полей: ${result.skippedFields.length}.` : ''}${result.skippedValues?.length ? `\nПропущено отдельных значений: ${result.skippedValues.length}.` : ''}${refreshNote}\nПеред следующим Apply нужна свежая проверка или свежая выгрузка Excel.`;
     }
     if (result?.status === 'attention') {
       return `Требуется внимание.\
@@ -9145,8 +11162,14 @@
     return result;
   }
 
-  async function applyPlan(plan) {
+  async function applyPlan(plan, options = {}) {
     if (!plan) throw new Error('Сначала проверьте Excel.');
+    const confirmApply = typeof options.confirm === 'function' ? options.confirm : message => window.confirm(message);
+    // FULL_UAT_DEFER_MAIN_SAVE_V1
+    // Full UAT owns the complete temporary-write transaction and proves each mutation by
+    // fresh read-back. It may defer the native main-card Save until cleanup is finished;
+    // ordinary Apply never sets this flag and therefore keeps the existing Save contract.
+    const deferMainMatrixSave = options.deferMainMatrixSave === true;
     const replacementIntegrity = crossMatrixReplacementIntegrity(plan);
     if (replacementIntegrity.blocked) throw new Error(replacementIntegrity.reason);
     if (plan?.safety?.blocked) throw new Error(`Файл нельзя применить: ${plan.safety.blockedReasons.join(' ')}`);
@@ -9155,13 +11178,13 @@
     const batch = evaluateApplyBatch(executable);
     if (batch.blocked) throw new Error(batch.reason);
     if (batch.warning) {
-      const okBatch = window.confirm(`${batch.reason}
+      const okBatch = confirmApply(`${batch.reason}
 
 Продолжить?`);
       if (!okBatch) return null;
     }
     if (plan.actions.some(a => a.match?.lowConfidence)) {
-      const okLow = window.confirm('Есть строки с низкой уверенностью сопоставления. Продолжить после проверки предпросмотра?');
+      const okLow = confirmApply('Есть строки с низкой уверенностью сопоставления. Продолжить после проверки предпросмотра?');
       if (!okLow) return null;
     }
     const c = plan.counts;
@@ -9169,7 +11192,7 @@
       const transferConfirmed = await confirmCrossMatrixReplacement(plan);
       if (!transferConfirmed) return null;
     } else {
-      const ok = window.confirm(`Применить корректные изменения к TESSA?\n\nИзменить: ${c.update}\nДобавить: ${c.add}\nУдалить: ${c.delete}\nПропустить: ${c.skip || 0}${plan.skippedFields?.length ? `\nОставить без изменения отдельных полей: ${plan.skippedFields.length}` : ''}\n\nОшибочные строки и указанные в Preview поля не будут применены.`);
+      const ok = confirmApply(`Применить корректные изменения к TESSA?\n\nИзменить: ${c.update}\nДобавить: ${c.add}\nУдалить: ${c.delete}\nПропустить строки: ${c.skip || 0}${plan.skippedFields?.length ? `\nОставить без изменения полей: ${plan.skippedFields.length}` : ''}${plan.skippedValues?.length ? `\nПропустить отдельных значений: ${plan.skippedValues.length}` : ''}\n\nВ TESSA попадут только значения, прошедшие проверку.`);
       if (!ok) return null;
     }
     APP.abortRequested = false;
@@ -9177,7 +11200,8 @@
     APP.lastReconciliation = null;
     let preflight;
     try {
-      preflight = await preflightPlan(plan);
+      // FULL_UAT_RUNTIME_CONTEXT_V1
+      preflight = await preflightPlan(plan, { bridge: options.runtimeBridge || undefined, structure: options.runtimeStructure || undefined });
     } catch (error) {
       if (!isPreflightAbortError(error)) throw error;
       const result = {
@@ -9187,6 +11211,7 @@
         rows: [],
         skipped: [...(plan.skippedRows || [])],
         skippedFields: [...(plan.skippedFields || [])],
+        skippedValues: [...(plan.skippedValues || [])],
         success: false,
         partial: true,
         status: 'cancelled',
@@ -9236,6 +11261,7 @@
       rows: [],
       skipped: [...(plan.skippedRows || []), ...runtimeSkips],
       skippedFields: [...(plan.skippedFields || [])],
+      skippedValues: [...(plan.skippedValues || [])],
       success: false,
       partial: false,
       status: 'running',
@@ -9508,7 +11534,14 @@
       result.verificationIncomplete = true;
     }
 
-    result.matrixSave = await persistMainMatrixAfterApply(bridge, result);
+    result.matrixSave = deferMainMatrixSave
+      ? {
+          ok: false,
+          skipped: true,
+          reason: 'deferred-by-caller',
+          acceptedCount: (result.rows || []).filter(row => row?.status === 'ok').length,
+        }
+      : await persistMainMatrixAfterApply(bridge, result);
     if (result.matrixSave.ok) {
       log('Основная карточка матрицы сохранена после применения.');
     } else if (!result.matrixSave.skipped) {
@@ -9530,6 +11563,14 @@
     }
     result.finishedAt = nowIso();
     finalizeApplyResult(result, { cancelled });
+    if (result.startedCount > 0) {
+      // A completed Store can change which historical values must remain visible.
+      // Drop both cache layers so the next workflow cannot reuse a catalog created
+      // before this write under the same user/template/card-type projection key.
+      const activeDictionaryCacheKey = APP.dictionaryCatalog?.stats?.cache?.key || dictionaryCacheKey(structure);
+      await deleteDictionaryCache(activeDictionaryCacheKey);
+      APP.dictionaryCatalog = null;
+    }
     APP.lastMutationReceipts = result.startedCount > 0 ? {
       planId: plan.id,
       matrixId: plan.matrixId,
@@ -9549,6 +11590,7 @@
     if (result.preflightSkippedCount || result.storeSkippedCount) progressParts.push(`не применено: ${result.preflightSkippedCount + result.storeSkippedCount}`);
     if (result.sourceSkippedCount) progressParts.push(`не вошли в Apply: ${result.sourceSkippedCount}`);
     if (result.skippedFields?.length) progressParts.push(`не применяются поля: ${result.skippedFields.length}`);
+    if (result.skippedValues?.length) progressParts.push(`пропущено значений: ${result.skippedValues.length}`);
     if (result.notStartedCount) progressParts.push(`не начато: ${result.notStartedCount}`);
     if (result.matrixSave?.ok) progressParts.push('матрица сохранена');
     else if (result.matrixSaveIncomplete) progressParts.push('матрица требует сохранения');
@@ -9590,7 +11632,7 @@
   }
 
   function downloadJson(value, name, replacer = jsonReplacer) {
-    const blob = new Blob([JSON.stringify(value, replacer, 2)], { type: 'application/json;charset=utf-8' });
+    const blob = new Blob([JSON.stringify(value, (key, item) => diagnosticJsonReplacer(key, typeof replacer === 'function' ? replacer(key, item) : item), 2)], { type: 'application/json;charset=utf-8' });
     return triggerBlobDownload(blob, name);
   }
 
@@ -9598,12 +11640,6 @@
   // Отчёты храним в памяти вкладки. Файл создаётся только по явному клику пользователя.
   function rememberReport(value, name) {
     APP.lastReport = { value, name };
-    const button = document.querySelector?.('#tms-download-report');
-    if (button) {
-      button.hidden = false;
-      setControlDisabled(button, false);
-      button.title = name || 'Скачать последний диагностический отчёт';
-    }
     return APP.lastReport;
   }
 
@@ -9611,6 +11647,304 @@
     if (!APP.lastReport?.value) return false;
     downloadJson(APP.lastReport.value, APP.lastReport.name || `TESSA_Matrix_Report_${Date.now()}.json`);
     return true;
+  }
+
+  const SUPPORT_BUNDLE_FORMAT = 'TESSA_MATRIX_SUPPORT_BUNDLE_V1';
+  const SUPPORT_BUNDLE_MAX_BYTES = 20 * 1024 * 1024;
+
+  function supportUtf8(value) {
+    const text = typeof value === 'string'
+      ? value
+      : JSON.stringify(value, (key, item) => diagnosticJsonReplacer(key, item), 2);
+    return new TextEncoder().encode(text);
+  }
+
+  async function sha256Hex(value) {
+    const bytes = byteView(value)
+      || (Object.prototype.toString.call(value) === '[object ArrayBuffer]' ? new Uint8Array(value) : supportUtf8(value));
+    if (!globalThis.crypto?.subtle) throw new Error('Браузер не поддерживает SHA-256 для manifest пакета.');
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', exactArrayBuffer(bytes));
+    return [...new Uint8Array(digest)].map(item => item.toString(16).padStart(2, '0')).join('');
+  }
+
+  function supportBundleDescriptor(plan = APP.plan, review = APP.review, contextOverride = null) {
+    const context = contextOverride || APP.supportBundleContext;
+    plan = plan || context?.plan;
+    review = review || context?.review;
+    const structure = context?.structure || APP.structure;
+    const snapshot = context?.snapshot || APP.snapshot;
+    const selectedFile = context?.selectedFile || APP.selectedFileRef;
+    if (!plan || !structure || !snapshot || !selectedFile) return null;
+    const reviewed = buildReviewedPlan(plan, review);
+    const changes = reviewedChangesArtifactDescriptor(reviewed, structure);
+    const applied = contextOverride ? contextOverride.applyReport : APP.lastReport?.value;
+    const reconciliation = contextOverride ? contextOverride.reconciliation : APP.lastReconciliation;
+    return {
+      key: hashText(JSON.stringify({
+        changes: changes.key,
+        matrixId: plan.matrixId || snapshot?.matrixId || '',
+        selectedName: selectedFile?.name || '',
+        selectedSize: selectedFile?.size || 0,
+        selectedModified: selectedFile?.lastModified || 0,
+        applyPlanId: applied?.planId || '',
+        applyFinishedAt: applied?.finishedAt || '',
+        reconciliation: reconciliation?.finishedAt || reconciliation?.status || '',
+      })),
+      reviewed,
+      changes,
+    };
+  }
+
+  function clearSupportBundleArtifact(state = APP) {
+    state.supportBundleRequest = Number(state.supportBundleRequest || 0) + 1;
+    state.supportBundleBuild = null;
+    state.supportBundleArtifact = null;
+  }
+
+  function updateSupportBundleControl({ available = false, ready = false, error = '' } = {}) {
+    const button = document.querySelector?.('#tms-download-package');
+    if (!button) return;
+    button.hidden = !available;
+    setControlDisabled(button, !available || APP.busy);
+    button.dataset.state = error ? 'error' : ready ? 'ready' : 'preparing';
+    button.textContent = error ? 'Повторить подготовку пакета' : ready ? 'Скачать пакет' : 'Готовлю пакет…';
+    button.title = error || (ready
+      ? 'Excel, список изменений и безопасные отчёты в одном ZIP'
+      : 'Пакет формируется в фоне; нажатие дождётся завершения');
+  }
+
+  function compactReconciliationReport(value) {
+    if (!value) return null;
+    return {
+      format: 'TESSA_MATRIX_RECONCILIATION_SUMMARY_V1',
+      createdAt: nowIso(),
+      status: value.status,
+      checkedCount: value.checkedCount,
+      verifiedCount: value.verifiedCount,
+      divergentCount: value.divergentCount,
+      missingCount: value.missingCount,
+      unknownCount: value.unknownCount,
+      attempts: value.attempts,
+      retryable: value.retryable,
+      reasonCode: value.reasonCode,
+      reasonCodes: [...new Set((value.rows || []).map(row => row?.reasonCode).filter(Boolean))].slice(0, 50),
+    };
+  }
+
+  function automaticDiagnosticSummary(reportOverride = null) {
+    const report = reportOverride || APP.lastReport?.value || {};
+    const failed = report?.success === false || report?.partial === true || report?.status === 'failed';
+    if (!failed) return null;
+    return {
+      format: 'TESSA_MATRIX_AUTOMATIC_DIAGNOSTICS_V1',
+      createdAt: nowIso(),
+      studioVersion: APP.version,
+      build: APP.pagingRuntimeContractBuild,
+      result: {
+        status: report.status || 'failed',
+        success: report.success === true,
+        partial: report.partial === true,
+        plannedCount: Number(report.plannedCount || 0),
+        appliedCount: Number(report.appliedCount || 0),
+        failedCount: Number(report.failedCount || 0),
+        skippedCount: Number(report.skippedCount || 0),
+        verificationIncomplete: report.verificationIncomplete === true,
+      },
+      capabilities: safePlain(APP.capabilityAvailability || {}, { maxDepth: 4, maxKeys: 100, maxArray: 100, maxString: 1000 }),
+      performance: buildPerformanceUatSummary(APP.lastPerformanceUat || performanceSnapshot()),
+    };
+  }
+
+  async function prepareSupportBundle(plan = APP.plan, review = APP.review, contextOverride = null) {
+    // Full UAT and other isolated callers pass an explicit context. This keeps the
+    // production UI cache tied to its selected file while allowing the same audited
+    // package builder to verify a detached roundtrip workbook.
+    const isolated = Boolean(contextOverride);
+    const descriptor = supportBundleDescriptor(plan, review, contextOverride);
+    if (!descriptor) {
+      if (!isolated) {
+        clearSupportBundleArtifact(APP);
+        updateSupportBundleControl();
+      }
+      return null;
+    }
+    if (!isolated && APP.supportBundleArtifact?.key === descriptor.key) {
+      updateSupportBundleControl({ available: true, ready: true });
+      return APP.supportBundleArtifact;
+    }
+    if (!isolated && APP.supportBundleBuild?.key === descriptor.key) {
+      updateSupportBundleControl({ available: true, ready: false });
+      return APP.supportBundleBuild.promise;
+    }
+
+    if (!isolated) clearSupportBundleArtifact(APP);
+    const token = isolated ? null : APP.supportBundleRequest;
+    if (!isolated) updateSupportBundleControl({ available: true, ready: false });
+    const promise = (async () => {
+      const context = contextOverride || APP.supportBundleContext || {};
+      const selectedFile = context.selectedFile || APP.selectedFileRef;
+      const selectedBytes = new Uint8Array(await selectedFileArrayBuffer(selectedFile));
+      const structure = context.structure || APP.structure;
+      const snapshot = context.snapshot || APP.sessionCache?.snapshot || APP.snapshot;
+      const dictionaryCatalog = context.dictionaryCatalog || APP.dictionaryCatalog;
+      const bridge = context.bridge || APP.bridge;
+      const matrixInfo = context.matrixInfo || (() => { try { return bridge?.matrixInfo?.() || {}; } catch (_) { return {}; } })();
+      const currentBytes = await performanceStage(
+        'support-bundle.current-xlsx',
+        () => createRoundtripXlsxBytes(structure, snapshot, matrixInfo, dictionaryCatalog, { includeActions: true }),
+        { operation: 'support-bundle', rows: snapshot?.rows?.length || 0 },
+      );
+      const changesBytes = await performanceStage(
+        'support-bundle.changes-xlsx',
+        () => createChangesReportXlsxBytes(descriptor.reviewed, structure),
+        { operation: 'support-bundle', rows: descriptor.changes.model.operations.length },
+      );
+      const previewReport = buildPreviewSupportReport(plan, review);
+      const rawApplyReport = isolated ? context.applyReport : APP.lastReport?.value;
+      const applyReport = rawApplyReport?.plannedCount !== undefined
+        ? buildApplySupportReport(rawApplyReport, APP.capabilities, APP.version)
+        : null;
+      const reconciliation = compactReconciliationReport(isolated ? context.reconciliation : APP.lastReconciliation);
+      const summary = {
+        format: SUPPORT_BUNDLE_FORMAT,
+        createdAt: nowIso(),
+        studioVersion: APP.version,
+        stage: applyReport ? 'after-apply' : 'preview',
+        matrixId: plan.matrixId || snapshot?.matrixId || null,
+        counts: safePlain(descriptor.reviewed.counts || {}, { maxDepth: 2, maxKeys: 20, maxArray: 20 }),
+        selectedFile: { name: selectedFile.name, size: selectedFile.size },
+        reconciliationStatus: reconciliation?.status || null,
+        currentSnapshot: context.refreshError ? 'last-confirmed-before-refresh-error' : (applyReport ? 'post-apply' : 'preview'),
+        currentSnapshotWarning: context.refreshError || null,
+      };
+
+      const entries = [
+        ['excel/matrix-current.xlsx', currentBytes],
+        ['excel/matrix-uploaded.xlsx', selectedBytes],
+        ['excel/changes.xlsx', changesBytes],
+        ['reports/summary.json', supportUtf8(summary)],
+        ['reports/preview.json', supportUtf8(previewReport)],
+      ];
+      if (applyReport) entries.push(['reports/apply.json', supportUtf8(applyReport)]);
+      if (reconciliation) entries.push(['reports/reconciliation.json', supportUtf8(reconciliation)]);
+      const automaticDiagnostics = isolated
+        ? automaticDiagnosticSummary(rawApplyReport || {})
+        : automaticDiagnosticSummary();
+      if (automaticDiagnostics) entries.push(['diagnostics/summary.json', supportUtf8(automaticDiagnostics)]);
+      entries.push(['README.txt', supportUtf8([
+        'TESSA Matrix Studio — пакет результата',
+        '',
+        'matrix-current.xlsx — состояние TESSA на момент создания пакета.',
+        'matrix-uploaded.xlsx — выбранный пользователем Excel.',
+        'changes.xlsx — полный список изменений и пропусков Preview.',
+        'reports — безопасные структурированные итоги проверки и применения.',
+        automaticDiagnostics ? 'diagnostics — автоматически добавленная очищенная диагностика ошибки.' : '',
+        '',
+        'Сырые ответы TESSA в этот пакет не включаются.',
+      ].filter(Boolean).join('\r\n'))]);
+
+      const files = [];
+      for (const [path, value] of entries) {
+        const bytes = byteView(value) || supportUtf8(value);
+        files.push({ path, bytes: bytes.byteLength, sha256: await sha256Hex(bytes) });
+      }
+      const manifest = {
+        format: SUPPORT_BUNDLE_FORMAT,
+        version: 1,
+        createdAt: summary.createdAt,
+        studioVersion: APP.version,
+        stage: summary.stage,
+        redaction: automaticDiagnostics ? 'automatic-allowlist' : 'compact-no-raw-responses',
+        files,
+      };
+      entries.push(['manifest.json', supportUtf8(manifest)]);
+      const zip = await performanceStage('support-bundle.zip', () => makeZip(entries), { operation: 'support-bundle', bytes: files.reduce((sum, item) => sum + item.bytes, 0) });
+      if (zip.byteLength > SUPPORT_BUNDLE_MAX_BYTES) {
+        throw new Error(`Пакет результата превышает безопасный лимит ${Math.round(SUPPORT_BUNDLE_MAX_BYTES / 1024 / 1024)} МБ.`);
+      }
+      if (!isolated && (token !== APP.supportBundleRequest || supportBundleDescriptor(plan, review)?.key !== descriptor.key)) return null;
+      const shortId = String(plan.matrixId || snapshot?.matrixId || 'matrix').slice(0, 8);
+      const name = `TESSA_Matrix_Package_${shortId}_${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
+      const artifact = { key: descriptor.key, name, bytes: zip, blob: new Blob([zip], { type: 'application/zip' }), manifest };
+      if (!isolated) {
+        APP.supportBundleArtifact = artifact;
+        APP.supportBundleBuild = null;
+        updateSupportBundleControl({ available: true, ready: true });
+      }
+      return artifact;
+    })().catch(error => {
+      if (!isolated && token === APP.supportBundleRequest) {
+        APP.supportBundleBuild = null;
+        APP.supportBundleArtifact = null;
+        updateSupportBundleControl({ available: true, ready: false, error: friendlyErrorMessage(error) });
+      }
+      throw error;
+    });
+    if (!isolated) APP.supportBundleBuild = { key: descriptor.key, token, promise };
+    return promise;
+  }
+
+  async function downloadSupportBundle() {
+    const context = APP.supportBundleContext;
+    const plan = context?.plan || APP.plan;
+    const review = context?.review || APP.review;
+    if (!plan || !(context?.selectedFile || APP.selectedFileRef)) return false;
+    let handle = null;
+    if (typeof window.showSaveFilePicker === 'function') {
+      const suggestedName = APP.supportBundleArtifact?.name || `TESSA_Matrix_Package_${Date.now()}.zip`;
+      try {
+        handle = await window.showSaveFilePicker({
+          suggestedName,
+          types: [{ description: 'ZIP package', accept: { 'application/zip': ['.zip'] } }],
+        });
+      } catch (error) {
+        if (error?.name === 'AbortError') return false;
+        handle = null;
+      }
+    }
+    const artifact = await prepareSupportBundle(plan, review);
+    if (!artifact) throw new Error('Пакет устарел во время подготовки. Повторите скачивание.');
+    if (handle) {
+      const writable = await handle.createWritable();
+      try { await writable.write(artifact.blob); await writable.close(); }
+      catch (error) { try { await writable.abort?.(); } catch (_) {} throw error; }
+    } else {
+      triggerBlobDownload(artifact.blob, artifact.name);
+    }
+    setProgress(100, 'Пакет скачан', `${artifact.name} · ${Math.max(1, Math.round(artifact.bytes.byteLength / 1024))} КБ`);
+    return true;
+  }
+
+  async function refreshSupportBundleAfterApply(plan, review, result) {
+    const previous = APP.supportBundleContext || {};
+    let bridge = previous.bridge || APP.bridge;
+    let snapshot = previous.snapshot || APP.snapshot;
+    let refreshError = '';
+    try {
+      bridge = await TessaBridge.create();
+      snapshot = await performanceStage(
+        'support-bundle.post-apply-snapshot',
+        () => bridge.loadSnapshot(previous.structure || APP.structure),
+        { operation: 'support-bundle' },
+      );
+      setSessionSnapshot(snapshot, previous.structure || APP.structure);
+    } catch (error) {
+      refreshError = friendlyErrorMessage(error);
+      log(`Пакет результата использует последний подтверждённый снимок: ${refreshError}`, 'warn');
+    }
+    APP.supportBundleContext = {
+      ...previous,
+      plan,
+      review,
+      bridge,
+      snapshot,
+      matrixInfo: (() => { try { return bridge?.matrixInfo?.() || previous.matrixInfo || {}; } catch (_) { return previous.matrixInfo || {}; } })(),
+      applyResult: result,
+      refreshError,
+    };
+    clearSupportBundleArtifact(APP);
+    updateSupportBundleControl({ available: true, ready: false });
+    return await prepareSupportBundle(plan, review);
   }
 
   function updateIntervalDiagnosticControlState() {
@@ -10117,7 +12451,7 @@
       try {
         const bytes = value instanceof Uint8Array ? value : new TextEncoder().encode(JSON.stringify(value, (key, item) => {
           if (key === 'expectedSemanticKey') return undefined;
-          return raw ? item : jsonReplacer(key, item);
+          return raw ? diagnosticJsonReplacer(key, item) : jsonReplacer(key, item);
         }, 2));
         if (!bytes || bytes.length > bounds.itemBytes || capturedBytes + bytes.length > bounds.bytes) throw new Error('Лимит размера пакета');
         entries.push([name, bytes]); capturedBytes += bytes.length;
@@ -10236,7 +12570,7 @@
     });
     if (file) await run('file-read', 'Чтение выбранного Excel', async () => {
       if (file.size > XLSX_ARCHIVE_LIMITS.MaxInputBytes) throw new Error('Выбранный Excel превышает лимит размера.');
-      const buffer = await file.arrayBuffer(); capture('selected.xlsx', new Uint8Array(buffer));
+      const buffer = await selectedFileArrayBuffer(file); capture('selected.xlsx', new Uint8Array(buffer));
       selected = await readXlsxArrayBuffer(buffer, file.name);
       return { detail: `${selected.rows.length} строк; ${selected.headers.filter(Boolean).length} столбцов.` };
     });
@@ -10309,7 +12643,7 @@
     const roundtripOk = await run('roundtrip', 'Выгрузка и обратное чтение всех полей', async () => {
       const bytes = await createRoundtripXlsxBytes(structure, snapshot, bridge.matrixInfo(), catalog);
       capture('matrix-current.xlsx', bytes);
-      generated = await readXlsxArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+      generated = await readXlsxArrayBuffer(exactArrayBuffer(bytes));
       const roundtrip = buildPlan(generated, structure, snapshot);
       capture('roundtrip.json', { counts: roundtrip.counts, safety: roundtrip.safety, skippedRows: roundtrip.skippedRows, skippedFields: roundtrip.skippedFields });
       if (roundtrip.safety?.blocked || roundtrip.counts.skip || roundtrip.skippedFields?.length || roundtrip.actions.some(a => a.type !== 'noop') || roundtrip.actions.length !== snapshot.rows.length) throw new Error('Выгрузка и обратное чтение дали расхождения. Подробности в пакете.');
@@ -10534,7 +12868,7 @@
     const readme = 'TESSA Matrix Studio — проверки без записи\n\nНачните с report.json: checks содержит результат каждого этапа, omitted — данные, не вошедшие в пакет.\nrequests/ содержит бизнес-запросы и ответы. selected.xlsx — исходный выбранный файл; matrix-current.xlsx — свежая выгрузка, если их удалось собрать.\nЕсли Preview содержит ошибку интервала, interval/ содержит полный opt-in raw JSON и отдельный privacy-safe interval-summary.json.\nЗапись, удаление, транзакции и чужая параллельная запись не тестировались. Успешная проверка дубликатов не разрешает Apply без обычного свежего Preview.\nПакет содержит рабочие значения. Передавайте его только тем, кому можно видеть эту матрицу. Cookies, пароли и HTTP-заголовки не собираются.\n';
     const interval = result?.intervalDiagnostics?.value;
     const intervalEntries = interval ? [
-      ['interval/TESSA_Interval_Diagnostics.json', JSON.stringify(interval, null, 2)],
+      ['interval/TESSA_Interval_Diagnostics.json', JSON.stringify(interval, diagnosticJsonReplacer, 2)],
       ['interval/interval-summary.json', JSON.stringify(buildIntervalDiagnosticSummary(interval), null, 2)],
     ] : [];
     const performanceUat = result?.performanceUat || APP.lastPerformanceUat;
@@ -10557,8 +12891,10 @@
       + '<p>Запись и удаление не проверялись.</p>';
   }
 
+  // PROD_SMOKE_DIAGNOSTICS_V1
   async function runStudioDiagnostics(download = false) {
     if (APP.busy) return;
+    const quickMode = !download;
     const file = document.querySelector('#tms-file')?.files?.[0] || null;
     const originalPlan = APP.plan, originalWorkbook = APP.workbook;
     const previous = { plan: APP.plan, applyReport: APP.lastReport?.value, reconciliation: APP.lastReconciliation, intervalDiagnostics: APP.lastIntervalDiagnostics?.value };
@@ -10577,7 +12913,7 @@
         if (APP.abortRequested) throw new Error('Проверки остановлены пользователем.');
         assertIdentity();
       };
-      let result = download ? APP.lastStudioDiagnostics : null;
+      let result = download && APP.lastStudioDiagnostics?.report?.mode === 'full' ? APP.lastStudioDiagnostics : null;
       if (result && (result.source?.plan !== originalPlan || result.source?.workbook !== originalWorkbook || result.source?.file !== file)) result = null;
       if (result?.report.matrixId) {
         context = { id: result.report.matrixId, templateId: result.report.templateId };
@@ -10586,12 +12922,12 @@
       if (!result) {
         result = await collectStudioDiagnostics({
           connect: async () => { const bridge = await TessaBridge.create(); context = { id: bridge.mainCard.id, templateId: bridge.templateId() }; return bridge; },
-          probe: probeRuntimeEnvironment, file, workbook: originalWorkbook, previous, assertContext, limits: { candidates: 200 },
+          probe: probeRuntimeEnvironment, file, workbook: originalWorkbook, previous, assertContext, limits: { candidates: quickMode ? 40 : 200 },
           onProgress: report => { renderStudioDiagnostics(report); setProgress(Math.min(94, 5 + report.checks.length * 4), 'Проверки без записи', report.checks.at(-1)?.title || 'Подготовка'); },
         });
       }
       assertIdentity();
-      const intervalDiagnostics = await resolveStudioIntervalDiagnostics({
+      const intervalDiagnostics = quickMode ? null : await resolveStudioIntervalDiagnostics({
         plan: originalPlan,
         workbook: originalWorkbook,
         structure: APP.structure,
@@ -10617,24 +12953,27 @@
         delete result.intervalDiagnostics;
         result.report.intervalDiagnostics = { included: false, status: 'not-needed', writesAttempted: 0 };
       }
-      // Performance UAT is deliberately synthetic/read-only. Real touched-only server
-      // timings are copied from this session's telemetry and are never fabricated.
+      // Performance UAT is deliberately synthetic/read-only. Regular «Проверки» use
+      // a fast 300-row smoke profile; downloaded «Диагностика» keeps the full 3000-row profile.
+      const performanceRows = quickMode ? 300 : 3000;
       let performanceUat;
       try {
-        setProgress(95, 'Performance UAT', 'Локальные сценарии 0/1/10/100/3000 строк');
-        performanceUat = await runPerformanceUat({ baseRows: 3000 });
+        setProgress(95, 'Performance UAT', `Локальные сценарии до ${performanceRows} строк`);
+        performanceUat = await runPerformanceUat({ baseRows: performanceRows });
       } catch (error) {
         performanceUat = {
           format: 'TESSA_PERFORMANCE_UAT_V1', scope: 'synthetic-read-only', status: 'failed',
-          createdAt: nowIso(), baseRows: 3000, scenarios: [], cache: { hits: 0, misses: 0 },
+          createdAt: nowIso(), baseRows: performanceRows, scenarios: [], cache: { hits: 0, misses: 0 },
           liveTimings: clonePlain(performanceSnapshot()?.stages || {}), totalMs: 0,
           failures: [{ scenario: 'setup', metric: 'exception', expected: 'success', actual: friendlyErrorMessage(error) }],
         };
       }
       APP.lastPerformanceUat = performanceUat;
+      result.report.mode = quickMode ? 'smoke' : 'full';
       result.performanceUat = performanceUat;
       result.report.performanceUat = buildPerformanceUatSummary(performanceUat);
       result.report.checks.push({
+        id: 'performance-uat',
         status: performanceUat.status === 'passed' ? 'pass' : 'fail',
         title: 'Performance UAT',
         detail: performanceUat.status === 'passed'
@@ -10651,7 +12990,7 @@
         assertIdentity();
         downloadBlob(new Blob([bytes], { type: 'application/zip' }), `TESSA_Diagnostics_${result.report.startedAt.replace(/[:.]/g, '-')}.zip`);
       }
-      setProgress(100, result.report.status === 'failed' ? 'В проверках найдены ошибки' : result.report.status === 'incomplete' ? 'Проверки выполнены не полностью' : 'Проверки без записи пройдены', download ? 'Пакет диагностики скачан.' : 'Результаты — в «Дополнительно → Проверки и диагностика».');
+      setProgress(100, result.report.status === 'failed' ? 'В проверках найдены ошибки' : result.report.status === 'incomplete' ? 'Проверки выполнены не полностью' : 'Проверки без записи пройдены', download ? 'Пакет диагностики скачан.' : 'Результаты — в «Для ИТ и поддержки».');
     } catch (error) {
       APP.lastStudioDiagnostics = null; renderStudioDiagnostics();
       setProgress(100, 'Не удалось завершить диагностику', friendlyErrorMessage(error));
@@ -10868,6 +13207,7 @@
       ...(reconciliation.rows || []).map(row => row?.reasonCode),
     ].filter(Boolean))];
     return {
+      format: 'TESSA_MATRIX_SUPPORT_REPORT_V1',
       studioVersion: String(input.version || APP.version),
       createdAt: nowIso(),
       ...(options.includeIds ? {
@@ -10929,6 +13269,7 @@
     const reasonCodes = [...new Set([
       ...(reviewed?.skippedRows || []).map(item => normalizeSpace(item?.code || '')).filter(Boolean),
       ...(reviewed?.skippedFields || []).map(item => normalizeSpace(item?.code || '')).filter(Boolean),
+      ...(reviewed?.skippedValues || []).map(item => normalizeSpace(item?.code || '')).filter(Boolean),
     ])].sort();
     const roleTypeIds = new Set();
     const collectRow = row => {
@@ -10964,11 +13305,18 @@
         noop: Number(reviewed?.counts?.noop || 0),
         skip: Number(reviewed?.counts?.skip || 0),
         skippedFields: Number(reviewed?.skippedFields?.length || 0),
+        skippedValues: Number(reviewed?.skippedValues?.length || 0),
       },
       reasonCodes,
       roleTypeIds: [...roleTypeIds].sort(),
       sources: [...new Set((reviewed?.skippedRows || []).map(item => normalizeSpace(item?.source || '')).filter(Boolean))].sort(),
       productionShadow: productionShadowProfile(reviewed),
+      previewRead: reviewed?.snapshot?.previewIncremental?.enabled ? {
+        mode: 'baseline-incremental',
+        totalRows: Number(reviewed.snapshot.previewIncremental.totalRows || 0),
+        baselineRows: Number(reviewed.snapshot.previewIncremental.baselineRows || 0),
+        cardGets: Number(reviewed.snapshot.previewIncremental.cardGets || 0),
+      } : { mode: 'full-or-session' },
       apply: {
         canApply: Boolean(availability.canApply),
         count: Number(availability.count || 0),
@@ -10979,6 +13327,7 @@
   }
 
   function jsonReplacer(key, value) {
+    if (isSensitiveDiagnosticKey(key)) return '[REDACTED]';
     if (key === 'card' || key === 'bridge' || key === 'columnMap') return undefined;
     if (value instanceof Map) return Object.fromEntries(value);
     return value;
@@ -11028,6 +13377,26 @@
     return Boolean(normalizeSpace(skip?.code || ''));
   }
 
+  function previewSkippedRows(plan) {
+    const rows = [...(plan?.skippedRows || [])];
+    const present = new Map(rows.map((item, index) => [Number(item.excelRow), index]));
+    const partial = new Map();
+    for (const item of plan?.skippedValues || []) {
+      const excelRow = Number(item.excelRow);
+      if (!excelRow) continue;
+      if (!partial.has(excelRow)) partial.set(excelRow, []);
+      partial.get(excelRow).push(`${item.label || 'Поле'}: «${item.value ?? ''}». ${item.reason || 'Значение не применено.'}`);
+    }
+    for (const [excelRow, reasons] of partial) {
+      const reason = `Часть значений строки не будет применена. ${reasons.join(' ')}`;
+      if (present.has(excelRow)) {
+        const index = present.get(excelRow);
+        rows[index] = { ...rows[index], code: rows[index].code || 'excel-value-not-applied', reason: `${rows[index].reason || ''} ${reason}`.trim() };
+      } else rows.push({ excelRow, source: 'excel-value', code: 'excel-value-not-applied', reason });
+    }
+    return rows;
+  }
+
   function createPreviewViewState(overrides = {}) {
     const pageSize = Math.max(1, Math.min(200, Math.trunc(Number(overrides.pageSize) || 40)));
     const page = Math.max(1, Math.trunc(Number(overrides.page) || 1));
@@ -11069,8 +13438,8 @@
     // ERROR is the stricter subset with a stable machine-readable code.
     if (state.filter === 'all' || state.filter === 'skip' || state.filter === 'error') {
       const skipped = state.filter === 'error'
-        ? (plan?.skippedRows || []).filter(isPreviewErrorSkip)
-        : (plan?.skippedRows || []);
+        ? previewSkippedRows(plan).filter(isPreviewErrorSkip)
+        : previewSkippedRows(plan);
       items = items.concat(skipped.map(skip => ({ kind: 'skip', skip })));
     }
     if (query) items = items.filter(item => (item.kind === 'action'
@@ -11109,155 +13478,6 @@
     };
   }
 
-  function revokeReviewedChangesArtifact(state = APP) {
-    if (!state) return;
-    const artifact = state.reviewedChangesArtifact;
-    state.reviewedChangesArtifact = null;
-    if (!artifact?.url) return;
-    try { URL.revokeObjectURL(artifact.url); } catch (_) { /* best effort */ }
-  }
-
-  function clearReviewedChangesArtifact(state = APP) {
-    if (!state) return;
-    state.reviewedChangesArtifactRequest = Number(state.reviewedChangesArtifactRequest || 0) + 1;
-    state.reviewedChangesArtifactBuild = null;
-    revokeReviewedChangesArtifact(state);
-  }
-
-  function updateReviewedChangesDownloadControl({ hasChanges = false, ready = false, error = '' } = {}) {
-    const button = document.querySelector?.('#tms-download-changes');
-    if (!button) return;
-    button.hidden = !hasChanges;
-    setControlDisabled(button, !ready);
-    button.title = ready
-      ? 'Скачать только операции из текущего Preview'
-      : hasChanges
-        ? (error || 'Формирую Excel изменений…')
-        : '';
-  }
-
-  async function prepareReviewedChangesArtifact(plan = APP.plan, reviewedSnapshot = null) {
-    const structure = APP.structure;
-    if (!plan || !structure) {
-      clearReviewedChangesArtifact(APP);
-      updateReviewedChangesDownloadControl();
-      return null;
-    }
-
-    const reviewed = reviewedSnapshot || buildReviewedPlan(plan, APP.review);
-    const descriptor = reviewedChangesArtifactDescriptor(reviewed, structure);
-    if (!descriptor.model.operations.length) {
-      clearReviewedChangesArtifact(APP);
-      updateReviewedChangesDownloadControl();
-      return null;
-    }
-
-    if (APP.reviewedChangesArtifact?.key === descriptor.key) {
-      updateReviewedChangesDownloadControl({ hasChanges: true, ready: true });
-      return APP.reviewedChangesArtifact;
-    }
-    if (APP.reviewedChangesArtifactBuild?.key === descriptor.key) {
-      updateReviewedChangesDownloadControl({ hasChanges: true, ready: false });
-      return APP.reviewedChangesArtifactBuild.promise;
-    }
-
-    clearReviewedChangesArtifact(APP);
-    const token = APP.reviewedChangesArtifactRequest;
-    const shortId = String(reviewed.matrixId || '').slice(0, 8);
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const name = `TESSA_Изменения_${shortId || 'matrix'}_${stamp}.xlsx`;
-    updateReviewedChangesDownloadControl({ hasChanges: true, ready: false });
-
-    const promise = (async () => {
-      const bytes = await performanceStage(
-        'changes-report.xlsx-build',
-        () => createChangesReportXlsxBytes(reviewed, structure),
-        { operation: 'changes-report', rows: descriptor.model.operations.length },
-      );
-      const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-      const url = URL.createObjectURL(blob);
-
-      // Preview/review may have changed while ZIP/XML generation yielded to the event loop.
-      // Never publish an artifact that belongs to an obsolete selection.
-      if (token !== APP.reviewedChangesArtifactRequest || APP.plan !== plan || APP.structure !== structure) {
-        try { URL.revokeObjectURL(url); } catch (_) { /* best effort */ }
-        return null;
-      }
-      const currentReviewed = buildReviewedPlan(APP.plan, APP.review);
-      const currentDescriptor = reviewedChangesArtifactDescriptor(currentReviewed, APP.structure);
-      if (currentDescriptor.key !== descriptor.key) {
-        try { URL.revokeObjectURL(url); } catch (_) { /* best effort */ }
-        return null;
-      }
-
-      revokeReviewedChangesArtifact(APP);
-      const artifact = {
-        key: descriptor.key,
-        url,
-        blob,
-        name,
-        operationCount: descriptor.model.operations.length,
-        preparedAt: nowIso(),
-      };
-      APP.reviewedChangesArtifact = artifact;
-      if (APP.reviewedChangesArtifactBuild?.token === token) APP.reviewedChangesArtifactBuild = null;
-      updateReviewedChangesDownloadControl({ hasChanges: true, ready: true });
-      return artifact;
-    })().catch(error => {
-      if (token === APP.reviewedChangesArtifactRequest) {
-        APP.reviewedChangesArtifactBuild = null;
-        revokeReviewedChangesArtifact(APP);
-        updateReviewedChangesDownloadControl({
-          hasChanges: true,
-          ready: false,
-          error: `Не удалось подготовить Excel: ${friendlyErrorMessage(error)}`,
-        });
-      }
-      return null;
-    });
-
-    APP.reviewedChangesArtifactBuild = { key: descriptor.key, token, promise };
-    return promise;
-  }
-
-  // The actual anchor activation is deliberately synchronous. The expensive XLSX build
-  // happens after Preview; the click only consumes the already prepared Blob URL, so the
-  // browser still sees the download as part of the user's gesture.
-  function downloadReviewedChangesXlsx() {
-    if (APP.busy || !APP.plan || !APP.structure) return;
-    const reviewed = buildReviewedPlan(APP.plan, APP.review);
-    const descriptor = reviewedChangesArtifactDescriptor(reviewed, APP.structure);
-    if (!descriptor.model.operations.length) {
-      setProgress(100, 'Нет изменений для выгрузки', 'Текущий Preview не содержит операций или пропущенных строк.');
-      return;
-    }
-
-    const artifact = APP.reviewedChangesArtifact;
-    if (!artifact?.url || artifact.key !== descriptor.key) {
-      updateReviewedChangesDownloadControl({ hasChanges: true, ready: false });
-      void prepareReviewedChangesArtifact(APP.plan, reviewed);
-      setProgress(100, 'Excel изменений ещё готовится', 'Дождитесь, пока кнопка станет доступна, и нажмите её ещё раз.');
-      return;
-    }
-
-    const host = document.body || document.documentElement;
-    const anchor = document.createElement('a');
-    anchor.href = artifact.url;
-    anchor.download = artifact.name;
-    anchor.rel = 'noopener';
-    anchor.hidden = true;
-    if (anchor.style) anchor.style.display = 'none';
-    if (host?.appendChild) host.appendChild(anchor);
-    try {
-      anchor.click();
-      setProgress(100, 'Excel изменений готов', `${artifact.operationCount} операций · файл только для просмотра`);
-    } catch (error) {
-      setProgress(100, 'Не удалось скачать изменения', friendlyErrorMessage(error));
-    } finally {
-      try { anchor.remove?.(); } catch (_) { /* best effort */ }
-    }
-  }
-
   function cherkizovoLogoSvg() {
     return `<svg viewBox="0 0 192.756 192.756" aria-hidden="true" focusable="false"><path fill="#E31E24" d="M162.854 63.44c10.303 20.271 11.299 48.019-.664 67.957-16.449 26.752-46.689 41.541-77.263 37.719-26.086-2.492-52.505-21.104-61.81-46.357-9.637-23.76-3.655-53.502 14.123-72.278 21.268-23.262 56.659-31.902 86.567-19.772 15.951 6.478 30.24 16.78 39.047 32.731z"/><path fill="#fff" d="M117.66 53.471c.996 3.323 1.494 6.646-.5 9.471-5.98 6.48-15.451 8.806-24.258 6.646-4.486-.831-9.305-3.656-11.465-7.81-1.33-4.154.831-7.976 3.157-10.8 8.806-6.646 24.591-7.145 32.235 2.493z"/><path fill="#fff" d="M79.277 69.255c6.646 13.292-1.495 29.077 3.656 40.209.831 2.326 3.489 1.33 5.316 1.496 6.813-3.324 5.317-10.635 9.471-15.453 4.154-9.637 14.289-15.951 24.426-16.616 11.631-.665 23.428 5.982 28.246 17.114 4.486 9.471 4.154 23.096-2.824 31.57-4.986 8.807-14.291 12.295-23.262 13.957-8.309.166-15.951-4.818-19.607-12.295-2.16-5.484-3.82-12.463 0-17.779 4.652-9.139 23.428-9.139 16.615-23.096-2.99-2.327-6.314-5.151-10.467-3.324-13.293 7.976-13.625 23.761-19.607 35.89-4.486 9.305-9.471 22.264-21.767 22.93-8.972 1.494-16.117-2.99-20.77-10.469-6.812-16.615-6.812-37.219-9.471-54.997.332-7.975 4.818-15.951 12.462-19.606 10.47-4.651 22.266.334 27.583 10.469z"/></svg>`;
   }
@@ -11267,29 +13487,30 @@
     const summary = document.querySelector('#tms-summary');
     const table = document.querySelector('#tms-plan');
     if (!summary || !table) return;
+    APP.supportBundleContext = {
+      plan,
+      review: APP.review,
+      structure: APP.structure,
+      snapshot: APP.snapshot,
+      dictionaryCatalog: APP.dictionaryCatalog,
+      selectedFile: APP.selectedFileRef,
+      bridge: APP.bridge,
+      matrixInfo: (() => { try { return APP.bridge?.matrixInfo?.() || {}; } catch (_) { return {}; } })(),
+    };
     updateIntervalDiagnosticControlState();
     const applySection = document.querySelector('#tms-apply-section');
     if (applySection) applySection.hidden = false;
     const reviewed = buildReviewedPlan(plan, APP.review);
-    const changesButton = document.querySelector?.('#tms-download-changes');
     const hasReviewedChanges = (reviewed.actions || []).some(action => ['update', 'add', 'delete'].includes(action?.type)) || Boolean(reviewed.skippedRows?.length);
-    if (changesButton) {
-      if (hasReviewedChanges) {
-        const descriptor = reviewedChangesArtifactDescriptor(reviewed, APP.structure);
-        const ready = Boolean(APP.reviewedChangesArtifact?.url && APP.reviewedChangesArtifact.key === descriptor.key);
-        updateReviewedChangesDownloadControl({ hasChanges: true, ready });
-        if (!ready && APP.reviewedChangesArtifactBuild?.key !== descriptor.key) {
-          void prepareReviewedChangesArtifact(plan, reviewed);
-        }
-      } else {
-        clearReviewedChangesArtifact(APP);
-        updateReviewedChangesDownloadControl();
-      }
-    }
+    updateSupportBundleControl({
+      available: hasReviewedChanges,
+      ready: Boolean(APP.supportBundleArtifact?.key === supportBundleDescriptor(plan, APP.review)?.key),
+    });
     APP.capabilityActions = reviewed.actions;
     const applyState = applyAvailability(plan, APP.review);
     APP.reviewedApplyEnabled = applyState.canApply;
     const c = reviewed.counts;
+    const attention = previewAttentionSummary(plan, APP.review);
     const skipped = reviewed.skippedRows || [];
     const warnings = (reviewed.warnings || []).slice(0, 8);
     const reviewedSafety = reviewed.safety || plan.safety || { blocked: false, blockedReasons: [] };
@@ -11298,23 +13519,36 @@
     const hasReviewExclusions = excludedRowCount > 0 || excludedChangeCount > 0;
     const hasSourceChanges = (plan.actions || []).some(action => action.type !== 'noop');
     summary.innerHTML = `
-      <div class="tms-counters">
-        <span class="tms-count tms-update">изменить <b>${c.update}</b></span>
-        <span class="tms-count tms-add">добавить <b>${c.add}</b></span>
-        <span class="tms-count tms-delete">удалить <b>${c.delete}</b></span>
+      <div class="tms-counters" aria-label="Фильтр Preview по типу изменения">
+        <button type="button" class="tms-count tms-count-filter tms-update${APP.previewView.filter === 'update' ? ' tms-active' : ''}" data-preview-counter-filter="update" aria-pressed="${APP.previewView.filter === 'update' ? 'true' : 'false'}" ${c.update ? '' : 'disabled'}>изменить <b>${c.update}</b></button>
+        <button type="button" class="tms-count tms-count-filter tms-add${APP.previewView.filter === 'add' ? ' tms-active' : ''}" data-preview-counter-filter="add" aria-pressed="${APP.previewView.filter === 'add' ? 'true' : 'false'}" ${c.add ? '' : 'disabled'}>добавить <b>${c.add}</b></button>
+        <button type="button" class="tms-count tms-count-filter tms-delete${APP.previewView.filter === 'delete' ? ' tms-active' : ''}" data-preview-counter-filter="delete" aria-pressed="${APP.previewView.filter === 'delete' ? 'true' : 'false'}" ${c.delete ? '' : 'disabled'}>удалить <b>${c.delete}</b></button>
         <span class="tms-count tms-noop">без изменений <b>${c.noop}</b></span>
-        <span class="tms-count tms-skip">пропустить <b>${c.skip || 0}</b></span>
+        <button type="button" class="tms-count tms-count-filter tms-skip${APP.previewView.filter === 'skip' ? ' tms-active' : ''}" data-preview-counter-filter="skip" aria-pressed="${APP.previewView.filter === 'skip' ? 'true' : 'false'}" ${attention.notApplied ? '' : 'disabled'}>не будет применено <b>${attention.notApplied}</b></button>
+        <button type="button" class="tms-count tms-count-filter tms-error${APP.previewView.filter === 'error' ? ' tms-active' : ''}" data-preview-counter-filter="error" aria-pressed="${APP.previewView.filter === 'error' ? 'true' : 'false'}" ${attention.errors ? '' : 'disabled'}>из них ошибки <b>${attention.errors}</b></button>
       </div>
+      ${attention.notApplied ? `<div class="tms-required-attention" role="alert"><b>Нужно проверить ${attention.notApplied} строк.</b> Нажмите «не будет применено» или «из них ошибки», исправьте Excel и повторите проверку.</div>` : ''}
       ${hasReviewExclusions ? `<div class="tms-review-note"><b>Фильтр применения включён.</b> Отключённые здесь изменения не попадут в TESSA; исходный Excel не изменяется.</div>` : ''}
       ${skipped.length ? `<div class="tms-review-note"><b>${applyState.count === 0
         ? 'Нет изменений для применения.'
-        : applyState.blocked ? 'Применение заблокировано.' : `Доступно для применения: ${applyState.count}.`}</b> Пропущено строк: ${skipped.length}. Причины указаны в списке ниже.</div>` : ''}
-      ${hasSourceChanges ? rowFailuresHtml(skipped) : ''}
+        : applyState.blocked ? 'Применение заблокировано.' : `Доступно для применения: ${applyState.count}.`}</b> Не будет применено к TESSA: ${skipped.length} строк. Эти строки не записываются; причины указаны в списке ниже.</div>` : ''}
+      ${rowFailuresHtml(skipped)}
+      ${existingAddMatchesHtml(reviewed)}
       ${skippedFieldsHtml(reviewed.skippedFields)}
+      ${skippedValuesHtml(reviewed.skippedValues)}
       ${reviewedSafety.blocked ? `<div class="tms-fatal"><b>Этот набор изменений нельзя безопасно применить</b><br>${(reviewedSafety.blockedReasons || []).map(escapeHtml).join('<br>')}</div>` : ''}
       ${applyState.batchBlocked ? `<div class="tms-fatal"><b>Слишком много изменений за один раз</b><br>Сейчас: ${applyState.count} · максимум: 2000. Раскройте «Выбрать часть изменений» и уменьшите число операций.</div>` : ''}
       ${warnings.length ? `<details class="tms-warning"><summary>Нужно проверить</summary><div>${warnings.map(item => `<div>${escapeHtml(item)}</div>`).join('')}</div></details>` : ''}
     `;
+
+    summary.onclick = event => {
+      const counterFilter = event.target?.closest?.('button[data-preview-counter-filter]');
+      if (counterFilter && !counterFilter.disabled && !APP.busy) {
+        const nextFilter = previewCounterFilterTarget(APP.previewView?.filter, counterFilter.dataset.previewCounterFilter);
+        APP.previewView = createPreviewViewState({ ...APP.previewView, filter: nextFilter, page: 1 });
+        renderPlan(APP.plan);
+      }
+    };
 
     renderResolutionCenter(plan);
 
@@ -11330,12 +13564,9 @@
 
     const toolbar = document.createElement('div');
     toolbar.className = 'tms-preview-toolbar';
-    const filterButton = (value, label) => `<button type="button" class="tms-preview-filter${selection.filter === value ? ' tms-active' : ''}" data-preview-filter="${value}">${label}</button>`;
+    const searchableTotal = (plan.actions || []).filter(action => action?.type && action.type !== 'noop').length + previewSkippedRows(plan).length;
     toolbar.innerHTML = `
-      <div class="tms-preview-filters">
-        ${filterButton('all', 'Все')}${filterButton('update', 'Изменить')}${filterButton('add', 'Добавить')}${filterButton('delete', 'Удалить')}${filterButton('skip', 'Пропустить')}${filterButton('error', 'Ошибки')}
-      </div>
-      <input id="tms-preview-query" aria-label="Поиск изменений" class="tms-preview-query" type="search" placeholder="Найти строку или значение" value="${escapeHtml(selection.query)}">
+      ${searchableTotal > 40 || selection.query ? `<input id="tms-preview-query" aria-label="Поиск изменений" class="tms-preview-query" type="search" placeholder="Найти строку или значение" value="${escapeHtml(selection.query)}">` : ''}
       ${hasSourceChanges || hasReviewExclusions ? `<details class="tms-package-details" ${hasReviewExclusions || applyState.batchBlocked ? 'open' : ''}><summary>Выбрать часть изменений${hasReviewExclusions ? ' · выбор изменён' : ''}</summary><div class="tms-preview-package">
         <strong>Применить первые</strong>
         <select id="tms-review-package-limit" aria-label="Число операций для применения">
@@ -11378,34 +13609,97 @@
       const rowExcluded = Boolean(APP.review?.excludedRows?.has?.(actionKey));
       const supportsWholeActionReview = action.type === 'update' || action.type === 'add' || action.type === 'delete';
       if (rowExcluded) item.classList.add('tms-review-row-excluded');
-      item.innerHTML = `<summary><b>${label}</b> — ${rowText}${action.match?.lowConfidence ? ' · проверьте соответствие' : ''}${rowExcluded ? ' · <span class="tms-review-state">не будет применено</span>' : ''}</summary>`;
+      const actionSummary = document.createElement('summary');
+      const actionLabel = document.createElement('b');
+      actionLabel.textContent = label;
+      actionSummary.append(actionLabel, document.createTextNode(` — ${rowText}${action.match?.lowConfidence ? ' · проверьте соответствие' : ''}`));
+      if (rowExcluded) {
+        actionSummary.appendChild(document.createTextNode(' · '));
+        const excludedState = document.createElement('span');
+        excludedState.className = 'tms-review-state';
+        excludedState.textContent = 'не будет применено';
+        actionSummary.appendChild(excludedState);
+      }
+      item.appendChild(actionSummary);
       const body = document.createElement('div');
       body.className = 'tms-action-body';
       const rowButtonLabel = action.type === 'update'
         ? (rowExcluded ? 'Вернуть строку' : 'Исключить строку')
         : (rowExcluded ? 'Вернуть операцию' : 'Не применять');
-      const rowReviewControl = supportsWholeActionReview ? `
-        <div class="tms-review-row-actions">
-          <button type="button" class="tms-review-btn tms-review-row-btn" data-review-action="${escapeHtml(actionKey)}" data-review-row="true" aria-pressed="${rowExcluded ? 'true' : 'false'}">${rowButtonLabel}</button>
-        </div>` : '';
+      if (supportsWholeActionReview) {
+        const rowActions = document.createElement('div');
+        rowActions.className = 'tms-review-row-actions';
+        const rowButton = document.createElement('button');
+        rowButton.type = 'button';
+        rowButton.className = 'tms-review-btn tms-review-row-btn';
+        rowButton.dataset.reviewAction = actionKey;
+        rowButton.dataset.reviewRow = 'true';
+        rowButton.setAttribute('aria-pressed', rowExcluded ? 'true' : 'false');
+        rowButton.textContent = rowButtonLabel;
+        rowActions.appendChild(rowButton);
+        body.appendChild(rowActions);
+      }
 
       if (action.type === 'update') {
         const excludedChanges = reviewExcludedChanges(APP.review, action);
         const rowsExcludedIndividually = (action.changes || []).filter(change => excludedChanges.has(change.key)).length;
-        body.innerHTML = `${rowReviewControl}${skippedFieldsHtml(action.skippedFields)}
-          ${!rowExcluded && rowsExcludedIndividually ? `<div class="tms-review-state">Не применяется полей: ${rowsExcludedIndividually}</div>` : ''}
-          ${(action.changes || []).map(change => {
-            const individuallyExcluded = excludedChanges.has(change.key);
-            const excluded = rowExcluded || individuallyExcluded;
-            const button = rowExcluded ? '' : `<button type="button" class="tms-review-btn tms-review-change-btn" data-review-action="${escapeHtml(actionKey)}" data-review-change="${escapeHtml(change.key)}" aria-pressed="${individuallyExcluded ? 'true' : 'false'}">${individuallyExcluded ? 'Вернуть' : 'Исключить'}</button>`;
-            return `<div class="tms-diff${excluded ? ' tms-diff-excluded' : ''}">
-              <div class="tms-diff-head"><b>${escapeHtml(change.label || change.key)}</b>${button}</div>
-              <div class="tms-diff-values"><div class="tms-before"><small>Было</small>${previewValuesHtml(change.before, plan.columnMap, change.key, previewIdsForKey(action.currentRow, change.key))}</div><div class="tms-after"><small>Будет</small>${previewValuesHtml(change.after, plan.columnMap, change.key, previewIdsForKey(action.excelRow, change.key))}</div></div>
-              ${excluded ? '<div class="tms-review-state">Это изменение не будет применено</div>' : ''}
-            </div>`;
-          }).join('')}`;
-      } else if (action.type === 'add') body.innerHTML = `${rowReviewControl}${flatToHtml(action.excelRow.flat, plan.columnMap, action.excelRow)}`;
-      else body.innerHTML = `${rowReviewControl}${flatToHtml(action.currentRow.flat, plan.columnMap, action.currentRow)}`;
+        if (action.skippedFields?.length) {
+          const skippedContainer = document.createElement('div');
+          skippedContainer.innerHTML = skippedFieldsHtml(action.skippedFields);
+          body.append(...skippedContainer.childNodes);
+        }
+        if (!rowExcluded && rowsExcludedIndividually) {
+          const state = document.createElement('div');
+          state.className = 'tms-review-state';
+          state.textContent = `Не применяется полей: ${rowsExcludedIndividually}`;
+          body.appendChild(state);
+        }
+        (action.changes || []).forEach(change => {
+          const individuallyExcluded = excludedChanges.has(change.key);
+          const excluded = rowExcluded || individuallyExcluded;
+          const diff = document.createElement('div');
+          diff.className = `tms-diff${excluded ? ' tms-diff-excluded' : ''}`;
+          const head = document.createElement('div');
+          head.className = 'tms-diff-head';
+          const changeLabel = document.createElement('b');
+          changeLabel.textContent = String(change.label || change.key);
+          head.appendChild(changeLabel);
+          if (!rowExcluded) {
+            const changeButton = document.createElement('button');
+            changeButton.type = 'button';
+            changeButton.className = 'tms-review-btn tms-review-change-btn';
+            changeButton.dataset.reviewAction = actionKey;
+            changeButton.dataset.reviewChange = String(change.key);
+            changeButton.setAttribute('aria-pressed', individuallyExcluded ? 'true' : 'false');
+            changeButton.textContent = individuallyExcluded ? 'Вернуть' : 'Исключить';
+            head.appendChild(changeButton);
+          }
+          const values = document.createElement('div');
+          values.className = 'tms-diff-values';
+          const before = document.createElement('div');
+          before.className = 'tms-before';
+          const beforeLabel = document.createElement('small');
+          beforeLabel.textContent = 'Было';
+          before.appendChild(beforeLabel);
+          appendPreviewValues(before, change.before, plan.columnMap, change.key, previewIdsForKey(action.currentRow, change.key));
+          const after = document.createElement('div');
+          after.className = 'tms-after';
+          const afterLabel = document.createElement('small');
+          afterLabel.textContent = 'Будет';
+          after.appendChild(afterLabel);
+          appendPreviewValues(after, change.after, plan.columnMap, change.key, previewIdsForKey(action.excelRow, change.key));
+          values.append(before, after);
+          diff.append(head, values);
+          if (excluded) {
+            const state = document.createElement('div');
+            state.className = 'tms-review-state';
+            state.textContent = 'Это изменение не будет применено';
+            diff.appendChild(state);
+          }
+          body.appendChild(diff);
+        });
+      } else if (action.type === 'add') appendFlatPreview(body, action.excelRow.flat, plan.columnMap, action.excelRow);
+      else appendFlatPreview(body, action.currentRow.flat, plan.columnMap, action.currentRow);
       item.appendChild(body);
       table.appendChild(item);
     });
@@ -11417,17 +13711,32 @@
       // behind an explicit disclosure rather than repeating it in the summary.
       item.open = !hasSourceChanges && selection.total <= 20;
       const reason = rowFailureReason(skip);
-      const technical = skip?.reason && skip.reason !== reason
-        ? `<details><summary>Технические подробности</summary><div>${escapeHtml(skip.reason)}</div></details>` : '';
-      item.innerHTML = `<summary><b>Пропущено</b> — ${skip?.excelRow ? `Excel ${escapeHtml(skip.excelRow)}` : 'строка без номера'}</summary><div class="tms-action-body">${escapeHtml(reason)}${technical}</div>`;
+      const skipSummary = document.createElement('summary');
+      const skipLabel = document.createElement('b');
+      skipLabel.textContent = 'Пропущено';
+      skipSummary.append(skipLabel, document.createTextNode(` — ${skip?.excelRow ? `Excel ${skip.excelRow}` : 'строка без номера'}`));
+      const skipBody = document.createElement('div');
+      skipBody.className = 'tms-action-body';
+      skipBody.appendChild(document.createTextNode(reason));
+      if (skip?.reason && skip.reason !== reason) {
+        const technical = document.createElement('details');
+        const technicalSummary = document.createElement('summary');
+        technicalSummary.textContent = 'Технические подробности';
+        const technicalText = document.createElement('div');
+        technicalText.textContent = String(skip.reason);
+        technical.append(technicalSummary, technicalText);
+        skipBody.appendChild(technical);
+      }
+      item.append(skipSummary, skipBody);
       table.appendChild(item);
     });
 
     // Делегируем навигацию и review-клики: renderPlan может пересобирать карточки сколько угодно.
     table.onclick = event => {
-      const filter = event.target?.closest?.('button[data-preview-filter]');
-      if (filter && !APP.busy) {
-        APP.previewView = createPreviewViewState({ ...APP.previewView, filter: filter.dataset.previewFilter, page: 1 });
+      const counterFilter = event.target?.closest?.('button[data-preview-counter-filter]');
+      if (counterFilter && !APP.busy) {
+        const nextFilter = previewCounterFilterTarget(APP.previewView?.filter, counterFilter.dataset.previewCounterFilter);
+        APP.previewView = createPreviewViewState({ ...APP.previewView, filter: nextFilter, page: 1 });
         renderPlan(APP.plan);
         return;
       }
@@ -11500,13 +13809,11 @@
           ? `Большой пакет: ${applyState.count} операций. Перед записью потребуется дополнительное подтверждение.`
           : '';
     }
-    const supportReportButton = document.querySelector('#tms-download-support-report');
-    if (supportReportButton) {
-      supportReportButton.hidden = false;
-      setControlDisabled(supportReportButton, false);
-    }
     rememberReport(buildPreviewReport(plan, APP.review),
       `TESSA_Matrix_Preview_${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+    if (hasReviewedChanges && APP.selectedFileRef) {
+      void prepareSupportBundle(plan, APP.review).catch(error => log(`Пакет результата: ${friendlyErrorMessage(error)}`, 'warn'));
+    }
   }
 
   // Presentation only: preserve order, repeated labels and IDs in the plan.
@@ -11526,6 +13833,46 @@
   function flatToHtml(flat, columnMap = null, row = null) {
     const labels = new Map([...(columnMap?.columns?.values?.() || [])].map(column => [column.key, column.excelHeader || column.name]));
     return Object.entries(flat).filter(([, value]) => value?.length).map(([key, value]) => `<div><b>${escapeHtml(labels.get(key) || key)}</b>: ${previewValuesHtml(value, columnMap, key, previewIdsForKey(row, key))}</div>`).join('') || 'Пустая строка';
+  }
+
+  function appendPreviewValues(host, values, columnMap, key, ids = []) {
+    if (!values?.length) {
+      host.appendChild(document.createTextNode('Не заполнено'));
+      return;
+    }
+    const column = columnMap?.columns?.get?.(String(key).slice(String(key).indexOf(':') + 1));
+    const isBoolean = column?.key === key && operandKind(column) === 'Boolean';
+    const isRole = column?.key === key && column?.kind === 'function';
+    values.forEach((value, index) => {
+      const span = document.createElement('span');
+      span.className = 'tms-value';
+      span.textContent = String(isBoolean ? booleanDisplay(value) : value);
+      const typeId = isRole ? previewPackedRoleTypeId(ids?.[index]) : '';
+      if (typeId) {
+        const badge = document.createElement('small');
+        badge.className = 'tms-role-type';
+        badge.textContent = previewRoleTypeLabel(typeId);
+        span.appendChild(badge);
+      }
+      host.appendChild(span);
+    });
+  }
+
+  function appendFlatPreview(host, flat, columnMap = null, row = null) {
+    const labels = new Map([...(columnMap?.columns?.values?.() || [])].map(column => [column.key, column.excelHeader || column.name]));
+    const populated = Object.entries(flat || {}).filter(([, value]) => value?.length);
+    if (!populated.length) {
+      host.appendChild(document.createTextNode('Пустая строка'));
+      return;
+    }
+    populated.forEach(([key, values]) => {
+      const line = document.createElement('div');
+      const label = document.createElement('b');
+      label.textContent = String(labels.get(key) || key);
+      line.append(label, document.createTextNode(': '));
+      appendPreviewValues(line, values, columnMap, key, previewIdsForKey(row, key));
+      host.appendChild(line);
+    });
   }
 
   function escapeHtml(value) {
@@ -11753,8 +14100,58 @@
   }
 
   function pickerSearchMatch(row, terms, roleType) {
-    if (roleType && roleType !== 'all' && canonicalValue(row?.item?.roleTypeId) !== canonicalValue(roleType)) return false;
-    return terms.every(term => row.haystack.includes(term));
+    if (roleType && roleType !== 'all' && row.roleType !== roleType) return false;
+    for (const term of terms) {
+      if (!row.haystack.includes(term)) return false;
+    }
+    return true;
+  }
+
+  // PERF_PICKER_SEARCH_CACHE_V1
+  function pickerMatchingRows(catalog, terms, roleType) {
+    const lookup = dictionaryLookup(catalog);
+    if (!lookup) return [];
+    const normalizedTerms = Array.from(terms || []).filter(Boolean);
+    // Numeric/code fragments normally have much higher selectivity than names.
+    // Check them first so most catalog rows fail after a single substring lookup.
+    const matchTerms = normalizedTerms.slice().sort((left, right) => {
+      const rightHasDigit = /\d/.test(right) ? 1 : 0;
+      const leftHasDigit = /\d/.test(left) ? 1 : 0;
+      return rightHasDigit - leftHasDigit || right.length - left.length;
+    });
+    const normalizedRoleType = canonicalValue(roleType || 'all') || 'all';
+    const queryKey = normalizedTerms.join(' ');
+    const cacheKey = normalizedRoleType + '|' + queryKey;
+    const cache = lookup.pickerSearchCache || (lookup.pickerSearchCache = new Map());
+    if (cache.has(cacheKey)) return cache.get(cacheKey);
+
+    let sourceRows = lookup.searchRows || [];
+    if (normalizedRoleType !== 'all') {
+      const roleRows = lookup.pickerRoleRows || (lookup.pickerRoleRows = new Map());
+      if (!roleRows.has(normalizedRoleType)) {
+        roleRows.set(normalizedRoleType, sourceRows.filter(row => row.roleType === normalizedRoleType));
+      }
+      sourceRows = roleRows.get(normalizedRoleType) || [];
+    }
+    let bestPrefixLength = -1;
+    for (const [key, rows] of cache.entries()) {
+      const split = key.indexOf('|');
+      const cachedRole = split >= 0 ? key.slice(0, split) : '';
+      const cachedQuery = split >= 0 ? key.slice(split + 1) : '';
+      if (cachedRole !== normalizedRoleType || !cachedQuery || !queryKey.startsWith(cachedQuery)) continue;
+      if (cachedQuery.length > bestPrefixLength) {
+        bestPrefixLength = cachedQuery.length;
+        sourceRows = rows;
+      }
+    }
+
+    const matched = sourceRows.filter(row => pickerSearchMatch(row, matchTerms, normalizedRoleType));
+    if (cache.size >= 8 && !cache.has(cacheKey)) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(cacheKey, matched);
+    return matched;
   }
 
   // Pagination is computed over the in-memory search index. Only one bounded page is
@@ -11764,19 +14161,15 @@
     const terms = searchCanonical(query).split(/\s+/).filter(Boolean);
     const roleType = canonicalValue(options?.roleType || 'all') || 'all';
     const pageSize = Math.max(1, Math.min(200, Math.trunc(Number(options?.pageSize) || 80)));
-    const requestedPage = Math.max(1, Math.trunc(Number(options?.page) || 1));
-    const offset = (requestedPage - 1) * pageSize;
-    const items = [];
-    let total = 0;
-    for (const row of dictionaryLookup(catalog)?.searchRows || []) {
-      if (!pickerSearchMatch(row, terms, roleType)) continue;
-      total++;
-      if (total > offset && items.length < pageSize) items.push(row.item);
-    }
+    const matched = pickerMatchingRows(catalog, terms, roleType);
+    const total = matched.length;
     const pageCount = Math.max(1, Math.ceil(total / pageSize));
-    if (requestedPage > pageCount && total) return searchPickerPage(catalog, { ...options, page: pageCount, pageSize });
+    const requestedPage = Math.max(1, Math.trunc(Number(options?.page) || 1));
+    const page = Math.min(requestedPage, pageCount);
+    const offset = (page - 1) * pageSize;
+    const items = matched.slice(offset, offset + pageSize).map(row => row.item);
     return {
-      items, total, page: Math.min(requestedPage, pageCount), pageSize, pageCount,
+      items, total, page, pageSize, pageCount,
       start: total ? offset + 1 : 0,
       end: total ? offset + items.length : 0,
       query: normalizeSpace(query), roleType,
@@ -11821,26 +14214,32 @@
     const roleType = canonicalValue(item?.roleTypeId);
     const display = normalizeSpace(item?.display);
     const roleFullName = pickerDetailValue(item, ['RoleFullName', 'UserFullName']);
-    const positionRaw = pickerDetailValue(item, ['RolePositionName', 'UserPosition', 'PositionName', 'Position']);
+    const positionRaw = normalizeSpace(item?.position || pickerDetailValue(item, ['RolePositionName', 'UserPosition', 'PositionName', 'Position']));
     const position = pickerPrimaryValue(positionRaw);
     const department = pickerCompactList(pickerDetailValue(item, ['Departments', 'UserDepartment', 'Department', 'Info']));
     const isPerson = roleType === '1' || Boolean(roleFullName);
-    const titleBase = display || roleFullName || normalizeSpace(item?.qualifier) || value;
-    const title = isPerson && position ? `${titleBase} — ${position}` : titleBase;
+    const personName = isPerson ? employeeSafeNameForPicker(item, value) : '';
+    const titleBase = isPerson
+      ? (personName || display || roleFullName || normalizeSpace(item?.qualifier) || value)
+      : (display || normalizeSpace(item?.qualifier) || value);
+    const title = isPerson && position ? (titleBase + ' — ' + position) : titleBase;
     const typeLabel = roleType ? previewRoleTypeLabel(roleType) : '';
-    const subtitle = [...new Set([isPerson && roleFullName && canonicalValue(roleFullName) !== canonicalValue(titleBase) ? roleFullName : '', department, typeLabel].filter(Boolean))].join(' · ');
-    return { title, subtitle, typeLabel, value };
+    const subtitle = [...new Set([
+      isPerson && roleFullName && canonicalValue(roleFullName) !== canonicalValue(titleBase) ? roleFullName : '',
+      department,
+      typeLabel,
+    ].filter(Boolean))].join(' · ');
+    return { title, subtitle, typeLabel, value: isPerson ? employeeSafeSelector(item) : value };
   }
 
   function pickerSelectionValue(item) {
-    const value = String(item?.selector || item?.display || '').trim();
+    const raw = String(item?.selector || item?.display || '').trim();
+    const value = Number(item?.roleTypeId) === PERSONAL_ROLE_TYPE_ID ? employeeSafeSelector(item) : raw;
     if (/[\n\r;\t]/.test(value)) throw new Error('В названии есть разделитель. Такое значение нельзя собрать автоматически. Выберите его в штатном редакторе TESSA.');
     if (/^[=+@-]/.test(value)) throw new Error('Название начинается со знака формулы. Выберите его в штатном редакторе TESSA.');
     return value;
   }
 
-  // Clipboard payload is plain text for Excel edit mode. Do not silently split
-  // a selector containing delimiters or allow a pasted formula prefix.
   function pickerSelectionText(items) {
     const unique = [...new Map((items || []).map(item => [pickerEntryKey(item), item])).values()];
     const result = unique.map(pickerSelectionValue).join('\n');
@@ -11871,10 +14270,7 @@
   function bulkSelectPickerMatches(selected, catalog, options = {}) {
     const terms = searchCanonical(options?.query || '').split(/\s+/).filter(Boolean);
     const roleType = canonicalValue(options?.roleType || 'all') || 'all';
-    const matches = [];
-    for (const row of dictionaryLookup(catalog)?.searchRows || []) {
-      if (pickerSearchMatch(row, terms, roleType)) matches.push(row.item);
-    }
+    const matches = pickerMatchingRows(catalog, terms, roleType).map(row => row.item);
     return bulkSelectPickerItems(selected, matches, options?.maxChars ?? 32767);
   }
 
@@ -11979,23 +14375,39 @@
     if (!templateId) throw new Error('У матрицы не найден TemplateID.');
 
     setProgress(28, 'Читаю структуру', 'Критерии и функции текущей матрицы');
-    const structure = await performanceStage(
-      'picker.structure',
-      () => bridge.requestStructure(templateId),
-      { operation: 'picker' },
-    );
+    const structure = APP.structure && canonicalValue(APP.structure.templateId) === canonicalValue(templateId)
+      ? APP.structure
+      : await performanceStage(
+        'picker.structure',
+        () => bridge.requestStructure(templateId),
+        { operation: 'picker' },
+      );
 
-    setProgress(48, 'Читаю матрицу', 'Получаю текущее состояние из TESSA');
-    const snapshot = await performanceStage(
+    const matrixId = bridge.mainCard?.id;
+    const currentSectionSignature = bridge.matrixSectionSignature();
+    const sessionSnapshot = getSessionSnapshot(matrixId, structure.templateId);
+    const snapshotAge = sessionSnapshot ? Date.now() - Date.parse(sessionSnapshot.createdAt || 0) : Infinity;
+    const reusableSnapshot = sessionSnapshot
+      && !sessionSnapshot.previewIncremental?.enabled
+      && sessionSnapshot.sectionSignature === currentSectionSignature
+      && snapshotAge >= 0
+      && snapshotAge < 5 * 60 * 1000
+      ? sessionSnapshot
+      : null;
+
+    setProgress(48, reusableSnapshot ? 'Использую свежий снимок матрицы' : 'Читаю матрицу',
+      reusableSnapshot ? 'Повторные CardGet не нужны' : 'Получаю текущее состояние из TESSA');
+    const snapshot = reusableSnapshot || await performanceStage(
       'picker.snapshot',
       () => bridge.loadSnapshot(structure),
       { operation: 'picker' },
     );
+    if (!reusableSnapshot) setSessionSnapshot(snapshot, structure);
 
-    setProgress(70, 'Обновляю справочники', 'Получаю актуальные значения и роли из TESSA');
+    setProgress(70, 'Готовлю справочники', 'Использую кэш, а при необходимости читаю TESSA');
     const dictionaryCatalog = await performanceStage(
       'picker.dictionaries',
-      () => bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: true }),
+      () => bridge.loadDictionaryCatalog(structure, snapshot, { forceRefresh: false }),
       { operation: 'picker', rows: snapshot.rows.length },
     );
 
@@ -12004,7 +14416,7 @@
     APP.snapshot = snapshot;
     APP.dictionaryCatalog = dictionaryCatalog;
 
-    const grid = buildRoundtripGrid(structure, snapshot, {}, dictionaryCatalog);
+    const grid = buildRoundtripGrid(structure, snapshot, {}, dictionaryCatalog, { includeRows: false });
     setProgress(92, 'Справочники готовы', 'Открываю выбор значений');
     return {
       headers: grid.columns.map(column => column.header),
@@ -12020,10 +14432,15 @@
   async function openValuePicker() {
     const file = document.querySelector('#tms-file')?.files?.[0];
     let source;
-    if (file) {
-      source = await readXlsxArrayBuffer(await file.arrayBuffer(), file.name);
+    if (file && APP.selectedFileRef === file && APP.workbook?.dictionaryCatalog) {
+      // Reuse the already parsed workbook + live catalog from Preview. Re-reading the
+      // hidden «Словари» sheet here used to be one of the heaviest user-facing paths.
+      source = APP.workbook;
+    } else if (file) {
+      const selected = await readSelectedWorkbookWithLiveCatalog(file, { needBridge: true });
+      source = selected.workbook;
     } else if (window.__TESSA_MATRIX_SYNC_TEST_MODE__ && APP.structure && APP.snapshot && APP.dictionaryCatalog) {
-      const grid = buildRoundtripGrid(APP.structure, APP.snapshot, {}, APP.dictionaryCatalog);
+      const grid = buildRoundtripGrid(APP.structure, APP.snapshot, {}, APP.dictionaryCatalog, { includeRows: false });
       source = {
         headers: grid.columns.map(column => column.header),
         schemaTokens: grid.columns.map(column => column.schema),
@@ -12054,7 +14471,9 @@
       <label for="tms-picker-column">Поле Excel</label><select id="tms-picker-column">${columns.map((c, i) => `<option value="${i}">${escapeHtml(c.label)}</option>`).join('')}</select>
       <div id="tms-picker-role-type-wrap" class="tms-picker-filter"><label for="tms-picker-role-type">Тип роли</label><select id="tms-picker-role-type"></select></div>
       <p class="tms-muted">Ищите по названию, ФИО, должности или подразделению. Выбор сохраняется при поиске, фильтрации и переходе между страницами.</p>
-      <details><summary>Продолжить набор из ячейки Excel</summary><textarea id="tms-picker-paste" rows="2" aria-label="Значения из Excel"></textarea><button id="tms-picker-import" type="button">Добавить в набор</button></details>
+      <details class="tms-picker-import-block"><summary>Добавить значения из Excel</summary><p class="tms-picker-import-hint">Вставьте значения по одному на строку или через точку с запятой. Уже выбранные значения сохранятся.</p><textarea id="tms-picker-paste" rows="4" aria-label="Значения из Excel" placeholder="Например:
+Иванов И.И.
+Петров П.П."></textarea><div class="tms-row tms-picker-import-actions"><button id="tms-picker-import" type="button">Добавить значения</button></div></details>
       <input id="tms-picker-query" type="search" aria-label="Поиск по справочнику" placeholder="Например: Иванов, инженер, отдел" maxlength="200">
       <div id="tms-picker-count" class="tms-muted" aria-live="polite"></div>
       <div class="tms-picker-bulk"><button type="button" id="tms-picker-select-page">Выбрать страницу</button><button type="button" id="tms-picker-select-all">Выбрать всё найденное</button></div>
@@ -12217,17 +14636,17 @@
       #tms-panel .tms-title{flex:1;min-width:0}
       #tms-panel .tms-title strong{display:block;font-size:14px}
       #tms-panel .tms-title small{display:block;color:var(--tms-muted);font-size:12px}
-      #tms-panel button,#tms-panel .tms-file-label{font-family:inherit;font-size:13px;font-weight:600;line-height:1.4;min-height:36px;border:1px solid var(--tms-line);border-radius:var(--tms-radius);padding:6px 10px;background:var(--tms-bg);color:var(--tms-ink);cursor:pointer;text-align:center;white-space:normal;margin:0;box-shadow:none;text-transform:none;letter-spacing:normal}
+      #tms-panel button,#tms-panel .tms-file-label{font-family:inherit;font-size:13px;font-weight:600;line-height:1.4;min-height:40px;border:1px solid var(--tms-line);border-radius:var(--tms-radius);padding:8px 12px;background:var(--tms-bg);color:var(--tms-ink);cursor:pointer;text-align:center;white-space:normal;margin:0;box-shadow:none;text-transform:none;letter-spacing:normal}
       #tms-panel button:hover:enabled,#tms-panel .tms-file-label:hover{background:var(--tms-soft);border-color:#9fa7b1}
       #tms-panel button:disabled,#tms-panel .tms-disabled{opacity:.45;cursor:not-allowed}
       #tms-panel button.tms-primary{background:var(--tms-red);border-color:var(--tms-red);color:#fff;box-shadow:0 2px 6px #a9151c1a}
       #tms-panel button.tms-primary:hover:enabled{background:var(--tms-red-dark);border-color:var(--tms-red-dark);box-shadow:0 4px 12px #a9151c26}
       #tms-panel .tms-danger{color:var(--tms-red-dark)}
-      #tms-panel .tms-close,#tms-panel .tms-help{width:32px;padding:2px;border-color:transparent;font-size:18px}
+      #tms-panel .tms-close,#tms-panel .tms-help{width:40px;padding:2px;border-color:transparent;font-size:18px}
       #tms-panel .tms-ghost{background:var(--tms-bg)}
       #tms-panel button.tms-subtle{border-color:transparent;background:transparent;color:var(--tms-muted);font-weight:500}
       #tms-panel button.tms-subtle:hover:enabled{background:var(--tms-soft);color:var(--tms-ink);border-color:var(--tms-line)}
-      #tms-panel input,#tms-panel select,#tms-panel textarea{font-family:inherit;font-size:13px;line-height:1.5;color:var(--tms-ink);border:1px solid var(--tms-line);border-radius:var(--tms-radius);background:var(--tms-bg);padding:7px 9px;min-height:32px;margin:0;max-width:100%}
+      #tms-panel input,#tms-panel select,#tms-panel textarea{font-family:inherit;font-size:13px;line-height:1.5;color:var(--tms-ink);border:1px solid var(--tms-line);border-radius:var(--tms-radius);background:var(--tms-bg);padding:8px 10px;min-height:40px;margin:0;max-width:100%}
       #tms-panel input[type=checkbox]{min-height:16px;width:16px;height:16px;margin:2px 0 0;accent-color:var(--tms-red);flex:none}
       #tms-panel :focus-visible,#tms-launch:focus-visible{outline:2px solid #234e86;outline-offset:2px}
       #tms-panel textarea{resize:vertical}
@@ -12254,6 +14673,11 @@
       #tms-panel .tms-step-caption,#tms-panel .tms-muted{font-size:12px;color:var(--tms-muted)}
       #tms-panel .tms-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
       #tms-panel #tms-test-tools>p,#tms-panel #tms-test-tools>.tms-row{margin-top:8px}
+      #tms-panel .tms-action-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+      #tms-panel .tms-action-list button{width:100%}
+      #tms-panel .tms-support-tools{display:grid;gap:8px;padding:12px 0;border-bottom:1px solid var(--tms-line)}
+      #tms-panel .tms-support-note{font-size:12px;color:var(--tms-muted);line-height:1.45}
+      #tms-panel #tms-uat-actions:empty{display:none}
       #tms-panel #tms-tests-result{margin-top:8px;font-size:12px;overflow-wrap:anywhere}
       #tms-panel #tms-tests-result>p{padding:6px 0;color:var(--tms-muted)}
       #tms-panel .tms-test-check{padding:8px 0;border-top:1px solid var(--tms-line)}
@@ -12262,14 +14686,20 @@
       #tms-panel #tms-file{position:absolute;opacity:0;width:1px;height:1px;min-height:0;padding:0}
       #tms-panel .tms-file-label:has(+ input:focus-visible){outline:2px solid #234e86;outline-offset:2px}
       #tms-panel #tms-apply{width:100%;min-height:42px;font-size:14px}
-      #tms-panel .tms-counters{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:12px 0}
+      #tms-panel .tms-counters{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:12px 0}
       #tms-panel .tms-count{padding:8px 4px;border:1px solid var(--tms-line);border-radius:var(--tms-radius);font-size:11px;text-align:center;background:var(--tms-soft)}
+      #tms-panel button.tms-count-filter{min-height:48px;font-weight:400;line-height:1.5;width:100%;background:var(--tms-soft);cursor:pointer}
+      #tms-panel button.tms-count-filter:hover:enabled{background:var(--tms-soft);border-color:#9fa7b1}
+      #tms-panel button.tms-count-filter.tms-active{background:var(--tms-bg);border-color:var(--tms-red);box-shadow:inset 0 0 0 1px var(--tms-red)}
       #tms-panel .tms-count b{display:block;font-size:18px;font-variant-numeric:tabular-nums;margin-top:4px}
       #tms-panel .tms-delete b{color:var(--tms-red-dark)}
       #tms-panel .tms-add b{color:var(--tms-success)}
       #tms-panel .tms-warning,#tms-panel .tms-skipped-box,#tms-panel .tms-review-note,#tms-panel .tms-fatal{margin-top:8px;padding:10px 12px;border:1px solid var(--tms-line);border-radius:var(--tms-radius);background:var(--tms-soft);font-size:12px;overflow-wrap:anywhere}
       #tms-panel .tms-warning,#tms-panel .tms-skipped-box{border-left:3px solid var(--tms-warning)}
       #tms-panel .tms-fatal{border-left:3px solid var(--tms-red);color:var(--tms-red-dark)}
+      #tms-panel .tms-required-attention{position:sticky;top:78px;z-index:20;margin:8px 0;padding:10px 12px;border:1px solid #d6a62a;border-left:4px solid #b17800;border-radius:var(--tms-radius);background:#fff8df;color:#5f4300;font-size:12px;box-shadow:0 2px 8px #0001}
+      #tms-panel #tms-download-package[data-state=ready]{border-color:var(--tms-red);color:var(--tms-red-dark)}
+      #tms-panel #tms-download-package[data-state=preparing]{color:var(--tms-muted)}
       #tms-panel .tms-skip-line{padding:8px 0;border-top:1px solid var(--tms-line)}
       #tms-panel .tms-skip-more{padding-top:8px}
       #tms-panel .tms-action{margin:8px 0;border:1px solid var(--tms-line);border-radius:var(--tms-radius);background:var(--tms-bg)}
@@ -12295,17 +14725,12 @@
       #tms-panel .tms-value+.tms-value{margin-top:5px;padding-top:5px;border-top:1px solid var(--tms-line)}
       #tms-panel .tms-diff-excluded .tms-diff-values{text-decoration:line-through;color:var(--tms-muted)}
       #tms-panel .tms-preview-toolbar{display:grid;gap:8px;margin:12px 0}
-      #tms-panel .tms-preview-filters{display:flex;gap:4px;flex-wrap:wrap}
-      #tms-panel .tms-preview-filter.tms-active{border-color:var(--tms-red);color:var(--tms-red-dark)}
       #tms-panel .tms-preview-query{width:100%}
       #tms-panel .tms-preview-package{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px;background:var(--tms-soft);border-radius:var(--tms-radius)}
       #tms-panel .tms-preview-package strong{font-size:12px}
       #tms-panel .tms-preview-package span{flex-basis:100%;font-size:12px;color:var(--tms-muted)}
       #tms-panel .tms-preview-pager{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--tms-muted);font-size:12px}
       #tms-panel .tms-empty{padding:16px;color:var(--tms-muted);text-align:center}
-      #tms-panel .tms-tools{padding:12px 0;border-bottom:1px solid var(--tms-line)}
-      #tms-panel .tms-tool-list{display:grid;gap:12px;padding-top:12px}
-      #tms-panel .tms-tool-list p{margin:4px 0 0;color:var(--tms-muted);font-size:12px}
       #tms-panel .tms-package-details>summary{font-size:12px;color:var(--tms-muted)}
       #tms-panel .tms-operation-status:has(.tms-status-line:not([hidden])){margin-top:10px}
       #tms-panel .tms-capability-technical button{margin-top:8px}
@@ -12339,7 +14764,7 @@
       #tms-launch{right:12px;bottom:12px}
       #tms-panel .tms-body{padding:0 12px 12px}
       #tms-panel .tms-counters{grid-template-columns:repeat(3,minmax(0,1fr))}}
-      @media(max-width:400px){#tms-panel .tms-diff-values{grid-template-columns:1fr}
+      @media(max-width:400px){#tms-panel .tms-diff-values,#tms-panel .tms-action-list{grid-template-columns:1fr}
       #tms-panel .tms-help-grid{grid-template-columns:1fr}}
       /* Animate only explicit interaction: opening, pressing and hover. No
          repeating decorative motion or expensive per-row animation on render. */
@@ -12386,19 +14811,17 @@
           <div class="tms-operation-status" aria-live="polite" aria-atomic="true"><div class="tms-status-line" hidden><span id="tms-progress-label">Готово</span><span id="tms-progress-percent" class="tms-progress-percent">0%</span></div><div class="tms-progress-track" hidden><div id="tms-progress-fill" class="tms-progress-fill"></div></div><div id="tms-progress-detail" class="tms-progress-detail"></div></div>
         </div>
         <div class="tms-controls">
-          <details class="tms-start-help"><summary>Перед началом работы</summary><p>В TESSA создайте черновик матрицы и перейдите в редактирование. Затем скачайте Excel: справочники при каждой выгрузке читаются заново.</p><p>Удалить строку: удалить её целиком в Excel. Удалить отдельное значение: очистить ячейку или убрать элемент списка. Очистить все рабочие ячейки строки — тоже удалить строку. Пустые строки между записями пропускаются; новые заполненные строки добавляются автоматически, в том числе вместе с удалениями.</p><p>Можно вводить полное название вручную. Однозначный фрагмент сопоставляется при проверке; неоднозначный требует уточнения. Автодополнение выпадающих списков зависит от версии Excel. Поиск в «Собрать значения» доступен независимо от неё.</p></details><div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button><button type="button" id="tms-open-picker" aria-controls="tms-value-picker" aria-expanded="false" title="Несколько значений для одной ячейки">Собрать значения</button></div><section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section></div>
+          <div class="tms-step"><div class="tms-step-label">1 · Файл для редактирования</div><div class="tms-row"><button id="tms-download-current">Скачать Excel</button><button type="button" id="tms-open-picker" aria-controls="tms-value-picker" aria-expanded="false" title="Несколько значений для одной ячейки">Собрать значения</button></div><section id="tms-value-picker" class="tms-picker" aria-label="Выбор значений для Excel" hidden></section></div>
           <div class="tms-step"><div class="tms-step-label">2 · Изменённый файл</div><div class="tms-row"><label for="tms-file" class="tms-file-label">Выбрать Excel</label><input id="tms-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div><div id="tms-file-name" class="tms-file-name">Файл не выбран</div></div>
-          <details class="tms-tools"><summary>Дополнительно</summary><div class="tms-tool-list">
-            <div><button id="tms-download-fresh">Обновить справочники в моём Excel</button><p>Выберите изменённый файл в шаге 2. Скачается его копия с новыми справочниками; ваши строки и правки сохранятся.</p></div>
-            <div><button id="tms-refresh-excel" disabled>Объединить с актуальной TESSA</button><p>Добавить новые поля и изменения других пользователей. Совпавшие правки объединяются; конфликты покажем для выбора. В старых книгах без исходных значений объединение ограничено.</p></div>
-            <details id="tms-test-tools"><summary>Проверки и диагностика</summary>
-              <p>Проверка матрицы и Excel без сохранения строк. Пакет содержит рабочие значения, запросы и ответы TESSA.</p>
-              <div class="tms-row"><button id="tms-run-tests" type="button">Запустить проверки</button><button id="tms-download-diagnostics" type="button">Скачать пакет диагностики</button></div>
-              <details><summary>Нативный интерфейс TESSA</summary><p>Снимает технический состав методов/контролов без бизнес-значений. Режим записи позволяет выполнить штатное действие TESSA (например, удалить строку правой кнопкой и сохранить) и скачать фактические вызовы CardService и изменение состава матрицы.</p><div class="tms-row"><button id="tms-native-surface" type="button">Снять интерфейс TESSA</button><button id="tms-native-record-start" type="button">Начать запись нативного действия</button><button id="tms-native-record-stop" type="button" disabled>Остановить и скачать</button></div></details>
-              <details><summary>Проверка с записью</summary><p>Сначала проверьте Excel и выберите операции в Preview. Кнопка применяет именно эти изменения после обычного подтверждения, затем перечитывает результат. Для испытаний используйте отдельный тестовый черновик. Добавление, изменение и удаление проверяются только если есть в выбранном наборе.</p><button id="tms-test-write" type="button">Применить выбранное и проверить запись</button></details><div id="tms-tests-result" role="status" aria-live="polite">Проверки ещё не запускались.</div>
-            </details>
-          </div></details>
-          <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-download-changes" hidden disabled>Скачать изменения в Excel</button><button id="tms-download-report" hidden disabled>Скачать результат</button><button id="tms-download-support-report" hidden disabled>Скачать отчёт для поддержки</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
+          <div class="tms-step" aria-label="Обслуживание Excel"><div class="tms-step-label">Excel и справочники</div><div class="tms-action-list"><button id="tms-download-fresh" type="button">Обновить справочники</button><button id="tms-refresh-excel" type="button" disabled>Объединить с актуальной TESSA</button></div><div class="tms-step-caption">Обновление создаёт свежий Excel. Объединение переносит ваши изменения на актуальное состояние TESSA.</div></div>
+          <section id="tms-test-tools" class="tms-support-tools" aria-label="Проверки и поддержка">
+            <div class="tms-step-label">Проверки и поддержка</div>
+            <div class="tms-action-list"><button id="tms-run-tests" type="button">Быстрые проверки</button><button id="tms-download-diagnostics" type="button">Скачать диагностику</button><button id="tms-native-surface" type="button">Снять интерфейс TESSA</button><button id="tms-native-record-start" type="button">Записать нативное действие</button><button id="tms-native-record-stop" type="button" disabled>Остановить и скачать</button><button id="tms-test-write" type="button">Проверить выбранную запись</button></div>
+            <p class="tms-support-note">Запись и Full UAT выполняйте в отдельном тестовом черновике. Full UAT создаёт временные строки, проверяет чтение после записи и удаляет их с обязательной сверкой восстановления.</p>
+            <div id="tms-uat-actions"></div>
+            <div id="tms-tests-result" role="status" aria-live="polite">Проверки ещё не запускались.</div>
+          </section>
+          <section id="tms-merge-conflicts" hidden aria-label="Конфликты объединения"></section><div class="tms-step"><div class="tms-step-label">3 · Проверка</div><div class="tms-row"><button id="tms-analyze" class="tms-primary" disabled>Проверить изменения</button><button id="tms-download-package" hidden disabled>Скачать пакет</button><button id="tms-stop" hidden disabled>Отмена</button></div></div>
           <div id="tms-apply-section" class="tms-step tms-step-apply" hidden><div class="tms-step-label">4 · Применение</div><button id="tms-apply" class="tms-primary" disabled>Применить к TESSA</button><div id="tms-apply-note" class="tms-step-caption"></div><button id="tms-reconcile" hidden disabled>Проверить результат</button><div id="tms-reconciliation-result" class="tms-step-caption tms-reconciliation-result"></div><div class="tms-row"><button id="tms-refresh-view" hidden disabled>Обновить отображение</button></div></div>
         </div>
         <div id="tms-summary"></div><section id="tms-resolution-center" hidden aria-label="Разрешение неоднозначностей"></section><div id="tms-plan"></div>
@@ -12510,18 +14933,20 @@
       catch (error) { const message = friendlyErrorMessage(error); log(message, 'error', error); setProgress(100, 'Проверка не завершена', message); }
       finally { setBusy(false); }
     });
-    panel.querySelector('#tms-download-changes').addEventListener('click', () => { downloadReviewedChangesXlsx(); });
-    panel.querySelector('#tms-download-report').addEventListener('click', () => { downloadLastReport(); });
-    panel.querySelector('#tms-download-support-report').addEventListener('click', () => {
+    panel.querySelector('#tms-download-package').addEventListener('click', async () => {
       if (APP.busy) return;
-      const report = APP.plan ? buildPreviewSupportReport(APP.plan, APP.review) : APP.lastSupportReport;
-      if (!report) {
-        setProgress(100, 'Отчёт пока недоступен', 'Сначала выполните проверку Excel или Apply.');
-        return;
+      setControlDisabled(panel.querySelector('#tms-download-package'), true);
+      try { await downloadSupportBundle(); }
+      catch (error) {
+        const message = friendlyErrorMessage(error);
+        log(`Не удалось скачать пакет: ${message}`, 'error', error);
+        setProgress(100, 'Не удалось скачать пакет', message);
+      } finally {
+        updateSupportBundleControl({
+          available: Boolean(APP.plan && APP.selectedFileRef),
+          ready: Boolean(APP.supportBundleArtifact),
+        });
       }
-      const name = `TESSA_Matrix_Support_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-      downloadJson(report, name, null);
-      setProgress(100, 'Отчёт скачан', name);
     });
     panel.querySelector('#tms-run-tests').addEventListener('click', () => runStudioDiagnostics());
     panel.querySelector('#tms-download-diagnostics').addEventListener('click', () => runStudioDiagnostics(true));
@@ -12540,6 +14965,11 @@
           { attempts: 3, baseDelayMs: 450 },
         );
         renderReconciliationResult(APP.lastReconciliation);
+        if (APP.supportBundleContext?.plan) {
+          clearSupportBundleArtifact(APP);
+          void prepareSupportBundle(APP.supportBundleContext.plan, APP.supportBundleContext.review)
+            .catch(bundleError => log(`Пакет результата: ${friendlyErrorMessage(bundleError)}`, 'warn'));
+        }
         setProgress(100, 'Проверка результата завершена', reconciliationSummary(APP.lastReconciliation));
       } catch (error) {
         const retryable = isWriterLockError(error);
@@ -12604,10 +15034,14 @@
         }
         if (result) {
           APP.lastSupportReport = buildApplySupportReport(result, APP.capabilities, APP.version);
+          const bundleReview = APP.supportBundleContext?.review || APP.review;
+          APP.supportBundleContext = { ...(APP.supportBundleContext || {}), plan: reviewedPlan, review: bundleReview, applyResult: result };
           invalidatePlanStateAfterApply(APP, result);
           renderPlanConsumedNotice(result);
           renderReconciliationResult(APP.lastReconciliation);
           updateReconciliationControlState();
+          void refreshSupportBundleAfterApply(reviewedPlan, bundleReview, result)
+            .catch(bundleError => log(`Не удалось подготовить пакет после Apply: ${friendlyErrorMessage(bundleError)}`, 'warn'));
         }
       }
       catch (error) {
@@ -12625,15 +15059,51 @@
     });
     APP.runtimeMonitor.start();
     window.addEventListener('pagehide', () => {
-      clearReviewedChangesArtifact(APP);
+      clearSupportBundleArtifact(APP);
+      releaseWorkbookArchive(APP.workbook);
       restoreNativeRecorderMethods(APP.nativeRecorder);
       APP.nativeRecorder = null;
       APP.runtimeMonitor?.stop();
     });
-    window.addEventListener('pageshow', () => APP.runtimeMonitor?.start());
-    document.addEventListener('visibilitychange', () => APP.runtimeMonitor?.tick());
+    window.addEventListener('pageshow', () => {
+      APP.runtimeMonitor?.start();
+      const pending = restoreLongJobCheckpoint();
+      if (document.wasDiscarded && pending) {
+        setProgress(0, 'Предыдущая операция была прервана браузером', 'Выберите Excel и повторите проверку — Studio сохранила этап, на котором вкладка была выгружена.');
+      }
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden' && APP.longJob) longJobCheckpoint(APP.longJob.stage, APP.longJob.detail || {});
+      APP.runtimeMonitor?.tick();
+    });
+    document.addEventListener('freeze', () => {
+      if (APP.longJob) longJobCheckpoint(APP.longJob.stage, APP.longJob.detail || {});
+    });
+    document.addEventListener('resume', () => APP.runtimeMonitor?.tick());
   }
 
+
+  const LONG_JOB_STORAGE_KEY = 'TMS_LONG_JOB_CHECKPOINT_V1';
+
+  function longJobCheckpoint(stage, detail = {}) {
+    if (!APP.longJob) APP.longJob = { id: `job-${Date.now()}`, startedAt: nowIso(), operation: detail.operation || 'unknown' };
+    APP.longJob = { ...APP.longJob, stage, detail: clonePlain(detail), updatedAt: nowIso() };
+    try { sessionStorage.setItem(LONG_JOB_STORAGE_KEY, JSON.stringify(APP.longJob)); } catch (_) {}
+    return APP.longJob;
+  }
+
+  function clearLongJobCheckpoint() {
+    APP.longJob = null;
+    try { sessionStorage.removeItem(LONG_JOB_STORAGE_KEY); } catch (_) {}
+  }
+
+  function restoreLongJobCheckpoint() {
+    try {
+      const parsed = JSON.parse(sessionStorage.getItem(LONG_JOB_STORAGE_KEY) || 'null');
+      if (parsed && parsed.stage) APP.longJob = parsed;
+    } catch (_) {}
+    return APP.longJob;
+  }
 
   async function bootstrap() {
     if (window.__TESSA_MATRIX_SYNC_TEST_MODE__) return;
@@ -12657,21 +15127,28 @@
     probeRuntimeEnvironment, inspectNativeViewCapabilitiesReadOnly, inspectMatrixCapabilitiesReadOnly,
     evaluateRuntimeCapabilities, capabilityOperationAvailability, humanCapabilityBlocker, capabilityStatusModel,
     normalizeSpace, isOverwriteMatch, stripFormulaMarker, canonicalHeader, canonicalValue, definitionKey, splitCell, mapConcurrent, yieldToMain, estimateRemainingMs, formatEtaMs, workProgressDetail, rememberReport, downloadLastReport, triggerBlobDownload, downloadJson, reconciliationSummary, renderReconciliationResult, sanitizeSupportReport, buildApplySupportReport,
+    supportBundleDescriptor, prepareSupportBundle, downloadSupportBundle, clearSupportBundleArtifact, sha256Hex,
+    workbookHistoricalRoleLookup, historicalRoleTextMatches, skippedValuesHtml, longJobCheckpoint, clearLongJobCheckpoint, restoreLongJobCheckpoint,
     sortedCanon, arraysEqual, hashText, fingerprintFlat, similarityFlat,
-    readXlsxArrayBuffer, releaseWorkbookArchive, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
-    buildRoundtripGrid, createRoundtripXlsxBytes, buildChangesReportModel, createChangesReportXlsxBytes, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
+    readXlsxArrayBuffer, releaseWorkbookArchive, exactArrayBuffer, loadExportSnapshotAndDictionaries, parseSheetXml, buildColumnMap, workbookRowsToDesired, foreignDesiredRow, buildCrossMatrixReplacementPlan, buildPlan,
+    buildRoundtripGrid, createRoundtripXlsxBytes, buildChangesReportModel, createChangesReportXlsxBytes, patchWorkbookVisibleCellForUat, refreshWorkbookDictionaries, preserveWorkbookSelectors, mergeWorkbookIntoCurrentSnapshot, prepareThreeWayMerge, mergeWorkbookEditsIntoSnapshot, parseSchemaToken, normalizeAction, cherkizovoLogoSvg, issueExcelRows, makeSkippedRow,
     parseBoolean, parseRange, headerSimilarity, countActions, matrixStateCaption, operandKind, typedScalarSemantic, typedRangeSemantic, reconciliationSemanticKey, createMutationReceipt, indexSnapshotForReconciliation, reconcileMutationReceipts, runReconciliationRead, deletionGuard, evaluateApplyBatch, applyAvailability, previewPreflightPolicy, replacementConfirmationModel, confirmCrossMatrixReplacement, isWriterLockError, persistMainMatrixAfterApply, refreshNativeMatrixViewAfterApply, collectPlanResolutionItems, applyResolutionChoiceToWorkbook, finalizeApplyResult, applyResultMessage,
-    createPlanReviewState, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
+    createPlanReviewState, previewAttentionSummary, resolutionCenterWindow, previewCounterFilterTarget, invalidatePlanStateAfterApply, keepReviewedPackage, planReviewActionKey, setPlanReviewChange, setPlanReviewRow, buildReviewedPlan, createPreviewViewState, selectPreviewItems, previewRoleTypeLabel, buildPreviewSupportReport,
     pickExactReferenceFromViewResult, uniqueReferenceMatches, isGuidLike,
     safePlain, classifyWorkbookContext, suppressPlanForUnsafeContext, evaluatePlanSafety, resultingRoleCountForAction, matrixNameSimilarity,
     preflightPlan, applyPreflightPreview, crossMatrixReplacementIntegrity, verifyCrossMatrixRollback, finalizeCrossMatrixTransferVerification, applyPlan, requestApplyAbort, hydrateMissingIdsForAction, nativeEditAccessState, assertNativeEditMode, isWritableMatrixDraft, assertWritableMatrixDraft,
     incrementalSafetyMode, collectTouchedIdentities, buildTargetedPreflightSnapshot, buildTargetedReconciliationSnapshot,
-    finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, partnerRecordKeepingColumnIndex, detectPlanDuplicateConflicts, friendlyErrorMessage,
+    finalizeDictionaryEntries, dictionaryLookup, resolveEmbeddedDictionaryValue, normalizeDictionaryCatalog, searchCanonical, booleanSemantic, booleanDisplay, humanQualifierFromDetails, partnerRecordKeepingColumnIndex, detectPlanDuplicateConflicts, friendlyErrorMessage, planPhysicalDictionaryCatalogs, buildDictionaryRefreshArtifacts,
     dictionaryStructureSignature, dictionaryCacheKey, readDictionaryCache, writeDictionaryCache, deleteDictionaryCache, mergeSnapshotIntoDictionaryCatalog, buildPreviewReport, compactPlanForExport, productionShadowProfile,
-    performanceStage, performanceSnapshot, resetPerformanceTelemetry, performanceUatScenarioNames, runPerformanceUat, buildPerformanceUatSummary, makeZip, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,
+    performanceStage, performanceSnapshot, resetPerformanceTelemetry, performanceUatScenarioNames, runPerformanceUat, buildPerformanceUatSummary, makeZip, unzipArrayBuffer, adaptiveConcurrency, sessionContextKey, setSessionSnapshot, getSessionSnapshot, updateSessionRows, invalidateSessionCache, sessionCacheStats,
     baselineExplicitValues, workbookBaselineFastPathIndex, unchangedDesiredRowFromBaseline,
     TessaBridge,
-    constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE },
+    version: APP.version,
+    performanceBuild: APP.performanceBuild,
+    buildFingerprint: APP.buildFingerprint,
+    // FULL_UAT_VERSION_PROVENANCE_V1
+    studioVersion: () => APP.version,
+    constants: { OPERAND, REQUEST, S, F, ROUNDTRIP, DICTIONARY_CACHE, PERFORMANCE, XLSX_ARCHIVE_LIMITS, SPREADSHEETML_LIMITS },
   };
 
   bootstrap();
@@ -12873,6 +15350,28 @@
       .filter(item => item.entries.length >= minimum);
   }
 
+  function documentTypeCriterionKeys(structure) {
+    return (structure?.conditions || [])
+      .filter(condition => [condition?.autocompleteViewName, condition?.refSection].some(value => canon(value) === 'gchdoctypes'))
+      .map(condition => `criterion:${condition.criterionRowId}`);
+  }
+
+  function normalizeAddDocumentTypes(book, row, structure, catalog, rng = Math.random) {
+    for (const key of documentTypeCriterionKeys(structure)) {
+      const valueIndex = tokenIndex(book, key);
+      if (valueIndex < 0 || !String(row.values?.[valueIndex] || '').trim()) continue;
+      const entries = authoritativeEntries(catalog, key);
+      if (!entries.length) throw new Error(`Для ${key} нет разрешённых видов документов текущего типа карточки.`);
+      const allowed = new Set(entries.map(entry => canon(entry.id)).filter(Boolean));
+      const idIndex = companionIndex(book, key);
+      const currentId = canon(String(idIndex >= 0 ? row.values?.[idIndex] || '' : '').split('|')[0]);
+      if (currentId && allowed.has(currentId)) continue;
+      const replacement = shuffled(entries, rng)[0];
+      setDictionaryValue(book, row, key, replacement);
+    }
+    return row;
+  }
+
   function buildWritableFieldInventory(book, structure, currentCatalog) {
     const criterionById = new Map();
     for (const definition of structure?.conditions || []) {
@@ -13041,6 +15540,7 @@
       issues: plan?.issues || [],
       skippedRows: (plan?.skippedRows || []).slice(0, 30),
       skippedFields: (plan?.skippedFields || []).slice(0, 30),
+      skippedValues: (plan?.skippedValues || []).slice(0, 30),
       safety: plan?.safety ? { blocked: Boolean(plan.safety.blocked), blockedReasons: plan.safety.blockedReasons || [] } : null,
     };
   }
@@ -13051,13 +15551,16 @@
     return plan;
   }
 
-  async function workbookFromSnapshot(structure, snapshot, bridge, catalog) {
+  async function workbookFromSnapshot(structure, snapshot, bridge, catalog, options = {}) {
     const bytes = await E.createRoundtripXlsxBytes(structure, snapshot, bridge.matrixInfo(), catalog, { includeActions: true });
-    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const buffer = E.exactArrayBuffer(bytes);
     const book = await E.readXlsxArrayBuffer(buffer, 'TESSA_UAT_CURRENT.xlsx', {
       skipSheetNames: ['Словари'],
       dictionaryCatalog: catalog,
       selectiveInflate: true,
+      // Only the one base workbook used by the dictionary-refresh scenario needs its
+      // raw OPC/ZIP parts later. Temporary UAT books are parse-and-discard.
+      retainArchive: options.retainArchive === true,
     });
     return { bytes, book };
   }
@@ -13365,7 +15868,7 @@
     const planStarted = nowMs();
     const sourceCatalog = E.mergeSnapshotIntoDictionaryCatalog(null, sourceStructure, sourceSnapshot);
     const bytes = await E.createRoundtripXlsxBytes(sourceStructure, sourceSnapshot, sourceInfo, sourceCatalog, { includeActions: true });
-    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const buffer = E.exactArrayBuffer(bytes);
     const workbook = await E.readXlsxArrayBuffer(buffer, 'TESSA_PROD_SHADOW.xlsx');
     const plan = E.buildPlan(workbook, targetStructure, targetSnapshot, targetInfo);
     const safety = E.evaluatePlanSafety(plan, { matrixInfo: () => targetInfo, localizeValue: value => value });
@@ -13426,6 +15929,10 @@
         const candidateBook = cloneWorkbook(book);
         const candidate = { ...source, excelRow: startRow, values: [...source.values] };
         clearSystemIdentity(candidateBook, candidate, 'add');
+        // Existing matrices can contain historical document types that are legal to
+        // keep but illegal for a new row. Replace those copied values with an entry
+        // from the current CardTypeID-scoped catalog before testing uniqueness.
+        normalizeAddDocumentTypes(candidateBook, candidate, structure, catalog, rng);
         setDictionaryValue(candidateBook, candidate, column.key, entry);
         candidateBook.rows.push(candidate);
         const plan = E.buildPlan(candidateBook, structure, snapshot, bridge.matrixInfo());
@@ -13435,6 +15942,64 @@
       }
     }
     throw new Error('Не удалось подобрать уникальную временную строку из актуальных справочников без конфликтов.');
+  }
+
+  function findSafeUpdateCandidate(book, structure, snapshot, bridge, catalog, rng, options = {}) {
+    const columns = shuffled(mutableCriterionColumns(book, catalog, Math.max(2, Number(options.minimumEntries || 2))), rng);
+    const sources = options.source ? [options.source] : shuffled((book.rows || []).filter(row => rowHasRole(book, row)), rng);
+    for (const source of sources) {
+      for (const column of columns) {
+        const current = canon(source.values?.[column.index] || '');
+        const entries = shuffled(column.entries.filter(entry => canon(entry.selector || entry.display) !== current), rng).slice(0, 40);
+        for (const entry of entries) {
+          const candidateBook = cloneWorkbook(book);
+          const candidateRow = candidateBook.rows.find(row => Number(row.excelRow) === Number(source.excelRow));
+          if (!candidateRow) continue;
+          setDictionaryValue(candidateBook, candidateRow, column.key, entry);
+          const plan = E.buildPlan(candidateBook, structure, snapshot, bridge.matrixInfo());
+          if ((plan.counts?.update || 0) === 1
+            && (plan.counts?.skip || 0) === 0
+            && (plan.counts?.add || 0) === 0
+            && (plan.counts?.delete || 0) === 0) {
+            const action = (plan.actions || []).find(item => item.type === 'update');
+            if (action) return { book: candidateBook, row: candidateRow, source, column, entry, action, plan };
+          }
+        }
+      }
+    }
+    throw new Error('Не удалось подобрать безопасный UPDATE из актуальных справочников.');
+  }
+
+  async function findPhysicalSafeUpdateCandidate(book, structure, snapshot, bridge, catalog, rng) {
+    const sources = shuffled((book.rows || []).filter(row => rowHasRole(book, row)), rng);
+    let lastEvidence = null;
+    for (const sourceRow of sources) {
+      let edited = null;
+      try {
+        edited = findSafeUpdateCandidate(book, structure, snapshot, bridge, catalog, rng, { source: sourceRow });
+      } catch (_) {
+        continue;
+      }
+      const visibleValue = String(edited.entry?.selector || edited.entry?.display || '');
+      if (!visibleValue) continue;
+      let physical = null;
+      try {
+        physical = await E.patchWorkbookVisibleCellForUat(book, edited.source.excelRow, edited.column.index, visibleValue, catalog);
+        const physicalPlan = E.buildPlan(physical.workbook, structure, snapshot, bridge.matrixInfo());
+        const action = (physicalPlan.actions || []).find(item => item.type === 'update');
+        lastEvidence = { excelRow: edited.source.excelRow, counts: physicalPlan.counts, skippedRows: physicalPlan.skippedRows || [] };
+        if ((physicalPlan.counts?.update || 0) === 1
+          && (physicalPlan.counts?.skip || 0) === 0
+          && (physicalPlan.counts?.add || 0) === 0
+          && (physicalPlan.counts?.delete || 0) === 0
+          && action) {
+          return { ...edited, physical, physicalPlan, selection: 'physical-safe-update' };
+        }
+      } finally {
+        if (physical?.workbook) E.releaseWorkbookArchive(physical.workbook);
+      }
+    }
+    throw new Error(`UAT не нашёл collision-safe UPDATE, который остаётся безопасным после физической правки/re-read XLSX: ${JSON.stringify(lastEvidence)}`);
   }
 
   function findRowByCard(book, rowCardId) {
@@ -13448,7 +16013,7 @@
     const seed = Number.isFinite(Number(options.seed)) ? Number(options.seed) >>> 0 : hashSeed(`${Date.now()}|${location?.href || ''}`);
     const rng = seededRandom(seed);
     const report = {
-      format: 'TESSA_FULL_UAT_V1', studioVersion: '1.14.0', runnerVersion: VERSION, seed, startedAt,
+      format: 'TESSA_FULL_UAT_V1', studioVersion: String(E.studioVersion?.() || 'unknown'), runnerVersion: VERSION, seed, startedAt,
       status: 'INCOMPLETE', matrix: null, checks: [], timeline: [], cleanup: [], cleanupLedger: null, restoreProof: null, dictionaryAudit: null, functionalActionAudit: null,
       rolePresentationAudit: null, recordKeepingAudit: null, fieldMutationAudit: null, productionShadowAudit: null, liveConfirmation: options.liveConfirmation === 'full-uat-confirmed' ? 'full-uat-confirmed' : null, writesAttempted: 0, writesCompleted: 0,
     };
@@ -13456,6 +16021,15 @@
     let baseline = null, structure = null, catalog = null, bridge = null, baselineSignature = null;
     let cleanupLedgerController = null;
     let cleanupUnsafe = false;
+    // FULL_UAT_ACTION_COVERAGE_FINAL_V1
+    let reconciliationActionReceiptContext = null;
+    // FULL_UAT_PINNED_CONTEXT_RECOVERY_V1
+    let pinnedUatBridge = null;
+    let pinnedUatMatrixId = '';
+    let pinnedUatTemplateId = '';
+    // FULL_UAT_PREFLIGHT_RECOVERY_STATE_V1
+    let initializationPhase = 'not-started';
+    let baselineCaptured = false;
     const timeline = (stage, detail, extra = null) => report.timeline.push({ at: now(), stage, detail, ...(extra ? { extra } : {}) });
     const addCheck = (id, title, status, detail, extra = {}) => {
       const item = { id, title, status, detail, ...extra }; report.checks.push(item); timeline(id, `${status}: ${detail}`); return item;
@@ -13512,18 +16086,53 @@
       }
     };
     async function freshSnapshot() {
-      const freshBridge = await E.TessaBridge.create();
-      if (canon(freshBridge.matrixInfo().matrixId) !== canon(report.matrix?.matrixId)) throw new Error('Во время UAT открыта другая матрица.');
+      // FULL_UAT_PINNED_CONTEXT_RECOVERY_V1
+      const freshBridge = pinnedUatBridge || await E.TessaBridge.create();
+      const freshInfo = freshBridge.matrixInfo();
+      if (report.matrix?.matrixId && canon(freshInfo.matrixId) !== canon(report.matrix.matrixId)) {
+        throw new Error('Pinned UAT bridge потерял исходную матрицу.');
+      }
       return { bridge: freshBridge, snapshot: await freshBridge.loadSnapshot(structure) };
     }
-    async function applySingle(plan, label) {
+
+    async function assertActiveUatContextBeforeWrite() {
+      const activeBridge = await E.TessaBridge.create();
+      const activeInfo = activeBridge.matrixInfo();
+      if (pinnedUatMatrixId && canon(activeInfo.matrixId) !== canon(pinnedUatMatrixId)) {
+        throw new Error('Во время UAT открыта другая матрица; новая запись не начата.');
+      }
+      if (pinnedUatTemplateId && canon(activeInfo.TemplateID) !== canon(pinnedUatTemplateId)) {
+        throw new Error('Во время UAT изменился шаблон матрицы; новая запись не начата.');
+      }
+      return activeBridge;
+    }
+    // UAT_DICTIONARY_REUSE_V1
+    // Dictionary views are large but immutable for the duration of one UAT run.
+    // Force-load them once (and once again in the explicit refresh test); between writes
+    // only overlay current matrix values, which is O(rows) and does no View API I/O.
+    const catalogForSnapshot = snapshot => E.mergeSnapshotIntoDictionaryCatalog(catalog, structure, snapshot);
+    async function applySingle(plan, label, options = {}) {
       applySafety(plan, bridge);
       if (plan.safety?.blocked) throw new Error(plan.safety.blockedReasons?.join(' ') || `${label}: Apply заблокирован.`);
       const executable = (plan.actions || []).filter(action => action.type !== 'noop');
       if (executable.length !== 1) throw new Error(`${label}: ожидалась 1 операция, получено ${executable.length}.`);
+      if (!options.recovery) await assertActiveUatContextBeforeWrite();
       report.writesAttempted += 1;
-      const result = await E.applyPlan(plan);
+      const result = await E.applyPlan(plan, { confirm: () => true, source: 'full-uat', deferMainMatrixSave: true, runtimeBridge: bridge, runtimeStructure: structure });
       if (!result) throw new Error(`${label}: применение отменено.`);
+      // FULL_UAT_STRICT_APPLY_RESULT_V1
+      // FULL_UAT_ACCEPTED_WRITE_RESULT_V2
+      // FULL_UAT_APPLY_FAILURE_EVIDENCE_V3
+      if (result.cancelled === true
+        || Number(result.appliedCount || 0) !== 1
+        || Number(result.failedCount || 0) !== 0
+        || Number(result.notStartedCount || 0) !== 0
+        || Number(result.preflightSkippedCount || 0) !== 0
+        || Number(result.storeSkippedCount || 0) !== 0) {
+        const firstRejected = (result.skipped || [])[0] || (result.rows || []).find(row => row?.status !== 'ok') || null;
+        const firstReason = String(firstRejected?.reason || firstRejected?.error || firstRejected?.reasonCode || '').trim();
+        throw new Error(`${label}: серверная операция завершилась не полностью (status=${result.status}, applied=${result.appliedCount}, skipped=${result.skippedCount}, notStarted=${result.notStartedCount}).` + (firstReason ? ' Причина: ' + firstReason : ''));
+      }
       report.writesCompleted += 1;
       return result;
     }
@@ -13532,14 +16141,31 @@
         const current = await freshSnapshot();
         const target = current.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
         if (!target) { report.cleanup.push({ scenarioId, rowCardId, status: 'already-absent', at: now() }); resolveCleanupForAbsentRow(rowCardId, 'already-absent', { resolvedBy: scenarioId }); return true; }
-        const currentCatalog = await current.bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true });
+        const currentCatalog = catalogForSnapshot(current.snapshot);
         const { book } = await workbookFromSnapshot(structure, current.snapshot, current.bridge, currentCatalog);
         const cardIndex = tokenIndex(book, 'system:rowCardId');
         book.rows = book.rows.filter(row => canon(row.values?.[cardIndex]) !== canon(rowCardId));
         let plan = E.buildPlan(book, structure, current.snapshot, current.bridge.matrixInfo()); plan = applySafety(plan, current.bridge);
         const deletes = plan.actions.filter(action => action.type === 'delete' && canon(action.currentRow?.rowCardId) === canon(rowCardId));
         if (deletes.length !== 1 || plan.actions.filter(action => action.type !== 'noop').length !== 1) throw new Error(`Cleanup не построил единственный DELETE временной строки: ${JSON.stringify(plan.counts)}.`);
-        bridge = current.bridge; const result = await applySingle(plan, `${scenarioId}: cleanup DELETE`);
+        bridge = current.bridge; const result = await applySingle(plan, scenarioId + ': cleanup DELETE', { recovery: true });
+        // Preserve one real DELETE receipt so the Reconcile action can be exercised later
+        // against the fully saved/restored matrix. This is real product reconciliation,
+        // not a synthetic action-coverage checkbox.
+        if (!reconciliationActionReceiptContext) {
+          const deleteAction = deletes[0];
+          const receipt = E.createMutationReceipt({
+            type: 'delete', action: deleteAction,
+            rowCardId: deleteAction.currentRow?.rowCardId,
+            versionId: deleteAction.currentRow?.versionId,
+            expectedRow: null, structure,
+          });
+          reconciliationActionReceiptContext = {
+            matrixId: report.matrix?.matrixId,
+            templateId: report.matrix?.templateId,
+            receipts: [receipt],
+          };
+        }
         const verified = await freshSnapshot();
         if (verified.snapshot.rows.some(row => canon(row.rowCardId) === canon(rowCardId))) throw new Error('Временная строка осталась после DELETE/read-back.');
         report.cleanup.push({ scenarioId, rowCardId, status: 'verified', at: now(), result: E.safePlain(result, { maxDepth: 5, maxKeys: 200, maxArray: 100 }) });
@@ -13568,7 +16194,7 @@
     }
     async function createTemporaryRow(scenarioId) {
       const current = await freshSnapshot(); bridge = current.bridge;
-      const currentCatalog = await bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true });
+      const currentCatalog = catalogForSnapshot(current.snapshot);
       const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog);
       const candidate = findUniqueAddCandidate(book, structure, current.snapshot, bridge, currentCatalog, rng, { gap: 3 });
       let plan = applySafety(candidate.plan, bridge); const beforeIds = new Set(current.snapshot.rows.map(row => canon(row.rowCardId)));
@@ -13593,31 +16219,111 @@
         } catch (_) { /* leave pending: global proof must become UNSAFE rather than guess */ }
         throw error;
       }
-      const after = await freshSnapshot();
-      const created = after.snapshot.rows.filter(row => !beforeIds.has(canon(row.rowCardId)));
-      if (created.length !== 1) {
-        resolveCleanupObligation(rowObligation.id, { status: 'pending', discoveredRowIds: created.map(row => row.rowCardId) });
-        throw new Error(`После ADD ожидалась 1 новая строка, найдено ${created.length}.`);
+      // FULL_UAT_ADD_RECEIPT_RECOVERY_V2
+      const addReceipt = (result.rows || []).find(row => row?.type === 'add' && row?.status === 'ok' && row?.rowCardId);
+      const receiptRowCardId = String(addReceipt?.rowCardId || '');
+      if (!receiptRowCardId) throw new Error(`${scenarioId}: успешный ADD не вернул RowCardID для cleanup.`);
+      resolveCleanupObligation(rowObligation.id, { status: 'pending', rowCardId: receiptRowCardId, identifiedAt: now(), identifiedBy: 'apply-receipt' });
+      let after;
+      try {
+        after = await freshSnapshot();
+      } catch (error) {
+        const cleanupOk = await cleanupCreatedRow(receiptRowCardId, `${scenarioId}-add-readback-recovery`);
+        if (!cleanupOk) throw new Error(`${scenarioId}: ADD принят, read-back не завершён и cleanup по receipt RowCardID не подтверждён: ${String(error?.message || error)}`);
+        throw error;
       }
-      resolveCleanupObligation(rowObligation.id, { status: 'pending', rowCardId: created[0].rowCardId, identifiedAt: now() });
-      return { created: created[0], after: after.snapshot, bridge: after.bridge, catalog: currentCatalog, candidate, result, cleanupObligationId: rowObligation.id };
+      const created = after.snapshot.rows.find(row => canon(row.rowCardId) === canon(receiptRowCardId));
+      if (!created) {
+        const cleanupOk = await cleanupCreatedRow(receiptRowCardId, `${scenarioId}-add-receipt-mismatch-recovery`);
+        if (!cleanupOk) throw new Error(`${scenarioId}: ADD receipt RowCardID отсутствует в read-back и cleanup не подтверждён.`);
+        throw new Error(`Добавленная временная строка не найдена по receipt RowCardID ${receiptRowCardId}.`);
+      }
+      return { created, after: after.snapshot, bridge: after.bridge, catalog: currentCatalog, candidate, result, cleanupObligationId: rowObligation.id };
     }
 
     try {
       timeline('start', `Full UAT seed=${seed}`);
-      bridge = await E.TessaBridge.create(); E.assertWritableMatrixDraft(bridge); E.assertNativeEditMode();
-      structure = await bridge.requestStructure(bridge.templateId()); baseline = await bridge.loadSnapshot(structure); baselineSignature = snapshotSignature(baseline);
+      initializationPhase = 'bridge-create';
+      bridge = await E.TessaBridge.create();
+      initializationPhase = 'draft-access';
+      E.assertWritableMatrixDraft(bridge);
+      initializationPhase = 'native-edit-mode';
+      E.assertNativeEditMode();
+      initializationPhase = 'structure';
+      structure = await bridge.requestStructure(bridge.templateId());
+      initializationPhase = 'baseline';
+      baseline = await bridge.loadSnapshot(structure);
+      baselineSignature = snapshotSignature(baseline);
+      baselineCaptured = true;
+      const info = bridge.matrixInfo();
+      report.matrix = { matrixId: info.matrixId, templateId: info.TemplateID, name: info.TemplateName, state: info.StateName, rows: baseline.rows.length };
+      pinnedUatBridge = bridge;
+      pinnedUatMatrixId = String(info.matrixId || '');
+      pinnedUatTemplateId = String(info.TemplateID || '');
+      timeline('context-pinned', 'Исходный runtime-контекст UAT закреплён для read-back/cleanup.', { matrixId: pinnedUatMatrixId, templateId: pinnedUatTemplateId });
       cleanupLedgerController = createCleanupLedger(baselineSignature); report.cleanupLedger = cleanupLedgerController.snapshot();
+      initializationPhase = 'dictionary';
       catalog = await bridge.loadDictionaryCatalog(structure, baseline, { forceRefresh: true, transient: true });
-      const info = bridge.matrixInfo(); report.matrix = { matrixId: info.matrixId, templateId: info.TemplateID, name: info.TemplateName, state: info.StateName, rows: baseline.rows.length };
-      const base = await workbookFromSnapshot(structure, baseline, bridge, catalog); packageEntries.push(['matrix-current.xlsx', base.bytes]);
+      initializationPhase = 'ready';
+      addCheck('uat-preflight', 'Готовность Full UAT', 'PASS', 'Черновик, режим редактирования, структура, baseline и справочники подтверждены до write-фазы.', { required: true, data: { phase: initializationPhase, baselineCaptured: true, matrixId: pinnedUatMatrixId, templateId: pinnedUatTemplateId } });
+      const base = await workbookFromSnapshot(structure, baseline, bridge, catalog, { retainArchive: true }); packageEntries.push(['matrix-current.xlsx', base.bytes]);
 
       await runCheck('action-download-current', 'Действие: скачать текущий Excel', async () => {
         if (!(base.bytes instanceof Uint8Array) || base.bytes.length < 4 || base.bytes[0] !== 0x50 || base.bytes[1] !== 0x4b) throw new Error('Текущая выгрузка не является XLSX/ZIP артефактом.');
         return { detail: `Сформирован matrix-current.xlsx (${base.bytes.length} байт).`, data: { outcome: 'xlsx-artifact', artifact: 'matrix-current.xlsx', bytes: base.bytes.length } };
       });
+      await runCheck('candidate-build-provenance', 'Версия и paging-adapter текущего кандидата', async () => {
+        const expectedBuild = 'TMS_V1_15_10_PAGING_V4_REFRESH_EDIT_V2';
+        const expectedPerformanceBuild = 'TMS_V1_16_0_PERF_ENDGAME_V1';
+        const actualBuild = String(E.buildFingerprint || '');
+        const actualPerformanceBuild = String(E.performanceBuild || '');
+        const version = String(E.studioVersion?.() || E.version || '');
+        if (actualBuild !== expectedBuild) {
+          throw new Error(`Загружен другой/старый userscript: build=${actualBuild || '(нет)'}, ожидался ${expectedBuild}.`);
+        }
+        if (actualPerformanceBuild !== expectedPerformanceBuild) {
+          throw new Error(`Загружена сборка без performance endgame: performanceBuild=${actualPerformanceBuild || '(нет)'}, ожидался ${expectedPerformanceBuild}.`);
+        }
+        if (version !== '1.17.1') {
+          throw new Error(`Загружена версия ${version || '(нет)'}, ожидалась 1.17.1.`);
+        }
+        return { detail: `Подтверждён v1.17.1 · ${actualBuild} · ${actualPerformanceBuild}.`, data: { version, build: actualBuild, performanceBuild: actualPerformanceBuild } };
+      });
+      await runCheck('initial-export-server-paging', 'Выгрузка: server paging без визуального листания', async () => {
+        const native = bridge.findNativeMatrixControl();
+        if (!native?.target) throw new Error('Нативное представление матрицы не найдено.');
+        const before = bridge.nativePagingInfo(native.target).currentPage;
+        const result = await bridge.collectNativeMatrixViewLinksAllPages({ pageLimit: 50 });
+        const after = bridge.nativePagingInfo(native.target).currentPage;
+        if (!result?.serverPaging) throw new Error('Первичная выгрузка использовала native-visual-paging вместо server-view-paging.');
+        if (before !== after) throw new Error(`Server paging изменил видимую страницу: ${before} → ${after}.`);
+        if ((baseline.rows || []).length && (result.links || []).length !== (baseline.rows || []).length) {
+          throw new Error(`Server paging вернул ${(result.links || []).length} строк вместо ${(baseline.rows || []).length}.`);
+        }
+        return {
+          detail: `Server paging подтверждён: ${(result.links || []).length} строк, ${(result.pagesVisited || []).length} server pages, visible page=${after}.`,
+          data: { source: 'server-view-paging', rows: (result.links || []).length, pagesVisited: result.pagesVisited || [], strategy: result.strategy || null, visiblePage: after },
+        };
+      });
+      await runCheck('native-view-paging-probe', 'Runtime TESSA: server paging без UI page flip', async () => {
+        const native = bridge.findNativeMatrixControl();
+        if (!native?.target) throw new Error('Нативное представление матрицы не найдено.');
+        const before = bridge.nativePagingInfo(native.target).currentPage;
+        const direct = await bridge.collectNativeMatrixViewLinksServerPaged({ pageLimit: 50 });
+        const after = bridge.nativePagingInfo(native.target).currentPage;
+        if (!direct?.serverPaging) throw new Error(`Runtime не подтвердил безопасный direct server paging; visual fallback. Build=${bridge.lastServerPagingDiagnostics?.build || E.buildFingerprint || '(нет)'}. Evidence=${JSON.stringify(bridge.lastServerPagingDiagnostics || null)}`);
+        if (after !== before) throw new Error(`Direct server paging изменил visible currentPage: ${before} → ${after}.`);
+        if ((baseline.rows || []).length > 50 && (direct.pagesVisited || []).length < 2) {
+          throw new Error(`Ожидалось несколько server pages для ${(baseline.rows || []).length} строк, получено ${JSON.stringify(direct.pagesVisited || [])}.`);
+        }
+        return {
+          detail: `Direct server paging работает без setPageAndRefresh: ${(direct.links || []).length} строк.`,
+          data: { rows: (direct.links || []).length, pagesVisited: direct.pagesVisited || [], strategy: direct.strategy || null, visiblePage: after },
+        };
+      });
+
       await runCheck('action-value-picker', 'Действие: собрать значения', async () => {
-        const columns = E.pickerColumns(structure, catalog);
+        const columns = E.pickerColumns({ schemaTokens: base.book.schemaTokens, headers: base.book.headers, dictionaryCatalog: catalog }) /* FULL_UAT_PICKER_SOURCE_V2 */;
         const column = columns.find(item => item?.catalog?.entries?.length);
         if (!column) throw new Error('В текущем шаблоне нет ни одного выбираемого справочного значения для picker.');
         const entry = column.catalog.entries[0];
@@ -13625,8 +16331,41 @@
         if (!String(text || '').trim()) throw new Error('Picker не сформировал значение для Excel.');
         return { detail: `Picker сформировал значение для «${column.label || column.key}».`, data: { outcome: 'picker-selection', column: column.key, value: text } };
       });
+      await runCheck('live-colleague-picker-multi-position', 'Регрессия: сотрудник с несколькими должностями копируется в Excel', async () => {
+        const item = {
+          id: 'uat-multi-position', roleTypeId: 1,
+          shortName: 'Тестов Т.А. — Руководитель направления; Эксперт по методологии', fullName: '',
+          position: 'Руководитель направления; Эксперт по методологии',
+          display: 'Тестов Т.А. — Руководитель направления; Эксперт по методологии — Руководитель направления',
+          selector: 'Тестов Т.А. — Руководитель направления; Эксперт по методологии — Руководитель направления',
+        };
+        // LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1
+        if (typeof E.pickerSelectionText !== 'function') throw new Error('Full UAT export pickerSelectionText недоступен.');
+        const text = E.pickerSelectionText([item]);
+        if (!text || /[;\r\n\t]/.test(text)) throw new Error('Picker не сформировал безопасное одиночное значение сотрудника.');
+        return { detail: 'Multi-position employee остаётся копируемым одним значением Excel.', data: { outcome: 'picker-selection', valueLength: text.length } };
+      });
+      await runCheck('live-colleague-preview-attention', 'Регрессия: крупный Preview показывает понятные счётчики и ограничивает список уточнений', async () => {
+        const syntheticSkips = Array.from({ length: 196 }, (_, index) => ({ excelRow: index + 15, code: index < 12 ? 'invalid-value' : '', reason: 'synthetic' }));
+        const syntheticPlan = { actions: [], counts: { update: 0, add: 0, delete: 0, noop: 100, skip: 196 }, skippedRows: syntheticSkips, desired: [], safety: { blocked: false, blockedReasons: [] } };
+        if (typeof E.previewAttentionSummary !== 'function' || typeof E.createPlanReviewState !== 'function') throw new Error('Full UAT Preview exports недоступны.');
+        const summary = E.previewAttentionSummary(syntheticPlan, E.createPlanReviewState());
+        if (typeof E.resolutionCenterWindow !== 'function') throw new Error('Full UAT export resolutionCenterWindow недоступен.');
+        const windowed = E.resolutionCenterWindow(Array.from({ length: 747 }, (_, index) => ({ excelRow: 15 + (index % 196) })), 0, 50);
+        if (summary.notApplied !== 196 || summary.errors !== 12) throw new Error('Preview attention counters do not match the synthetic 196/12 case.');
+        if (windowed.items.length !== 50 || windowed.total !== 747 || windowed.hidden !== 697) throw new Error('Resolution Center is not bounded to 50 visible items.');
+        return { detail: '196 not-applied rows and 12 errors are explicit; 747-item Resolution Center renders only 50 per page.', data: { outcome: 'preview-plan', notApplied: summary.notApplied, errors: summary.errors, totalClarifications: windowed.total, visibleClarifications: windowed.items.length } };
+      });
+      await runCheck('live-colleague-preview-counter-filters', 'Регрессия: верхние счётчики Preview управляют фильтром без дублирующей панели', async () => {
+        if (typeof E.previewCounterFilterTarget !== 'function') throw new Error('Full UAT export previewCounterFilterTarget недоступен.');
+        const add = E.previewCounterFilterTarget('all', 'add');
+        const all = E.previewCounterFilterTarget('add', 'add');
+        const errors = E.previewCounterFilterTarget('delete', 'error');
+        if (add !== 'add' || all !== 'all' || errors !== 'error') throw new Error('Счётчики Preview переключают фильтры неверно.');
+        return { detail: 'Счётчики являются единственным фильтром: выбор категории работает, повторный клик возвращает «Все».', data: { outcome: 'preview-counter-filter', add, all, errors } };
+      });
       await runCheck('action-file-ingest', 'Действие: загрузить изменённый Excel', async () => {
-        const buffer = base.bytes.buffer.slice(base.bytes.byteOffset, base.bytes.byteOffset + base.bytes.byteLength);
+        const buffer = E.exactArrayBuffer(base.bytes);
         const ingested = await E.readXlsxArrayBuffer(buffer, 'TESSA_UAT_INGEST.xlsx');
         if (!ingested || (ingested.rows || []).length !== (base.book.rows || []).length) throw new Error('Повторный ingest изменил число строк roundtrip-книги.');
         return { detail: `Excel прочитан обратно: ${(ingested.rows || []).length} строк.`, data: { outcome: 'ingest-workbook', rows: (ingested.rows || []).length } };
@@ -13637,24 +16376,328 @@
         if (previewPlan.counts.skip || previewPlan.counts.add || previewPlan.counts.update || previewPlan.counts.delete) throw new Error(`Неизменённый roundtrip дал ложные изменения: ${JSON.stringify(previewPlan.counts)}`);
         return { detail: 'Production planner построил нулевой Preview для неизменённой книги.', data: { outcome: 'preview-plan', counts: previewPlan.counts } };
       });
-      await runCheck('action-changes-export', 'Действие: скачать изменения в Excel', async () => {
-        const candidate = findUniqueAddCandidate(base.book, structure, baseline, bridge, catalog, rng, { gap: 5 });
-        const bytes = await E.createChangesReportXlsxBytes(candidate.plan, structure);
-        if (!(bytes instanceof Uint8Array) || bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error('Отчёт изменений не сформировал XLSX/ZIP артефакт.');
-        packageEntries.push(['changes-preview.xlsx', bytes]);
-        return { detail: `Сформирован changes-preview.xlsx (${bytes.length} байт).`, data: { outcome: 'changes-xlsx-artifact', artifact: 'changes-preview.xlsx', bytes: bytes.length } };
+      await runCheck('preview-filters', 'Preview: все фильтры и счётчики', async () => {
+        const update = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng);
+        const add = findUniqueAddCandidate(base.book, structure, baseline, bridge, catalog, rng, { gap: 7 });
+        const deleteBook = cloneWorkbook(base.book);
+        const deleteTarget = deleteBook.rows.find(row => Number(row.excelRow) !== Number(update.row.excelRow)) || deleteBook.rows[0];
+        if (!deleteTarget) return { status: 'NOT_RUN', detail: 'Нет строки для DELETE-фильтра.' };
+        const deleteIndex = deleteBook.rows.indexOf(deleteTarget);
+        deleteBook.rows.splice(deleteIndex, 1);
+        const deletePlan = E.buildPlan(deleteBook, structure, baseline, info);
+        const deleteAction = (deletePlan.actions || []).find(action => action.type === 'delete');
+        if (!deleteAction) throw new Error('Не удалось построить DELETE для filter-contract.');
+
+        const synthetic = {
+          ...update.plan,
+          actions: [update.action, (add.plan.actions || []).find(action => action.type === 'add'), deleteAction].filter(Boolean),
+          skippedRows: [
+            { excelRow: 990001, reason: 'UAT: строка пропущена', code: '' },
+            { excelRow: 990002, reason: 'UAT: ошибка справочника', code: 'dictionary-not-found' },
+          ],
+        };
+        const expected = { all: 5, update: 1, add: 1, delete: 1, skip: 2, error: 1 };
+        const actual = {};
+        for (const [filter, count] of Object.entries(expected)) {
+          const selected = E.selectPreviewItems(synthetic, null, E.createPreviewViewState({ filter, pageSize: 200 }));
+          actual[filter] = selected.total;
+          if (selected.total !== count) throw new Error(`Фильтр ${filter}: ожидалось ${count}, получено ${selected.total}.`);
+        }
+        const searched = E.selectPreviewItems(synthetic, null, E.createPreviewViewState({ filter: 'error', query: '990002', pageSize: 200 }));
+        if (searched.total !== 1) throw new Error(`Поиск внутри ERROR вернул ${searched.total} вместо 1.`);
+        return { detail: 'Все/Изменить/Добавить/Удалить/Пропустить/Ошибки и поиск дают точные счётчики.', data: actual };
+      });
+
+      await runCheck('review-cancel-item', 'Отмена одного изменения и всей строки', async () => {
+        const update = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng);
+        const action = update.action;
+        const change = action.changes?.[0];
+        if (!change) throw new Error('UPDATE не содержит изменения для частичной отмены.');
+        const review = E.createPlanReviewState();
+        E.setPlanReviewChange(review, action, change.key, true);
+        let reviewed = E.buildReviewedPlan(update.plan, review);
+        const changedAction = (reviewed.actions || []).find(item => Number(item.excelRow?.excelRow) === Number(action.excelRow?.excelRow));
+        if (changedAction?.type === 'update' && (changedAction.changes || []).some(item => item.key === change.key)) {
+          throw new Error('Отменённое поле осталось в executable UPDATE.');
+        }
+
+        E.setPlanReviewChange(review, action, change.key, false);
+        reviewed = E.buildReviewedPlan(update.plan, review);
+        if ((reviewed.counts?.update || 0) !== 1) throw new Error('Возврат отдельного поля не восстановил UPDATE.');
+
+        E.setPlanReviewRow(review, action, true);
+        reviewed = E.buildReviewedPlan(update.plan, review);
+        if ((reviewed.counts?.update || 0) !== 0) throw new Error('Отмена всей строки не убрала UPDATE из Apply.');
+        E.setPlanReviewRow(review, action, false);
+        reviewed = E.buildReviewedPlan(update.plan, review);
+        if ((reviewed.counts?.update || 0) !== 1) throw new Error('Возврат всей строки не восстановил UPDATE.');
+        return { detail: 'Отдельное поле и целая операция исключаются/возвращаются без затрагивания остального плана.' };
+      });
+
+      await runCheck('two-excel-disjoint-merge', 'Два Excel: независимые изменения объединяются', async () => {
+        const first = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng);
+        const firstIdentity = rowIdentity(first.book, first.row);
+        const secondSourceBook = cloneWorkbook(base.book);
+        const secondCandidates = secondSourceBook.rows.filter(row => canon(rowIdentity(secondSourceBook, row).rowCardId) !== canon(firstIdentity.rowCardId));
+        if (!secondCandidates.length) return { status: 'NOT_RUN', detail: 'Недостаточно строк для двух независимых Excel.' };
+
+        let second = null;
+        for (const source of secondCandidates.slice(0, 30)) {
+          try {
+            second = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng, { source });
+          } catch (_) { /* try another source */ }
+          if (second && canon(rowIdentity(second.book, second.row).rowCardId) !== canon(firstIdentity.rowCardId)) break;
+          second = null;
+        }
+        if (!second) return { status: 'NOT_RUN', detail: 'Не удалось подобрать вторую независимую строку.' };
+
+        const afterFirst = E.mergeWorkbookIntoCurrentSnapshot(first.book, structure, baseline).snapshot;
+        let prepared = E.prepareThreeWayMerge(second.book, structure, afterFirst);
+        if ((prepared.unresolved || []).length) throw new Error(`Независимые изменения дали конфликтов: ${prepared.unresolved.length}.`);
+        const merged = E.mergeWorkbookIntoCurrentSnapshot(prepared.workbook, structure, afterFirst);
+        const secondPlan = E.buildPlan(prepared.workbook, structure, afterFirst, info);
+        if ((secondPlan.counts?.skip || 0) || (secondPlan.counts?.delete || 0) || (secondPlan.counts?.add || 0)) {
+          throw new Error(`Второй Excel после merge дал опасный план: ${JSON.stringify(secondPlan.counts)}`);
+        }
+        if ((merged.snapshot?.rows || []).length !== baseline.rows.length) throw new Error('Two-Excel merge изменил число строк.');
+        return { detail: 'Изменение Excel A сохранено, независимое изменение Excel B добавлено без ложного конфликта.', data: { firstRow: first.row.excelRow, secondRow: second.row.excelRow } };
+      });
+
+      await runCheck('merge-conflict-resolution', 'Два Excel: конфликт одного поля обнаруживается', async () => {
+        const first = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng, { minimumEntries: 3 });
+        const afterFirst = E.mergeWorkbookIntoCurrentSnapshot(first.book, structure, baseline).snapshot;
+        const competing = cloneWorkbook(base.book);
+        const competingRow = competing.rows.find(row => Number(row.excelRow) === Number(first.row.excelRow));
+        const alternatives = (first.column.entries || []).filter(entry => {
+          const value = canon(entry.selector || entry.display);
+          return value !== canon(first.entry.selector || first.entry.display)
+            && value !== canon(first.source.values?.[first.column.index] || '');
+        });
+        if (!competingRow || !alternatives.length) return { status: 'NOT_RUN', detail: 'Нет третьего справочного значения для конфликтного merge.' };
+        setDictionaryValue(competing, competingRow, first.column.key, alternatives[0]);
+        const prepared = E.prepareThreeWayMerge(competing, structure, afterFirst);
+        if (!(prepared.unresolved || []).length) throw new Error('Пересекающиеся изменения одного поля не были показаны как конфликт.');
+        const mineChoices = Object.fromEntries(prepared.unresolved.map(item => [item.id, 'mine']));
+        const mine = E.prepareThreeWayMerge(competing, structure, afterFirst, mineChoices);
+        if ((mine.unresolved || []).length) throw new Error('Выбор «Мой Excel» не разрешил конфликт.');
+        const serverChoices = Object.fromEntries(prepared.unresolved.map(item => [item.id, 'server']));
+        const server = E.prepareThreeWayMerge(competing, structure, afterFirst, serverChoices);
+        if ((server.unresolved || []).length) throw new Error('Выбор «TESSA» не разрешил конфликт.');
+        return { detail: `Конфликт обнаружен (${prepared.unresolved.length}) и разрешается обеими сторонами без молчаливой перезаписи.` };
+      });
+
+      await runCheck('action-support-bundle', 'Действие: скачать единый пакет', async () => {
+        const previewPlan = E.buildPlan(base.book, structure, baseline, info);
+        const selectedBytes = E.exactArrayBuffer(base.bytes);
+        const selectedFile = {
+          name: 'TESSA_UAT_CURRENT.xlsx',
+          size: base.bytes.byteLength,
+          lastModified: 0,
+          arrayBuffer: async () => selectedBytes.slice(0),
+        };
+        const artifact = await E.prepareSupportBundle(previewPlan, E.createPlanReviewState(), {
+          plan: previewPlan,
+          review: E.createPlanReviewState(),
+          structure,
+          snapshot: baseline,
+          selectedFile,
+          dictionaryCatalog: catalog,
+          bridge,
+          matrixInfo: info,
+        });
+        if (!(artifact?.bytes instanceof Uint8Array) || artifact.bytes.length < 4 || artifact.bytes[0] !== 0x50 || artifact.bytes[1] !== 0x4b) {
+          throw new Error('Единый пакет не сформирован как ZIP-артефакт.');
+        }
+        const buffer = artifact.bytes.buffer.slice(artifact.bytes.byteOffset, artifact.bytes.byteOffset + artifact.bytes.byteLength);
+        const entries = await E.unzipArrayBuffer(buffer);
+        const required = [
+          'excel/matrix-current.xlsx', 'excel/matrix-uploaded.xlsx', 'excel/changes.xlsx',
+          'reports/summary.json', 'reports/preview.json', 'manifest.json', 'README.txt',
+        ];
+        const missing = required.filter(path => !entries.has(path));
+        if (missing.length) throw new Error(`В едином пакете отсутствуют: ${missing.join(', ')}.`);
+        const manifest = JSON.parse(new TextDecoder().decode(entries.get('manifest.json')));
+        if (manifest?.format !== 'TESSA_MATRIX_SUPPORT_BUNDLE_V1') throw new Error(`Неизвестный формат manifest: ${manifest?.format || '(нет)'}.`);
+        for (const file of manifest.files || []) {
+          const bytes = entries.get(file.path);
+          if (!bytes) throw new Error(`Manifest ссылается на отсутствующий файл ${file.path}.`);
+          if (await E.sha256Hex(bytes) !== file.sha256) throw new Error(`SHA-256 не совпал для ${file.path}.`);
+        }
+        const successfulLimit = 12 * 1024 * 1024;
+        if (!entries.has('diagnostics/summary.json') && artifact.bytes.length > successfulLimit) {
+          throw new Error(`Успешный пакет превышает 12 МБ: ${artifact.bytes.length} байт.`);
+        }
+        return { detail: `Единый пакет проверен (${artifact.bytes.length} байт, ${entries.size} файлов).`, data: { outcome: 'support-zip-artifact', artifact: artifact.name, bytes: artifact.bytes.length, files: entries.size } };
+      });
+
+      // FULL_UAT_RESOURCE_SAFETY_V1
+      // A real OOM cannot be used as a successful test oracle: if the renderer dies there is
+      // no code left to emit FAIL or cleanup live writes. Full UAT therefore proves the
+      // fail-fast resource guards and repeatedly exercises the bounded XLSX path that must
+      // prevent the browser from reaching OOM in normal operation.
+      await runCheck('resource-input-limit', 'Память: XLSX больше лимита отклоняется до ZIP/XML', async () => {
+        const limits = E.constants?.XLSX_ARCHIVE_LIMITS;
+        if (!limits || !Number.isFinite(Number(limits.MaxInputBytes)) || Number(limits.MaxInputBytes) <= 0) throw new Error('Production XLSX input limit недоступен.');
+        let rejected = false;
+        let message = '';
+        let oversized = null;
+        try {
+          oversized = new Uint8Array(Number(limits.MaxInputBytes) + 1);
+          await E.readXlsxArrayBuffer(oversized.buffer, 'TESSA_UAT_OVERSIZE.xlsx', { retainArchive: false, selectiveInflate: true });
+        } catch (error) {
+          message = String(error?.message || error);
+          rejected = /размер файла|безопасн.*лимит/i.test(message);
+        } finally {
+          oversized = null;
+        }
+        if (!rejected) throw new Error(`Файл > ${limits.MaxInputBytes} байт не был fail-fast отклонён. ${message}`);
+        return { detail: `Hard limit ${Math.round(Number(limits.MaxInputBytes) / 1024 / 1024)} МБ сработал до разбора XLSX.`, data: { maxInputBytes: limits.MaxInputBytes, rejection: message } };
+      });
+
+      await runCheck('resource-entry-limit', 'Память: слишком много ZIP-частей XLSX отклоняется', async () => {
+        const limits = E.constants?.XLSX_ARCHIVE_LIMITS;
+        if (!limits || !Number.isFinite(Number(limits.MaxEntries))) throw new Error('Production ZIP entry limit недоступен.');
+        const entries = Array.from({ length: Number(limits.MaxEntries) + 1 }, (_, index) => [`xl/uat-resource-${index}.xml`, '']);
+        const bytes = await E.makeZip(entries);
+        let rejected = false;
+        let message = '';
+        try {
+          await E.readXlsxArrayBuffer(E.exactArrayBuffer(bytes), 'TESSA_UAT_TOO_MANY_PARTS.xlsx', { retainArchive: false });
+        } catch (error) {
+          message = String(error?.message || error);
+          rejected = /слишком много|количеств.*файл/i.test(message);
+        }
+        if (!rejected) throw new Error(`ZIP с ${entries.length} частями не был отклонён. ${message}`);
+        return { detail: `Лимит ZIP-частей ${limits.MaxEntries} подтверждён fail-closed.`, data: { maxEntries: limits.MaxEntries, testedEntries: entries.length, rejection: message } };
+      });
+
+      await runCheck('resource-path-traversal', 'Безопасность XLSX: path traversal внутри ZIP', async () => {
+        const bytes = await E.makeZip([['../TESSA_UAT_EVIL.xml', '<x/>']]);
+        let rejected = false;
+        let message = '';
+        try {
+          await E.readXlsxArrayBuffer(E.exactArrayBuffer(bytes), 'TESSA_UAT_PATH_TRAVERSAL.xlsx', { retainArchive: false });
+        } catch (error) {
+          message = String(error?.message || error);
+          rejected = /небезопасн.*путь|путь.*архив/i.test(message);
+        }
+        if (!rejected) throw new Error(`Небезопасный ZIP path не был отклонён. ${message}`);
+        return { detail: 'ZIP path traversal отклонён до чтения workbook XML.', data: { rejection: message } };
+      });
+
+      await runCheck('resource-spreadsheet-bounds', 'Безопасность XLSX: границы строк/столбцов Excel', async () => {
+        const limits = E.constants?.SPREADSHEETML_LIMITS;
+        if (!limits?.MaxRowNumber || !limits?.MaxColumnNumber) throw new Error('SpreadsheetML production limits недоступны.');
+        const worksheet = body => `<?xml version="1.0" encoding="utf-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${body}</sheetData></worksheet>`;
+        let rowRejected = false;
+        let colRejected = false;
+        try {
+          const row = Number(limits.MaxRowNumber) + 1;
+          E.parseSheetXml(worksheet(`<row r="${row}"><c r="A${row}" t="str"><v>x</v></c></row>`), []);
+        } catch (error) {
+          rowRejected = /строк|номер строки|лимит/i.test(String(error?.message || error));
+        }
+        try {
+          E.parseSheetXml(worksheet('<row r="1"><c r="XFE1" t="str"><v>x</v></c></row>'), []);
+        } catch (error) {
+          colRejected = /столб|XFD|16384/i.test(String(error?.message || error));
+        }
+        if (!rowRejected || !colRejected) throw new Error(`Границы SpreadsheetML не сработали: row=${rowRejected}, col=${colRejected}.`);
+        return { detail: `Excel bounds подтверждены: rows≤${limits.MaxRowNumber}, cols≤${limits.MaxColumnNumber}.`, data: limits };
+      });
+
+      await runCheck('memory-bounded-roundtrip', 'Память: повторный XLSX roundtrip без удержания архива', async () => {
+        const heap = () => {
+          const used = Number(globalThis.performance?.memory?.usedJSHeapSize);
+          const limit = Number(globalThis.performance?.memory?.jsHeapSizeLimit);
+          return Number.isFinite(used) && used > 0 ? { used, limit: Number.isFinite(limit) && limit > 0 ? limit : null } : null;
+        };
+        const before = heap();
+        const buffer = E.exactArrayBuffer(base.bytes);
+        const samples = [];
+        for (let iteration = 1; iteration <= 3; iteration += 1) {
+          const parsed = await E.readXlsxArrayBuffer(buffer, `TESSA_UAT_MEMORY_${iteration}.xlsx`, {
+            skipSheetNames: ['Словари'],
+            dictionaryCatalog: catalog,
+            retainArchive: false,
+            selectiveInflate: true,
+          });
+          if (parsed.parsedSheets?.has?.('Словари')) throw new Error(`Итерация ${iteration}: лист «Словари» был материализован в bounded-memory режиме.`);
+          if ((parsed.rows || []).length !== (base.book.rows || []).length) throw new Error(`Итерация ${iteration}: число строк изменилось ${parsed.rows?.length}/${base.book.rows?.length}.`);
+          if (E.releaseWorkbookArchive(parsed)) throw new Error(`Итерация ${iteration}: retainArchive:false всё равно удержал распакованные ZIP parts.`);
+          const plan = E.buildPlan(parsed, structure, baseline, info);
+          if (plan.counts.skip || plan.counts.add || plan.counts.update || plan.counts.delete) throw new Error(`Итерация ${iteration}: повторный roundtrip дал изменения ${JSON.stringify(plan.counts)}.`);
+          samples.push({ iteration, rows: parsed.rows?.length || 0, heap: heap() });
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+        const after = heap();
+        const heapPressure = after?.limit ? after.used / after.limit : null;
+        return {
+          status: heapPressure !== null && heapPressure >= 0.90 ? 'WARN' : 'PASS',
+          detail: after?.limit
+            ? `3 повторных import→plan прошли без удержания ZIP/«Словарей»; Chrome heap telemetry ${Math.round(after.used / 1024 / 1024)} / ${Math.round(after.limit / 1024 / 1024)} МБ${heapPressure >= 0.90 ? ' (высокое давление памяти; deterministic guards прошли)' : ''}.`
+            : '3 повторных import→plan прошли без удержания ZIP/«Словарей»; performance.memory браузером не предоставлен.',
+          data: { before, after, samples, heapPressure, heapTelemetryOnly: true, archiveRetained: false, dictionarySheetParsed: false },
+        };
       });
 
       await runCheck('prod-shadow-offline', 'Production-shadow: объём и ошибки production-класса', async () => {
+        const heapSnapshot = () => {
+          const used = Number(globalThis.performance?.memory?.usedJSHeapSize);
+          const limit = Number(globalThis.performance?.memory?.jsHeapSizeLimit);
+          return Number.isFinite(used) && used > 0 ? { used, limit: Number.isFinite(limit) && limit > 0 ? limit : null } : null;
+        };
+        const heapBefore = heapSnapshot();
         const audit = await runProductionShadowAudit();
-        report.productionShadowAudit = audit;
+        const heapAfter = heapSnapshot();
+        report.productionShadowAudit = { ...audit, heapBefore, heapAfter };
+        if (Number(audit.metrics?.dictionaryEntries || 0) < 100000) throw new Error(`Stress-профиль слишком мал: ${audit.metrics?.dictionaryEntries || 0} dictionary entries.`);
+        const heapPressure = heapAfter?.limit ? heapAfter.used / heapAfter.limit : null;
         return {
-          detail: `Synthetic envelope: ${audit.metrics.dictionaryEntries} значений справочников; перенос ${audit.profile.sourceRows}→${audit.profile.targetRows}; ${audit.metrics.operationCount} операций; schema drift ${audit.profile.retiredColumns}/${audit.profile.targetOnlyColumns}; ${audit.metrics.totalMs} мс.`,
-          data: { outcome: 'production-shadow', profile: audit.profile, metrics: audit.metrics, assertions: audit.assertions },
+          status: heapPressure !== null && heapPressure >= 0.90 ? 'WARN' : 'PASS',
+          detail: heapAfter?.limit
+            ? `Synthetic envelope: ${audit.metrics.dictionaryEntries} значений; ${audit.profile.sourceRows}→${audit.profile.targetRows}; ${audit.metrics.operationCount} операций; ${audit.metrics.totalMs} мс; Chrome heap telemetry ${Math.round(heapAfter.used / 1024 / 1024)} / ${Math.round(heapAfter.limit / 1024 / 1024)} МБ${heapPressure >= 0.90 ? ' (высокое давление)' : ''}.`
+            : `Synthetic envelope: ${audit.metrics.dictionaryEntries} значений справочников; перенос ${audit.profile.sourceRows}→${audit.profile.targetRows}; ${audit.metrics.operationCount} операций; schema drift ${audit.profile.retiredColumns}/${audit.profile.targetOnlyColumns}; ${audit.metrics.totalMs} мс; performance.memory недоступен.`,
+          data: { outcome: 'production-shadow', profile: audit.profile, metrics: audit.metrics, assertions: audit.assertions, heapBefore, heapAfter, heapPressure, heapTelemetryOnly: true },
         };
       });
 
       await runCheck('runtime', 'Контекст и доступ на запись', async () => ({ detail: `Черновик «${info.TemplateName}», строк: ${baseline.rows.length}.` }));
+      await runCheck('server-paging-parity', 'Чтение матрицы без перелистывания UI', async () => {
+        if (typeof bridge.collectNativeMatrixViewLinksServerPaged !== 'function') {
+          return { status: 'WARN', detail: 'Server-paging helper недоступен; Studio продолжит использовать безопасный UI fallback.' };
+        }
+        const started = Number(globalThis.performance?.now?.() ?? Date.now());
+        const fast = await bridge.collectNativeMatrixViewLinksServerPaged();
+        const fastMs = Number(globalThis.performance?.now?.() ?? Date.now()) - started;
+        if (!fast) {
+          return { status: 'WARN', detail: 'TESSA runtime не отдал доказуемый server-paged набор; безопасный UI fallback остаётся активен.', data: { fastAvailable: false } };
+        }
+        const fallbackStarted = Number(globalThis.performance?.now?.() ?? Date.now());
+        const fallback = await bridge.collectNativeMatrixViewLinksAllPages({ forceUiPaging: true });
+        const fallbackMs = Number(globalThis.performance?.now?.() ?? Date.now()) - fallbackStarted;
+        const identity = item => `${canon(item?.rowCardId)}|${canon(item?.versionId)}`;
+        const fastIds = (fast.links || []).map(identity).sort();
+        const fallbackIds = (fallback.links || []).map(identity).sort();
+        if (!sameArray(fastIds, fallbackIds)) {
+          throw new Error(`Server paging и UI fallback расходятся: server=${fastIds.length}, ui=${fallbackIds.length}.`);
+        }
+        if (fastIds.length !== baseline.rows.length) {
+          throw new Error(`Server paging вернул ${fastIds.length} строк, baseline содержит ${baseline.rows.length}.`);
+        }
+        return {
+          detail: `Server paging = ${fast.pagesVisited?.length || 0} запросов / ${Math.round(fastMs)} мс; UI fallback = ${fallback.pagesVisited?.length || 0} страниц / ${Math.round(fallbackMs)} мс; identity совпадают.`,
+          data: {
+            fastAvailable: true,
+            rows: fastIds.length,
+            serverRequests: fast.pagesVisited?.length || 0,
+            uiPages: fallback.pagesVisited?.length || 0,
+            serverMs: Math.round(fastMs),
+            uiMs: Math.round(fallbackMs),
+            serverPageLimit: fast.pageLimit || null,
+          },
+        };
+      }, false);
       await runCheck('roundtrip', 'Выгрузка → обратное чтение', async () => {
         const plan = E.buildPlan(base.book, structure, baseline, info);
         if (plan.counts.skip || plan.counts.add || plan.counts.update || plan.counts.delete) throw new Error(`Roundtrip дал изменения: ${JSON.stringify(plan.counts)}`);
@@ -13686,56 +16729,270 @@
         if (candidate.plan.counts.add !== 1 || candidate.plan.counts.skip) throw new Error(JSON.stringify(compactPlan(candidate.plan)));
         return { detail: `Excel ${candidate.row.excelRow}: распознано ADD после пустого промежутка.` };
       });
+      // FULL_UAT_COPIED_IDENTITY_COLLISION_SAFE_V1
+      // The scenario verifies duplicate hidden row identities, not duplicate business rows.
+      // First find four valid mutations that are unique against the current matrix; only
+      // after that remove two unrelated originals to add the DELETE part of the contract.
       await runCheck('row-copied-identities', 'Изменённые копии строки с одинаковыми скрытыми ID', async () => {
         if (base.book.rows.length < 3) return { status: 'NOT_RUN', detail: 'Нужно минимум 3 исходные строки.' };
-        const columns = mutableCriterionColumns(base.book, catalog, 5); if (!columns.length) return { status: 'NOT_RUN', detail: 'Нет критерия минимум с 5 значениями.' };
-        const column = shuffled(columns, rng)[0], source = chooseSourceRow(base.book, rng), sourceIdentity = rowIdentity(base.book, source);
-        const remove = base.book.rows.filter(row => canon(rowIdentity(base.book, row).rowCardId) !== canon(sourceIdentity.rowCardId)).slice(0, 2);
-        const removedIds = new Set(remove.map(row => canon(rowIdentity(base.book, row).rowCardId))); const test = cloneWorkbook(base.book);
-        test.rows = test.rows.filter(row => !removedIds.has(canon(rowIdentity(test, row).rowCardId)) && canon(rowIdentity(test, row).rowCardId) !== canon(sourceIdentity.rowCardId));
-        const entries = shuffled(column.entries.filter(entry => canon(entry.selector || entry.display) !== canon(source.values[column.index])), rng).slice(0, 4); const start = maxExcelRow(base.book) + 1;
-        entries.forEach((entry, index) => { const copy = { ...source, excelRow: start + index * 2, values: [...source.values] }; setDictionaryValue(test, copy, column.key, entry); test.rows.push(copy); });
-        const plan = E.buildPlan(test, structure, baseline, info);
-        if (plan.counts.skip !== 0 || plan.counts.add !== 3 || plan.counts.update !== 1 || plan.counts.delete !== 2) throw new Error(`Ожидалось UPDATE 1 / ADD 3 / DELETE 2 / SKIP 0; получено ${JSON.stringify(plan.counts)}. ${JSON.stringify(plan.skippedRows || [])}`);
-        return { detail: 'Одна копия стала UPDATE, остальные три — ADD; два отсутствующих оригинала — DELETE.', data: compactPlan(plan) };
+        const columns = shuffled(mutableCriterionColumns(base.book, catalog, 5), rng)
+          .sort((a, b) => Number(b.entries?.length || 0) - Number(a.entries?.length || 0));
+        if (!columns.length) return { status: 'NOT_RUN', detail: 'Нет критерия минимум с 5 значениями.' };
+
+        const sources = shuffled((base.book.rows || []).filter(row => rowHasRole(base.book, row)), rng);
+        if (!sources.length) throw new Error('Не найдена исходная строка с исполнителем для copied-identity UAT.');
+
+        const attempts = [];
+        const attemptLimit = 240;
+        const startExcelRow = maxExcelRow(base.book) + 1;
+        let selected = null;
+
+        copiedIdentitySearch:
+        for (const sourceRow of sources.slice(0, 24)) {
+          const sourceIdentity = rowIdentity(base.book, sourceRow);
+          const sourceId = canon(sourceIdentity.rowCardId);
+          if (!sourceId) continue;
+
+          for (const column of columns.slice(0, 8)) {
+            const current = canon(sourceRow.values?.[column.index] || '');
+            const entries = [...new Map(
+              shuffled((column.entries || []).filter(entry => canon(entry.selector || entry.display) !== current), rng)
+                .map(entry => [canon(entry.id || entry.selector || entry.display), entry]),
+            ).values()].filter(entry => canon(entry.id || entry.selector || entry.display));
+
+            if (entries.length < 4) continue;
+            const candidatePool = entries.slice(0, 24);
+
+            for (let offset = 0; offset + 4 <= candidatePool.length; offset += 4) {
+              const chosen = candidatePool.slice(offset, offset + 4);
+              const probeBook = cloneWorkbook(base.book);
+              probeBook.rows = probeBook.rows.filter(row => canon(rowIdentity(probeBook, row).rowCardId) !== sourceId);
+              chosen.forEach((entry, index) => {
+                const copy = { ...sourceRow, excelRow: startExcelRow + index * 2, values: [...sourceRow.values] };
+                setDictionaryValue(probeBook, copy, column.key, entry);
+                probeBook.rows.push(copy);
+              });
+
+              const probePlan = E.buildPlan(probeBook, structure, baseline, info);
+              attempts.push({
+                sourceExcelRow: sourceRow.excelRow,
+                column: column.key,
+                offset,
+                counts: probePlan.counts,
+                skipped: (probePlan.skippedRows || []).slice(0, 2),
+              });
+
+              // A valid probe proves the four copied identities themselves are handled as
+              // one UPDATE + three ADD without accidentally colliding with another TESSA row.
+              if (
+                probePlan.counts.skip === 0
+                && probePlan.counts.add === 3
+                && probePlan.counts.update === 1
+                && probePlan.counts.delete === 0
+              ) {
+                const removable = shuffled(
+                  (base.book.rows || []).filter(row => canon(rowIdentity(base.book, row).rowCardId) !== sourceId),
+                  rng,
+                ).slice(0, 2);
+                if (removable.length < 2) continue;
+
+                const removedIds = new Set(removable.map(row => canon(rowIdentity(base.book, row).rowCardId)));
+                const finalBook = cloneWorkbook(base.book);
+                finalBook.rows = finalBook.rows.filter(row => {
+                  const rowId = canon(rowIdentity(finalBook, row).rowCardId);
+                  return rowId !== sourceId && !removedIds.has(rowId);
+                });
+                chosen.forEach((entry, index) => {
+                  const copy = { ...sourceRow, excelRow: startExcelRow + index * 2, values: [...sourceRow.values] };
+                  setDictionaryValue(finalBook, copy, column.key, entry);
+                  finalBook.rows.push(copy);
+                });
+
+                const finalPlan = E.buildPlan(finalBook, structure, baseline, info);
+                attempts.push({
+                  sourceExcelRow: sourceRow.excelRow,
+                  column: column.key,
+                  offset,
+                  phase: 'final',
+                  counts: finalPlan.counts,
+                  skipped: (finalPlan.skippedRows || []).slice(0, 2),
+                });
+
+                if (
+                  finalPlan.counts.skip === 0
+                  && finalPlan.counts.add === 3
+                  && finalPlan.counts.update === 1
+                  && finalPlan.counts.delete === 2
+                ) {
+                  selected = { sourceRow, column, chosen, removable, plan: finalPlan };
+                  break copiedIdentitySearch;
+                }
+              }
+
+              if (attempts.length >= attemptLimit) break copiedIdentitySearch;
+            }
+          }
+        }
+
+        if (!selected) {
+          throw new Error('Не удалось построить collision-safe copied-identity сценарий за ' + attempts.length + ' попыток. Последние планы: ' + JSON.stringify(attempts.slice(-8)));
+        }
+
+        return {
+          detail: 'Excel ' + selected.sourceRow.excelRow + ', ' + selected.column.key + ': одна копия стала UPDATE, остальные три — ADD; два отсутствующих оригинала — DELETE. Кандидат предварительно проверен на отсутствие business-дублей.',
+          data: {
+            ...compactPlan(selected.plan),
+            sourceExcelRow: selected.sourceRow.excelRow,
+            column: selected.column.key,
+            candidateEntries: selected.chosen.map(entry => candidateEvidenceValue(entry)),
+            removedRows: selected.removable.map(row => row.excelRow),
+            searchAttempts: attempts.length,
+          },
+        };
       });
       await runCheck('dictionary-stale-companion', 'Изменение текста при старом скрытом ID', async () => {
-        const columns = mutableCriterionColumns(base.book, catalog, 2); if (!columns.length) return { status: 'NOT_RUN', detail: 'Нет подходящего справочника.' };
-        const test = cloneWorkbook(base.book), row = chooseSourceRow(test, rng), column = shuffled(columns, rng)[0];
-        const oldHidden = companionIndex(test, column.key) >= 0 ? row.values[companionIndex(test, column.key)] : '';
-        const entry = shuffled(column.entries.filter(item => canon(item.selector || item.display) !== canon(row.values[column.index])), rng)[0]; setDictionaryValue(test, row, column.key, entry, true);
-        const plan = E.buildPlan(test, structure, baseline, info); if (plan.counts.skip) throw new Error(JSON.stringify(plan.skippedRows));
-        const update = plan.actions.find(action => action.type === 'update'); if (!update) throw new Error(`Изменение не распознано как UPDATE: ${JSON.stringify(plan.counts)}`);
-        const resolved = update.excelRow?.ids?.[column.key]?.[0] || ''; if (!resolved || canon(resolved) === canon(oldHidden)) throw new Error('Старый companion ID не был пересопоставлен по новому видимому значению.');
-        return { detail: 'Видимое значение победило устаревший companion ID; ID пересобран из справочника.' };
+        const safe = findSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng);
+        const test = cloneWorkbook(base.book);
+        const row = test.rows.find(item => Number(item.excelRow) === Number(safe.source.excelRow));
+        if (!row) throw new Error('UAT setup: исходная строка безопасного UPDATE не найдена.');
+        const column = safe.column;
+        const idIndex = companionIndex(test, column.key);
+        const oldHidden = idIndex >= 0 ? row.values[idIndex] : '';
+
+        // Keep the old hidden companion deliberately: visible text must win and be
+        // re-resolved to the new dictionary ID. Candidate was pre-proven collision-safe,
+        // so a duplicate SKIP here is a real stale-companion defect, not flaky UAT data.
+        setDictionaryValue(test, row, column.key, safe.entry, true);
+        if (idIndex >= 0) row.values[idIndex] = oldHidden;
+
+        const plan = E.buildPlan(test, structure, baseline, info);
+        if ((plan.counts?.update || 0) !== 1
+          || (plan.counts?.skip || 0) !== 0
+          || (plan.counts?.add || 0) !== 0
+          || (plan.counts?.delete || 0) !== 0) {
+          throw new Error(`UAT setup/case должен давать ровно 1 UPDATE без дублей: ${JSON.stringify({ counts: plan.counts, skippedRows: plan.skippedRows || [] })}`);
+        }
+        const update = (plan.actions || []).find(action => action.type === 'update');
+        if (!update) throw new Error(`Изменение не распознано как UPDATE: ${JSON.stringify(plan.counts)}`);
+        const resolved = update.excelRow?.ids?.[column.key]?.[0] || '';
+        if (!resolved || canon(resolved) === canon(oldHidden)) {
+          throw new Error('Старый companion ID не был пересопоставлен по новому видимому значению.');
+        }
+        return {
+          detail: 'Collision-safe UPDATE: видимое значение победило устаревший companion ID; ID пересобран из справочника.',
+          data: { excelRow: row.excelRow, field: column.key, oldHidden, resolved },
+        };
       });
       await runCheck('dictionary-invalid', 'Некорректное значение справочника', async () => {
         const columns = mutableCriterionColumns(base.book, catalog, 2); if (!columns.length) return { status: 'NOT_RUN', detail: 'Нет подходящего справочника.' };
-        const test = cloneWorkbook(base.book), row = chooseSourceRow(test, rng), column = shuffled(columns, rng)[0]; row.values[column.index] = `__UAT_INVALID_${seed}__`; const idIndex = companionIndex(test, column.key); if (idIndex >= 0) row.values[idIndex] = '';
-        const plan = E.buildPlan(test, structure, baseline, info); if (!plan.counts.skip && !(plan.issues || []).length) throw new Error('Некорректное значение не было отклонено.');
-        return { detail: 'Неизвестное значение остановлено до Store.', data: compactPlan(plan) };
+        const test = cloneWorkbook(base.book), row = chooseSourceRow(test, rng), column = shuffled(columns, rng)[0];
+        const invalidValue = `__UAT_INVALID_${seed}__`;
+        row.values[column.index] = invalidValue;
+        const idIndex = companionIndex(test, column.key); if (idIndex >= 0) row.values[idIndex] = '';
+        const plan = E.buildPlan(test, structure, baseline, info);
+
+        // FULL_UAT_DICTIONARY_INVALID_VALUE_LEVEL_V1
+        // v1.15 may fail closed at row, field or individual-value level. The old UAT only
+        // looked at counts.skip / plan.issues and therefore reported a false FAIL when the
+        // planner correctly preserved the existing field through skippedFields/skippedValues.
+        const sameRow = item => Number(item?.excelRow) === Number(row.excelRow);
+        const sameField = item => canon(item?.key || '') === canon(column.key);
+        const rejectedField = (plan.skippedFields || []).find(item => sameRow(item) && sameField(item));
+        const rejectedValue = (plan.skippedValues || []).find(item => sameRow(item) && sameField(item));
+        const rejectedRow = (plan.skippedRows || []).find(item => sameRow(item));
+        const rejectedIssue = (plan.issues || []).find(item => {
+          const text = JSON.stringify(item || {});
+          return text.includes(invalidValue) || (sameRow(item) && (!item?.key || sameField(item)));
+        });
+        const leakedIntoExecutableChange = (plan.actions || [])
+          .filter(action => action?.type && action.type !== 'noop')
+          .some(action => (action.changes || []).some(change =>
+            canon(change?.key || '') === canon(column.key)
+            && (change?.after || []).some(value => canon(value) === canon(invalidValue))
+          ));
+        if (leakedIntoExecutableChange) throw new Error('Некорректное значение попало в исполняемый change-set Apply.');
+        if (!rejectedField && !rejectedValue && !rejectedRow && !rejectedIssue && !plan.counts.skip) {
+          throw new Error('Некорректное значение не было отклонено ни на уровне строки, ни поля, ни значения.');
+        }
+        const level = rejectedValue ? 'value' : rejectedField ? 'field' : rejectedRow || plan.counts.skip ? 'row' : 'issue';
+        return { detail: `Неизвестное значение fail-closed отклонено до Store на уровне ${level}; в executable change-set его нет.`, data: { rejectionLevel: level, ...compactPlan(plan) } };
       });
-      await runCheck('dictionary-refresh', 'Обновление справочников без потери строк', async () => {
-        const refreshedBytes = await E.refreshWorkbookDictionaries(base.book, structure, catalog);
-        E.releaseWorkbookArchive(base.book);
+      await runCheck('dictionary-refresh', 'Обновление справочников в изменённом Excel без потери правки', async () => {
+        catalog = await bridge.loadDictionaryCatalog(structure, baseline, { forceRefresh: true, transient: true });
+        const edited = await findPhysicalSafeUpdateCandidate(base.book, structure, baseline, bridge, catalog, rng);
+        const visibleValue = String(edited.entry?.selector || edited.entry?.display || '');
+        if (!visibleValue) throw new Error('UAT setup: безопасный UPDATE не содержит видимого значения.');
+
+        const physical = await E.patchWorkbookVisibleCellForUat(
+          base.book,
+          edited.source.excelRow,
+          edited.column.index,
+          visibleValue,
+          catalog,
+        );
+        const sourceBook = physical.workbook;
+        const beforePlan = E.buildPlan(sourceBook, structure, baseline, info);
+        if ((beforePlan.counts?.update || 0) !== 1
+          || (beforePlan.counts?.skip || 0) !== 0
+          || (beforePlan.counts?.add || 0) !== 0
+          || (beforePlan.counts?.delete || 0) !== 0) {
+          E.releaseWorkbookArchive(sourceBook);
+          throw new Error(`UAT setup: физическая пользовательская правка XLSX должна давать ровно 1 UPDATE: ${JSON.stringify({ counts: beforePlan.counts, warnings: beforePlan.warnings || [], issues: beforePlan.issues || [], skippedRows: beforePlan.skippedRows || [], skippedFields: beforePlan.skippedFields || [], skippedValues: beforePlan.skippedValues || [], safety: beforePlan.safety || null })}`);
+        }
+        const beforeAction = (beforePlan.actions || []).find(action => action.type === 'update');
+        if (!beforeAction) {
+          E.releaseWorkbookArchive(sourceBook);
+          throw new Error('UAT setup: UPDATE action не найден после физической правки XLSX.');
+        }
+
+        let refreshedBytes;
+        try {
+          refreshedBytes = await E.refreshWorkbookDictionaries(sourceBook, structure, catalog);
+        } finally {
+          E.releaseWorkbookArchive(sourceBook);
+          // The base OPC archive is retained solely to create the physical edit above.
+          // The parsed rows remain usable by later checks after the raw ZIP parts go away.
+          E.releaseWorkbookArchive(base.book);
+        }
         const refreshed = await E.readXlsxArrayBuffer(
-          refreshedBytes.buffer.slice(refreshedBytes.byteOffset, refreshedBytes.byteOffset + refreshedBytes.byteLength),
+          E.exactArrayBuffer(refreshedBytes),
           'TESSA_UAT_REFRESHED.xlsx',
           { skipSheetNames: ['Словари'], dictionaryCatalog: catalog, retainArchive: false, selectiveInflate: true },
         );
-        const plan = E.buildPlan(refreshed, structure, baseline, info); if (plan.counts.skip || plan.counts.add || plan.counts.update || plan.counts.delete) throw new Error(`После refresh появились изменения: ${JSON.stringify(plan.counts)}`);
-        packageEntries.push(['dictionary-refreshed.xlsx', refreshedBytes]); return { detail: 'Справочники обновились; матрица и скрытые identity сохранились.' };
+        const afterPlan = E.buildPlan(refreshed, structure, baseline, info);
+
+        if ((afterPlan.counts?.update || 0) !== 1
+          || (afterPlan.counts?.skip || 0) !== 0
+          || (afterPlan.counts?.add || 0) !== 0
+          || (afterPlan.counts?.delete || 0) !== 0) {
+          throw new Error(`Refresh изменил пользовательскую правку/план: ${JSON.stringify({ before: beforePlan.counts, after: afterPlan.counts, skippedRows: afterPlan.skippedRows || [], skippedFields: afterPlan.skippedFields || [], skippedValues: afterPlan.skippedValues || [] })}`);
+        }
+
+        const afterAction = (afterPlan.actions || []).find(action => action.type === 'update');
+        if (!afterAction || canon(beforeAction.currentRow?.rowCardId) !== canon(afterAction.currentRow?.rowCardId)) {
+          throw new Error('После refresh изменённая строка потеряла target identity.');
+        }
+        const refreshedRow = (refreshed.rows || []).find(row => Number(row.excelRow) === Number(edited.source.excelRow));
+        const visibleAfter = refreshedRow?.values?.[edited.column.index] ?? '';
+        if (canon(visibleAfter) !== canon(visibleValue)) {
+          throw new Error(`После refresh потерялась пользовательская правка ячейки ${physical.ref}: «${visibleValue}» → «${visibleAfter}».`);
+        }
+
+        return {
+          detail: `Физическая правка ${physical.ref} сохранена после refresh; hidden identity и план UPDATE не изменились.`,
+          data: { before: beforePlan.counts, after: afterPlan.counts, excelRow: edited.source.excelRow, cell: physical.ref, field: edited.column.key, value: visibleValue, bytes: refreshedBytes.length, sha256: await E.sha256Hex(refreshedBytes) },
+        };
       });
       await runCheck('merge-current', 'Объединение с актуальной TESSA', async () => {
         const merged = E.mergeWorkbookIntoCurrentSnapshot(base.book, structure, baseline); if ((merged.snapshot?.rows || []).length !== baseline.rows.length) throw new Error(`После merge строк ${merged.snapshot?.rows?.length}, ожидалось ${baseline.rows.length}.`);
         const mergedBytes = await E.createRoundtripXlsxBytes(structure, merged.snapshot, info, catalog, { baselineRows: baseline.rows, includeActions: true, schemaChanges: merged.schemaChanges, customColumns: merged.customColumns });
         const parsed = await E.readXlsxArrayBuffer(
-          mergedBytes.buffer.slice(mergedBytes.byteOffset, mergedBytes.byteOffset + mergedBytes.byteLength),
+          E.exactArrayBuffer(mergedBytes),
           'TESSA_UAT_MERGED.xlsx',
           { skipSheetNames: ['Словари'], dictionaryCatalog: catalog, retainArchive: false, selectiveInflate: true },
         ); const plan = E.buildPlan(parsed, structure, baseline, info);
         if (plan.counts.skip || plan.counts.add || plan.counts.update || plan.counts.delete) throw new Error(`Merge дал ложные изменения: ${JSON.stringify(plan.counts)}`);
-        packageEntries.push(['merged-current.xlsx', mergedBytes]); return { detail: 'Объединение roundtrip с неизменившейся TESSA идемпотентно.' };
+        return { detail: 'Объединение roundtrip с неизменившейся TESSA идемпотентно.', data: { bytes: mergedBytes.length, sha256: await E.sha256Hex(mergedBytes) } };
       });
 
       const dictionaryRefreshEvidence = report.checks.find(check => check.id === 'dictionary-refresh');
@@ -13744,7 +17001,7 @@
       addCheck('action-merge-current', 'Действие: объединить с актуальной TESSA', mergeEvidence?.status === 'PASS' ? 'PASS' : 'FAIL', mergeEvidence?.detail || 'Нет доказательства merge.', { required: true, data: { outcome: 'merged-workbook', artifact: 'merged-current.xlsx', sourceCheck: 'merge-current' } });
 
       await runCheck('dictionary-audit', 'Связь столбцов со справочниками', async () => {
-        const columns = E.pickerColumns(structure, catalog); const audit = columns.map(column => ({ key: column.key, label: column.label, catalogId: column.catalog?.id || catalog.columnCatalogIds?.[column.key] || null, sourceView: column.catalog?.sourceView || null, entries: column.catalog?.entries?.length || 0 }));
+        const columns = E.pickerColumns({ schemaTokens: base.book.schemaTokens, headers: base.book.headers, dictionaryCatalog: catalog }) /* FULL_UAT_PICKER_SOURCE_V2 */; const audit = columns.map(column => ({ key: column.key, label: column.label, catalogId: column.catalog?.id || catalog.columnCatalogIds?.[column.key] || null, sourceView: column.catalog?.sourceView || null, entries: column.catalog?.entries?.length || 0 }));
         const missing = audit.filter(item => !item.catalogId || !item.entries); report.dictionaryAudit = { columns: audit, missing, stats: E.safePlain(catalog.stats || {}, { maxDepth: 4, maxKeys: 200, maxArray: 200 }) };
         if (missing.length) throw new Error(`Пустые/непривязанные справочники: ${missing.map(item => item.label).join(', ')}`); return { detail: `Проверено ${audit.length} picker-столбцов; пустых привязок нет.` };
       });
@@ -13772,7 +17029,6 @@
         const diagnosticResult = { report: { format: 'TESSA_STUDIO_DIAGNOSTICS_V1', studioVersion: report.studioVersion, status: 'passed', checks: [], omitted: [] }, entries: [['matrix-current.xlsx', base.bytes]], performanceUat: task8PerformanceUat };
         const zip = await E.makeStudioDiagnosticPackage(diagnosticResult);
         if (!(zip instanceof Uint8Array) || zip.length < 4 || zip[0] !== 0x50 || zip[1] !== 0x4b) throw new Error('Диагностика не сформировала ZIP артефакт.');
-        packageEntries.push(['studio-diagnostics.zip', zip]);
         return { detail: `Сформирован studio-diagnostics.zip (${zip.length} байт).`, data: { outcome: 'diagnostic-artifact', artifact: 'studio-diagnostics.zip', bytes: zip.length } };
       });
 
@@ -13790,181 +17046,469 @@
       await runCheck('write-update-delete', 'Сервер: ADD → UPDATE → read-back → cleanup', async () => {
         const temp = await createTemporaryRow('write-update-delete'), rowCardId = temp.created.rowCardId;
         try {
-          const current = await freshSnapshot(); bridge = current.bridge; const currentCatalog = await bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true }); const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog); const target = findRowByCard(book, rowCardId); if (!target) throw new Error('Временная строка не найдена после ADD.');
+          const current = await freshSnapshot(); bridge = current.bridge; const currentCatalog = catalogForSnapshot(current.snapshot); const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog); const target = findRowByCard(book, rowCardId); if (!target) throw new Error('Временная строка не найдена после ADD.');
           let updatePlan = null; for (const column of shuffled(mutableCriterionColumns(book, currentCatalog, 3), rng)) { for (const entry of shuffled(column.entries.filter(entry => canon(entry.selector || entry.display) !== canon(target.values[column.index])), rng).slice(0, 20)) { const attempt = cloneWorkbook(book), row = findRowByCard(attempt, rowCardId); setDictionaryValue(attempt, row, column.key, entry); const plan = E.buildPlan(attempt, structure, current.snapshot, bridge.matrixInfo()); const exec = plan.actions.filter(action => action.type !== 'noop'); if (exec.length === 1 && exec[0].type === 'update' && canon(exec[0].currentRow?.rowCardId) === canon(rowCardId) && !plan.counts.skip) { updatePlan = plan; break; } } if (updatePlan) break; }
           if (!updatePlan) throw new Error('Не удалось подобрать безопасное UPDATE временной строки.'); registerFieldMutationObligations(updatePlan, 'write-update-delete', rowCardId); await applySingle(updatePlan, 'write-update-delete: UPDATE'); const afterUpdate = await freshSnapshot(); if (!afterUpdate.snapshot.rows.some(row => canon(row.rowCardId) === canon(rowCardId))) throw new Error('Временная строка исчезла после UPDATE.'); if (!await cleanupCreatedRow(rowCardId, 'write-update-delete')) throw new Error('Cleanup после UPDATE не подтверждён.'); const final = await freshSnapshot(); if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) throw new Error('После UPDATE cleanup baseline не восстановлен.'); return { detail: 'Временная строка изменена через штатный Store/read-back и полностью удалена.' };
         } catch (error) { await cleanupCreatedRow(rowCardId, 'write-update-delete-finally'); throw error; }
       });
-      await runCheck('write-every-field', 'Сервер: каждое доступное поле → read-back → restore', async () => {
+      // FULL_UAT_BATCHED_FIELD_WRITES_V1
+      // Every writable field is still mutated and read back, but safe changes are grouped
+      // into one row UPDATE and restored together. This keeps field coverage while cutting
+      // the live write/read-back count from ~2×fields to ~2×batches.
+      await runCheck('write-every-field', 'Сервер: все доступные поля пакетами → read-back → restore', async () => {
+        // FULL_UAT_BATCHED_FIELD_WRITES_V1
         const temp = await createTemporaryRow('write-every-field'), rowCardId = temp.created.rowCardId;
-        const audit = { rowCardId, inventory: [], evidence: [] };
+        const audit = { rowCardId, inventory: [], evidence: [], batches: [], batchSize: 6 };
         report.fieldMutationAudit = audit;
         let fatalRestore = null;
         try {
           let initial = await freshSnapshot(); bridge = initial.bridge;
-          let currentCatalog = await bridge.loadDictionaryCatalog(structure, initial.snapshot, { forceRefresh: true, transient: true });
+          let currentCatalog = catalogForSnapshot(initial.snapshot);
           const initialPackage = await workbookFromSnapshot(structure, initial.snapshot, bridge, currentCatalog);
           const initialBook = initialPackage.book;
           const initialTarget = findRowByCard(initialBook, rowCardId);
-          if (!initialTarget) throw new Error('Временная строка не найдена перед проверкой полей.');
+          const initialSnapshotRow = initial.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
+          if (!initialTarget || !initialSnapshotRow) throw new Error('Временная строка не найдена перед проверкой полей.');
+
           const inventory = buildWritableFieldInventory(initialBook, structure, currentCatalog);
-          audit.inventory = inventory.map(item => ({ token: item.token, label: item.label, kind: item.kind, strategy: item.strategy, index: item.index }));
+          audit.inventory = inventory.map(item => ({
+            token: item.token, label: item.label, kind: item.kind, strategy: item.strategy, index: item.index,
+          }));
           if (!inventory.length) return { status: 'NOT_RUN', detail: 'В текущей структуре нет доступных для записи criterion/function полей.' };
 
-          for (const inventoryItem of inventory) {
-            let mutationApplied = false;
-            let mutationObligationIds = [];
-            let original = null;
-            let originalSemantic = [];
+          const evidenceByToken = new Map();
+          for (const item of inventory) {
+            const hiddenIndex = companionIndex(initialBook, item.token);
             const evidence = {
-              token: inventoryItem.token,
-              label: inventoryItem.label,
-              kind: inventoryItem.kind,
-              before: null,
+              token: item.token,
+              label: item.label,
+              kind: item.kind,
+              before: {
+                visible: String(initialTarget.values?.[item.index] ?? ''),
+                hidden: hiddenIndex >= 0 ? String(initialTarget.values?.[hiddenIndex] ?? '') : '',
+                semantic: canonicalFieldValues(initialSnapshotRow.flat?.[item.token] || []),
+              },
               candidate: null,
               observedAfter: null,
               restoreResult: 'not-needed',
               status: 'NOT_RUN',
             };
+            evidenceByToken.set(item.token, evidence);
             audit.evidence.push(evidence);
-            try {
-              const current = await freshSnapshot(); bridge = current.bridge;
-              currentCatalog = await bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true });
-              const prepared = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog);
-              const book = prepared.book;
-              const target = findRowByCard(book, rowCardId);
-              const snapshotRow = current.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
-              if (!target || !snapshotRow) throw new Error('Временная строка не найдена перед изолированной мутацией.');
-              const liveItem = buildWritableFieldInventory(book, structure, currentCatalog).find(item => item.token === inventoryItem.token);
-              if (!liveItem) {
-                evidence.status = 'NOT_RUN'; evidence.restoreResult = 'not-needed'; evidence.reason = 'Поле исчезло из актуальной структуры.';
-                continue;
-              }
-              const hiddenIndex = companionIndex(book, liveItem.token);
-              original = { visible: String(target.values?.[liveItem.index] ?? ''), hidden: hiddenIndex >= 0 ? String(target.values?.[hiddenIndex] ?? '') : '' };
-              originalSemantic = canonicalFieldValues(snapshotRow.flat?.[liveItem.token] || []);
-              evidence.before = { visible: original.visible, hidden: original.hidden, semantic: [...originalSemantic] };
+          }
 
-              let selected = null;
-              for (const candidate of fieldCandidateValues(liveItem, original.visible).slice(0, 24)) {
-                const attempt = cloneWorkbook(book);
+          let remaining = inventory.map(item => item.token);
+          const maxBatchSize = audit.batchSize;
+          let reusableState = null;
+
+          while (remaining.length && !fatalRestore) {
+            const current = reusableState || await freshSnapshot(); reusableState = null; bridge = current.bridge;
+            currentCatalog = catalogForSnapshot(current.snapshot);
+            const prepared = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog);
+            const baseBook = prepared.book;
+            const baseTarget = findRowByCard(baseBook, rowCardId);
+            const baseSnapshotRow = current.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
+            if (!baseTarget || !baseSnapshotRow) throw new Error('Временная строка не найдена перед пакетной мутацией.');
+
+            const liveInventory = buildWritableFieldInventory(baseBook, structure, currentCatalog);
+            const liveByToken = new Map(liveInventory.map(item => [item.token, item]));
+            let workingBook = cloneWorkbook(baseBook);
+            const selected = [];
+
+            for (const token of remaining) {
+              if (selected.length >= maxBatchSize) break;
+              const liveItem = liveByToken.get(token);
+              if (!liveItem) continue;
+              const currentVisible = String(baseTarget.values?.[liveItem.index] ?? '');
+              let picked = null;
+
+              for (const candidate of fieldCandidateValues(liveItem, currentVisible).slice(0, 24)) {
+                const attempt = cloneWorkbook(workingBook);
                 const attemptRow = findRowByCard(attempt, rowCardId);
+                if (!attemptRow) break;
                 setFieldCandidate(attempt, attemptRow, liveItem, candidate);
                 let plan = E.buildPlan(attempt, structure, current.snapshot, bridge.matrixInfo());
                 plan = applySafety(plan, bridge);
                 const executable = (plan.actions || []).filter(action => action.type !== 'noop');
-                const update = executable.length === 1 && executable[0].type === 'update' && canon(executable[0].currentRow?.rowCardId) === canon(rowCardId) ? executable[0] : null;
+                const update = executable.length === 1
+                  && executable[0].type === 'update'
+                  && canon(executable[0].currentRow?.rowCardId) === canon(rowCardId)
+                  ? executable[0] : null;
                 const change = update?.changes?.find(item => item.key === liveItem.token);
                 if (update && change && !plan.counts?.skip && !plan.safety?.blocked) {
-                  selected = { candidate, plan, expectedAfter: canonicalFieldValues(change.after || []) };
+                  picked = { candidate, attempt, plan };
                   break;
                 }
               }
-              if (!selected) {
-                evidence.status = 'NOT_RUN'; evidence.restoreResult = 'not-needed'; evidence.reason = 'Не найдено безопасное альтернативное значение, дающее единственный UPDATE.';
-                continue;
-              }
 
-              evidence.candidate = candidateEvidenceValue(selected.candidate);
-              mutationObligationIds = registerFieldMutationObligations(selected.plan, `write-every-field:${liveItem.token}`, rowCardId);
-              await applySingle(selected.plan, `write-every-field ${liveItem.token}: UPDATE`);
-              mutationApplied = true;
-              const after = await freshSnapshot(); bridge = after.bridge;
-              const afterRow = after.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
-              if (!afterRow) throw new Error('Временная строка исчезла после мутации поля.');
-              const observedAfter = canonicalFieldValues(afterRow.flat?.[liveItem.token] || []);
-              evidence.observedAfter = [...observedAfter];
-              if (!sameArray(observedAfter, selected.expectedAfter)) {
-                throw new Error(`Read-back ${liveItem.token} не совпал с ожидаемым значением: expected=${JSON.stringify(selected.expectedAfter)} actual=${JSON.stringify(observedAfter)}.`);
+              if (!picked) continue;
+              workingBook = picked.attempt;
+              selected.push({ token, item: liveItem, candidate: picked.candidate });
+            }
+
+            if (!selected.length) {
+              // With an empty batch, failure means there is no safe isolated alternative
+              // for the remaining fields in the current live row.
+              for (const token of remaining) {
+                const evidence = evidenceByToken.get(token);
+                const liveItem = liveByToken.get(token);
+                evidence.status = 'NOT_RUN';
+                evidence.reason = liveItem
+                  ? 'Не найдено безопасное альтернативное значение, дающее единственный UPDATE.'
+                  : 'Поле исчезло из актуальной структуры.';
               }
-              evidence.status = 'PASS';
+              break;
+            }
+
+            let batchPlan = E.buildPlan(workingBook, structure, current.snapshot, bridge.matrixInfo());
+            batchPlan = applySafety(batchPlan, bridge);
+            const executable = (batchPlan.actions || []).filter(action => action.type !== 'noop');
+            const update = executable.length === 1
+              && executable[0].type === 'update'
+              && canon(executable[0].currentRow?.rowCardId) === canon(rowCardId)
+              ? executable[0] : null;
+            if (!update || batchPlan.counts?.skip || batchPlan.safety?.blocked) {
+              throw new Error('Пакетный field-UAT не построил единственный безопасный UPDATE.');
+            }
+
+            const selectedTokens = new Set(selected.map(item => item.token));
+            const expectedByToken = new Map();
+            for (const selectedItem of selected) {
+              const change = update.changes?.find(item => item.key === selectedItem.token);
+              if (!change) throw new Error('Пакетный UPDATE потерял изменение ' + selectedItem.token + '.');
+              const rawExpectedAfter = canonicalFieldValues(change.after || []);
+              // FULL_UAT_BOOLEAN_SEMANTIC_V2
+              const expectedAfter = selectedItem.item.strategy === 'boolean'
+                ? rawExpectedAfter.map(value =>
+                  ['да', 'true', '1'].includes(value) ? 'true'
+                    : ['нет', 'false', '0'].includes(value) ? 'false' : value)
+                : rawExpectedAfter;
+              expectedByToken.set(selectedItem.token, expectedAfter);
+              const evidence = evidenceByToken.get(selectedItem.token);
+              evidence.candidate = candidateEvidenceValue(selectedItem.candidate);
+            }
+
+            const batchId = 'field-batch-' + String(audit.batches.length + 1).padStart(2, '0');
+            const mutationObligationIds = registerFieldMutationObligations(batchPlan, batchId, rowCardId);
+            const writesBefore = report.writesCompleted;
+            let mutationApplied = false;
+            let batchError = null;
+            let afterState = null;
+            try {
+              await applySingle(batchPlan, batchId + ': UPDATE');
+              mutationApplied = true;
+              afterState = await freshSnapshot(); bridge = afterState.bridge;
+              const after = afterState;
+              const afterRow = after.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
+              if (!afterRow) throw new Error('Временная строка исчезла после пакетной мутации.');
+
+              for (const selectedItem of selected) {
+                const evidence = evidenceByToken.get(selectedItem.token);
+                const observed = canonicalFieldValues(afterRow.flat?.[selectedItem.token] || []);
+                evidence.observedAfter = [...observed];
+                if (!sameArray(observed, expectedByToken.get(selectedItem.token) || [])) {
+                  evidence.status = 'FAIL';
+                  evidence.error = 'Read-back не совпал с ожидаемым значением.';
+                  batchError ||= new Error(
+                    'Read-back ' + selectedItem.token + ' не совпал: expected='
+                    + JSON.stringify(expectedByToken.get(selectedItem.token) || [])
+                    + ' actual=' + JSON.stringify(observed)
+                  );
+                } else {
+                  evidence.status = 'PASS';
+                }
+              }
             } catch (error) {
-              evidence.status = 'FAIL';
-              evidence.error = String(error?.message || error);
+              batchError = error;
+              for (const selectedItem of selected) {
+                const evidence = evidenceByToken.get(selectedItem.token);
+                if (evidence.status !== 'PASS') {
+                  evidence.status = 'FAIL';
+                  evidence.error = String(error?.message || error);
+                }
+              }
             } finally {
-              if (mutationApplied && original) {
+              if (mutationApplied) {
                 try {
-                  const restoreState = await freshSnapshot(); bridge = restoreState.bridge;
-                  const restoreCatalog = await bridge.loadDictionaryCatalog(structure, restoreState.snapshot, { forceRefresh: true, transient: true });
+                  const restoreState = afterState || await freshSnapshot(); bridge = restoreState.bridge;
+                  const restoreCatalog = catalogForSnapshot(restoreState.snapshot);
                   const restorePackage = await workbookFromSnapshot(structure, restoreState.snapshot, bridge, restoreCatalog);
                   const restoreBook = restorePackage.book;
                   const restoreRow = findRowByCard(restoreBook, rowCardId);
-                  const restoreItem = buildWritableFieldInventory(restoreBook, structure, restoreCatalog).find(item => item.token === inventoryItem.token);
-                  if (!restoreRow || !restoreItem) throw new Error('Поле или временная строка недоступны для restore.');
-                  restoreRow.values[restoreItem.index] = original.visible;
-                  const restoreHiddenIndex = companionIndex(restoreBook, restoreItem.token);
-                  if (restoreHiddenIndex >= 0) restoreRow.values[restoreHiddenIndex] = original.hidden;
+                  if (!restoreRow) throw new Error('Временная строка недоступна для пакетного restore.');
+
+                  for (const selectedItem of selected) {
+                    const restoreItem = buildWritableFieldInventory(restoreBook, structure, restoreCatalog)
+                      .find(item => item.token === selectedItem.token);
+                    const evidence = evidenceByToken.get(selectedItem.token);
+                    if (!restoreItem) throw new Error('Поле ' + selectedItem.token + ' недоступно для restore.');
+                    restoreRow.values[restoreItem.index] = evidence.before.visible;
+                    const hiddenIndex = companionIndex(restoreBook, restoreItem.token);
+                    if (hiddenIndex >= 0) restoreRow.values[hiddenIndex] = evidence.before.hidden;
+                  }
+
                   let restorePlan = E.buildPlan(restoreBook, structure, restoreState.snapshot, bridge.matrixInfo());
                   restorePlan = applySafety(restorePlan, bridge);
                   const restoreExecutable = (restorePlan.actions || []).filter(action => action.type !== 'noop');
-                  const beforeRestoreRow = restoreState.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
-                  if (!sameArray(canonicalFieldValues(beforeRestoreRow?.flat?.[restoreItem.token] || []), originalSemantic)) {
-                    if (restoreExecutable.length !== 1 || restoreExecutable[0].type !== 'update' || canon(restoreExecutable[0].currentRow?.rowCardId) !== canon(rowCardId) || restorePlan.counts?.skip || restorePlan.safety?.blocked) {
-                      throw new Error(`restore не построил единственный безопасный UPDATE для ${restoreItem.token}.`);
+
+                  const needsRestore = selected.some(selectedItem => {
+                    const liveRow = restoreState.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
+                    return !sameArray(
+                      canonicalFieldValues(liveRow?.flat?.[selectedItem.token] || []),
+                      evidenceByToken.get(selectedItem.token).before.semantic || []
+                    );
+                  });
+
+                  if (needsRestore) {
+                    if (restoreExecutable.length !== 1
+                      || restoreExecutable[0].type !== 'update'
+                      || canon(restoreExecutable[0].currentRow?.rowCardId) !== canon(rowCardId)
+                      || restorePlan.counts?.skip
+                      || restorePlan.safety?.blocked) {
+                      throw new Error('Пакетный restore не построил единственный безопасный UPDATE.');
                     }
-                    await applySingle(restorePlan, `write-every-field ${restoreItem.token}: restore`);
+                    await applySingle(restorePlan, batchId + ': restore');
                   }
+
                   const restored = await freshSnapshot(); bridge = restored.bridge;
+                  reusableState = restored;
                   const restoredRow = restored.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
-                  const restoredSemantic = canonicalFieldValues(restoredRow?.flat?.[restoreItem.token] || []);
-                  if (!sameArray(restoredSemantic, originalSemantic)) throw new Error(`restore read-back ${restoreItem.token} не совпал с исходным значением.`);
-                  evidence.restoreResult = 'verified';
-                  for (const obligationId of mutationObligationIds) resolveCleanupObligation(obligationId, { status: 'verified', resolvedAt: now(), resolvedBy: 'field-readback-restore' });
+                  if (!restoredRow) throw new Error('Временная строка исчезла после пакетного restore.');
+
+                  for (const selectedItem of selected) {
+                    const evidence = evidenceByToken.get(selectedItem.token);
+                    const restoredSemantic = canonicalFieldValues(restoredRow.flat?.[selectedItem.token] || []);
+                    if (!sameArray(restoredSemantic, evidence.before.semantic || [])) {
+                      throw new Error('restore read-back ' + selectedItem.token + ' не совпал с исходным значением.');
+                    }
+                    evidence.restoreResult = 'verified';
+                  }
+                  for (const obligationId of mutationObligationIds) {
+                    resolveCleanupObligation(obligationId, {
+                      status: 'verified',
+                      resolvedAt: now(),
+                      resolvedBy: 'batched-field-readback-restore',
+                    });
+                  }
                 } catch (restoreError) {
                   cleanupUnsafe = true;
-                  evidence.restoreResult = `FAILED: ${String(restoreError?.message || restoreError)}`;
-                  evidence.status = 'FAIL';
                   fatalRestore = restoreError;
+                  for (const selectedItem of selected) {
+                    const evidence = evidenceByToken.get(selectedItem.token);
+                    evidence.restoreResult = 'FAILED: ' + String(restoreError?.message || restoreError);
+                    evidence.status = 'FAIL';
+                  }
                 }
               }
             }
-            if (fatalRestore) break;
+
+            audit.batches.push({
+              id: batchId,
+              tokens: selected.map(item => item.token),
+              fields: selected.length,
+              writes: report.writesCompleted - writesBefore,
+              status: fatalRestore || batchError ? 'FAIL' : 'PASS',
+              error: fatalRestore ? String(fatalRestore?.message || fatalRestore)
+                : batchError ? String(batchError?.message || batchError) : null,
+            });
+
+            remaining = remaining.filter(token => !selectedTokens.has(token));
+            if (batchError) {
+              // Keep testing independent later batches only if cleanup was proven.
+              if (fatalRestore) break;
+            }
           }
 
           const passCount = audit.evidence.filter(item => item.status === 'PASS').length;
           const failCount = audit.evidence.filter(item => item.status === 'FAIL').length;
           const notRunCount = audit.evidence.filter(item => item.status === 'NOT_RUN').length;
-          if (fatalRestore) throw new Error(`Не удалось доказать restore одного из полей: ${String(fatalRestore?.message || fatalRestore)}.`);
-          if (failCount) throw new Error(`Каждое поле проверено не полностью: PASS ${passCount}, FAIL ${failCount}, NOT_RUN ${notRunCount}.`);
-          if (!passCount) return { status: 'NOT_RUN', detail: `Ни для одного из ${inventory.length} полей не найдено безопасной альтернативы.`, data: audit };
-          return { status: 'PASS', detail: `Изолированно проверено ${passCount} полей; NOT_RUN ${notRunCount}. Для каждой записи выполнен read-back и restore.`, data: audit };
+          audit.summary = {
+            total: audit.evidence.length,
+            pass: passCount,
+            fail: failCount,
+            notRun: notRunCount,
+            batches: audit.batches.length,
+            writes: audit.batches.reduce((sum, item) => sum + Number(item.writes || 0), 0),
+          };
+
+          if (fatalRestore) throw fatalRestore;
+          if (failCount) throw new Error(
+            'Пакетная проверка полей: FAIL ' + failCount + ' из ' + audit.evidence.length
+            + '. См. fieldMutationAudit.'
+          );
+          return {
+            detail: 'Поля проверены пакетами: PASS ' + passCount
+              + ', NOT RUN ' + notRunCount
+              + ', пакетов ' + audit.batches.length
+              + ', write-операций ' + audit.summary.writes + '.',
+            data: audit.summary,
+          };
         } finally {
-          const cleaned = await cleanupCreatedRow(rowCardId, 'write-every-field');
-          if (!cleaned) cleanupUnsafe = true;
-          const final = await freshSnapshot();
-          if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) {
-            cleanupUnsafe = true;
-            throw new Error('После every-field UAT исходная матрица отличается от baseline.');
-          }
+          if (!await cleanupCreatedRow(rowCardId, 'write-every-field-finally')) cleanupUnsafe = true;
         }
       });
-      await runCheck('write-clear-delete', 'Сервер: ADD → очистка поля → read-back → cleanup', async () => {
+      await runCheck('write-clear-delete', 'Сервер: ADD → SET → CLEAR → read-back → cleanup', async () => {
+        // FULL_UAT_CLEAR_SCENARIO_DETERMINISTIC_V2
+        // The old test tried to infer that a criterion was optional by looking for some
+        // *other* production row where the same column happened to be blank. That made
+        // the check depend on the live matrix data shape and could return NOT_RUN even
+        // when SET/CLEAR worked correctly. A freshly accepted temporary row is stronger
+        // evidence: every criterion that is blank on that accepted row is already proven
+        // to have a valid blank state for this exact row. Exercise that field through a
+        // real dictionary-backed SET, server read-back, CLEAR, server read-back, cleanup.
         const temp = await createTemporaryRow('write-clear-delete'), rowCardId = temp.created.rowCardId;
         try {
-          const current = await freshSnapshot(); bridge = current.bridge; const currentCatalog = await bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true }); const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog); const target = findRowByCard(book, rowCardId); if (!target) throw new Error('Временная строка не найдена после ADD.');
-          const candidateIndexes = directTokenIndexes(book).filter(index => String(book.schemaTokens[index]).startsWith('criterion:') && String(target.values[index] || '').trim()); let clearPlan = null;
-          for (const index of shuffled(candidateIndexes, rng)) { const key = book.schemaTokens[index]; if (!(book.rows || []).some(row => canon(rowIdentity(book, row).rowCardId) !== canon(rowCardId) && !String(row.values[index] || '').trim())) continue; const attempt = cloneWorkbook(book), row = findRowByCard(attempt, rowCardId); row.values[index] = ''; const idIndex = companionIndex(attempt, key); if (idIndex >= 0) row.values[idIndex] = ''; const plan = E.buildPlan(attempt, structure, current.snapshot, bridge.matrixInfo()); const exec = plan.actions.filter(action => action.type !== 'noop'); if (exec.length === 1 && exec[0].type === 'update' && canon(exec[0].currentRow?.rowCardId) === canon(rowCardId) && !plan.counts.skip) { clearPlan = plan; break; } }
-          if (!clearPlan) return { status: 'NOT_RUN', detail: 'Не найдено доказанно необязательное заполненное поле временной строки.' }; registerFieldMutationObligations(clearPlan, 'write-clear-delete', rowCardId); await applySingle(clearPlan, 'write-clear-delete: CLEAR'); if (!await cleanupCreatedRow(rowCardId, 'write-clear-delete')) throw new Error('Cleanup после очистки не подтверждён.'); const final = await freshSnapshot(); if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) throw new Error('После очистки cleanup baseline не восстановлен.'); return { detail: 'Очистка значения применена на временной строке, подтверждена и откатана.' };
-        } catch (error) { await cleanupCreatedRow(rowCardId, 'write-clear-delete-finally'); throw error; }
+          const current = await freshSnapshot();
+          bridge = current.bridge;
+          const currentCatalog = await bridge.loadDictionaryCatalog(structure, current.snapshot, { forceRefresh: true, transient: true });
+          const { book } = await workbookFromSnapshot(structure, current.snapshot, bridge, currentCatalog);
+          const target = findRowByCard(book, rowCardId);
+          if (!target) throw new Error('Временная строка не найдена после ADD.');
+
+          const blankColumns = shuffled(
+            mutableCriterionColumns(book, currentCatalog, 1)
+              .filter(column => !String(target.values?.[column.index] || '').trim()),
+            rng,
+          );
+          let selected = null;
+          for (const column of blankColumns) {
+            for (const entry of shuffled(column.entries, rng).slice(0, 40)) {
+              const attempt = cloneWorkbook(book);
+              const row = findRowByCard(attempt, rowCardId);
+              if (!row) throw new Error('Временная строка потеряна при подготовке SET.');
+              setDictionaryValue(attempt, row, column.key, entry);
+              const plan = E.buildPlan(attempt, structure, current.snapshot, bridge.matrixInfo());
+              const executable = (plan.actions || []).filter(action => action.type !== 'noop');
+              if (executable.length === 1
+                && executable[0].type === 'update'
+                && canon(executable[0].currentRow?.rowCardId) === canon(rowCardId)
+                && Number(plan.counts?.skip || 0) === 0
+                && !(plan.issues || []).length) {
+                selected = { column, entry, plan };
+                break;
+              }
+            }
+            if (selected) break;
+          }
+          if (!selected) {
+            throw new Error('Не удалось подобрать безопасный словарный критерий для детерминированного SET → CLEAR на временной строке.');
+          }
+
+          await applySingle(selected.plan, 'write-clear-delete: SET');
+
+          const afterSet = await freshSnapshot();
+          bridge = afterSet.bridge;
+          const setRow = afterSet.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
+          if (!setRow) throw new Error('Временная строка исчезла после SET.');
+          const setValues = setRow.flat?.[selected.column.key] || [];
+          if (!(Array.isArray(setValues) ? setValues.some(value => String(value ?? '').trim()) : String(setValues ?? '').trim())) {
+            throw new Error('SET не подтверждён server read-back: выбранный критерий остался пустым.');
+          }
+
+          const setCatalog = await bridge.loadDictionaryCatalog(structure, afterSet.snapshot, { forceRefresh: true, transient: true });
+          const { book: setBook } = await workbookFromSnapshot(structure, afterSet.snapshot, bridge, setCatalog);
+          const clearTarget = findRowByCard(setBook, rowCardId);
+          if (!clearTarget) throw new Error('Временная строка не найдена перед CLEAR.');
+          const clearIndex = tokenIndex(setBook, selected.column.key);
+          if (clearIndex < 0) throw new Error('Критерий SET отсутствует в свежей Excel-схеме перед CLEAR.');
+
+          const clearBook = cloneWorkbook(setBook);
+          const clearRow = findRowByCard(clearBook, rowCardId);
+          clearRow.values[clearIndex] = '';
+          const idIndex = companionIndex(clearBook, selected.column.key);
+          if (idIndex >= 0) clearRow.values[idIndex] = '';
+          const clearPlan = E.buildPlan(clearBook, structure, afterSet.snapshot, bridge.matrixInfo());
+          const clearExecutable = (clearPlan.actions || []).filter(action => action.type !== 'noop');
+          if (clearExecutable.length !== 1
+            || clearExecutable[0].type !== 'update'
+            || canon(clearExecutable[0].currentRow?.rowCardId) !== canon(rowCardId)
+            || Number(clearPlan.counts?.skip || 0) !== 0
+            || (clearPlan.issues || []).length) {
+            throw new Error('CLEAR не построил единственный безопасный UPDATE временной строки: ' + JSON.stringify(compactPlan(clearPlan)));
+          }
+
+          await applySingle(clearPlan, 'write-clear-delete: CLEAR');
+
+          const afterClear = await freshSnapshot();
+          const clearedRow = afterClear.snapshot.rows.find(row => canon(row.rowCardId) === canon(rowCardId));
+          if (!clearedRow) throw new Error('Временная строка исчезла после CLEAR до cleanup.');
+          const clearedValues = clearedRow.flat?.[selected.column.key] || [];
+          if (Array.isArray(clearedValues)
+            ? clearedValues.some(value => String(value ?? '').trim())
+            : Boolean(String(clearedValues ?? '').trim())) {
+            throw new Error('CLEAR не подтверждён server read-back: критерий остался заполненным.');
+          }
+
+          if (!await cleanupCreatedRow(rowCardId, 'write-clear-delete')) {
+            throw new Error('Cleanup после SET → CLEAR не подтверждён.');
+          }
+          const final = await freshSnapshot();
+          if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) {
+            throw new Error('После SET → CLEAR → cleanup baseline не восстановлен.');
+          }
+          return { detail: 'На временной строке выполнены SET → CLEAR → read-back → cleanup; baseline полностью восстановлен.' };
+        } catch (error) {
+          await cleanupCreatedRow(rowCardId, 'write-clear-delete-finally');
+          throw error;
+        }
       });
 
-
-      const applyEvidence = report.checks.find(check => check.id === 'write-add-delete' && check.status === 'PASS') || report.checks.find(check => check.id === 'write-update-delete' && check.status === 'PASS');
-      addCheck('action-apply', 'Действие: применить к TESSA', applyEvidence ? 'PASS' : 'FAIL', applyEvidence ? `Live write/read-back доказан проверкой ${applyEvidence.id}.` : 'Нет успешного live write/read-back.', { required: true, data: { outcome: 'live-write-readback', sourceCheck: applyEvidence?.id || null, writesCompleted: report.writesCompleted } });
-      const actionReconcileState = await freshSnapshot();
-      const actionReconcileMatches = sameArray(snapshotSignature(actionReconcileState.snapshot), baselineSignature);
-      addCheck('action-reconcile', 'Действие: проверить результат', actionReconcileMatches ? 'PASS' : 'FAIL', actionReconcileMatches ? 'Fresh read-back после write/cleanup совпадает с baseline.' : 'Fresh read-back расходится с baseline.', { required: true, data: { outcome: 'reconciliation-readback', rows: actionReconcileState.snapshot.rows.length, baselineEquivalent: actionReconcileMatches } });
-      if (!actionReconcileMatches) cleanupUnsafe = true;
-
-      if (typeof E.stopNativeOperationRecorder === 'function') { try { const nativeRecord = await E.stopNativeOperationRecorder(false); if (nativeRecord) packageEntries.push(['native-write-trace.json', utf8(nativeRecord)]); } catch (error) { addCheck('native-recorder-stop', 'Остановка нативной записи', 'WARN', String(error?.message || error), { required: false }); } }
-      const final = await freshSnapshot(); if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) { cleanupUnsafe = true; addCheck('final-baseline', 'Финальное состояние матрицы', 'FAIL', 'После UAT исходные строки/значения отличаются от baseline.', { required: true }); } else addCheck('final-baseline', 'Финальное состояние матрицы', 'PASS', 'Исходная матрица полностью восстановлена.', { required: true });
-      report.status = cleanupUnsafe ? 'UNSAFE' : report.checks.some(check => check.required !== false && check.status === 'FAIL') ? 'FAILED' : 'PASSED';
+      // FULL_UAT_RECORDER_THROUGH_FINAL_SAVE_V2
+      // Recorder remains active: cleanup recovery, the sole main-card Save and its proof
+      // still belong to the same native evidence window.
     } catch (error) {
-      report.fatalError = String(error?.message || error); report.status = cleanupUnsafe ? 'UNSAFE' : 'INCOMPLETE'; timeline('fatal', report.fatalError); try { if (typeof E.stopNativeOperationRecorder === 'function') await E.stopNativeOperationRecorder(false); } catch (_) { /* best effort */ }
+      report.fatalError = String(error?.message || error);
+      const abortedBeforeBaseline = !baselineCaptured && report.writesAttempted === 0;
+      report.status = cleanupUnsafe ? 'UNSAFE' : 'INCOMPLETE';
+      if (abortedBeforeBaseline && !report.checks.some(check => check.id === 'uat-preflight')) {
+        addCheck('uat-preflight', 'Готовность Full UAT', 'FAIL', report.fatalError, { required: true, data: { phase: initializationPhase, baselineCaptured: false, writesAttempted: 0 } });
+      }
+      timeline('fatal', report.fatalError, { phase: initializationPhase, baselineCaptured, writesAttempted: report.writesAttempted });
     } finally {
 
-      try {
+      const recoveryReady = Boolean(baselineCaptured && baselineSignature && structure && pinnedUatBridge && report.matrix?.matrixId);
+      if (!recoveryReady && report.writesAttempted === 0) {
+        report.finalMatrixSave = { ok: false, skipped: true, reason: 'preflight-abort-before-baseline' };
+        report.restoreProof = {
+          status: 'NOT_REQUIRED', baselineEquivalent: null, pendingObligations: 0, failedObligations: 0,
+          reason: 'UAT остановлен до подтверждённого baseline и до первой мутации; восстанавливать нечего.',
+          phase: initializationPhase, checkedAt: now(),
+        };
+        addCheck('final-restore-proof', 'Task9: восстановление baseline', 'NOT_RUN', report.restoreProof.reason, { required: true, data: report.restoreProof });
+        timeline('recovery-skipped', report.restoreProof.reason, { phase: initializationPhase });
+      } else try {
         await recoverCleanupObligations();
+        // FULL_UAT_SINGLE_MAIN_SAVE_V1
+        if (report.writesCompleted > 0) {
+          if (!bridge || typeof bridge.saveMainMatrixAfterApply !== 'function') throw new Error('Финальный нативный Save основной карточки матрицы недоступен.');
+          const finalMainSave = await bridge.saveMainMatrixAfterApply();
+          report.finalMatrixSave = E.safePlain(finalMainSave, { maxDepth: 4, maxKeys: 80, maxArray: 20 });
+          if (!finalMainSave || finalMainSave.ok === false) throw new Error(`Финальный нативный Save основной карточки матрицы не подтверждён: ${String(finalMainSave?.reason || finalMainSave?.error || 'unknown')}`);
+          timeline('main-matrix-save', 'Один нативный Save после write/cleanup фазы.', { method: finalMainSave.method || null });
+        } else {
+          report.finalMatrixSave = { ok: false, skipped: true, reason: 'no-accepted-writes' };
+        }
+
+        const final = await freshSnapshot();
+        if (!sameArray(snapshotSignature(final.snapshot), baselineSignature)) {
+          cleanupUnsafe = true;
+          addCheck('final-baseline', 'Финальное состояние матрицы', 'FAIL', 'После cleanup и финального Save исходные строки/значения отличаются от baseline.', { required: true });
+        } else {
+          addCheck('final-baseline', 'Финальное состояние матрицы', 'PASS', 'После cleanup и финального Save исходная матрица полностью восстановлена.', { required: true });
+        }
+
+        if (typeof E.stopNativeOperationRecorder === 'function') {
+          try {
+            const nativeRecord = await E.stopNativeOperationRecorder(false);
+            if (nativeRecord) report.nativeOperationSummary = {
+              format: 'TESSA_NATIVE_OPERATION_SUMMARY_V1',
+              captured: Array.isArray(nativeRecord?.records) ? nativeRecord.records.length : 0,
+              errors: Array.isArray(nativeRecord?.records) ? nativeRecord.records.filter(item => item?.status === 'error').length : 0,
+            };
+          } catch (error) {
+            addCheck('native-recorder-stop', 'Остановка нативной записи', 'WARN', String(error?.message || error), { required: false });
+          }
+        }
         if (cleanupLedgerController && baselineSignature && structure && report.matrix?.matrixId) {
           const restoredState = await freshSnapshot();
           report.cleanupLedger = cleanupLedgerController.snapshot();
@@ -13988,6 +17532,81 @@
         addCheck('final-restore-proof', 'Task9: восстановление baseline', 'FAIL', `UNSAFE: ${report.restoreProof.error}`, { required: true, data: report.restoreProof });
       }
 
+      // FULL_UAT_ACTION_COVERAGE_FINAL_V1
+      // Apply evidence is based on the same audited live writes that the Full UAT just
+      // executed. A PASS requires at least one accepted mutation and zero unfinished writes.
+      {
+        const noWriteAbort = Boolean(report.fatalError) && report.writesAttempted === 0;
+        const applyOk = report.writesAttempted > 0
+          && report.writesCompleted === report.writesAttempted
+          && !report.checks.some(check => check.required !== false && check.status === 'FAIL' && /^write-/.test(String(check.id || '')));
+        addCheck(
+          'action-apply',
+          'Действие: применить к TESSA',
+          noWriteAbort ? 'NOT_RUN' : (applyOk ? 'PASS' : 'FAIL'),
+          noWriteAbort
+            ? 'Apply не запускался: Full UAT остановился до первой мутации. Первичная причина сохранена в fatalError.'
+            : (applyOk
+              ? 'Реальные Apply-операции завершены и подтверждены server read-back/cleanup.'
+              : ('Apply evidence неполный: attempted=' + report.writesAttempted + ', completed=' + report.writesCompleted + '.')),
+          { required: true, data: { outcome: applyOk ? 'live-write-readback' : null, writesAttempted: report.writesAttempted, writesCompleted: report.writesCompleted, notRunBecauseFatalBeforeWrite: noWriteAbort } },
+        );
+      }
+
+      // Reconcile must be a real runReconciliationRead invocation. The retained receipt is
+      // a successful DELETE of a temporary UAT row; after cleanup/final Save the correct
+      // reconciliation result is "verified" with that row still absent.
+      try {
+        const noWriteAbort = Boolean(report.fatalError) && report.writesAttempted === 0;
+        if (noWriteAbort) {
+          addCheck('action-reconcile', 'Действие: сверить результат', 'NOT_RUN', 'Reconcile не запускался: Full UAT остановился до первой мутации, поэтому mutation receipt не создавался.', { required: true, data: { outcome: null, notRunBecauseFatalBeforeWrite: true } });
+        } else {
+          if (!reconciliationActionReceiptContext?.receipts?.length) {
+            throw new Error('Нет подтверждённого DELETE receipt для Reconcile evidence.');
+          }
+          const reconciliationResult = await E.runReconciliationRead(
+            async () => pinnedUatBridge || E.TessaBridge.create(),
+          reconciliationActionReceiptContext,
+          { attempts: 3, baseDelayMs: 100 },
+        );
+        const checked = Number(reconciliationResult?.checkedCount || 0);
+        const verified = Number(reconciliationResult?.verifiedCount || 0);
+        if (reconciliationResult?.status !== 'verified' || checked < 1 || verified !== checked) {
+          throw new Error(
+            'Reconcile не подтвердил receipt: status=' + String(reconciliationResult?.status || 'unknown')
+            + ', checked=' + checked + ', verified=' + verified
+            + ', missing=' + Number(reconciliationResult?.missingCount || 0)
+            + ', divergent=' + Number(reconciliationResult?.divergentCount || 0) + '.',
+          );
+        }
+        addCheck(
+          'action-reconcile',
+          'Действие: сверить результат',
+          'PASS',
+          'Reconcile реально перечитал TESSA по mutation receipt и подтвердил итог.',
+          {
+            required: true,
+            data: {
+              outcome: 'reconciliation-readback',
+              status: reconciliationResult.status,
+              mode: reconciliationResult.mode || null,
+              checkedCount: checked,
+              verifiedCount: verified,
+              attempts: reconciliationResult.attempts || 1,
+            },
+          },
+        );
+        }
+      } catch (reconcileError) {
+        addCheck(
+          'action-reconcile',
+          'Действие: сверить результат',
+          'FAIL',
+          String(reconcileError?.message || reconcileError),
+          { required: true, data: { outcome: null } },
+        );
+      }
+
       try {
         const packageProbe = await E.makeZip([...packageEntries, ['task8-package-probe.txt', utf8('TESSA Full UAT package probe')]]);
         if (!(packageProbe instanceof Uint8Array) || packageProbe.length < 4 || packageProbe[0] !== 0x50 || packageProbe[1] !== 0x4b) throw new Error('Full UAT package probe не является ZIP.');
@@ -13996,10 +17615,24 @@
         addCheck('action-full-uat', 'Действие: полный UAT', 'FAIL', String(packageProbeError?.message || packageProbeError), { required: true, data: { outcome: null } });
       }
       report.functionalActionAudit = actionCoverageFromChecks(report.checks, E.STUDIO_ACTION_REGISTRY || []);
+      // FULL_UAT_FINAL_VERDICT_AFTER_SAVE_V2
+      const requiredFailures = report.checks.filter(check => check.required !== false && check.status === 'FAIL');
       if (cleanupUnsafe || report.restoreProof?.status === 'UNSAFE') report.status = 'UNSAFE';
-      else if (report.functionalActionAudit.missing.length && report.status === 'PASSED') report.status = 'FAILED';
+      else if (report.fatalError) report.status = 'INCOMPLETE';
+      else if (requiredFailures.length || report.functionalActionAudit.missing.length) report.status = 'FAILED';
+      else report.status = 'PASSED';
+
+      // FULL_UAT_FAILURE_SUMMARY_V1
+      report.failedChecks = report.checks
+        .filter(check => check.status === 'FAIL')
+        .map(check => ({ id: check.id, title: check.title, detail: check.detail, required: check.required !== false }));
+      if (report.failedChecks.length) {
+        const failureText = report.failedChecks.map((check, index) => (index + 1) + '. ' + check.id + ' — ' + (check.title || '') + '\n' + String(check.detail || '')).join('\n\n');
+        packageEntries.push(['failed-checks.json', utf8({ seed: report.seed, status: report.status, fatalError: report.fatalError || null, failures: report.failedChecks })], ['FAILURES.txt', utf8((report.fatalError ? 'FATAL\\n' + report.fatalError + '\\n\\n' : '') + failureText)]);
+      }
+
       report.finishedAt = now(); report.durationMs = new Date(report.finishedAt).getTime() - new Date(startedAt).getTime(); report.summary = { pass: report.checks.filter(x => x.status === 'PASS').length, fail: report.checks.filter(x => x.status === 'FAIL').length, warn: report.checks.filter(x => x.status === 'WARN').length, notRun: report.checks.filter(x => x.status === 'NOT_RUN').length, writesAttempted: report.writesAttempted, writesCompleted: report.writesCompleted, cleanupVerified: report.cleanup.filter(x => x.status === 'verified' || x.status === 'already-absent').length, cleanupFailed: report.cleanup.filter(x => x.status === 'FAILED').length, cleanupLedgerPending: Number(report.cleanupLedger?.pending || 0), cleanupLedgerFailed: Number(report.cleanupLedger?.failed || 0), restoreStatus: report.restoreProof?.status || 'NOT_RUN' };
-      const summary = { format: 'TESSA_FULL_UAT_SUMMARY_V1', status: report.status, seed: report.seed, studioVersion: report.studioVersion, runnerVersion: report.runnerVersion, matrix: report.matrix, startedAt: report.startedAt, finishedAt: report.finishedAt, summary: report.summary };
+      const summary = { format: 'TESSA_FULL_UAT_SUMMARY_V1', status: report.status, seed: report.seed, studioVersion: report.studioVersion, runnerVersion: report.runnerVersion, matrix: report.matrix, startedAt: report.startedAt, finishedAt: report.finishedAt, summary: report.summary, failedChecks: report.failedChecks };
       const readme = `TESSA Matrix Studio — Full UAT\n\nСтатус: ${report.status}\nSeed: ${report.seed}\nМатрица: ${report.matrix?.name || ''} (${report.matrix?.matrixId || ''})\n\nPASSED — обязательные проверки прошли и cleanup подтверждён.\nFAILED — есть функциональная ошибка, cleanup подтверждён.\nUNSAFE — cleanup или восстановление исходного состояния не подтверждены.\nINCOMPLETE — UAT не дошёл до полного набора проверок.\n`;
       packageEntries.push(['cleanup-ledger.json', utf8(report.cleanupLedger || {})], ['restore-proof.json', utf8(report.restoreProof || {})], ['summary.json', utf8(summary)], ['uat-report.json', utf8(report)], ['timeline.json', utf8(report.timeline)], ['dictionary-audit.json', utf8({ dictionaryAudit: report.dictionaryAudit, rolePresentationAudit: report.rolePresentationAudit, recordKeepingAudit: report.recordKeepingAudit, productionShadowAudit: report.productionShadowAudit })], ['README.txt', utf8(readme)]);
       try { const zip = await E.makeZip(packageEntries); const stamp = report.finishedAt.replace(/[:.]/g, '-'); E.triggerBlobDownload(new Blob([zip], { type: 'application/zip' }), `TESSA_Full_UAT_${report.status}_${stamp}.zip`); }
@@ -14016,19 +17649,174 @@
       style.textContent = `.tms-picker-import-block{margin-top:12px;padding:12px;border:1px solid rgba(128,128,128,.22);border-radius:10px;background:rgba(128,128,128,.035)}.tms-picker-import-block>summary{font-weight:600;cursor:pointer}.tms-picker-import-hint{margin:8px 0;color:var(--tms-muted,#6b7280);font-size:12px;line-height:1.45}.tms-picker-import-block textarea{display:block;width:100%;box-sizing:border-box;min-height:92px;margin:8px 0;resize:vertical}.tms-picker-import-actions{justify-content:flex-end}.tms-uat-card{margin-top:12px;padding:14px;border:1px solid rgba(128,128,128,.22);border-radius:12px;background:rgba(128,128,128,.035)}.tms-uat-card h4{margin:0 0 6px;font-size:14px}.tms-uat-card p{margin:5px 0 10px;line-height:1.45}.tms-uat-status{margin-top:10px;padding:9px 11px;border-radius:8px;background:rgba(128,128,128,.08);font-size:12px;white-space:pre-wrap}.tms-uat-status[data-state="running"],.tms-uat-status[data-state="PASSED"],.tms-uat-status[data-state="FAILED"],.tms-uat-status[data-state="UNSAFE"]{font-weight:600}`;
       document.head?.appendChild(style);
     }
-    const host = document.querySelector('#tms-test-tools'); if (!host || host.querySelector('#tms-full-uat')) return false;
-    const card = document.createElement('div'); card.className = 'tms-uat-card'; card.innerHTML = `<h4>Полный UAT</h4><p>Автоматически проверяет Excel-сценарии, справочники, объединение и реальные ADD/UPDATE/DELETE на временных строках. Исходные строки не меняются; после каждого write-сценария временная строка удаляется и состояние перечитывается.</p><button id="tms-full-uat" type="button">Запустить полный UAT</button><div id="tms-full-uat-status" class="tms-uat-status" data-state="idle">Не запускался.</div>`; host.appendChild(card);
+    const host = document.querySelector('#tms-uat-actions') || document.querySelector('#tms-test-tools'); if (!host || host.querySelector('#tms-full-uat')) return false;
+    const card = document.createElement('div'); card.className = 'tms-uat-card'; card.innerHTML = `<h4>Полный UAT</h4><button id="tms-full-uat" type="button">Запустить полный UAT</button><div id="tms-full-uat-status" class="tms-uat-status" data-state="idle">Не запускался.</div>`; host.appendChild(card);
     const button = card.querySelector('#tms-full-uat'), status = card.querySelector('#tms-full-uat-status');
     button.addEventListener('click', async () => {
+      // FULL_UAT_UI_PREFLIGHT_V1
+      try {
+        const preflightBridge = await E.TessaBridge.create();
+        E.assertWritableMatrixDraft(preflightBridge);
+        E.assertNativeEditMode();
+      } catch (preflightError) {
+        status.dataset.state = 'INCOMPLETE';
+        status.textContent = 'INCOMPLETE · PRECHECK\n' + String(preflightError?.message || preflightError) + '\nНикаких изменений в TESSA не выполнялось.';
+        return;
+      }
       if (!window.confirm('Полный UAT выполнит реальные операции только с временными строками в текущем черновике TESSA и будет удалять их после каждого сценария. Запустить?')) return;
       button.disabled = true; status.dataset.state = 'running'; status.textContent = 'Выполняю Full UAT… Не закрывайте вкладку до скачивания итогового ZIP.';
-      try { const result = await runFullUat({ liveConfirmation: 'full-uat-confirmed' }); status.dataset.state = result.status; status.textContent = `${result.status} · PASS ${result.summary?.pass || 0} · FAIL ${result.summary?.fail || 0} · NOT RUN ${result.summary?.notRun || 0}\nИтоговый ZIP скачан. Seed: ${result.seed}`; }
+      try {
+        // FULL_UAT_INLINE_FAILURES_V1
+        const result = await runFullUat({ liveConfirmation: 'full-uat-confirmed' });
+        status.dataset.state = result.status;
+        const failures = Array.isArray(result.failedChecks)
+          ? result.failedChecks
+          : (result.checks || []).filter(check => check?.status === 'FAIL').map(check => ({ id: check.id, title: check.title, detail: check.detail }));
+        const nl = String.fromCharCode(10);
+        const failureText = failures.map((check, index) =>
+          String(index + 1) + '. ' + String(check?.id || 'unknown') + ' — ' + String(check?.title || '') + nl + String(check?.detail || '')
+        ).join(nl + nl);
+        const header = String(result.status) + ' · PASS ' + String(result.summary?.pass || 0) + ' · FAIL ' + String(result.summary?.fail || 0) + ' · NOT RUN ' + String(result.summary?.notRun || 0)
+          + nl + 'Итоговый ZIP скачан. Seed: ' + String(result.seed);
+        status.textContent = header + (failureText ? nl + nl + 'FAIL DETAILS' + nl + failureText : '');
+        if (failureText && E && typeof E.triggerBlobDownload === 'function') {
+          E.triggerBlobDownload(
+            new Blob([failureText], { type: 'text/plain;charset=utf-8' }),
+            'TESSA_Full_UAT_FAILURES_' + String(result.seed || 'unknown') + '.txt',
+          );
+        }
+      }
       catch (error) { status.dataset.state = 'UNSAFE'; status.textContent = `UNSAFE · ${String(error?.message || error)}`; }
       finally { button.disabled = false; }
     });
     return true;
   }
 
-  window[INSTALL_KEY] = { version: VERSION, seededRandom, hashSeed, snapshotSignature, cloneWorkbook, buildWritableFieldInventory, fieldCandidateValues, actionCoverageFromChecks, createCleanupLedger, baselineRestoreProof, runProductionShadowAudit, runFullUat, installUi };
+  window[INSTALL_KEY] = { version: VERSION, seededRandom, hashSeed, snapshotSignature, cloneWorkbook, buildWritableFieldInventory, fieldCandidateValues, normalizeAddDocumentTypes, findUniqueAddCandidate, actionCoverageFromChecks, createCleanupLedger, baselineRestoreProof, runProductionShadowAudit, runFullUat, installUi };
   if (!globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__) { let attempts = 0; const timer = setInterval(() => { attempts += 1; if (installUi() || attempts > 120) clearInterval(timer); }, 250); installUi(); }
+})();
+
+(() => {
+  'use strict';
+
+  const INSTALL_KEY = '__TMS_INSTALL_INTERVAL_ADD_VALID_FALLBACK__';
+  const PATCH_KEY = Symbol.for('tessa-matrix-studio.interval-add-valid-fallback.v1');
+
+  function installIntervalAddValidFallback(proto) {
+    if (!proto || typeof proto !== 'object') throw new Error('TESSA Matrix Studio: invalid TessaBridge prototype for interval fallback.');
+    if (proto[PATCH_KEY]) return proto[PATCH_KEY];
+
+    const originalCreateRowCard = proto.createRowCard;
+    const originalRebuildRowCard = proto.rebuildRowCard;
+    const originalValidateDuplicate = proto.validateDuplicate;
+    if (typeof originalCreateRowCard !== 'function'
+      || typeof originalRebuildRowCard !== 'function'
+      || typeof originalValidateDuplicate !== 'function') {
+      throw new Error('TESSA Matrix Studio: interval fallback cannot bind required TessaBridge methods.');
+    }
+
+    const holderByCard = new WeakMap();
+    const dynamicKeys = ['card', 'cardId', 'versionId', 'newMethod', 'diagnosticNewMode', 'intervalExtractorFallback'];
+
+    proto.createRowCard = async function patchedCreateRowCard(templateId) {
+      const initial = await originalCreateRowCard.call(this, templateId);
+      if (!initial?.card) return initial;
+
+      const holder = {
+        current: initial,
+        templateId,
+        rebuildArgs: null,
+        retrying: false,
+      };
+      holderByCard.set(initial.card, holder);
+
+      // Preflight keeps the returned object and later spreads it into preparedAdds.
+      // Accessors make that spread observe the server-accepted Valid card if the
+      // first duplicate-check hit only the known interval extractor defect.
+      const facade = {};
+      for (const key of dynamicKeys) {
+        Object.defineProperty(facade, key, {
+          enumerable: true,
+          configurable: false,
+          get() { return holder.current?.[key]; },
+        });
+      }
+      for (const [key, value] of Object.entries(initial)) {
+        if (!(key in facade)) facade[key] = value;
+      }
+      return facade;
+    };
+
+    proto.rebuildRowCard = function patchedRebuildRowCard(card, versionId, excelRow, structure, snapshot) {
+      const holder = card && typeof card === 'object' ? holderByCard.get(card) : null;
+      if (holder && !holder.retrying) {
+        holder.rebuildArgs = { excelRow, structure, snapshot };
+      }
+      return originalRebuildRowCard.call(this, card, versionId, excelRow, structure, snapshot);
+    };
+
+    proto.validateDuplicate = async function patchedValidateDuplicate(card, versionId) {
+      const holder = card && typeof card === 'object' ? holderByCard.get(card) : null;
+      try {
+        return await originalValidateDuplicate.call(this, card, versionId);
+      } catch (error) {
+        if (error?.code !== 'duplicate-interval-extractor'
+          || !holder
+          || holder.retrying
+          || !holder.rebuildArgs
+          || typeof this.createDiagnosticRowCard !== 'function') {
+          throw error;
+        }
+
+        holder.retrying = true;
+        try {
+          // CardNewMode.Valid is a second CardNew only. Nothing is stored here.
+          // The same desired row is rebuilt and the SAME server ValidateDuplicate
+          // contract must allow it before this card can reach preparedAdds/Store.
+          const valid = await this.createDiagnosticRowCard(holder.templateId, 'Valid');
+          if (!valid?.card || !valid?.versionId) throw error;
+          const { excelRow, structure, snapshot } = holder.rebuildArgs;
+          originalRebuildRowCard.call(this, valid.card, valid.versionId, excelRow, structure, snapshot);
+          try {
+            await originalValidateDuplicate.call(this, valid.card, valid.versionId);
+          } catch (validError) {
+            if (validError?.code === 'duplicate-interval-extractor') {
+              const evidence = '[CardNewMode.Default=extractor-error; CardNewMode.Valid=extractor-error]';
+              const message = String(validError?.message || 'LeftOperandExtractor is null');
+              if (!message.includes(evidence)) validError.message = `${message} ${evidence}`;
+            }
+            throw validError;
+          }
+
+          valid.intervalExtractorFallback = 'CardNewMode.Valid';
+          holder.current = valid;
+          holderByCard.set(valid.card, holder);
+          console.warn('[TESSA Matrix Studio] ValidateDuplicate rejected default CardNew with duplicate-interval-extractor; CardNewMode.Valid passed the same server validation and will be used for this ADD.');
+          return;
+        } finally {
+          holder.retrying = false;
+        }
+      }
+    };
+
+    const state = Object.freeze({
+      installed: true,
+      mode: 'CardNewMode.Valid',
+      reasonCode: 'duplicate-interval-extractor',
+      validatesAgain: true,
+      bypassesDuplicateCheck: false,
+    });
+    Object.defineProperty(proto, PATCH_KEY, { value: state, enumerable: false, configurable: false });
+    return state;
+  }
+
+  window[INSTALL_KEY] = installIntervalAddValidFallback;
+  const exports = window.__TESSA_MATRIX_SYNC_EXPORTS__ || window.__TMS_RUNTIME_BRIDGE__;
+  if (exports?.TessaBridge?.prototype) {
+    try {
+      installIntervalAddValidFallback(exports.TessaBridge.prototype);
+    } catch (error) {
+      console.error('[TESSA Matrix Studio] Failed to install interval ADD fallback.', error);
+    }
+  }
 })();

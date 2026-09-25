@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 
 const replaceOnce = (source, before, after, label) => {
@@ -59,6 +60,27 @@ export function applyPreviewCounterFilters(input) {
       </div>`;
   source = replaceOnce(source, oldCounters, newCounters, 'Preview counter cards');
 
+  // v1.15 regression fix: counters live in #tms-summary, while the historical click
+  // delegation lives on #tms-plan. Events do not bubble across siblings, so the old
+  // implementation rendered working-looking buttons that could never reach the handler.
+  source = replacePatternOnce(
+    source,
+    /    renderResolutionCenter\(plan\);\n\n    \/\/ Не теряем раскрытую строку/,
+    `    summary.onclick = event => {
+      const counterFilter = event.target?.closest?.('button[data-preview-counter-filter]');
+      if (counterFilter && !APP.busy) {
+        const nextFilter = previewCounterFilterTarget(APP.previewView?.filter, counterFilter.dataset.previewCounterFilter);
+        APP.previewView = createPreviewViewState({ ...APP.previewView, filter: nextFilter, page: 1 });
+        renderPlan(APP.plan);
+      }
+    };
+
+    renderResolutionCenter(plan);
+
+    // Не теряем раскрытую строку`,
+    'Preview counter summary click delegation',
+  );
+
   // Remove only the rendered duplicate filter row. The tiny local factory may remain
   // dead in the template source; keeping this transform independent of quote escaping
   // makes the release composition resilient across the 1.14.x source variants.
@@ -90,6 +112,10 @@ export function applyPreviewCounterFilters(input) {
   source = replaceOnce(source, '      #tms-panel .tms-preview-filters{display:flex;gap:4px;flex-wrap:wrap}\n', '', 'legacy Preview filter CSS');
   source = replaceOnce(source, '      #tms-panel .tms-preview-filter.tms-active{border-color:var(--tms-red);color:var(--tms-red-dark)}\n', '', 'legacy Preview active-filter CSS');
 
+  if (!source.includes('summary.onclick = event =>')) {
+    throw new Error('Preview counter buttons must delegate clicks from #tms-summary');
+  }
+
   const exportNeedle = '    createPlanReviewState, previewAttentionSummary, resolutionCenterWindow, invalidatePlanStateAfterApply, keepReviewedPackage,';
   const exportReplacement = '    createPlanReviewState, previewAttentionSummary, resolutionCenterWindow, previewCounterFilterTarget, invalidatePlanStateAfterApply, keepReviewedPackage,';
   source = replaceOnce(source, exportNeedle, exportReplacement, 'counter-filter test export');
@@ -110,7 +136,7 @@ export function applyPreviewCounterFilters(input) {
   return source;
 }
 
-if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const file = process.argv[2];
   if (!file) throw new Error('usage: node hotfixes/v1.14.2-preview-counter-filters.mjs <userscript>');
   const input = fs.readFileSync(file, 'utf8');

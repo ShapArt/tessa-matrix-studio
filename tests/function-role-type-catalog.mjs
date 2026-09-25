@@ -52,7 +52,7 @@ function bridgeFixture() {
 const roleTypes = catalog => catalog.entries.map(entry => Number(entry.roleTypeId));
 const roleIds = catalog => catalog.entries.map(entry => entry.id);
 
-test('live GUID performer functions receive independent function dictionaries', async () => {
+test('live GUID performer functions share one compact MtxRoles dictionary', async () => {
   const snapshot = {
     rows: [
       {
@@ -68,20 +68,16 @@ test('live GUID performer functions receive independent function dictionaries', 
   const signingId = catalog.columnCatalogIds['function:signing'];
   const requiredId = catalog.columnCatalogIds['function:required'];
 
-  assert.notEqual(signingId, 'roles:MtxRoles', 'real GUID FunctionType must not fall back to the raw shared MtxRoles catalog');
-  assert.notEqual(requiredId, 'roles:MtxRoles', 'each real function column needs its own picker catalog');
-  assert.notEqual(signingId, requiredId, 'different function columns must not share one mutable/ordered role catalog');
+  assert.equal(signingId, 'roles:MtxRoles', 'GUID/custom function must reuse the physical MtxRoles catalog');
+  assert.equal(requiredId, 'roles:MtxRoles', 'all compatible performer functions must share one physical catalog');
+  assert.equal(signingId, requiredId, 'duplicate 20k–30k role lists must not be materialized per function');
 
-  const signing = catalog.catalogs[signingId];
-  const required = catalog.catalogs[requiredId];
-  assert.equal(roleTypes(signing)[0], 1, 'Подписание already uses Personal roles, so people must be offered first');
-  assert.equal(roleTypes(required)[0], 9, 'Обязательные already uses Group roles, so that function-specific role type must be offered first');
-
-  // Personal stays the universal safe next choice for performer functions, while other
-  // legitimate TESSA role classes remain available instead of being destructively filtered.
-  assert.equal(roleTypes(required)[1], 1);
-  assert.deepEqual(new Set(roleTypes(signing)), new Set([0, 1, 2, 9]));
-  assert.deepEqual(new Set(roleTypes(required)), new Set([0, 1, 2, 9]));
+  const shared = catalog.catalogs[signingId];
+  assert.deepEqual(new Set(roleTypes(shared)), new Set([0, 1, 2, 9]));
+  assert.ok(shared.functionPolicies?.signing, 'per-function observed role metadata must remain available without cloning entries');
+  assert.ok(shared.functionPolicies?.required, 'every shared function must retain its ranking policy metadata');
+  assert.deepEqual(shared.functionPolicies.signing.observedRoleTypeIds, [1]);
+  assert.deepEqual(shared.functionPolicies.required.observedRoleTypeIds, [9]);
 });
 
 test('numeric FunctionType installations keep strict RoleType filtering', async () => {
@@ -91,7 +87,7 @@ test('numeric FunctionType installations keep strict RoleType filtering', async 
   assert.deepEqual(roleIds(catalog.catalogs[personalId]), ['person-1', 'person-2']);
 });
 
-test('current exact RoleID/RoleTypeID value survives a function-specific dictionary overlay', async () => {
+test('current exact RoleID/RoleTypeID value survives the shared compact dictionary overlay', async () => {
   const snapshot = {
     rows: [{
       rowCardId: 'row-1',

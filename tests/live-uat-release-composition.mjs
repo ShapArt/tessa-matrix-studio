@@ -1,58 +1,35 @@
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 
-const artifactComposition = fs.readFileSync(new URL('./v1.14-artifact-composition.mjs', import.meta.url), 'utf8');
+const builder = fs.readFileSync(new URL('../tools/build-candidate.mjs', import.meta.url), 'utf8');
 const releaseWorkflow = fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+const uatWorkflow = fs.readFileSync(new URL('../.github/workflows/uat-candidate.yml', import.meta.url), 'utf8');
+const uatSource = fs.readFileSync(new URL('../src/uat/full-uat.js', import.meta.url), 'utf8');
 const rcContract = fs.readFileSync(new URL('./v1.14-rc-contract.mjs', import.meta.url), 'utf8');
 
-assert.match(artifactComposition, /v1\.14-full-uat-inline-failures\.mjs/,
-  'canonical composed artifact must keep inline Full UAT failure evidence');
-assert.match(artifactComposition, /v1\.14-live-uat-final-four\.mjs/,
-  'canonical composed artifact must apply the final-four live UAT fixes');
+assert.match(builder, /if \(profile === 'uat'\) modules\.push\(read\('src\/uat\/full-uat\.js'\)\)/,
+  'the UAT profile must append the canonical Full UAT module');
+assert.match(builder, /if \(profile === 'production'\)/,
+  'the builder must have an explicit production boundary');
+assert.match(builder, /delete window\.__TMS_RUNTIME_BRIDGE__/,
+  'production must remove the temporary runtime bridge');
+assert.match(uatSource, /FULL_UAT_INLINE_FAILURES_V1/,
+  'canonical Full UAT must retain inline failure evidence');
+assert.match(uatSource, /FAIL DETAILS/,
+  'canonical Full UAT must show exact failed checks without ZIP extraction');
+assert.match(uatSource, /FULL_UAT_FINAL_VERDICT_AFTER_SAVE_V2/,
+  'canonical Full UAT must calculate its verdict after final Save evidence');
 
-const inlineIndex = releaseWorkflow.indexOf('node hotfixes/v1.14-full-uat-inline-failures.mjs dist/tessa-matrix-studio.user.js');
-const finalFourIndex = releaseWorkflow.indexOf('node hotfixes/v1.14-live-uat-final-four.mjs dist/tessa-matrix-studio.user.js');
-assert.ok(inlineIndex >= 0,
-  'production release must apply inline Full UAT failure UX to the shipped userscript');
-assert.ok(finalFourIndex > inlineIndex,
-  'production release must apply final-four fixes after the finalizer/inline-failure transforms');
-assert.match(releaseWorkflow, /hotfixes\/v1\.14-live-uat-final-four\.mjs/,
-  'release change detection/package must track the final-four transform');
-
-assert.match(releaseWorkflow, /hotfixes\/v1\.14-full-uat-inline-failures\.mjs/,
-  'release change detection/package must track the inline-failure transform');
-
-const exactV1142Transforms = [
-  'v1.14.2-live-excel-preview-ux.mjs',
-  'v1.14.2-preview-counter-filters.mjs',
-  'v1.14.2-full-uat-scope-fix.mjs',
-  'v1.14.2-full-uat-deterministic-clear.mjs',
-  'v1.14.2-full-uat-copied-identity-collision-safe.mjs',
-  'v1.14.2-full-uat-action-coverage-final.mjs',
-  'v1.14.2-full-uat-version-provenance.mjs',
-];
-let previousIndex = finalFourIndex;
-for (const transform of exactV1142Transforms) {
-  assert.match(artifactComposition, new RegExp(transform.replaceAll('.', '\\.')),
-    `exact UAT composition must apply ${transform}`);
-  const productionIndex = releaseWorkflow.indexOf('node hotfixes/' + transform + ' dist/tessa-matrix-studio.user.js');
-  assert.ok(productionIndex > previousIndex,
-    `production Release must apply ${transform} in the same ordered chain as the exact UAT artifact`);
-  previousIndex = productionIndex;
-}
-
-
-// v1.14 exact UAT/live composition no longer emits the old copy-as-add marker. The
-// production Release must validate markers that are actually present in the canonical
-// artifact, otherwise a verified build can fail before the native-evidence gate.
-assert.doesNotMatch(releaseWorkflow, /DUPLICATE_IDENTITY_COPY_AS_ADD_V1/,
-  'production release must not require an obsolete marker absent from the canonical v1.14 artifact');
-assert.match(releaseWorkflow, /grep -Fq "FULL_UAT_RUNTIME_CONTEXT_V1" dist\/tessa-matrix-studio\.user\.js/,
-  'production release must validate the current Full UAT runtime-context marker');
+assert.match(uatWorkflow, /npm run build:uat/);
+assert.match(releaseWorkflow, /npm run build:production/);
+assert.doesNotMatch(releaseWorkflow, /node hotfixes\//,
+  'production release must not replay historical hotfix transforms');
+assert.match(releaseWorkflow, /Production build exposed test\/UAT globals/,
+  'release must verify the production trust boundary');
 
 assert.match(rcContract, /import ['"]\.\/live-uat-final-four-regressions\.mjs['"]/,
-  'npm-test RC contract must permanently execute the final-four behavioral regression');
+  'RC contract must retain the final-four behavior regression');
 assert.match(rcContract, /import ['"]\.\/live-uat-release-composition\.mjs['"]/,
-  'npm-test RC contract must permanently execute release/UAT composition parity');
+  'RC contract must execute production/UAT composition parity');
 
-console.log('Live UAT release composition parity: exact candidate and production build use the same final transforms: OK');
+console.log('Live UAT/release parity: one canonical source with isolated production and UAT profiles: OK');

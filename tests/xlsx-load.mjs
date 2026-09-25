@@ -80,7 +80,7 @@ for (const size of [500, 1000, 5000]) {
   const totalMs = performance.now() - started;
 
   assert(workbook.rows.length === size, `${size}: imported ${workbook.rows.length} rows`);
-  assert(workbook.roundtrip.format === 'TESSA_MATRIX_ROUNDTRIP_V6',
+  assert(workbook.roundtrip.format === 'TESSA_MATRIX_ROUNDTRIP_V7',
     `${size}: wrong roundtrip format ${workbook.roundtrip.format}`);
   assert(workbook.roundtrip.baselineRows?.length === size,
     `${size}: baseline ledger has ${workbook.roundtrip.baselineRows?.length || 0} rows`);

@@ -81,7 +81,7 @@ const supportText = JSON.stringify(support);
 assert.equal(support.format, 'TESSA_MATRIX_SUPPORT_REPORT_V1');
 const declaredStudioVersion = code.match(/\/\/ @version\s+([^\s]+)/)?.[1];
 assert.equal(support.studioVersion, declaredStudioVersion, 'support report must use the declared userscript version');
-assert.deepEqual(support.counts, { update: 1, add: 1, delete: 1, noop: 0, skip: 3, skippedFields: 1 });
+assert.deepEqual(support.counts, { update: 1, add: 1, delete: 1, noop: 0, skip: 3, skippedFields: 1, skippedValues: 0 });
 assert.deepEqual(support.reasonCodes.sort(), ['ambiguous-value', 'duplicate-interval-extractor', 'invalid-value']);
 assert.deepEqual(support.roleTypeIds.sort(), ['1', '9']);
 assert.equal(support.apply.canApply, true);
@@ -93,9 +93,9 @@ assert.equal(supportWithIds.matrixId, 'matrix-secret-id');
 assert.equal(supportWithIds.templateId, 'template-secret-id');
 assert.ok(!JSON.stringify(supportWithIds).includes('person-secret'), 'includeIds may expose matrix/template IDs, never business row/role IDs');
 
-assert.ok(code.includes("filterButton('error', 'Ошибки')"), 'Preview toolbar must expose an Error filter');
+assert.ok(code.includes('data-preview-counter-filter="error"'), 'Preview counters must expose an Error filter');
 assert.ok(code.includes("selection.filter === 'skip' || selection.filter === 'error'"), 'SKIP and ERROR views must both disable bulk Apply selection');
-assert.ok(code.includes('id="tms-download-support-report"'), 'Preview must expose a support-report download button');
+assert.ok(code.includes('id="tms-download-package"'), 'Preview must expose the unified support-package button');
 assert.ok(code.includes('tms-role-type'), 'Preview role values must render a visible role-type badge');
 
 console.log('TESSA Matrix Studio v1.11 Preview filters, role types and privacy-safe support report: OK');

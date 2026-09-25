@@ -55,18 +55,16 @@ assert(downloadUrl === 'https://github.com/ShapArt/tessa-matrix-studio/releases/
 assert(updateUrl === 'https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.meta.js', 'userscript update check must use latest metadata asset');
 assert(readme.includes(updateUrl), 'README does not document metadata update URL');
 assert(!readme.includes('cdn.jsdelivr.net/gh/ShapArt/tessa-matrix-studio@main/tessa-matrix-studio.user.js'), 'README must not use stale jsDelivr @main install/update path');
-const screenshotVersion = publicVersion === '1.14.2' ? '1.14.1' : publicVersion;
-assert(readme.includes(`docs/assets/studio-start-v${screenshotVersion}.jpg`), 'README lost current Studio start screenshot');
-assert(readme.includes(`docs/assets/excel-matrix-v${screenshotVersion}.jpg`), 'README lost current Excel matrix screenshot');
-assert(readme.includes(`docs/assets/studio-preview-v${screenshotVersion}.jpg`), 'README lost current Preview screenshot');
-assert(readme.includes(`docs/assets/studio-apply-v${screenshotVersion}.jpg`), 'README lost current Apply screenshot');
-assert(readme.includes(`docs/assets/changes-report-v${screenshotVersion}.jpg`), 'README lost current changes-report screenshot');
+for (const prefix of ['studio-start', 'excel-matrix', 'studio-preview', 'studio-apply', 'changes-report']) {
+  const asset = readme.match(new RegExp(`docs/assets/${prefix}-v[^"')]+\\.(?:jpg|png)`))?.[0];
+  assert(asset && fs.existsSync(new URL(`../${asset}`, import.meta.url)), `README lost current ${prefix} screenshot`);
+}
 assert(readme.includes('Tampermonkey → Dashboard / Панель управления'), 'README lost Tampermonkey Dashboard fallback');
 assert(readme.includes('Utilities / Сервис'), 'README lost Tampermonkey Utilities fallback');
 assert(readme.includes('В разделе **URL** вставьте:'), 'README lost manual URL import field');
 
 assert(readme.includes('CHANGELOG.md') && readme.includes('docs/PRODUCTION-RUNBOOK.md'), 'README must link to deep technical safety documentation');
-assert(changelog.includes('baseline-ledger') || runbook.includes('Roundtrip V6'), 'deep docs must explain the V6 baseline safety model');
+assert(changelog.includes('baseline-ledger') || runbook.includes('Roundtrip V6') || runbook.includes('Roundtrip V7'), 'deep docs must explain the baseline safety model');
 assert(!readme.includes('# Боевой UAT перед раздачей пользователям'), 'public README must not contain the internal pre-release UAT block');
 assert(!readme.includes('Стоп-критерии'), 'public README must not contain the removed UAT stop-criteria block');
 

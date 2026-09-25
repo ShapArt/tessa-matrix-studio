@@ -25,10 +25,35 @@ jobs:
           package-manager-cache: false
       - name: Install test dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
       - name: Test fidelity / coverage contract
         run: node tests/test-coverage-contract.mjs
       - name: Syntax and full regression tests
         run: npm test
+
+  dependency-and-secret-scan:
+    name: Dependency and secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+      - name: Repository secret scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -nEI '(BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{30,}|xox[baprs]-[A-Za-z0-9-]{20,})' -- . \
+            ':(exclude)tests/**' ':(exclude)docs/**'; then
+            echo 'Potential committed secret detected.' >&2
+            exit 1
+          fi
 
   codeql:
     name: CodeQL
@@ -80,22 +105,27 @@ jobs:
           # yet. analyze normally waits for processing; the bounded retry only covers
           # eventual consistency between the analysis and alert APIs.
           analysis_sha=""
-          for attempt in 1 2 3 4 5; do
-            analysis_sha="$(
+          observed_shas=""
+          # A busy PR can receive a newer CodeQL analysis while an older workflow is
+          # still finishing. Do not require the exact checkout to remain the newest
+          # analysis; require it to exist in the bounded PR analysis history.
+          for attempt in $(seq 1 20); do
+            analyses="$(
               api_get analyses \
                 --data-urlencode "tool_name=CodeQL" \
                 "${scope[@]}" \
-                --data-urlencode "per_page=1" \
-              | jq -r '.[0].commit_sha // empty'
+                --data-urlencode "per_page=100"
             )"
+            analysis_sha="$(jq -r --arg sha "${GITHUB_SHA}" '[.[] | select(.commit_sha == $sha)][0].commit_sha // empty' <<<"${analyses}")"
+            observed_shas="$(jq -r '[.[].commit_sha] | unique | .[:8] | join(",")' <<<"${analyses}")"
             if [[ "${analysis_sha}" == "${GITHUB_SHA}" ]]; then
               break
             fi
-            if [[ "${attempt}" == "5" ]]; then
-              echo "::error::Latest CodeQL analysis for ${scope_label} is ${analysis_sha:-missing}, expected ${GITHUB_SHA}."
+            if [[ "${attempt}" == "20" ]]; then
+              echo "::error::CodeQL analysis for exact checkout ${GITHUB_SHA} was not exposed for ${scope_label}. Observed: ${observed_shas:-none}."
               exit 1
             fi
-            sleep 2
+            sleep 3
           done
 
           blocking=0
