@@ -115,9 +115,11 @@ assert(!code.includes("const rowExcluded = action.type === 'update' &&"), 'row e
 assert(!code.includes("if (!sourceAction || sourceAction.type !== 'update') return;"), 'review click handler must not reject ADD/DELETE row exclusion');
 assert(code.includes("const supportsWholeActionReview = action.type === 'update' || action.type === 'add' || action.type === 'delete';"),
   'Preview must explicitly support whole-operation review for UPDATE/ADD/DELETE');
-assert(code.includes("} else if (action.type === 'add') body.innerHTML = `${rowReviewControl}"),
-  'ADD Preview must render the whole-operation review control');
-assert(code.includes("else body.innerHTML = `${rowReviewControl}${flatToHtml(action.currentRow.flat, plan.columnMap, action.currentRow)}`;"),
-  'DELETE Preview must render the whole-operation review control while passing row metadata for typed role badges');
+assert(code.includes("rowButton.dataset.reviewRow = 'true'"),
+  'ADD/UPDATE/DELETE Preview must render the whole-operation review control');
+assert(code.includes("action.type === 'add') appendFlatPreview(body, action.excelRow.flat"),
+  'ADD Preview must render business values through DOM text nodes');
+assert(code.includes('appendFlatPreview(body, action.currentRow.flat, plan.columnMap, action.currentRow)'),
+  'DELETE Preview must pass row metadata for typed role badges');
 
 console.log('TESSA Matrix Studio selective review for ADD/DELETE and idempotent cascading ADD: OK');

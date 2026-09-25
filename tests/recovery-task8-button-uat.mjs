@@ -24,7 +24,7 @@ const required = [
   'value-picker',
   'file-ingest',
   'preview',
-  'changes-export',
+  'support-bundle',
   'dictionary-refresh',
   'merge-current',
   'apply',
@@ -39,7 +39,7 @@ assert.equal(new Set(actions.map(item => item.id)).size, actions.length, 'action
 assert.equal(new Set(actions.map(item => item.uatCheckId)).size, actions.length, 'every user action needs its own UAT check id');
 
 const allowedOutcomes = new Set([
-  'xlsx-artifact', 'picker-selection', 'ingest-workbook', 'preview-plan', 'changes-xlsx-artifact',
+  'xlsx-artifact', 'picker-selection', 'ingest-workbook', 'preview-plan', 'support-zip-artifact',
   'refreshed-workbook', 'merged-workbook', 'live-write-readback', 'reconciliation-readback',
   'diagnostic-artifact', 'performance-result', 'full-uat-package',
 ]);

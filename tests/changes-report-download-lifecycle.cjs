@@ -1,5 +1,5 @@
 const { JSDOM } = require('jsdom');
-const fs = require('fs');
+const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 
@@ -13,82 +13,55 @@ w.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 w.TextEncoder = TextEncoder;
 w.TextDecoder = TextDecoder;
 w.Blob = Blob;
-w.Response = Response;
-w.CompressionStream = globalThis.CompressionStream;
-w.DecompressionStream = globalThis.DecompressionStream;
 w.alert = () => {};
 w.confirm = () => true;
 
 const created = [];
 const revoked = [];
-let seq = 0;
 w.URL.createObjectURL = blob => {
-  const url = `blob:https://tessa.cherkizovsky.net/prepared-${++seq}`;
+  const url = `blob:https://tessa.cherkizovsky.net/package-${created.length + 1}`;
   created.push({ url, blob });
   return url;
 };
 w.URL.revokeObjectURL = url => revoked.push(String(url));
+w.HTMLAnchorElement.prototype.click = () => {};
 
 let source = fs.readFileSync(path.join(__dirname, '../tessa-matrix-studio.user.js'), 'utf8');
 source = source.replace(
   'window.__TESSA_MATRIX_SYNC_EXPORTS__ = {',
-  'window.__downloadLifecycleTest={APP,mountUi,renderPlan,resetFilePreview}; window.__TESSA_MATRIX_SYNC_EXPORTS__ = {',
+  'window.__downloadLifecycleTest={APP,mountUi,resetFilePreview}; window.__TESSA_MATRIX_SYNC_EXPORTS__ = {',
 );
 w.eval(source);
 
 const U = w.__downloadLifecycleTest;
 const E = w.__TESSA_MATRIX_SYNC_EXPORTS__;
-const structure = {
-  templateId: 'download-template',
-  conditions: [{ criterionRowId: 'org', criterionName: 'Организация', operandTypeId: E.constants.OPERAND.ReferenceGuid }],
-  functions: [],
-};
-function plan(after) {
-  return {
-    matrixId: 'download-matrix', templateId: structure.templateId, matrixName: 'Download lifecycle',
-    actions: [{
-      type: 'update', excelRow: { excelRow: 15, flat: { 'criterion:org': [after] } },
-      currentRow: { index: 0, rowCardId: 'row-1', flat: { 'criterion:org': ['Орг А'] } },
-      changes: [{ key: 'criterion:org', label: 'Организация', before: ['Орг А'], after: [after] }],
-    }],
-    skippedRows: [], skippedFields: [], warnings: [],
-    safety: { blocked: false, blockedReasons: [], matrixInfo: { matrixId: 'download-matrix', templateId: structure.templateId } },
-    matrixInfo: { matrixId: 'download-matrix', templateId: structure.templateId },
-  };
-}
-function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
-async function waitFor(predicate, timeoutMs, message) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    if (predicate()) return;
-    await sleep(20);
-  }
-  throw new Error(message);
-}
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 (async () => {
   U.mountUi();
   U.APP.runtimeMonitor?.stop?.();
-  U.APP.structure = structure;
-  U.APP.review = E.createPlanReviewState();
 
-  const firstPlan = plan('Орг Б');
-  U.APP.plan = firstPlan;
-  U.renderPlan(firstPlan);
-  await waitFor(() => created.length >= 1, 5000, 'Preview did not prepare a browser download artifact');
-  const firstUrl = created[0].url;
+  U.APP.supportBundleRequest = 4;
+  U.APP.supportBundleArtifact = { key: 'old', bytes: new Uint8Array([1]), blob: new Blob(['old']) };
+  U.APP.supportBundleBuild = { key: 'old', promise: Promise.resolve(null) };
+  E.clearSupportBundleArtifact(U.APP);
+  assert.equal(U.APP.supportBundleArtifact, null, 'superseded package bytes remained retained');
+  assert.equal(U.APP.supportBundleBuild, null, 'superseded package build remained retained');
+  assert.equal(U.APP.supportBundleRequest, 5, 'request generation was not invalidated');
 
-  const secondPlan = plan('Орг В');
-  U.APP.plan = secondPlan;
-  U.renderPlan(secondPlan);
-  await waitFor(() => created.length >= 2, 5000, 'updated Preview did not prepare a replacement artifact');
-  assert.ok(revoked.includes(firstUrl), `superseded Preview object URL was not revoked: ${JSON.stringify({ firstUrl, revoked })}`);
+  E.triggerBlobDownload(new Blob(['package'], { type: 'application/zip' }), 'package.zip', { cleanupDelayMs: 0 });
+  assert.equal(created.length, 1, 'download did not create exactly one temporary Blob URL');
+  await sleep(20);
+  assert.deepEqual(revoked, [created[0].url], 'temporary Blob URL was not revoked after download');
+  assert.equal(w.document.querySelectorAll('a[download]').length, 0, 'temporary download anchor remained in DOM');
 
-  const secondUrl = created.at(-1).url;
+  U.APP.supportBundleArtifact = { key: 'reset', bytes: new Uint8Array([2]), blob: new Blob(['reset']) };
+  U.APP.supportBundleBuild = { key: 'reset', promise: Promise.resolve(null) };
   U.resetFilePreview();
-  assert.ok(revoked.includes(secondUrl), `resetFilePreview did not revoke prepared URL: ${JSON.stringify({ secondUrl, revoked })}`);
+  assert.equal(U.APP.supportBundleArtifact, null, 'file reset retained support package bytes');
+  assert.equal(U.APP.supportBundleBuild, null, 'file reset retained support package build');
 
-  console.log('TESSA changes download lifecycle: prepared after Preview and superseded URLs revoked');
+  console.log('TESSA support bundle lifecycle: generation invalidation, byte release and Blob URL cleanup OK');
   U.APP.runtimeMonitor?.stop?.();
   dom.window.close();
 })().catch(error => {

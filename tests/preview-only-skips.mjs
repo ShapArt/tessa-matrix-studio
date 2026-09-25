@@ -5,10 +5,16 @@ import assert from 'node:assert/strict';
 // Exercise the actual renderer with the live failure shape. No CardService is
 // provided: displaying failures cannot retry a check or start a write.
 class Element {
-  constructor() { this.children = []; this.dataset = {}; this.classList = { add() {} }; }
+  constructor(tag = 'div') { this.tagName = tag; this.children = []; this.dataset = {}; this.classList = { add() {} }; }
   set innerHTML(value) { this.html = value; this.children = []; }
-  get innerHTML() { return this.html || ''; }
-  appendChild(child) { this.children.push(child); }
+  get innerHTML() { return (this.html || '') + this.children.map(child => child.outerHTML ?? child.textContent ?? '').join(''); }
+  set textContent(value) { this.html = String(value).replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[ch]); this.children = []; }
+  get textContent() { return this.html || ''; }
+  get outerHTML() { return `<${this.tagName}>${this.innerHTML}</${this.tagName}>`; }
+  appendChild(child) { this.children.push(child); return child; }
+  append(...children) { children.forEach(child => this.appendChild(child)); }
+  setAttribute(name, value) { this[name] = String(value); }
+  get childNodes() { return this.children; }
   querySelectorAll() { return []; }
   querySelector() { return null; }
 }
@@ -17,7 +23,8 @@ globalThis.window = globalThis;
 globalThis.__TESSA_MATRIX_SYNC_TEST_MODE__ = true;
 globalThis.document = {
   body: { innerText: '' }, querySelector: id => elements.get(id) || null,
-  querySelectorAll: () => [], createElement: () => new Element(),
+  querySelectorAll: () => [], createElement: tag => new Element(tag),
+  createTextNode: value => ({ textContent: String(value), outerHTML: String(value).replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[ch]) }),
 };
 const source = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
 vm.runInThisContext(source.replace('  bootstrap();', '  window.__skipPreviewTest = { APP, renderPlan }; bootstrap();'));
