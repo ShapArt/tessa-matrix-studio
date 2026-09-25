@@ -1,8 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const DELETE_ROW_REQUEST_TYPE = 'd090417f-bf4b-45ed-9c82-33ef23acd96f';
@@ -503,36 +501,6 @@ function assertSchema4ReleaseEvidence(attestation, version, userscriptSource, pa
   };
 }
 
-function runTransform(root, target, relativeScript) {
-  const script = path.join(root, relativeScript);
-  const result = spawnSync(process.execPath, [script, target], { cwd: root, encoding: 'utf8' });
-  if (result.status !== 0) {
-    throw new Error(`Failed to rebuild live-tested parent with ${relativeScript}: ${result.stderr || result.stdout || `exit ${result.status}`}`);
-  }
-}
-
-function buildRepositoryParentUserscript(parentVersion) {
-  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tms-report-parent-'));
-  const target = path.join(tmp, 'tessa-matrix-studio.user.js');
-  try {
-    fs.copyFileSync(path.join(root, 'tessa-matrix-studio.user.js'), target);
-    runTransform(root, target, 'hotfixes/malformed-range-diagnostic-transform.mjs');
-    runTransform(root, target, 'hotfixes/v1.13.0-user-row-lifecycle-transform.mjs');
-    let source = fs.readFileSync(target, 'utf8');
-    source = source.replace(/^\/\/ @version\s+[0-9.]+$/m, `// @version      ${parentVersion}`);
-    source = source.replace(/^(\s*)version:\s*'[0-9.]+'\s*,$/m, `$1version: '${parentVersion}',`);
-    fs.writeFileSync(target, source, 'utf8');
-    fs.appendFileSync(target, `\n${fs.readFileSync(path.join(root, 'hotfixes/interval-add-valid-fallback.js'), 'utf8')}\n`, 'utf8');
-    runTransform(root, target, 'hotfixes/v1.13.0-full-uat-live-finalize.mjs');
-    runTransform(root, target, 'hotfixes/v1.14-full-uat-inline-failures.mjs');
-    runTransform(root, target, 'hotfixes/v1.14-live-uat-final-four.mjs');
-    return fs.readFileSync(target, 'utf8');
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-}
-
 export function assertReleaseNativeEvidence({ version, userscriptSource, attestation, parentUserscriptSource = null }) {
   if (compareVersions(version, '1.12.2') < 0) {
     return { ok: true, skipped: true, version: String(version), reason: 'legacy-release-before-native-evidence-gate' };
@@ -587,13 +555,14 @@ function cli() {
   const version = args.shift();
   const userscriptPath = args.shift();
   const attestationPath = args.shift();
+  const parentUserscriptPath = args.shift();
   if (!version || !userscriptPath) {
-    throw new Error('Usage: node tools/release-native-evidence-gate.mjs <version> <userscript> [attestation.json]');
+    throw new Error('Usage: node tools/release-native-evidence-gate.mjs <version> <userscript> [attestation.json] [schema4-parent-userscript]');
   }
   const userscriptSource = fs.readFileSync(path.resolve(userscriptPath), 'utf8');
   const attestation = attestationPath ? JSON.parse(fs.readFileSync(path.resolve(attestationPath), 'utf8')) : null;
   const parentUserscriptSource = Number(attestation?.schemaVersion) === 4
-    ? buildRepositoryParentUserscript(String(attestation.parentVersion || ''))
+    ? (parentUserscriptPath ? fs.readFileSync(path.resolve(parentUserscriptPath), 'utf8') : null)
     : null;
   const result = assertReleaseNativeEvidence({ version, userscriptSource, attestation, parentUserscriptSource });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

@@ -1,18 +1,11 @@
 import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
-import { applyLiveExcelPreviewUx } from '../hotfixes/v1.14.2-live-excel-preview-ux.mjs';
-import { applyPreviewCounterFilters } from '../hotfixes/v1.14.2-preview-counter-filters.mjs';
-import { applyFullUatScopeFix } from '../hotfixes/v1.14.2-full-uat-scope-fix.mjs';
-
 const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/live-ord-main-78792326-regression.json', import.meta.url), 'utf8'));
 const configuredSource = process.env.TMS_TEST_SOURCE;
-const baseline = configuredSource
+const source = configuredSource
   ? fs.readFileSync(configuredSource, 'utf8')
   : fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
-const liveUxSource = baseline.includes('LIVE_EXCEL_PREVIEW_UX_V1') ? baseline : applyLiveExcelPreviewUx(baseline);
-const counterUxSource = liveUxSource.includes('PREVIEW_COUNTER_FILTERS_V1') ? liveUxSource : applyPreviewCounterFilters(liveUxSource);
-const source = counterUxSource.includes('LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1') ? counterUxSource : applyFullUatScopeFix(counterUxSource);
 assert.match(source, /LIVE_EXCEL_PREVIEW_UX_V1/);
 assert.match(source, /PREVIEW_COUNTER_FILTERS_V1/);
 assert.match(source, /LIVE_EXCEL_FULL_UAT_SCOPE_FIX_V1/);

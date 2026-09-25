@@ -12,12 +12,10 @@ globalThis.document = {
 };
 
 const source = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
-const hotfix = fs.readFileSync(new URL('../hotfixes/interval-add-valid-fallback.js', import.meta.url), 'utf8');
 vm.runInThisContext(source, { filename: 'tessa-matrix-studio.user.js' });
-vm.runInThisContext(hotfix, { filename: 'interval-add-valid-fallback.js' });
 const E = globalThis.__TESSA_MATRIX_SYNC_EXPORTS__;
 const installFallback = globalThis.__TMS_INSTALL_INTERVAL_ADD_VALID_FALLBACK__;
-assert.equal(typeof installFallback, 'function', 'interval ADD hotfix installer missing');
+assert.equal(typeof installFallback, 'function', 'canonical interval ADD fallback installer missing');
 const O = E.constants.OPERAND;
 
 const structure = {

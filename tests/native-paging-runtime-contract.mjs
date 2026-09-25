@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
-import { buildPagingCandidate } from '../tools/build-paging-candidate.mjs';
+import { buildCandidate } from '../tools/build-candidate.mjs';
 
 // Behavioral contract from the supplied TESSA platform bundle (2026-09-23).
 // No proprietary bundle, business data, or captured identifiers are committed.
@@ -52,7 +52,9 @@ class ViewRequest {
 
 const temp = process.env.TMS_TEST_SOURCE ? null : fs.mkdtempSync(path.join(os.tmpdir(), 'tms-paging-'));
 try {
-  const source = fs.readFileSync(process.env.TMS_TEST_SOURCE || buildPagingCandidate(path.join(temp, 'candidate.js')), 'utf8');
+  const candidatePath = path.join(temp, 'candidate.js');
+  if (!process.env.TMS_TEST_SOURCE) buildCandidate({ profile: 'uat', out: candidatePath });
+  const source = fs.readFileSync(process.env.TMS_TEST_SOURCE || candidatePath, 'utf8');
   const start = source.indexOf('    async collectNativeMatrixViewLinksServerPaged(options = {}) {');
   const end = source.indexOf('\n    async collectNativeMatrixViewLinksAllPages(', start);
   assert.ok(start >= 0 && end > start);

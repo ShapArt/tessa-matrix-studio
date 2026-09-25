@@ -1,16 +1,7 @@
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
-import { applyV11510LiveStability } from '../hotfixes/v1.15.10-live-stability.mjs';
-
 const sourcePath = process.env.TMS_TEST_SOURCE || new URL('../tessa-matrix-studio.user.js', import.meta.url);
-let source = fs.readFileSync(sourcePath, 'utf8');
-
-source = source
-  .replace(/^(\/\/ @version\s+)[0-9.]+$/m, '$11.16.1')
-  .replace(/(^\s*version:\s*')[0-9.]+(',\s*$)/m, '$11.16.1$2');
-
-const output = applyV11510LiveStability(source);
-assert.equal(applyV11510LiveStability(output), output, 'transform must be idempotent');
+const output = fs.readFileSync(sourcePath, 'utf8');
 
 for (const marker of [
   "buildFingerprint: 'TMS_V1_15_10_PAGING_V4_REFRESH_EDIT_V2'",

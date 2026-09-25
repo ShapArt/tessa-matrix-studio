@@ -4,12 +4,6 @@ import './live-uat-final-four-regressions.mjs';
 import './live-uat-release-composition.mjs';
 import './live-colleague-excel-regressions.mjs';
 
-// Historical evidence stays immutable; the active release contract now validates the
-// canonical v1.17 source and builder instead of replaying the v1.14 transform chain.
-const historicalParityPath = new URL('./v1.14.1-report-only-release-parity.mjs', import.meta.url);
-assert.ok(fs.existsSync(historicalParityPath));
-assert.match(fs.readFileSync(historicalParityPath, 'utf8'), /811a3e7251cc0f89f632814b3ac49d5feb1e280670f34f31c6a631b22d960eff/);
-
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const source = fs.readFileSync(new URL('../tessa-matrix-studio.user.js', import.meta.url), 'utf8');
 const fullUat = fs.readFileSync(new URL('../src/uat/full-uat.js', import.meta.url), 'utf8');
@@ -38,4 +32,4 @@ assert.match(readme, /version-1\.17\.1/);
 assert.match(readme, /Скачать пакет/);
 assert.ok(readme.includes('docs/assets/studio-start-v1.14.1.jpg'), 'historical product screenshot must remain available');
 
-console.log('TESSA Matrix Studio v1.17 canonical RC, historical evidence and live-UAT regression contract: OK');
+console.log('TESSA Matrix Studio v1.17 canonical RC and live-UAT regression contract: OK');

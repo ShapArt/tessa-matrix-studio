@@ -1,8 +1,7 @@
 import fs from 'node:fs';
 
 // Релизный контракт сверяет публичный README, changelog и issue-template с версией,
-// которую реально получит пользователь из GitHub Release. Большой base userscript может
-// оставаться на предыдущем patch, пока release.yml детерминированно собирает hotfix overlays.
+// которую реально получит пользователь из GitHub Release.
 const read = (path) => fs.readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
@@ -28,21 +27,7 @@ const publicVersion = pkg.version;
 const downloadUrl = downloadMatch[1];
 const updateUrl = updateMatch[1];
 
-const parseVersion = value => String(value || '').split('.').map(part => Number(part));
-const isComposedPatchAhead = (next, base) => {
-  const a = parseVersion(next);
-  const b = parseVersion(base);
-  return a.length === 3 && b.length === 3
-    && a.every(Number.isInteger) && b.every(Number.isInteger)
-    && a[0] === b[0] && a[1] === b[1] && a[2] > b[2];
-};
-const intervalOverlayExists = fs.existsSync(new URL('../hotfixes/interval-add-valid-fallback.js', import.meta.url));
-const rangeTransformExists = fs.existsSync(new URL('../hotfixes/malformed-range-diagnostic-transform.mjs', import.meta.url));
-if (publicVersion !== baseVersion) {
-  assert(intervalOverlayExists, `base userscript ${baseVersion} differs from public release ${publicVersion} without interval composition`);
-  assert(rangeTransformExists, `base userscript ${baseVersion} differs from public release ${publicVersion} without range transform`);
-  assert(isComposedPatchAhead(publicVersion, baseVersion), `public release ${publicVersion} must be a later patch of base userscript ${baseVersion}`);
-}
+assert(publicVersion === baseVersion, `canonical userscript ${baseVersion} differs from package ${publicVersion}`);
 
 assert(readme.includes(`version-${publicVersion}-`), 'README version badge is out of sync');
 assert(readme.includes(`**v${publicVersion} · Автор: Шаповалов Артём**`), 'README header version is out of sync');
