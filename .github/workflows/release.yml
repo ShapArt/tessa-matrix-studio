@@ -105,21 +105,28 @@ jobs:
             echo 'Production build exposed test/UAT globals.' >&2
             exit 1
           fi
+          node tools/build-enterprise-package.mjs \
+            dist/tessa-matrix-studio.user.js deployment/enterprise-config.example.json \
+            dist/enterprise-unsigned
           awk 'BEGIN { emit=0 } /^\/\/ ==UserScript==/ { emit=1 } emit { print } /^\/\/ ==\/UserScript==/ { exit }' \
             dist/tessa-matrix-studio.user.js > dist/tessa-matrix-studio.meta.js
           grep -Fqx "// @version      $VERSION" dist/tessa-matrix-studio.meta.js
           (
             cd dist
             zip -q "tessa-matrix-studio-v$VERSION.zip" tessa-matrix-studio.user.js
+            zip -q -r "tessa-matrix-studio-v$VERSION-enterprise-unsigned.zip" enterprise-unsigned
           )
           zip -q -j "dist/tessa-matrix-studio-v$VERSION.zip" \
             README.md CHANGELOG.md SECURITY.md \
             docs/DEPLOYMENT-GPO-INTUNE.md docs/SECURITY-REVIEW-v1.17.0.md \
-            docs/UAT-v1.17.0.md docs/ROLLBACK-v1.16.15.md
+            docs/UAT-v1.17.0.md docs/ROLLBACK-v1.16.15.md \
+            docs/CERTIFICATION-CONTROLS.md docs/CHANGE-ALGORITHMS.md \
+            docs/LIVE-UAT-AUDIT-v1.17.1.md
           (
             cd dist
             sha256sum tessa-matrix-studio.meta.js tessa-matrix-studio.user.js \
-              "tessa-matrix-studio-v$VERSION.zip" > SHA256SUMS.txt
+              "tessa-matrix-studio-v$VERSION.zip" \
+              "tessa-matrix-studio-v$VERSION-enterprise-unsigned.zip" > SHA256SUMS.txt
           )
 
       - name: Enforce native TESSA evidence
@@ -164,7 +171,9 @@ jobs:
           fi
           gh release create "$TAG" \
             dist/tessa-matrix-studio.meta.js dist/tessa-matrix-studio.user.js \
-            "dist/tessa-matrix-studio-v$VERSION.zip" dist/SHA256SUMS.txt \
+            "dist/tessa-matrix-studio-v$VERSION.zip" \
+            "dist/tessa-matrix-studio-v$VERSION-enterprise-unsigned.zip" \
+            dist/SHA256SUMS.txt \
             --title "TESSA Matrix Studio v$VERSION" --generate-notes
 
       - name: Verify public latest delivery
@@ -181,6 +190,7 @@ jobs:
             if curl --fail --location --silent --show-error "$BASE/tessa-matrix-studio.meta.js" -o "$PUBLIC_DIR/tessa-matrix-studio.meta.js" \
               && curl --fail --location --silent --show-error "$BASE/tessa-matrix-studio.user.js" -o "$PUBLIC_DIR/tessa-matrix-studio.user.js" \
               && curl --fail --location --silent --show-error "$BASE/tessa-matrix-studio-v$EXPECTED_VERSION.zip" -o "$PUBLIC_DIR/tessa-matrix-studio-v$EXPECTED_VERSION.zip" \
+              && curl --fail --location --silent --show-error "$BASE/tessa-matrix-studio-v$EXPECTED_VERSION-enterprise-unsigned.zip" -o "$PUBLIC_DIR/tessa-matrix-studio-v$EXPECTED_VERSION-enterprise-unsigned.zip" \
               && curl --fail --location --silent --show-error "$BASE/SHA256SUMS.txt" -o "$PUBLIC_DIR/SHA256SUMS.txt" \
               && [[ "$(awk '/@version/{print $3; exit}' "$PUBLIC_DIR/tessa-matrix-studio.user.js")" == "$EXPECTED_VERSION" ]]; then
               break

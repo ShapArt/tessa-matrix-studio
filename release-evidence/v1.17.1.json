@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 5,
+  "version": "1.17.1",
+  "userscriptSha256": "fd3938eff4196e33c82f482fef051c56a44277c4610fde5b759edb717da8f222",
+  "status": "verified",
+  "operation": "live-uat-exact-artifact",
+  "candidateArtifactDigest": "df796ac0c3dee4a877c6c7d634dcda75c32eedb8567f0732d9793389b9c890bf",
+  "candidateArtifactRunId": 36139112943,
+  "candidateArtifactName": "tessa-matrix-studio-v1.17.1-uat-36139112943",
+  "candidateCommit": "cf914a69fdd950913911b83e6ee599651926e809",
+  "candidateUserscriptSha256": "6db412489f3656039ddaebc9dfccbc424e65e2d7e36717e95008e232050d0748",
+  "liveUat": {
+    "status": "PASSED",
+    "passCount": 51,
+    "failCount": 0,
+    "notRunCount": 0,
+    "seed": 4289822038,
+    "archiveName": "TESSA_Full_UAT_PASSED_2026-09-25T13-53-30-303Z.zip",
+    "archiveSizeBytes": 1002686,
+    "archiveSha256": "0e76ba813e2296ab5eead535246056ce548d81eb711161e3f93419724644dfaa",
+    "writesAttempted": 21,
+    "writesCompleted": 21,
+    "cleanupVerified": 32,
+    "restoreStatus": "VERIFIED"
+  },
+  "runnerContract": {
+    "allRequiredChecksPassed": true,
+    "cleanupSafe": true,
+    "finalBaselinePassed": true,
+    "restoreVerified": true,
+    "actionCoverageComplete": true,
+    "applyEvidencePassed": true,
+    "reconcileEvidencePassed": true,
+    "productionShadowPassed": true,
+    "versionProvenancePassed": true
+  }
+}

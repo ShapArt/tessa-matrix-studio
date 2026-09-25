@@ -26,6 +26,8 @@ try {
   const uat = fs.readFileSync(uatA);
   assert.equal(sha256(production), sha256(fs.readFileSync(productionB)), 'production build must be deterministic');
   assert.equal(sha256(uat), sha256(fs.readFileSync(uatB)), 'UAT build must be deterministic');
+  assert.equal(sha256(uat), '6db412489f3656039ddaebc9dfccbc424e65e2d7e36717e95008e232050d0748',
+    'v1.17.1 UAT build must remain byte-identical to the candidate that passed live TESSA UAT');
 
   const productionSource = production.toString('utf8');
   const uatSource = uat.toString('utf8');
@@ -43,10 +45,20 @@ try {
     'production must not publish internal test exports');
   assert.doesNotMatch(productionSource, /__TMS_FULL_UAT_V1__/,
     'production must not embed the destructive Full UAT runner');
+  assert.match(productionSource, /<details id="tms-test-tools"[^>]*>[\s\S]*?<summary class="tms-step-label">Проверки и поддержка<\/summary>/,
+    'production support actions must be collapsed by default');
+  assert.doesNotMatch(productionSource, /Запустить полный UAT|id="tms-uat-actions"|id:\s*'full-uat'|selector:\s*'#tms-full-uat'/,
+    'production UI and action registry must not expose Full UAT');
+  assert.doesNotMatch(productionSource, /^\/\/ @include\s+https:\/\/tessa-app\*/m,
+    'production userscript must use only exact TESSA hosts');
+  assert.match(productionSource, /Диагностические файлы могут содержать служебные данные TESSA/,
+    'production support disclosure must warn about diagnostic data handling');
   assert.match(uatSource, /__TESSA_MATRIX_SYNC_EXPORTS__/,
     'UAT candidate must expose the explicit test bridge');
   assert.match(uatSource, /__TMS_FULL_UAT_V1__/,
     'UAT candidate must include the Full UAT runner');
+  assert.match(uatSource, /<section id="tms-test-tools"[^>]*>[\s\S]*?id="tms-uat-actions"/,
+    'UAT candidate must keep support and Full UAT actions visible for certification');
   assert.match(uatSource, /'action-support-bundle'/,
     'UAT action registry must verify the unified support package');
 

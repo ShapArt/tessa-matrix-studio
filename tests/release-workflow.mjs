@@ -29,6 +29,9 @@ assert(workflow.includes('TESSA_MATRIX_ROUNDTRIP_V7'), 'release must verify the 
 assert(workflow.includes('TESSA_MATRIX_SUPPORT_BUNDLE_V1'), 'release must verify the unified support package');
 assert(workflow.includes('Production build exposed test/UAT globals'), 'release must fail if production exposes test internals');
 assert(workflow.includes('tessa-matrix-studio.meta.js'), 'release must publish metadata-only updates');
+assert(workflow.includes('tools/build-enterprise-package.mjs'), 'release must build the exact production enterprise package');
+assert(workflow.includes('tessa-matrix-studio-v$VERSION-enterprise-unsigned.zip'), 'release must publish the unsigned IT handoff package');
+assert(!/gh release create[\s\S]*dist\/tessa-matrix-studio\.uat\.user\.js/.test(workflow), 'public release must not publish the UAT userscript');
 
 assert(workflow.includes('Refusing to overwrite published release'), 'published versions must be immutable');
 assert(!workflow.includes('--clobber'), 'release assets must never be overwritten');
