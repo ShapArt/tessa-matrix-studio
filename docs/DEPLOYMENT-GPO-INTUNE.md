@@ -22,6 +22,8 @@ node tools/build-enterprise-package.mjs dist/tessa-matrix-studio.user.js enterpr
 
 Builder создаёт Manifest V3 с точными host patterns и без дополнительных permissions. Подпись CRX выполняет ИТ в защищённом контуре: закрытый ключ не хранится в репозитории или CI. Для управляемого обновления config должен содержать выданный Edge extension ID, корпоративные HTTPS `updateUrl` и `crxUrl`; тогда пакет также создаёт `update.xml` и заготовки policy.
 
+Full UAT не встраивается в production-расширение. Для тестового контура соберите отдельный exact-кандидат командой `npm run build:uat`; кнопка **«Запустить полный UAT»** будет видна в плоском разделе **«Проверки и поддержка»**. После получения `FAIL 0 / NOT RUN 0` и `restoreStatus=VERIFIED` замените UAT-сборку production-файлом из того же коммита.
+
 ## Кольца
 
 1. **Pilot** — тестовая группа, тестовый TESSA контур, Fast UAT и один Live smoke с восстановлением.
@@ -29,6 +31,8 @@ Builder создаёт Manifest V3 с точными host patterns и без д�
 3. **Production** — обязательная установка через `ExtensionSettings` или `ExtensionInstallForcelist` после ACL gate и Certification UAT.
 
 В Intune используйте Administrative Templates для Microsoft Edge или импортированный ADMX. В GPO задайте force-installed extension и корпоративный update URL. Запретите пользователю менять источник обновления. Перед раскаткой сверьте SHA-256 `studio.js`, CRX и published manifest с утверждённой заявкой.
+
+Официальные ориентиры: [управление расширениями Edge](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-manage-extensions) и [политики установки расширений](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-manage-extensions-policies).
 
 ## Обновление и откат
 

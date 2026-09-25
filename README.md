@@ -6,7 +6,7 @@
 
 `TESSA → XLSX → массовая правка → точный diff → review → controlled apply`
 
-[![Version](https://img.shields.io/badge/version-1.17.0-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.17.1-EF233C?style=flat-square)](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)
 [![Quality & Security](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml/badge.svg)](https://github.com/ShapArt/tessa-matrix-studio/actions/workflows/quality.yml)
 
 ### [1 · УСТАНОВИТЬ TAMPERMONKEY ДЛЯ CHROME](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
@@ -15,7 +15,7 @@
 
 [РЕЛИЗ](https://github.com/ShapArt/tessa-matrix-studio/releases/latest) · [КОД](https://github.com/ShapArt/tessa-matrix-studio/blob/main/tessa-matrix-studio.user.js) · [ISSUES](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 
-**v1.17.0 · Автор: Шаповалов Артём**
+**v1.17.1 · Автор: Шаповалов Артём**
 
 </div>
 
@@ -43,11 +43,11 @@ TESSA Matrix Studio добавляет в открытую карточку ма
 
 После обычного Apply Studio автоматически перечитывает матрицу и сверяет сохранённые строки и значения. Неподтверждённая запись не считается полностью успешной.
 
-В **1.17.0** после Preview доступна одна кнопка **«Скачать пакет»**. ZIP содержит текущую выгрузку TESSA, выбранный пользователем Excel, полный отчёт изменений и SHA-256 manifest. Повторяющиеся справочники в Roundtrip V7 физически хранятся один раз, а справочники кэшируются на 30 минут с изоляцией по пользователю, шаблону и типу карточки. Production и UAT теперь собираются одним детерминированным builder-ом.
+В **1.17.1** после Preview доступна одна кнопка **«Скачать пакет»**. ZIP содержит текущую выгрузку TESSA, выбранный пользователем Excel, полный отчёт изменений и SHA-256 manifest. Повторяющиеся справочники в Roundtrip V7 физически хранятся один раз, а справочники кэшируются на 30 минут с изоляцией по пользователю, шаблону и типу карточки. Кнопки обновления и объединения Excel видны сразу. В UAT-сборке Full UAT также находится в открытом списке действий.
 
-![Preview и единая кнопка скачивания пакета в v1.17.0](docs/assets/v1.17-preview.png)
+![Preview и единая кнопка скачивания пакета в v1.17.1](docs/assets/v1.17-preview.png)
 
-В **1.14.0** неизменённые строки проходят быстрый fingerprint-path, а серверная перепроверка по возможности ограничивается реально затронутыми строками с безопасным fallback. Для сотрудников Excel показывает **ФИО — должность**. После Preview можно нажать **«Скачать изменения в Excel»** и получить отдельный отчёт только по ADD/UPDATE/DELETE/SKIP; он помечен как report-only и не принимается обратно для Apply. В диагностический ZIP добавлен read-only Performance UAT. Числа из CI являются synthetic-замерами локального planner-а и не заменяют live-проверку TESSA.
+В **1.14.0** неизменённые строки получили быстрый fingerprint-path, а серверная перепроверка стала по возможности ограничиваться реально затронутыми строками с безопасным fallback. Для сотрудников Excel показывает **ФИО — должность**. Появившийся тогда отдельный отчёт изменений теперь входит в единый пакет 1.17. В диагностический ZIP включён read-only Performance UAT. Числа из CI являются synthetic-замерами локального planner-а и не заменяют live-проверку TESSA.
 
 В **1.14.1** Excel-отчёт изменений стал самодостаточным: UPDATE показывает изменённые поля, ADD и DELETE разворачивают все заполненные бизнес-поля строки, SKIP сохраняет причину, а книга содержит один лист «Изменения» и остаётся report-only.
 
@@ -130,7 +130,7 @@ Studio автоматически подключается к открытой �
 Если Tampermonkey уже установлен и разрешён для userscript'ов:
 
 1. Нажмите **[УСТАНОВИТЬ TESSA MATRIX STUDIO](https://github.com/ShapArt/tessa-matrix-studio/releases/latest/download/tessa-matrix-studio.user.js)**.
-2. Подтвердите установку версии **1.17.0** в Tampermonkey.
+2. Подтвердите установку версии **1.17.1** в Tampermonkey.
 3. Откройте матрицу TESSA и обновите страницу (`Ctrl+R`).
 4. Убедитесь, что появилась панель **TESSA Matrix Studio**.
 5. Сначала нажмите **Скачать Excel** и сохраните исходную выгрузку как резервную копию.
@@ -192,7 +192,7 @@ Studio автоматически подключается к открытой �
 Перед подтверждением проверьте:
 
 - **Название:** `TESSA Matrix Studio — Черкизово`
-- **Версия:** `1.17.0`
+- **Версия:** `1.17.1`
 - **Автор:** `Шаповалов Артём`
 - **Разрешения:** `@grant none`
 - **Область запуска:** только домены TESSA Черкизово
@@ -491,14 +491,24 @@ npm test
 
 Ключевые части userscript разделены комментариями по ответственности: XLSX, справочники, TESSA bridge, planner, safety/apply и UI. При изменении логики сопоставления строк сначала добавляйте regression-case в `tests/planner.mjs`.
 
+Production и UAT собираются отдельно. Production не публикует тестовые write-функции в `window`; Full UAT доступен в exact UAT-кандидате:
+
+```bash
+npm run build:uat
+```
+
+После сборки установите `tessa-matrix-studio.user.js` только в тестовом контуре. Алгоритмы ADD/UPDATE/DELETE описаны в [CHANGE-ALGORITHMS.md](docs/CHANGE-ALGORITHMS.md), доказательства и обязательные внешние gates — в [CERTIFICATION-CONTROLS.md](docs/CERTIFICATION-CONTROLS.md).
+
 ---
 
 ## Версия и поддержка
 
-Текущая версия: **1.17.0**
+Текущая версия: **1.17.1**
 Автор: **Шаповалов Артём**
 
 - [История изменений](CHANGELOG.md)
 - [Политика безопасности](SECURITY.md)
+- [Алгоритмы изменений](docs/CHANGE-ALGORITHMS.md)
+- [Контроли сертификации](docs/CERTIFICATION-CONTROLS.md)
 - [Сообщить об ошибке](https://github.com/ShapArt/tessa-matrix-studio/issues/new/choose)
 - [Скачать последний релиз](https://github.com/ShapArt/tessa-matrix-studio/releases/latest)

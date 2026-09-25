@@ -1,6 +1,8 @@
-# Проверка безопасности v1.17.0
+# Проверка безопасности v1.17.1
 
-Объект проверки — production и UAT сборки TESSA Matrix Studio 1.17.0, XLSX/ZIP границы, Preview, запись через штатный API TESSA, диагностический пакет и корпоративная упаковка Manifest V3.
+Объект проверки — production и UAT сборки TESSA Matrix Studio 1.17.1, XLSX/ZIP границы, Preview, запись через штатный API TESSA, диагностический пакет и корпоративная упаковка Manifest V3.
+
+Полная матрица trust boundaries и внешних gates вынесена в [CERTIFICATION-CONTROLS.md](CERTIFICATION-CONTROLS.md). Базовый checklist — [OWASP ASVS 5.0.0](https://owasp.org/projects/asvs); наличие checklist не заменяет независимую проверку ИБ и серверных ACL TESSA.
 
 ## Реализованные меры
 
