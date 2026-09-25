@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { enterpriseFiles } from '../tools/build-enterprise-package.mjs';
-const source = '// @version      1.16.15\n(() => { window.example = true; })();\n';
+const source = '// @version      1.17.0\n(() => { window.example = true; })();\n';
 const base = { origins: ['https://tessa.example.test'] };
 const files = enterpriseFiles(source, base);
 const manifest = JSON.parse(files.get('extension/manifest.json'));
@@ -21,5 +21,5 @@ assert.match(updated.get('update.xml'), /a=1&amp;b=2/);
 assert.equal(JSON.parse(updated.get('policy/ExtensionSettings.json'))[config.extensionId].override_update_url, true);
 assert.throws(() => enterpriseFiles(source, { ...config, crxUrl: 'http://updates.example.test/file.crx' }));
 assert.throws(() => enterpriseFiles(source, { ...config, extensionId: 'x'.repeat(32) }));
-assert.throws(() => enterpriseFiles(source.replace('1.16.15', '01.16.15'), base));
+assert.throws(() => enterpriseFiles(source.replace('1.17.0', '01.17.0'), base));
 console.log('Enterprise package: exact static source, narrow origins, no privileged permissions, validated updates and deterministic checksums OK');
