@@ -63,7 +63,7 @@ jobs:
           node -e "const fs=require('fs'); fs.writeFileSync('dist/candidate-manifest.json', JSON.stringify({format:'TESSA_MATRIX_UAT_CANDIDATE_V1',version:process.argv[1],commit:process.argv[2],userscriptSha256:process.argv[3],profile:'uat'},null,2)+'\\n')" "$VERSION" "$COMMIT_SHA" "$USER_SHA"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Upload exact UAT candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tessa-matrix-studio-v${{ steps.version.outputs.version }}-uat-${{ github.run_id }}
           path: |
